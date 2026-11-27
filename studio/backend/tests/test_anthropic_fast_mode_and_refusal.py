@@ -110,8 +110,7 @@ def test_fast_mode_dropped_on_opus_4_7(monkeypatch):
 
 
 def test_fast_mode_dropped_on_opus_4_6(monkeypatch):
-    """4.6 accepts `speed` but answers at standard speed and standard rates,
-    so the toggle would promise a speed-up that never arrives."""
+    """Opus 4.6 accepts speed but answers at standard speed and rates, so fast mode is dropped."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")

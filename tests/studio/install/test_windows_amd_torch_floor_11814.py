@@ -59,16 +59,14 @@ class TestPythonRepairMap:
 
     @pytest.mark.parametrize("gfx", _RDNA_WINDOWS_ARCHES)
     def test_the_family_leaf_is_in_the_211_allowlist(self, gfx):
-        """The stale/mismatch checks key on the family leaf, the install on the arch: a
-        floor in one and not the other reinstalls every update or never repairs."""
+        """Stale checks key on the leaf, install on the arch: a floor must be in both places."""
         leaf = stack_mod._GFX_TO_AMD_INDEX_ARCH[gfx].lower()
         assert (
             leaf in stack_mod._ROCM_GFX_TORCH211_LEAVES
         ), f"{gfx} -> {leaf} not in the 2.11 allowlist"
 
     def test_cdna_stays_bare(self):
-        """gfx908 / gfx90a: no Windows wheels, unmeasured; Linux reaches them via the
-        floored rocm7.2 index. Deliberately not in the allowlist."""
+        """gfx908/gfx90a: no Windows wheels, unmeasured; Linux uses the floored rocm7.2 index."""
         assert "gfx908" not in stack_mod._ROCM_GFX_TORCH211_LEAVES
         assert "gfx90a" not in stack_mod._ROCM_GFX_TORCH211_LEAVES
         assert "gfx908" not in stack_mod._WINDOWS_ROCM_TORCH_PKG_SPECS

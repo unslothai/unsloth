@@ -26,6 +26,9 @@ class _FakeProc:
     def is_alive(self):
         return self._alive
 
+    def terminate(self):
+        self._alive = False
+
 
 class _ScriptedQueue:
     def __init__(self, events):
@@ -186,3 +189,56 @@ def test_finished_pump_leaves_the_next_run_alone(monkeypatch):
     assert second.status == "pending" and second.error is None
     assert second.internal_api_key_id == 2 and 2 not in revoked
     assert emitted == []
+
+
+def test_cancel_wins_over_a_start_still_queued_in_the_worker_pipe(monkeypatch):
+    m = _manager_with_active_job()
+    m._job.status = "pending"
+    emitted: list = []
+    retired: list = []
+    monkeypatch.setattr(m, "_emit", lambda e: emitted.append(e))
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+    m._mp_q = _ScriptedQueue(
+        [{"type": "job.started", "artifact_path": "/tmp/late", "execution_type": "full"}]
+    )
+
+    assert m.cancel("job-test") is True
+    assert m._job.status == "cancelling"
+    m._pump_loop()
+
+    assert m._job.status == "cancelled"
+    assert m._job.error is None
+    assert m._job.artifact_path is None
+    assert [e.get("type") for e in emitted] == ["job.cancelling", "job.cancelled"]
+    assert retired and retired[0] is m._job
+
+
+def test_normal_start_and_completed_events_still_apply(monkeypatch):
+    m = _manager_with_active_job()
+    m._job.status = "pending"
+    emitted: list = []
+    retired: list = []
+    monkeypatch.setattr(m, "_emit", lambda e: emitted.append(e))
+    monkeypatch.setattr(m, "_retire_workflow_key", lambda j: retired.append(j))
+    m._proc._alive = False
+    m._mp_q = _ScriptedQueue(
+        [
+            {"type": "job.started", "artifact_path": "/tmp/run", "execution_type": "full"},
+            {
+                "type": "job.completed",
+                "artifact_path": "/tmp/run",
+                "execution_type": "full",
+                "analysis": {"rows": 3},
+            },
+        ]
+    )
+
+    m._pump_loop()
+
+    assert m._job.status == "completed"
+    assert m._job.error is None
+    assert m._job.artifact_path == "/tmp/run"
+    assert m._job.execution_type == "full"
+    assert m._job.analysis == {"rows": 3}
+    assert [e.get("type") for e in emitted] == ["job.started", "job.completed"]
+    assert retired and retired[0] is m._job

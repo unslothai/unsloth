@@ -33,9 +33,7 @@ _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVF
 # Pipeline attributes that hold a text encoder, in order.
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first,
-# skip_last) blocks to keep dense (``FamilyProfile.te_int8_skip``, measured hidden-state fidelity); absent families
-# have no schedule clearing the bar, so int8 falls back to fp8.
+# int8 TE needs decoder blocks kept bf16; families without a te_int8_skip schedule fall back to fp8.
 _TE_INT8_SKIP: dict[str, tuple[int, int]] = _profile_table("te_int8_skip")
 
 
@@ -97,9 +95,7 @@ def resolve_te_quant_request(
     return (AutoTeQuant(scheme) if scheme is not None else None), True
 
 
-# Families whose automatic int8 encoder is the larger share of the default load's error AND whose bf16 encoder costs no
-# speed once resident. qwen-image (Qwen2.5-VL-7B, 2512, 16 prompts, G4, LPIPS vs the bf16 pipeline): int8 ConvRot
-# encoder 0.087 mean, bf16 encoder 0.059 at the same s/img, +6.1 GiB resident.
+# Families where the int8 encoder adds most error and the bf16 encoder costs no speed once resident.
 TE_BF16_AUTO_FAMILIES = frozenset({"qwen-image"})
 TE_BF16_AUTO_ENV = "UNSLOTH_DIFFUSION_TE_BF16_AUTO"
 TE_BF16_AUTO_REASON = (
@@ -579,9 +575,7 @@ def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
 
 
 def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[str]:
-    """FQNs of decoder blocks to keep bf16: the first ``skip_first`` and last ``skip_last`` of
-    each top-level ``nn.ModuleList`` stack. Structural, so no per-architecture table.
-    Counts live slots only (truncated dead tails are passthroughs)."""
+    """Edge FQNs of each ModuleList stack's first skip_first and last skip_last blocks, live slots only."""
     import torch
 
     from .diffusion_te_truncate import live_slots
@@ -858,9 +852,7 @@ def _install_storage_restore(encoder: Any) -> int:
 
 
 def _install_dtype_override(cls: type) -> None:
-    """Shadow ``cls.dtype`` with a property preferring the per-instance compute-dtype
-    override ``_cast_fp8`` sets; instances without it keep the original behaviour. Class
-    identity is untouched, applied once per class."""
+    """Property prefers per-instance dtype override from _cast_fp8; instances without it are unchanged."""
     existing = cls.__dict__.get("dtype")
     if getattr(getattr(existing, "fget", None), "_unsloth_te_dtype_override", False):
         return

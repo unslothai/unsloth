@@ -273,6 +273,13 @@ STUDIO_OPTION_LISTS: Mapping[str, tuple[dict, ...]] = MappingProxyType(
 
 OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
     {
+        # join-cfg only: the default independent-cfg sampling refuses a request carrying it.
+        "echo_tts": (
+            OptionRule(
+                defaults = {"guidance_scale": None},
+                sources = {"guidance_scale": "audio.cpp model_specs/echo_tts.json (join-cfg only)"},
+            ),
+        ),
         "ace_step": (
             OptionRule(
                 extra = (
@@ -662,8 +669,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
                 },
             ),
         ),
-        # VoxCPM1: the embedded spec's defaults are older than the runtime's; prompt_text is the
-        # Clone transcript under another name.
+        # VoxCPM1 spec defaults lag the runtime; prompt_text is Clone's transcript.
         "voxcpm1": (
             OptionRule(
                 defaults = {

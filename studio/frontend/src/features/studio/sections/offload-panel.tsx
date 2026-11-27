@@ -65,11 +65,23 @@ export function useOffloadState(enabled: boolean, intervalMs = 2000): OffloadSta
         // Retry on the next poll.
       }
     }
-    void poll();
-    const timer = setInterval(() => void poll(), intervalMs);
+    let lastPollAt = 0;
+    const pollNow = () => {
+      lastPollAt = Date.now();
+      void poll();
+    };
+    pollNow();
+    const timer = setInterval(() => {
+      if (!document.hidden) pollNow();
+    }, intervalMs);
+    const onVisibilityChange = () => {
+      if (!document.hidden && Date.now() - lastPollAt >= intervalMs) pollNow();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [enabled, intervalMs]);
   return data;

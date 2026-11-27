@@ -80,6 +80,48 @@ export function ggufVariantsMatch(
   );
 }
 
+const HUB_REPO_ID_RE = /^[^/:\\\s]+\/[^/:\\\s]+$/;
+
+export function withoutNamedQuant(
+  id: string,
+  quant: string | null | undefined,
+): string {
+  if (!(quant && id.toLowerCase().endsWith(`:${quant.toLowerCase()}`))) {
+    return id;
+  }
+  const repo = id.slice(0, -quant.length - 1);
+  return HUB_REPO_ID_RE.test(repo) ? repo : id;
+}
+
+export function servedCheckpoint(
+  loaded: readonly { quant?: string | null; checkpoint?: string }[],
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  if (!(checkpoint && variant)) {
+    return checkpoint;
+  }
+  const copy = loaded.find(
+    (m) =>
+      m.checkpoint &&
+      m.quant &&
+      m.checkpoint !== checkpoint &&
+      ggufVariantsMatch(m.quant, variant) &&
+      modelIdsMatch(withoutNamedQuant(m.checkpoint, m.quant), checkpoint),
+  );
+  return copy?.checkpoint ?? checkpoint;
+}
+
+/** For long-lived runs: a quant loaded later beside this one would take the bare repo id. */
+export function pinnedCheckpoint(
+  checkpoint: string,
+  variant: string | null | undefined,
+): string {
+  return variant && HUB_REPO_ID_RE.test(checkpoint)
+    ? `${checkpoint}:${variant}`
+    : checkpoint;
+}
+
 // Mirrors core/inference/model_ids.py _looks_like_path.
 const PUBLIC_ID_PATH_PREFIX_RE = /^(?:[/\\]|\.{1,2}[\\/]|~)/;
 const GGUF_SUFFIX_RE = /\.gguf$/i;
@@ -111,7 +153,7 @@ function looksLikeModelPath(identifier: string): boolean {
   return identifier.split("/").length - 1 >= 2 || identifier.includes("\\");
 }
 
-function hfCacheRepoId(path: string): string | null {
+export function hfCacheRepoId(path: string): string | null {
   const parts = path.replace(BACKSLASHES_RE, "/").split("/");
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index];
@@ -189,6 +231,8 @@ export function residentModelIdMatches(
 
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
+// An MLX tag's checkpoint: <links>/<tag hash>/mlx/<name>, mlx linking to the current build.
+const OLLAMA_MLX_CHECKPOINT_RE = /[\\/][0-9a-f]{10}[\\/]mlx[\\/][^\\/]+[\\/]?$/;
 
 /** The resolver refuses to index a materialized link, so settings must not mirror onto it. */
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
@@ -206,6 +250,19 @@ export function isOllamaModelId(modelId: string | null | undefined): boolean {
     Boolean(modelId?.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) ||
     isOllamaLinkPath(modelId)
   );
+}
+
+/** An Ollama tag in its MLX format: a checkpoint directory, never a single .gguf file. */
+export function isOllamaMlxModelId(modelId: string | null | undefined): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return isOllamaLinkPath(modelId) && OLLAMA_MLX_CHECKPOINT_RE.test(modelId);
+}
+
+/** A materialized .gguf link, which the resolver never indexes; an MLX tag's checkpoint it does. */
+export function isMaterializedOllamaLink(modelId: string | null | undefined): boolean {
+  return isOllamaLinkPath(modelId) && !isOllamaMlxModelId(modelId);
 }
 
 // Bare file names come from lease-backed loads whose host path /status withholds.

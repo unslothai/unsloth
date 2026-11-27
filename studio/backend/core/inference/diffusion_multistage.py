@@ -28,9 +28,8 @@ def _denoisers(pipe: Any) -> list:
 
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
-    """Whether the denoiser a call onloaded can stay while ``companions`` (the modules that run before it is needed
-    again) are onloaded beside it: free memory plus the allocator's idle cache (minus CUDA graph pools) covers them
-    with a margin."""
+    """Whether the denoiser can stay beside the companions: free memory plus idle allocator cache
+    (minus CUDA graph pools) covers them with a margin."""
     try:
         import torch
 
@@ -94,13 +93,14 @@ def hold_denoiser_between_calls(
             del pipe.maybe_free_model_hooks
 
 
+ENCODE_ONCE_MEMO_ATTR = "_unsloth_encode_once_memo"
+
+
 @contextlib.contextmanager
 def encode_once(runner: Any):
-    """For the span of one request: identical keyword-only ``encode_prompt`` calls (what the diffusers pipelines make)
-    after the first get a device copy of the first one's outputs (taken right after it, so its in-place edits never
-    reach them) instead of encoding or uploading again. Later calls share that copy: diffusers' pipelines build new
-    tensors from it (cat / repeat) and never write it. Calls with tensors or positional arguments pass through.
-    Restores the attribute it found."""
+    """Per request, identical keyword-only encode_prompt calls reuse a device copy of the first call
+    outputs, taken right after it so its in-place edits never reach them; tensor or positional
+    calls pass through."""
     encode = getattr(runner, "encode_prompt", None)
     if not callable(encode):
         yield
@@ -123,10 +123,16 @@ def encode_once(runner: Any):
         return out
 
     runner.encode_prompt = encode_prompt
+    # Read by LTX-2.5's connector reuse, which releases the memo's prompt rows once their connector outputs are cached.
+    exposed = getattr(runner, "__dict__", None)
+    if isinstance(exposed, dict):
+        exposed[ENCODE_ONCE_MEMO_ATTR] = memo
     try:
         yield
     finally:
         memo.clear()
+        if isinstance(exposed, dict) and exposed.get(ENCODE_ONCE_MEMO_ATTR) is memo:
+            del exposed[ENCODE_ONCE_MEMO_ATTR]
         if had_own:
             runner.encode_prompt = encode
         else:

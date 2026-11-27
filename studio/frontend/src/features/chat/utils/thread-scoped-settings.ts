@@ -18,7 +18,7 @@ import {
   sanitizeRagSource,
 } from "./mirrored-chat-settings.ts";
 
-/** "full" (Full access) is session-only, so a thread never carries it. */
+/** Never "full": a chat's Full access is the separate `fullAccess` flag. */
 export type ThreadPermissionMode = Exclude<PermissionMode, "full">;
 
 export interface ThreadScopedSettings {
@@ -31,6 +31,8 @@ export interface ThreadScopedSettings {
   deepResearchEnabled?: boolean;
   mcpEnabledForChat?: boolean;
   permissionMode?: ThreadPermissionMode;
+  /** Full access granted to this chat. Not a store field: the store reads and writes it itself. */
+  fullAccess?: boolean;
   ragEnabled?: boolean;
   ragSource?: RagSource;
   ragMode?: RagMode;
@@ -158,6 +160,31 @@ export function isThreadOwnedSettingKey(key: string): boolean {
   );
 }
 
+// Derived from permissionMode, so they must travel with it (codeToolsOn reads the last).
+const PERMISSION_MIRROR_KEYS = [
+  "confirmToolCalls",
+  "bypassPermissions",
+  "chatFullAccessPreviousMode",
+  "codeToolsDeclinedUnderFullAccess",
+] as const;
+
+/** `live` with `own`'s thread-scoped settings and permission mirrors; the model fields stay live. */
+export function withRunThreadScopedSettings<T extends { params: object }>(
+  live: T,
+  own: T,
+): T {
+  const source = own as unknown as Record<string, unknown>;
+  const ownParams = own.params as Record<string, unknown>;
+  const params: Record<string, unknown> = { ...live.params };
+  const next: Record<string, unknown> = { ...live, params };
+  for (const key of THREAD_SCOPED_SETTING_KEYS) {
+    if (isThreadScopedParamKey(key)) params[key] = ownParams[key];
+    else next[key] = source[key];
+  }
+  for (const key of PERMISSION_MIRROR_KEYS) next[key] = source[key];
+  return next as T;
+}
+
 // The patch model is extra="forbid", so one bad field would 400 the whole write.
 export function sanitizeThreadScopedSettings(
   value: unknown,
@@ -185,6 +212,7 @@ export function sanitizeThreadScopedSettings(
     if (typeof value[key] === "string") target[key] = value[key];
   }
   if (value.seed === null) settings.seed = null;
+  if (typeof value.fullAccess === "boolean") settings.fullAccess = value.fullAccess;
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;
   return settings;

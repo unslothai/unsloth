@@ -70,7 +70,7 @@ export function WorkflowTitleMenu({
                   <span className="text-ui-13 font-medium text-foreground">
                     {tab.label}
                   </span>
-                  <span className="text-ui-11p5 leading-snug text-muted-foreground">
+                  <span className="text-ui-12 leading-normal text-muted-foreground">
                     {tab.hint}
                   </span>
                 </span>

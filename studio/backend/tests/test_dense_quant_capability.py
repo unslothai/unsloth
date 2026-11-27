@@ -166,8 +166,7 @@ def test_the_scheme_ladder_is_published_beside_the_bit():
 
 
 def test_the_ladder_is_read_off_the_same_refresh_as_the_bit():
-    """The reader beside the bit is a pure read, so the polled route never probes or imports torch a
-    second time, and both entries come from one pass."""
+    """Polled route is a pure read: no probe or torch import; both entries from one refresh."""
     reader = _src("_dense_quant_schemes")
     assert "_probe_dense_quant_schemes" not in reader
     assert "_refresh_dense_quant_capability" not in reader

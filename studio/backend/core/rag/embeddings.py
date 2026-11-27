@@ -224,7 +224,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         data = _repo_json(name, "modules.json", token)
         subdirs = []
         for module in data or ():
-            sub = str((module or {}).get("path", "")).strip().strip("/")
+            sub = str((module or {}).get("path", "")).strip("/")
             if sub:
                 subdirs.append(sub)
         return tuple(dict.fromkeys(subdirs))
@@ -611,6 +611,9 @@ def _get(model_name: str | None = None):
             from utils.hf_cache_settings import active_hf_hub_cache
 
             _gate_st_custom_modules()
+            from utils.security import st_config_args
+
+            st_config_args.install()
 
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(
@@ -899,12 +902,37 @@ def _resolve_auto() -> str:
     """Auto picks sentence-transformers on a CUDA/ROCm GPU, else llama-server; GPU detection uses smi."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
-    if LlamaCppBackend._get_gpu_free_memory():
+    global _gpu_found_key
+    key = _gpu_probe_key(LlamaCppBackend)
+    if key == _gpu_found_key:
         return "sentence-transformers"
-    if LlamaCppBackend._find_llama_server_binary():
-        return "llama-server"
-    return "sentence-transformers"
+    binary = key[1]
+    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
+    if LlamaCppBackend._get_gpu_free_memory(binary = binary):
+        # Kept only if no key input moved while the probe ran (another thread changing a mask).
+        if _gpu_probe_key(LlamaCppBackend) == key:
+            _gpu_found_key = key
+        return "sentence-transformers"
+    return "llama-server" if binary else "sentence-transformers"
+
+
+# Key of the last probe that found a GPU (each probe spawns nvidia-smi / amd-smi); misses are never cached.
+_gpu_found_key: tuple | None = None
+
+
+def _gpu_probe_key(llama_cpp_backend) -> tuple:
+    binary = llama_cpp_backend._find_llama_server_binary()
+    try:
+        st = os.stat(binary) if binary else None
+        binary_id = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) if st else None
+    except OSError:
+        binary_id = None
+    return (
+        llama_cpp_backend._get_gpu_free_memory,
+        binary,
+        binary_id,
+        frozenset(os.environ.items()),
+    )
 
 
 # Cached: the auto GPU probe is a subprocess (#10390).
@@ -1118,6 +1146,8 @@ def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool
 
 def resolved_backend_for_model(model_name: str, token: str | bool | None = None) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
+    if config.is_connection_model(model_name):
+        return "connection"
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
@@ -1216,11 +1246,8 @@ def _current_backend_key() -> str:
     """The cache key the backend in use should carry right now. Tests that install a
     stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
     raw = _raw_backend()
-    forced = _forced_backends.get(config.effective_embedding_model())
-    if forced:
-        return _backend_cache_key(raw, forced)
-    key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
-    return _backend_cache_key(raw, key)
+    model = config.effective_embedding_model()
+    return _backend_cache_key(raw, _backend_choice(raw, model, _forced_backends.get(model)))
 
 
 def _backend_cache_key(raw: str, key: str) -> str:
@@ -1247,6 +1274,25 @@ def _dispose_replaced_backend(old, new = None) -> None:
             logger.warning("replaced embedding backend shutdown failed", exc_info = True)
 
 
+def _backend_choice(
+    raw: str,
+    model: str,
+    forced: str | None = None,
+) -> str:
+    # The model itself is remote, so it wins over RAG_EMBED_BACKEND and any local fallback pin.
+    if config.is_connection_model(model):
+        return "connection"
+    return forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+
+
+def _is_connection_backend(backend) -> bool:
+    try:
+        from .embed_connection import ConnectionEmbeddingBackend
+    except Exception:  # noqa: BLE001 - connection plumbing import must never block
+        return False
+    return isinstance(backend, ConnectionEmbeddingBackend)
+
+
 def _get_backend(model_name: str | None = None):
     """Uses the job's pinned model_name, not the live setting; a Settings change would mislabel vectors."""
     global _backend, _backend_key
@@ -1258,12 +1304,15 @@ def _get_backend(model_name: str | None = None):
         forced = _forced_backends.get(model)
         # Load-bearing: other probes resolve auto outside this lock and would keep a stale answer.
         _hardware_probe.choice = None
-        key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+        key = _backend_choice(raw, model, forced)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             _keep_hardware_choice(_backend)
             return _backend
         old = _backend
-        if key in _ST_ALIASES:
+        if key == "connection":
+            from .embed_connection import ConnectionEmbeddingBackend
+            new = ConnectionEmbeddingBackend()
+        elif key in _ST_ALIASES:
             new = _build_st_backend_or_fallback(model)
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
@@ -1288,12 +1337,13 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         _forced_backends.clear()
         _backend = None
         _backend_key = None
         _resident_hardware = None
+        _gpu_found_key = None
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
@@ -1315,6 +1365,8 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return True
     if isinstance(backend, _SentenceTransformersBackend):
         return _model is not None and _name == model_name
+    if _is_connection_backend(backend):
+        return config.is_connection_model(model_name)
     if _is_llama_backend(backend):
         try:
             # Unload is a fresh start: clearing _forced_backends lets the saved model pick its backend again.
@@ -1328,13 +1380,14 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
 
 def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
         # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
+        _gpu_found_key = None
     if backend is None:
         # Live servers keep spawn-time pooling; a stopped backend re-reads the file, so dedup must match.
         return _release_st_model()
@@ -1355,7 +1408,7 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw
+        key = _backend_choice(raw, model_name or config.effective_embedding_model())
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False
@@ -1364,7 +1417,9 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
 def batches_across_documents(model_name: str | None = None) -> bool:
     """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
     CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
-    if active_backend_is_llama(model_name):
+    if active_backend_is_llama(model_name) or config.is_connection_model(
+        model_name or config.effective_embedding_model()
+    ):
         return True
     model = _model
     # A loaded model's device counts: a GPU choice can still have fallen back to CPU at load.
@@ -1404,8 +1459,13 @@ def _identity(
     is_llama: bool,
     name: str,
     served = None,
-    served_identity: tuple[str | None, str | None] | None = None,
+    served_identity: tuple[str | None, str | None] | str | None = None,
 ) -> str:
+    if config.is_connection_model(name):
+        from .embed_connection import connection_identity
+        return connection_identity(
+            name, served_identity if isinstance(served_identity, str) else None
+        )
     if is_llama:
         if served_identity is None:
             repo = config.effective_gguf_repo_for_embedding_model(name)
@@ -1429,8 +1489,7 @@ def _identity_backend_is_llama(name: str) -> bool:
         with _backend_lock:
             backend = _backend
             cached_key = _backend_key
-        forced = _forced_backends.get(name)
-        resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
+        resolved = _backend_choice(raw, name, _forced_backends.get(name))
         expected_key = _backend_cache_key(raw, resolved)
         if backend is None or cached_key == expected_key:
             return active_backend_is_llama(name)

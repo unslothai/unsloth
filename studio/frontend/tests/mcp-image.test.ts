@@ -9,6 +9,7 @@ import {
   imageFieldCandidates,
   mcpImageMappingsEnabled,
   modelVisibleMessage,
+  projectMcpServers,
   toolOnlyImages,
   unmappedImageFields,
   withImageField,
@@ -191,4 +192,20 @@ test("any mapping edit on a legacy server sends one row per tool", () => {
     ),
     [saved[0]],
   );
+});
+
+test("a project's own MCP set keeps an excluded image server from making images tool-only", () => {
+  const mapped = { tool: "lookup", field: "image", encoding: "base64" };
+  const servers = [
+    { id: "vision", is_enabled: true, image_input_mappings: [mapped] },
+    { id: "docs", is_enabled: true, image_input_mappings: [] },
+  ];
+  type Servers = Parameters<typeof mcpImageMappingsEnabled>[0];
+  const enabled = (selected: string[] | null | undefined) =>
+    mcpImageMappingsEnabled(projectMcpServers(servers, selected) as unknown as Servers);
+  assert.equal(enabled(undefined), true);
+  assert.equal(enabled(null), true);
+  assert.equal(enabled(["vision"]), true);
+  assert.equal(enabled(["docs"]), false);
+  assert.equal(enabled([]), false);
 });

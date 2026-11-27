@@ -769,8 +769,7 @@ def test_instability_measured_at_a_rung_still_silences_that_rung(tmp_path):
 
 
 def test_a_declared_unstable_action_still_holds_at_every_rung(tmp_path):
-    # Declared entries are action properties, not rung-scoped.
-    # Exit 2, not 1: the only pair was filed as expected variation, so no verdict was produced.
+    # Declared actions hold at every rung. Exit 2, not 1: the only pair is expected variation.
     rows = [{"row_type": "run_meta", "tier": "standard"}]
     rows.append(parity_action("r1K.base.rep0", "stop_generation", "A"))
     rows.append(parity_action("r1K.treatment.rep0", "stop_generation", "B"))
@@ -801,8 +800,7 @@ def resumed_parity(tmp_path: Path, name: str, retry_session: str) -> Path:
 
 
 def test_a_resumed_arm_is_not_paired_with_its_partner_from_the_old_session(tmp_path):
-    # A resumed dead arm runs under a new session id, so session-scoped volatiles look like arm
-    # differences.
+    # Resumed arms get a new session id, so session-scoped volatiles look like differences.
     null = resumed_parity(tmp_path, "null_resumed", "s2")
     unstable, _derived, _checks = U.unstable_set([null])
     assert ("r100K", "settings") not in unstable
@@ -1026,13 +1024,8 @@ def probe_payload(tmp_path: Path, name: str, script: str | None) -> Path:
 
 
 def test_a_payload_recorded_with_a_probe_installed_is_refused(tmp_path):
-    """The instrument was in the shot. There is no flag to override it.
-
-    A probe samples the DOM on its own schedule and forces layout to do it, so the timings are a
-    measurement of the page AND the instrument. Without this the run looks entirely ordinary: it
-    records the same cells and renders the same A/B table, and only the caller's memory stops the
-    numbers being quoted.
-    """
+    """A probe installed while recording is refused, with no override flag: the timings measure the
+    probe as well as the page."""
     path = probe_payload(tmp_path, "probed", "arms/content_visibility_probe.js")
     with pytest.raises(SystemExit) as excinfo:
         F.load([path])
@@ -1235,8 +1228,7 @@ def test_the_documented_loop_asserts_liveness_before_it_reads_any_timing():
 
 
 def test_floor_table_prints_a_clean_verdict_from_a_run_that_liveness_voids(tmp_path, capsys):
-    # `paired` matches only metrics both arms recorded, so a missed slot leaves only a smaller `n`
-    # and the survivors look like a clean win.
+    # A missed slot leaves `paired` a smaller `n`, so the survivors look like a clean win.
     mine = liveness_payload(
         tmp_path, "mine", [(1000.0, 900.0), (1000.0, 900.0), (1000.0, 900.0), (1000.0, None)]
     )

@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
-UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss."""
+"""Token-aware SFT micro-batches: UNSLOTH_TOKEN_BALANCE=1 keeps num_items_in_batch unchanged;
+UNSLOTH_TOKEN_BUDGET passes sum to the unsplit loss.
+
+Under torchrun (WORLD_SIZE > 1) balancing across ranks is the default; UNSLOTH_TOKEN_BALANCE=0 turns it off.
+
+UNSLOTH_TOKEN_BALANCE=labels also regroups rows across UNSLOTH_TOKEN_BALANCE_WINDOW (default 8)
+consecutive optimizer steps so every step carries a similar number of supervised tokens (shifted
+labels != -100). That changes which rows share a step, so it changes the data order: opt-in only."""
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import heapq
 import inspect
@@ -17,7 +24,9 @@ import torch
 
 __all__ = [
     "karmarkar_karp",
+    "equal_size_partition",
     "balance_step_indices",
+    "balance_label_steps",
     "TokenBalancedSampler",
     "split_batch_by_token_budget",
     "install_token_budget",
@@ -25,6 +34,8 @@ __all__ = [
 
 _TOKEN_BALANCE_ENV = "UNSLOTH_TOKEN_BALANCE"
 _TOKEN_BUDGET_ENV = "UNSLOTH_TOKEN_BUDGET"
+_TOKEN_BALANCE_WINDOW_ENV = "UNSLOTH_TOKEN_BALANCE_WINDOW"
+_DEFAULT_LABEL_WINDOW = 8
 
 
 def karmarkar_karp(
@@ -34,7 +45,9 @@ def karmarkar_karp(
 ):
     """Split indices of `values` into `k` groups with near-equal sums (largest differencing method).
 
-    With `equal_size`, `len(values)` must be a multiple of `k` and every group gets the same count.
+    With `equal_size`, `len(values)` must be a multiple of `k` and every group gets the same count;
+    each group then takes exactly one of every `k` consecutive values in sorted order, which is what
+    ranks stepping in lockstep need (see `balance_step_indices`), and groups come heaviest first.
     Deterministic: ties break on index. Mirrors verl/utils/seqlen_balancing.py:karmarkar_karp.
     """
     k = int(k)
@@ -69,6 +82,93 @@ def karmarkar_karp(
     return [sorted(s[1]) for s in heap[0][2]]
 
 
+def _longest_first(values, k):
+    """Equal-size LPT: rows longest first, each to the lightest group that still has room."""
+    size = len(values) // k
+    groups = [[] for _ in range(k)]
+    heap = [(0, j) for j in range(k)]
+    for i in sorted(range(len(values)), key = lambda i: (-values[i], i)):
+        total, j = heapq.heappop(heap)
+        groups[j].append(i)
+        if len(groups[j]) < size:
+            heapq.heappush(heap, (total + values[i], j))
+    return groups
+
+
+def _swap_refine(values, groups, max_swaps):
+    """1-for-1 swaps between the heaviest group and the lightest one that has a helpful swap, taking
+    the swap that best halves their gap. Group sizes never change, the heaviest sum never grows and
+    the sum of squares strictly falls, so it stops; `max_swaps` bounds the cost."""
+    groups = [list(g) for g in groups]
+    sums = [sum(values[i] for i in g) for g in groups]
+    k = len(groups)
+    for _ in range(max_swaps):
+        hi = min(range(k), key = lambda j: (-sums[j], j))
+        best = None
+        for lo in sorted(range(k), key = lambda j: (sums[j], j)):
+            gap = sums[hi] - sums[lo]
+            if gap <= 0:
+                break
+            keyed = sorted((values[b], p) for p, b in enumerate(groups[lo]))
+            keys = [v for v, _ in keyed]
+            for a_pos, a in enumerate(groups[hi]):
+                # The best partner b has values[b] nearest values[a] - gap / 2.
+                q = bisect.bisect_left(keys, values[a] - gap / 2)
+                for c in (q - 1, q):
+                    if 0 <= c < len(keys):
+                        d = values[a] - keys[c]
+                        if 0 < d < gap:
+                            score = abs(gap - 2 * d)
+                            if best is None or score < best[0]:
+                                best = (score, a_pos, keyed[c][1], lo, d)
+            if best is not None:
+                break
+        if best is None:
+            break
+        _, a_pos, b_pos, lo, d = best
+        groups[hi][a_pos], groups[lo][b_pos] = groups[lo][b_pos], groups[hi][a_pos]
+        sums[hi] -= d
+        sums[lo] += d
+    return [sorted(g) for g in groups]
+
+
+def equal_size_partition(values, k):
+    """`k` equal-count groups of the indices of `values` with the smallest heaviest sum this finds:
+    the better (heaviest sum, then spread) of equal-size differencing and a size-capped longest-first
+    fill, each improved by 1-for-1 swaps. Equal-size differencing alone leaves the heaviest group
+    several % (2 groups) to 20%+ (8 groups) over the mean on long-tailed lengths; this gets within
+    about 0.1-3%. Unlike `karmarkar_karp`, a group may take several of the largest values, so it is
+    for a total per group (ranks that synchronise once per step), not for ranks in lockstep.
+    Deterministic: ties break on index; groups come heaviest first. At most 2 * len(values) swaps."""
+    differenced = karmarkar_karp(values, k, equal_size = True)
+    k = len(differenced)
+    if k < 2 or len(values) <= k:
+        return differenced
+
+    def key(groups):
+        sums = [sum(values[i] for i in g) for g in groups]
+        return (max(sums), max(sums) - min(sums))
+
+    max_swaps = 2 * len(values)
+    best = min(
+        _swap_refine(values, differenced, max_swaps),
+        _swap_refine(values, _longest_first(values, k), max_swaps),
+        key = key,
+    )
+    return sorted(best, key = lambda g: (-sum(values[i] for i in g), g))
+
+
+def _more_even(regrouped, given, weights, size):
+    """The partitioners are heuristics: True unless `given` already has the smaller spread of
+    per-group sums over consecutive `size` chunks, so a regroup never ends up less even."""
+
+    def spread(order):
+        sums = [sum(weights[i] for i in order[s : s + size]) for s in range(0, len(order), size)]
+        return max(sums) - min(sums)
+
+    return spread(regrouped) <= spread(given)
+
+
 def balance_step_indices(
     indices,
     lengths,
@@ -76,6 +176,7 @@ def balance_step_indices(
     grad_accum,
     world_size = 1,
     cross_rank = True,
+    lockstep = True,
 ):
     """Reorder one optimizer step's sampler output (`world_size * grad_accum * batch_size` indices).
 
@@ -83,6 +184,12 @@ def balance_step_indices(
     batches, global batch b goes to rank b % world_size, and rank r's g-th batch of the step is
     global batch g * world_size + r. With `cross_rank` rows move between ranks to equalize per-rank
     tokens; without it each rank keeps its own rows and only its accumulation slots are balanced.
+
+    `lockstep`: ranks wait for each other on every micro-batch (FSDP, pipeline / tensor / context
+    parallel), so a micro-step costs its longest slot over ranks. Equal-size differencing gives every
+    rank one row of each size tier and slots come heaviest first, which lines similar slots up across
+    ranks. False (DDP, which synchronises once per step): only each rank's total matters, which
+    `equal_size_partition` evens out far better on long-tailed lengths.
     """
     bs, ga, ws = int(batch_size), int(grad_accum), int(world_size)
     window = bs * ga * ws
@@ -90,22 +197,46 @@ def balance_step_indices(
         raise ValueError(f"expected {window} indices, got {len(indices)}")
     if ga * ws == 1:
         return list(indices)
+    rank_rows = [
+        [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)] for r in range(ws)
+    ]
     if cross_rank and ws > 1:
-        groups = karmarkar_karp([lengths[i] for i in indices], ws, equal_size = True)
-        rank_rows = [[indices[p] for p in group] for group in groups]
-    else:
-        rank_rows = [
-            [indices[(g * ws + r) * bs + j] for g in range(ga) for j in range(bs)]
-            for r in range(ws)
-        ]
+        values = [lengths[i] for i in indices]
+        if lockstep:
+            groups = karmarkar_karp(values, ws, equal_size = True)
+        else:
+            groups = equal_size_partition(values, ws)
+        regrouped = [[indices[p] for p in group] for group in groups]
+        if _more_even(sum(regrouped, []), sum(rank_rows, []), lengths, ga * bs):
+            rank_rows = regrouped
     out = [None] * window
     for r, rows in enumerate(rank_rows):
         slots = karmarkar_karp([lengths[i] for i in rows], ga, equal_size = True)
+        slots = [[rows[p] for p in slot] for slot in slots]
+        if not _more_even(sum(slots, []), rows, lengths, bs):
+            slots = [rows[g * bs : (g + 1) * bs] for g in range(ga)]
         for g, slot in enumerate(slots):
             base = (g * ws + r) * bs
-            for j, p in enumerate(slot):
-                out[base + j] = rows[p]
+            out[base : base + bs] = slot
     return out
+
+
+def balance_label_steps(indices, label_counts, step_size):
+    """Regroup `len(indices) // step_size` consecutive optimizer steps so each step's summed
+    `label_counts` is near-equal; every step keeps `step_size` rows and the multiset is unchanged.
+
+    Steps are emitted in order of their earliest original row and rows keep their original relative
+    order inside a step, so the sampler's shuffle still decides the coarse order."""
+    step_size = int(step_size)
+    if step_size < 1 or len(indices) % step_size != 0:
+        raise ValueError(f"expected a multiple of {step_size} indices, got {len(indices)}")
+    steps = len(indices) // step_size
+    if steps < 2:
+        return list(indices)
+    groups = equal_size_partition([label_counts[i] for i in indices], steps)
+    groups.sort(key = lambda group: group[0])
+    out = [indices[p] for group in groups for p in group]
+    return out if _more_even(out, indices, label_counts, step_size) else list(indices)
 
 
 class TokenBalancedSampler(torch.utils.data.Sampler):
@@ -113,6 +244,10 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
 
     `keep_first_window` passes the first window through unchanged: accelerate's BatchSamplerShard
     (even_batches) pads an uneven tail with the first `world_size * batch_size` indices it saw.
+
+    With `label_counts`, `label_window` consecutive step windows are first regrouped by
+    `balance_label_steps`; `balance_lengths` False then leaves each step's rows in that order.
+    `lockstep` is passed to `balance_step_indices`.
     """
 
     def __init__(
@@ -124,6 +259,10 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         world_size = 1,
         cross_rank = True,
         keep_first_window = False,
+        label_counts = None,
+        label_window = 1,
+        balance_lengths = True,
+        lockstep = True,
     ):
         self.sampler = sampler
         self.lengths = lengths
@@ -132,12 +271,37 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
         self.world_size = int(world_size)
         self.cross_rank = bool(cross_rank)
         self.keep_first_window = bool(keep_first_window)
+        self.label_counts = label_counts
+        self.label_window = max(int(label_window), 1) if label_counts is not None else 1
+        self.balance_lengths = bool(balance_lengths)
+        self.lockstep = bool(lockstep)
 
     def __len__(self):
         return len(self.sampler)
 
+    def _steps(self, buffer, window):
+        if self.label_counts is not None:
+            buffer = balance_label_steps(buffer, self.label_counts, window)
+        if not self.balance_lengths:
+            return buffer
+        out = []
+        for start in range(0, len(buffer), window):
+            out.extend(
+                balance_step_indices(
+                    buffer[start : start + window],
+                    self.lengths,
+                    self.batch_size,
+                    self.grad_accum,
+                    self.world_size,
+                    self.cross_rank,
+                    self.lockstep,
+                )
+            )
+        return out
+
     def __iter__(self):
         window = self.batch_size * self.grad_accum * self.world_size
+        span = window * self.label_window
         buffer = []
         first = self.keep_first_window
         for index in self.sampler:
@@ -146,16 +310,14 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
                 first = False
                 yield from buffer
                 buffer = []
-            elif len(buffer) == window:
-                yield from balance_step_indices(
-                    buffer,
-                    self.lengths,
-                    self.batch_size,
-                    self.grad_accum,
-                    self.world_size,
-                    self.cross_rank,
-                )
+            elif len(buffer) == span:
+                yield from self._steps(buffer, window)
                 buffer = []
+        # A shorter tail still regroups its full steps; the partial step passes through.
+        full = len(buffer) - len(buffer) % window
+        if full and not first:
+            yield from self._steps(buffer[:full], window)
+            buffer = buffer[full:]
         yield from buffer
 
     def set_epoch(self, epoch):
@@ -172,7 +334,12 @@ class TokenBalancedSampler(torch.utils.data.Sampler):
 def _segments_of(batch, total):
     lengths = batch.get("packed_seq_lengths")
     if isinstance(lengths, torch.Tensor):
-        lengths = [int(x) for x in lengths.tolist()]
+        # The host tuple the packing collators attach (packing._carry_host_lengths): no device read.
+        host = getattr(lengths, "_unsloth_lengths_tuple", None)
+        if isinstance(host, tuple) and len(host) == lengths.numel():
+            lengths = list(host)
+        else:
+            lengths = [int(x) for x in lengths.tolist()]
         return lengths if sum(lengths) == total else None
     position_ids = batch.get("position_ids")
     if not isinstance(position_ids, torch.Tensor) or tuple(position_ids.shape) != (1, total):
@@ -223,6 +390,8 @@ def _split_padding_free(batch, budget):
         for key, value in batch.items():
             if key == "packed_seq_lengths":
                 chunk[key] = torch.tensor(group, dtype = value.dtype, device = value.device)
+                # Each chunk's forward reads its lengths from this tuple instead of the device.
+                chunk[key]._unsloth_lengths_tuple = tuple(group)
             elif isinstance(value, torch.Tensor):
                 chunk[key] = value[:, start:stop]
             else:
@@ -278,11 +447,8 @@ def _splittable_keys(batch):
 
 
 def split_batch_by_token_budget(batch, budget):
-    """Split a collated text batch into sub-batches of at most `budget` tokens, else return `[batch]`.
-
-    Padding-free batches ([1, T] with sequence boundaries) split between whole sequences; padded
-    batches ([B, L]) split by rows. Anything else (vision tensors, unknown shapes) is not split.
-    """
+    """Splits a batch to at most budget tokens: padding-free [1, T] batches between whole sequences,
+    padded [B, L] by rows; other shapes are never split."""
     if not isinstance(batch, Mapping) or budget is None or budget <= 0:
         return [batch]
     input_ids = batch.get("input_ids")
@@ -307,10 +473,33 @@ def _env_int(name):
         raise ValueError(f"Unsloth: {name} must be an integer, got {value!r}.")
 
 
+def _arrow_lengths(dataset):
+    """Row lengths of `input_ids` from the Arrow list offsets (no token is read), or None."""
+    try:
+        import pyarrow.compute as pc
+
+        # A transform may not return the stored column.
+        if getattr(dataset, "_format_type", None) == "custom":
+            return None
+        lengths = pc.list_value_length(dataset.data.column("input_ids"))
+        indices = getattr(dataset, "_indices", None)
+        if indices is not None:
+            lengths = pc.take(lengths, indices.column(0))
+        lengths = lengths.to_pylist()
+    except Exception:
+        return None
+    if len(lengths) != len(dataset) or any(length is None for length in lengths):
+        return None
+    return lengths
+
+
 def _dataset_lengths(dataset):
     column_names = getattr(dataset, "column_names", None)
     if column_names is None or "input_ids" not in column_names:
         return None
+    lengths = _arrow_lengths(dataset)
+    if lengths is not None:
+        return lengths
     # Batched, so the whole token column is never materialised as Python lists at once.
     if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
         lengths = []
@@ -318,6 +507,104 @@ def _dataset_lengths(dataset):
             lengths.extend(len(ids) for ids in rows["input_ids"])
         return lengths
     return [len(ids) for ids in dataset["input_ids"]]
+
+
+def _supervised_count(
+    labels,
+    completion_mask,
+    assistant_mask,
+    seq_lengths = None,
+):
+    # Shifted-loss positions surviving the collator masks; packed rows mask each later document's
+    # first token (packing._mask_padding_free_boundary_labels); set_format arrays need tolist().
+    labels, completion_mask, assistant_mask, seq_lengths = (
+        value.tolist() if hasattr(value, "tolist") else value
+        for value in (labels, completion_mask, assistant_mask, seq_lengths)
+    )
+    n = (
+        len(labels)
+        if labels is not None
+        else len(completion_mask if completion_mask is not None else assistant_mask)
+    )
+    starts = set()
+    offset = 0
+    for length in seq_lengths if seq_lengths is not None else ():
+        starts.add(offset)
+        offset += int(length)
+    count = 0
+    for k in range(1, n):
+        if k in starts:
+            continue
+        if labels is not None and labels[k] == -100:
+            continue
+        if completion_mask is not None and not completion_mask[k]:
+            continue
+        if assistant_mask is not None and not assistant_mask[k]:
+            continue
+        count += 1
+    return count
+
+
+def _dataset_label_counts(dataset, completion_only_loss = True):
+    """Supervised tokens per row as the loss sees them: shifted labels != -100, and also inside the
+    completion_mask (when the collator applies it) and assistant_masks columns, as TRL's collator
+    masks every one that is present. None when the dataset has none of these columns."""
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is None:
+        return None
+    columns = [
+        column
+        for column in ("labels", "completion_mask", "assistant_masks")
+        if column in column_names and (column != "completion_mask" or completion_only_loss)
+    ]
+    if not columns:
+        return None
+
+    def counts_of(rows):
+        n = len(rows[columns[0]])
+        return [
+            _supervised_count(
+                rows["labels"][i] if "labels" in rows else None,
+                rows["completion_mask"][i] if "completion_mask" in rows else None,
+                rows["assistant_masks"][i] if "assistant_masks" in rows else None,
+                rows["seq_lengths"][i] if "seq_lengths" in rows else None,
+            )
+            for i in range(n)
+        ]
+
+    read = columns + (["seq_lengths"] if "seq_lengths" in column_names else [])
+    if hasattr(dataset, "select_columns") and hasattr(dataset, "iter"):
+        counts = []
+        selected = dataset.select_columns(read)
+        if hasattr(selected, "with_format"):
+            selected = selected.with_format(None)  # plain lists: no tensor conversion per row
+        for rows in selected.iter(batch_size = 4096):
+            counts.extend(counts_of(rows))
+        return counts
+    return counts_of({column: dataset[column] for column in read})
+
+
+def _data_parallel_world():
+    try:
+        return int(os.environ.get("WORLD_SIZE", "1"))
+    except ValueError:
+        return 1
+
+
+def _balance_mode():
+    value = os.environ.get(_TOKEN_BALANCE_ENV, "auto").strip().lower()
+    if value in ("", "auto"):
+        return "auto" if _data_parallel_world() > 1 else None
+    if value in ("1", "true", "yes", "on", "exact", "tokens"):
+        return "exact"
+    if value in ("labels", "label"):
+        return "labels"
+    return None
+
+
+def _label_window():
+    window = _env_int(_TOKEN_BALANCE_WINDOW_ENV)
+    return window if window > 0 else _DEFAULT_LABEL_WINDOW
 
 
 def _accepts_num_items(fn):
@@ -358,7 +645,10 @@ def _router_aux_loss_active(trainer):
     return False
 
 
-def _exactness_blocker(trainer):
+def _exactness_blocker(trainer, step_loss = True):
+    """Why regrouping / splitting this trainer's rows would change the objective, or None. Shared with
+    pipeline parallel GA folding (models/pp_env.py), which passes step_loss = False: its loss always
+    divides by the window's num_items_in_batch."""
     args = getattr(trainer, "args", None)
     optim = str(getattr(args, "optim", "")).lower()
     # LOMO / AdaLomo and the *_layerwise optimizers update weights inside every backward.
@@ -367,7 +657,7 @@ def _exactness_blocker(trainer):
     # NEFTune scales its noise by the forward's sequence length, which a split shortens.
     if getattr(args, "neftune_noise_alpha", None):
         return "NEFTune noise depends on the sequence length of each forward"
-    if not _loss_uses_step_count(trainer):
+    if step_loss and not _loss_uses_step_count(trainer):
         return (
             "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
         )
@@ -420,12 +710,23 @@ def _padded_batches(trainer):
     )
 
 
-def _balance_dataloader(trainer, dataloader):
-    if _exactness_blocker(trainer) is not None:
+def _balance_dataloader(
+    trainer,
+    dataloader,
+    mode = "exact",
+):
+    labels_mode = mode == "labels"
+    auto = mode == "auto"
+    if auto and (
+        getattr(trainer, "is_deepspeed_enabled", False)
+        or getattr(trainer, "is_fsdp_enabled", False)
+    ):
+        # DeepSpeed / accelerate FSDP stay opt-in.
         return False
-    # A padded micro-batch costs rows x its longest row: equal token sums put a long row in every
-    # micro-batch, which adds padding without lowering the peak.
-    if _padded_batches(trainer):
+    # The labels mode regroups rows across steps (a data order change), so it does not need the
+    # within-step exactness guards; it then length-balances inside each step only when they pass.
+    balance_lengths = _exactness_blocker(trainer) is None and not _padded_batches(trainer)
+    if not labels_mode and not balance_lengths:
         return False
     # accelerate's DataLoaderDispatcher deals successive inner batches to ranks behind a plain BatchSampler.
     if any(c.__name__ == "DataLoaderDispatcher" for c in type(dataloader).__mro__):
@@ -453,14 +754,27 @@ def _balance_dataloader(trainer, dataloader):
     ):
         # group_by_length / batch_rebalance already pick their own order.
         return False
-    lengths = _dataset_lengths(getattr(dataloader, "dataset", None))
+    dataset = getattr(dataloader, "dataset", None)
+    lengths = _dataset_lengths(dataset)
     if lengths is None:
         return False
+    label_counts = None
+    if labels_mode:
+        # TRL's collator applies completion_mask only with completion_only_loss; others are assumed to apply it.
+        collator = getattr(trainer, "data_collator", None)
+        label_counts = _dataset_label_counts(
+            dataset,
+            completion_only_loss = getattr(collator, "completion_only_loss", True) is not False,
+        )
+        if label_counts is None or len(label_counts) != len(lengths):
+            return False
     if keep_first_window and len(sampler) % (world_size * batch_sampler.batch_size) == 0:
         keep_first_window = False
     args = trainer.args
     # Moving rows between ranks keeps the loss exact only when the token count is global.
     cross_rank = world_size > 1 and bool(getattr(args, "average_tokens_across_devices", False))
+    if auto and not cross_rank:
+        return False
     batch_sampler.sampler = TokenBalancedSampler(
         sampler,
         lengths,
@@ -469,8 +783,35 @@ def _balance_dataloader(trainer, dataloader):
         world_size,
         cross_rank,
         keep_first_window,
+        label_counts = label_counts,
+        label_window = _label_window() if labels_mode else 1,
+        balance_lengths = balance_lengths,
+        lockstep = _lockstep_ranks(trainer),
     )
     return True
+
+
+def _lockstep_ranks(trainer):
+    """False only for plain DDP, whose ranks synchronise once per optimizer step. FSDP (native or
+    accelerate), DeepSpeed and tensor / pipeline / context / expert parallel ranks also wait for
+    each other inside every micro-batch, so they keep the lockstep layout."""
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return True
+    if str(os.environ.get("UNSLOTH_FSDP2", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "native",
+    ):
+        return True
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"):
+        value = str(os.environ.get(name, "")).strip()
+        if value and value != "1":
+            return True
+    return False
 
 
 def _same_count_on_every_rank(
@@ -598,9 +939,8 @@ def _metric_lengths(trainer):
 
 
 def _global_chunk_weights(trainer, chunks, accelerator):
-    """Per-key chunk weights. With several processes TRL gathers each chunk's sums across ranks, so the
-    weight is the chunk's token count summed over ranks. Older TRL (attention style) averages per-rank
-    entropy ratios, which cannot be refolded, so entropy is left unfolded there."""
+    """Multi-process weights sum token counts over ranks; older attention-style TRL averages
+    per-rank entropy ratios, which cannot be refolded, so entropy stays unfolded."""
     weights = {
         key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
     }
@@ -644,7 +984,7 @@ def _merge_chunk_metrics(
 
 def install_token_budget(trainer):
     """Install whichever of UNSLOTH_TOKEN_BALANCE / UNSLOTH_TOKEN_BUDGET is set on `trainer`."""
-    balance = os.environ.get(_TOKEN_BALANCE_ENV, "0").lower() in ("1", "true", "yes", "on")
+    balance = _balance_mode()
     budget = _env_int(_TOKEN_BUDGET_ENV)
     if (not balance and budget <= 0) or getattr(trainer, "_unsloth_token_budget_installed", False):
         return
@@ -655,8 +995,30 @@ def install_token_budget(trainer):
 
         def get_train_dataloader(*args, **kwargs):
             dataloader = original_get_train_dataloader(*args, **kwargs)
-            trainer._unsloth_token_balance_active = _balance_dataloader(trainer, dataloader)
-            if not trainer._unsloth_token_balance_active:
+            trainer._unsloth_token_balance_active = _balance_dataloader(
+                trainer, dataloader, balance
+            )
+            if trainer._unsloth_token_balance_active and balance == "labels":
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BALANCE=labels regrouping rows over "
+                    f"{_label_window()} optimizer steps to even out supervised tokens per step.",
+                )
+            elif trainer._unsloth_token_balance_active and balance == "auto":
+                _note_once(
+                    trainer,
+                    "Unsloth: data-parallel ranks get equal token counts per optimizer step "
+                    "(same rows per step; UNSLOTH_TOKEN_BALANCE=0 turns it off).",
+                )
+            elif balance == "auto":
+                pass
+            elif balance == "labels":
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BALANCE=labels ignored: needs a labels, completion_mask "
+                    "or assistant_masks column and a plain random or sequential sampler.",
+                )
+            elif not trainer._unsloth_token_balance_active:
                 reason = _exactness_blocker(trainer)
                 if reason is None and _padded_batches(trainer):
                     reason = "batches are padded, so equal token sums would only add padding"
@@ -712,15 +1074,23 @@ def install_token_budget(trainer):
                 return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             trainer._unsloth_token_budget_splits += 1
             total = None
-            for i, chunk in enumerate(chunks):
-                context = (
-                    accelerator.no_sync(model)
-                    if i < len(chunks) - 1 and accelerator is not None
-                    else contextlib.nullcontext()
-                )
-                with context:
-                    loss = original_training_step(model, chunk, num_items_in_batch, *args, **kwargs)
-                total = loss if total is None else total + loss
+            try:
+                for i, chunk in enumerate(chunks):
+                    partial = i < len(chunks) - 1
+                    # sync_gradients stays True per chunk; expert parallel reads this to sum replicas once per step.
+                    trainer._unsloth_token_budget_partial = partial
+                    context = (
+                        accelerator.no_sync(model)
+                        if partial and accelerator is not None
+                        else contextlib.nullcontext()
+                    )
+                    with context:
+                        loss = original_training_step(
+                            model, chunk, num_items_in_batch, *args, **kwargs
+                        )
+                    total = loss if total is None else total + loss
+            finally:
+                trainer._unsloth_token_budget_partial = False
             if metrics is not None:
                 weights = _global_chunk_weights(trainer, chunks, accelerator)
                 _merge_chunk_metrics(trainer, metrics, lengths, chunks, weights)

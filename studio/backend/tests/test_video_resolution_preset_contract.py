@@ -117,9 +117,7 @@ def test_the_frontend_fallback_offers_only_real_family_presets():
 
 
 def test_the_frontend_fallback_is_a_usable_default_for_the_family_it_mirrors():
-    """The fallback exists to populate the select on first paint, so it must be non-empty
-    and its first entry must be some family's DEFAULT (presets[0]) -- the size the loader
-    plans against -- not an arbitrary member of the union."""
+    """The frontend fallback must be non-empty, with its first entry a family's presets[0] default."""
     fallback = _fallback_presets()
     assert len(fallback) >= 1
     firsts = {
@@ -144,4 +142,19 @@ def test_the_size_controls_follow_the_backend_presets_not_a_hardcoded_list():
     assert "presets && presets.length > 0" in memo
     assert "{resolutionPresets.map(([w, h]) => (" in src
     assert "videoSizeLimits(status?.defaults, resolutionPresets)" in src
-    assert "width: sourceSized ? undefined : videoSize[0]," in src
+    # The request size is one memo over everything it reads (#19622): handleGenerate spreads it and depends on it,
+    # so Generate never sends a matchedResolution from before the latest frame swap.
+    memo = src[src.index("const generateCanvas = useMemo(") :]
+    memo = memo[: memo.index(");\n")]
+    assert "requestCanvas(sourceSized, matchedResolution, videoSize, !autoMatchSource)" in memo
+    deps = memo[memo.rindex("[") + 1 : memo.rindex("]")]
+    assert {d.strip() for d in deps.split(",") if d.strip()} >= {
+        "autoMatchSource",
+        "matchedResolution",
+        "sourceSized",
+        "videoSize",
+    }, deps
+    generate = src[src.index("const handleGenerate = useCallback(") :]
+    generate = generate[: generate.index("\n  ]);")]
+    assert "...generateCanvas," in generate
+    assert "\n    generateCanvas,\n" in generate[generate.rindex("}, [") :]

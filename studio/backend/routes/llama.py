@@ -164,8 +164,7 @@ _last_llama_update_step = -1
 
 
 def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
-    """One llama_update_progress line per 10% step so a prebuilt update reports
-    progress without a line per poll. Resyncs when a new update starts."""
+    """Log one llama_update_progress line per 10% step, not per poll; resets when a new update starts."""
     global _last_llama_update_step
     if job.state != "running" or job.progress is None:
         return
@@ -238,7 +237,25 @@ class LlamaBackendOption(BaseModel):
         False, description = "True when a prebuilt for this backend installs on this host."
     )
     unavailable_reason: Optional[str] = Field(
-        None, description = "unavailable | no_prebuilt | error, when available is false."
+        None,
+        description = (
+            "unavailable | no_prebuilt | other_release | error | rocm_not_installed | "
+            "rocm_no_access, "
+            "when available is false."
+        ),
+    )
+    unavailable_detail: Optional[str] = Field(
+        None, description = "The resolver's own message for an unavailable backend."
+    )
+    unavailable_hint: Optional[str] = Field(
+        None, description = "What to do so this backend can install, when known."
+    )
+    applies_to_host: bool = Field(
+        True,
+        description = (
+            "False when this host has no GPU the backend runs on (ROCm with no AMD card), "
+            "so the picker leaves it out instead of greying it."
+        ),
     )
     resolved_backend: Optional[str] = Field(
         None, description = "For 'auto', the backend hardware detection picks right now."

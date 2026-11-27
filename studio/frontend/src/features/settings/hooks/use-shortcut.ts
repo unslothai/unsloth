@@ -59,9 +59,7 @@ export function isImeComposing(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229;
 }
 
-// Set only while the listeners re-read their snapshots. Nothing mutates the DOM between two
-// listeners (React schedules their re-renders), so each id and each document query is answered
-// once per pass instead of once per subscriber; a long chat makes every miss a whole-tree walk.
+// Set only for one listener pass, since nothing mutates the DOM between listeners.
 let passAnswers: Map<string, boolean> | null = null;
 
 function answerOncePerPass(key: string, compute: () => boolean): boolean {

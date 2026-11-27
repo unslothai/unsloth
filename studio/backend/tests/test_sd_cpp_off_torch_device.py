@@ -270,8 +270,7 @@ def _drive_load_route(
     video_engine = None,
     video_loading = None,
 ):
-    """Run the real image-load route with every hardware and engine answer stubbed; returns the
-    route calls in order, plus what the route raised."""
+    """Runs the real image-load route with stubs; returns its calls and what it raised."""
     import asyncio
 
     from fastapi import HTTPException

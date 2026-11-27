@@ -10,6 +10,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   parsePromptUpsamplerStatus,
   PROMPT_UPSAMPLER_ROUTES,
+  upsamplerRouteFor,
   type PromptUpsamplerPreviewRequest,
   type PromptUpsamplerStatus,
 } from "./lib/prompt-enhance";
@@ -21,16 +22,24 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getPromptUpsamplerStatus(signal?: AbortSignal): Promise<PromptUpsamplerStatus> {
+export async function getPromptUpsamplerStatus(
+  signal?: AbortSignal,
+  family?: string | null,
+): Promise<PromptUpsamplerStatus> {
   return parsePromptUpsamplerStatus(
-    await parseJson<unknown>(await authFetch(PROMPT_UPSAMPLER_ROUTES.status, { signal })),
+    await parseJson<unknown>(
+      await authFetch(upsamplerRouteFor(PROMPT_UPSAMPLER_ROUTES.status, family), { signal }),
+    ),
   );
 }
 
 /** Start the background download of the prompt upsampler. Progress is read back from the status route. */
-export async function startPromptUpsamplerDownload(hfToken?: string): Promise<void> {
+export async function startPromptUpsamplerDownload(
+  hfToken?: string,
+  family?: string | null,
+): Promise<void> {
   await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.download, {
+    await authFetch(upsamplerRouteFor(PROMPT_UPSAMPLER_ROUTES.download, family), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
@@ -39,9 +48,9 @@ export async function startPromptUpsamplerDownload(hfToken?: string): Promise<vo
 }
 
 /** Stop the download. Partial files stay cached, so a later download resumes. */
-export async function cancelPromptUpsamplerDownload(): Promise<void> {
+export async function cancelPromptUpsamplerDownload(family?: string | null): Promise<void> {
   await parseJson<unknown>(
-    await authFetch(PROMPT_UPSAMPLER_ROUTES.cancel, { method: "POST" }),
+    await authFetch(upsamplerRouteFor(PROMPT_UPSAMPLER_ROUTES.cancel, family), { method: "POST" }),
   );
 }
 

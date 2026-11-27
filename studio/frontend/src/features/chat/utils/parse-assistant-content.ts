@@ -7,6 +7,30 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
+// A noncharacter stands in for the "<" of a literal tag (or one split across deltas) so it cannot
+// parse as a marker; one char for one keeps offsets into the raw text aligned with the parts.
+const LITERAL_TAG_MARK = "\uFDD0";
+const LITERAL_TAG = /<(?=\/?think>)/g;
+const PENDING_TAG = /<(?=\/?(?:t(?:h(?:i(?:nk?)?)?)?)?$)/;
+
+/** `pending: false` leaves a trailing tag fragment alone, as inline parsing may still complete it. */
+export function markLiteralThinkTags(
+  text: string,
+  { pending = true }: { pending?: boolean } = {},
+): string {
+  const marked = text.replace(LITERAL_TAG, LITERAL_TAG_MARK);
+  return pending ? markPendingThinkTag(marked) : marked;
+}
+
+export function markPendingThinkTag(text: string): string {
+  return text.replace(PENDING_TAG, LITERAL_TAG_MARK);
+}
+
+export function unmarkLiteralThinkTags(text: string): string {
+  return text.includes(LITERAL_TAG_MARK)
+    ? text.replaceAll(LITERAL_TAG_MARK, "<")
+    : text;
+}
 
 export function extractDeltaText(delta: unknown): {
   text: string;
@@ -77,7 +101,7 @@ export function extractDeltaText(delta: unknown): {
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const thinking = extractReasoningText(obj);
       if (thinking) {
-        text += `${THINK_OPEN_TAG}${thinking}${THINK_CLOSE_TAG}`;
+        text += `${THINK_OPEN_TAG}${markLiteralThinkTags(thinking)}${THINK_CLOSE_TAG}`;
         structuredReasoningContinues = true;
         hasStructuredReasoning = true;
       }
@@ -89,6 +113,7 @@ export function extractDeltaText(delta: unknown): {
 // ContentPart fields are readonly (TS2540), so replace the last element instead.
 
 export function appendTextPart(parts: ContentPart[], text: string): void {
+  text = unmarkLiteralThinkTags(text);
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "text") {
@@ -99,6 +124,7 @@ export function appendTextPart(parts: ContentPart[], text: string): void {
 }
 
 export function appendReasoningPart(parts: ContentPart[], text: string): void {
+  text = unmarkLiteralThinkTags(text);
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {

@@ -145,8 +145,7 @@ class TestAUnifiedMemoryApuDefersToTorch:
     ],
 )
 def test_every_amd_smi_envelope_shape_is_read(rocm, monkeypatch, envelope):
-    """A single-GPU envelope must parse, or the TypeError fallback reopens a HIP context via
-    mem_get_info."""
+    """Single-GPU envelopes must parse, or the TypeError fallback reopens HIP via mem_get_info."""
     monkeypatch.setattr(amd, "_run_amd_smi", lambda *a, **k: envelope(_payload((0, 4096, 24576))))
     assert amd.get_gpu_vram_mib() == {0: (20480, 24576)}
     assert LlamaCppBackend._get_gpu_memory_amd_smi() == [(0, 20480, 24576)]
@@ -234,8 +233,7 @@ class TestTheArchGateAppliesToThisBranchToo:
         ]
 
     def test_unknown_coverage_keeps_every_device(self, rocm, tmp_path, monkeypatch):
-        """No install marker (source build, pre-#7624 install): fail open, the same
-        way the torch branch does."""
+        """No install marker (source or pre-#7624 build): fail open like the torch branch."""
         monkeypatch.setattr(
             LlamaCppBackend,
             "_rocm_arch_by_physical_id",

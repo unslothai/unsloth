@@ -414,22 +414,62 @@ def test_unsafe_ids_resolve_to_nothing(client, bad):
         assert client.delete(f"{INPUTS}/{quote(bad, safe = '')}").status_code == 404
 
 
+@pytest.mark.parametrize(
+    "prompt, name",
+    [
+        ("", "Clip"),
+        ("  a   short\n prompt ", "a short prompt"),
+        ("x" * 60, "x" * 60),
+        ("word " * 11 + "y" * 10, ("word " * 11 + "y" * 10)[:59].rstrip() + "\u2026"),
+        ("ab " * 30, ("ab " * 30)[:59].rstrip() + "\u2026"),
+    ],
+)
+def test_a_clip_source_name_is_its_prompt_cut_with_an_ellipsis(prompt, name):
+    meta = {"prompt": prompt, "model": "m", "audio_type": "snac", "sample_rate": 16000}
+    clip = gallery.save(
+        wav_bytes(), meta | {"duration_s": 1.0, "created_at": "2026-10-02T00:00:00Z"}
+    )
+    source = audio_inputs.resolve_source({"clip_id": clip["id"]})
+    assert source.name == name
+    assert len(source.name) <= 60
+
+
 def test_transcribe_sends_a_16k_mono_copy_and_saves_nothing(client, monkeypatch):
     from routes import inference
 
     calls, model = [], "audio-cpp/audio.cpp-gguf/Qwen3-ASR-0.6B-GGUF"
 
-    async def fake_transcribe(raw, model, language, fast, engine, request, device):
+    async def fake_transcribe(
+        raw,
+        model,
+        language,
+        fast,
+        engine,
+        request,
+        device,
+        *,
+        context_length = 0,
+    ):
         with wave.open(io.BytesIO(raw)) as w:
-            calls.append((w.getframerate(), w.getnchannels(), model, language, engine, device))
+            calls.append(
+                (
+                    w.getframerate(),
+                    w.getnchannels(),
+                    model,
+                    language,
+                    engine,
+                    device,
+                    context_length,
+                )
+            )
         return {"text": " Okay, I'm Cemo. ", "language": "English"}
 
     monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
     record = _upload(client, encode("webm", "libopus", 48000, "stereo", 1.0), "r.webm").json()
     url = f"{INPUTS}/{record['id']}/transcribe"
-    response = client.post(url, json = {"model": model, "device": "cpu"})
+    response = client.post(url, json = {"model": model, "device": "cpu", "context_length": 4096})
     assert response.json() == {"text": "Okay, I'm Cemo.", "language": "English", "model": model}
-    assert calls == [(16000, 1, model, None, None, "cpu")]
+    assert calls == [(16000, 1, model, None, None, "cpu", 4096)]
     source, clip_q = f"{INPUTS}/source/transcribe", {"clip_id": _clip()["id"]}
     assert client.post(source, params = clip_q, json = {"model": "m"}).status_code == 200
     assert client.post(url, params = clip_q, json = {"model": "m"}).status_code == 400

@@ -3,6 +3,7 @@
 
 """Model loading and streaming shared by `inference` and `chat`."""
 
+import copy
 import json
 import os
 import re
@@ -143,11 +144,9 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin the cache locations the backend pins, for in-process CLI commands.
-
-    Otherwise they inherit unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION, resolved against the
-    working directory, leaving an unsloth_compiled_cache cache_cleanup will not remove (#8865).
-    """
+    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
+    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
+    (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -190,6 +189,38 @@ def configure_quiet_logging() -> None:
     except ModuleNotFoundError:
         return
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
+    use_plain_tracebacks()
+
+
+def use_plain_tracebacks() -> None:
+    """Plain tracebacks: structlog's rich default highlights each frame's source (~2 s per llama_cpp.py frame).
+
+    Only the console renderer's exception formatter changes; levels, columns and colors are kept."""
+    try:
+        import structlog
+    except ModuleNotFoundError:
+        return
+    plain = getattr(structlog.dev, "plain_traceback", None)
+    renderer_cls = getattr(structlog.dev, "ConsoleRenderer", None)
+    if plain is None or renderer_cls is None:
+        return
+    processors = list(structlog.get_config().get("processors") or ())
+    changed = False
+    for index, processor in enumerate(processors):
+        if not isinstance(processor, renderer_cls):
+            continue
+        # A copy, so structlog's builtin default renderer (used again by reset_defaults()) stays as it was.
+        renderer = copy.copy(processor)
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property):
+            renderer.exception_formatter = plain  # public setter, structlog >= 25.5
+        elif hasattr(renderer, "_exception_formatter"):
+            renderer._exception_formatter = plain
+        else:
+            continue
+        processors[index] = renderer
+        changed = True
+    if changed:
+        structlog.configure(processors = processors)
 
 
 def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
@@ -411,10 +442,8 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether a backend's end-of-generation stats say the reply ran out of budget.
-
-    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
-    """
+    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
+    MLX and llama-server set finish_reason to length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
@@ -474,10 +503,8 @@ def _image_payload(part) -> Optional[str]:
 
 
 def _local_image_request(messages: list, several: bool):
-    """Studio's local route shape: an image marker where each image stood, plus the payloads in order.
-
-    A model that reads one image per conversation gets only the newest turn's, like the app.
-    """
+    """Studio's local route shape: an image marker where each image stood plus payloads in order; a
+    model that reads one image per conversation gets only the newest turn's image, like the app."""
     owners = []  # (message index, user ordinal, payloads)
     ordinal = 0
     for index, message in enumerate(messages):
@@ -754,6 +781,48 @@ def _load_gguf_backend(
     return ChatBackend("gguf", llama_backend)
 
 
+_SECURITY_BLOCKS = ("malware_blocked", "remote_code_blocked")
+
+
+def _http_error_text(exc: Exception) -> str:
+    # str(HTTPError) is only "HTTP Error <code>: <reason>"; the server's cause is in the body.
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = json.loads(exc.read() or b"{}")
+            detail = body.get("detail") or body.get("error", {}).get("message")
+        except Exception:
+            detail = None
+        if isinstance(detail, str) and detail:
+            return f"HTTP Error {exc.code}: {detail}"
+    return str(exc)
+
+
+def _exit_if_refused_load(
+    model: str,
+    reason: str,
+    trust_remote_code: bool,
+    error_kind: Optional[str] = None,
+) -> None:
+    if error_kind in _SECURITY_BLOCKS:
+        typer.echo(f"Error: {reason}", err = True)
+        typer.echo(
+            "The repository security scan refused this load; --trust-remote-code never "
+            "overrides it.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+    # transformers and the server both phrase this refusal with the kwarg name.
+    if trust_remote_code or "trust_remote_code" not in reason:
+        return
+    typer.echo(
+        f"Error: {model} needs its own modelling code to load. If you trust this repository, "
+        "rerun with --trust-remote-code (it executes Python from the repo).",
+        err = True,
+    )
+    raise typer.Exit(code = 1)
+
+
 def load_chat_backend(
     model: str,
     *,
@@ -764,14 +833,12 @@ def load_chat_backend(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
     model_config = None,
     fresh_backend: bool = False,
 ):
-    """Load `model` in-process: GGUF via llama-server, else the orchestrator.
-
-    fresh_backend uses a private orchestrator so a second model (compare's
-    base column) can run alongside the main one.
-    """
+    """Load model in-process, GGUF via llama-server else the orchestrator; fresh_backend uses a
+    private orchestrator so a second model (compare's base column) runs alongside."""
     from unsloth_cli._studio_deps import studio_backend_imports
 
     with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
@@ -812,7 +879,7 @@ def load_chat_backend(
             from core.inference import get_inference_backend
             backend = get_inference_backend()
         try:
-            loaded = backend.load_model(
+            load_kwargs = dict(
                 config = model_config,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -820,7 +887,13 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
+            if trust_remote_code:
+                load_kwargs["trust_remote_code"] = trust_remote_code
+            loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
+            _exit_if_refused_load(
+                model, str(exc), trust_remote_code, getattr(exc, "error_kind", None)
+            )
             if not is_mlx_distributed:
                 raise
             if rank == 0:
@@ -866,8 +939,7 @@ _STUDIO_SERVICE_MARKER = "Unsloth UI Backend"
 
 
 def _recorded_loopback_bases(address: Optional[str], port: str) -> list:
-    """Loopback bases for a server recorded at *address*. The wrong family reaches whoever else
-    holds that port number."""
+    """Loopback bases for a recorded address; the wrong family hits whoever holds that port."""
     import ipaddress
 
     loopback, parsed_any = set(), False
@@ -932,8 +1004,7 @@ def _answers_as_studio(base: str, timeout: float) -> bool:
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     candidates = _loopback_candidate_bases(base)
-    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
-    # the flow talks to that exact address.
+    # Use the first loopback address that answers, so the flow talks to that exact address.
     found = next((c for c in candidates if _answers_as_studio(c, timeout)), None)
     if os.environ.get("UNSLOTH_STUDIO_URL"):
         return found
@@ -1011,8 +1082,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
 
 
 def _studio_token() -> Optional[str]:
-    """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
-    signs with the same stored secret the server validates against."""
+    """Signs a JWT with the server's stored secret, since the CLI runs as the same OS user."""
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
 
@@ -1032,6 +1102,29 @@ def _studio_token() -> Optional[str]:
         return None
 
 
+def _is_local(name: str) -> bool:
+    # Mirrors Unsloth's model_identity.is_local(probe=True), minus ref: handles.
+    name = name.strip()
+    if name.startswith(("/", "\\", "~", ".")) or "\\" in name:
+        return True
+    if len(name) >= 2 and name[1] == ":" and name[0].isalpha():
+        return True
+    return bool(name) and os.path.exists(os.path.expanduser(name))
+
+
+def _path_key(path: str) -> str:
+    # Mirrors Unsloth's model_identity.path_key.
+    return os.path.normcase(path).replace("\\", "/").rstrip("/")
+
+
+def _served_key(served: tuple) -> tuple:
+    return _path_key(served[0]), (served[1] or "").lower()
+
+
+def _served_label(served: tuple) -> str:
+    return f"'{served[0]}' ({served[1]})" if served[1] else f"'{served[0]}'"
+
+
 class HttpChatBackend:
     """Chat against a running Unsloth server over its OpenAI-compatible API.
 
@@ -1040,11 +1133,15 @@ class HttpChatBackend:
     """
 
     def __init__(self, base_url: str, token: str) -> None:
+        self.image_generator: Optional[str] = None
         self._base = base_url
         self._token = token
         self.reply_hit_token_limit = False
         self.gguf_variant: Optional[str] = None
         self.supports_images = False
+        self._model_id = "default"
+        # (path, (checkpoint, quant)): Unsloth answers an unloaded path with whatever is loaded.
+        self._watched: Optional[tuple] = None
 
     def _request(
         self,
@@ -1066,8 +1163,50 @@ class HttpChatBackend:
             },
             method = method,
         )
+        if self.image_generator and path == "/v1/chat/completions":
+            request.add_header("X-Unsloth-Events", "1")
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
+
+    def _signed_gallery_url(self, image_id: str) -> Optional[str]:
+        from urllib.parse import quote
+
+        gallery_path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}"
+        try:
+            with self._request("GET", f"{gallery_path}/signed-url", timeout = 10) as response:
+                payload = json.load(response)
+        except (OSError, ValueError):
+            return None
+        path = payload.get("url") if isinstance(payload, dict) else None
+        if isinstance(path, str) and path.startswith(f"{gallery_path}/file-signed?token="):
+            return self._base + path
+        return None
+
+    def _require_image_swap_support(self) -> None:
+        from urllib.error import HTTPError
+
+        try:
+            with self._request("GET", "/api/settings/chat-image-swap", timeout = 10) as response:
+                settings = json.load(response)
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise typer.BadParameter(
+                    f"Studio could not verify image swapping support (HTTP {exc.code}).",
+                    param_hint = "--image-generator",
+                ) from None
+            settings = None
+        except (OSError, ValueError):
+            settings = None
+        if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
+            raise typer.BadParameter(
+                "This Studio server did not report chat image swapping support. Update Studio and try again.",
+                param_hint = "--image-generator",
+            )
+        if settings.get("managed_by_env") is True and not settings["enabled"]:
+            raise typer.BadParameter(
+                "This Studio server has chat image swapping disabled by UNSLOTH_CHAT_IMAGE_SWAP.",
+                param_hint = "--image-generator",
+            )
 
     def ensure_loaded(
         self,
@@ -1080,14 +1219,15 @@ class HttpChatBackend:
         speculative_type: Optional[SpeculativeType] = None,
         spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
-        payload = {
-            "model_path": model,
-            "hf_token": hf_token,
-            "max_seq_length": max_seq_length,
-            "tensor_parallel": tensor_parallel,
-        }
+        status = self._inference_status()
+        payload = {"model_path": model, "hf_token": hf_token}
+        if max_seq_length is not None:
+            payload["max_seq_length"] = max_seq_length
+        if tensor_parallel is not None:
+            payload["tensor_parallel"] = tensor_parallel
         if load_in_4bit is not None:
             payload["load_in_4bit"] = load_in_4bit
         if llama_extra_args:
@@ -1096,10 +1236,22 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
-        resident_variant = self._resident_gguf_variant(model)
+        if trust_remote_code:
+            payload["trust_remote_code"] = trust_remote_code
+        resident = self._serves(model, status)
+        resident_variant = (
+            status.get("gguf_variant")
+            if resident and status.get("is_gguf") and not model.lower().endswith(".gguf")
+            else None
+        )
         if resident_variant:
             payload["gguf_variant"] = resident_variant
         self.gguf_variant = resident_variant
+        if resident:
+            from unsloth_cli.commands.start import _resident_reload_payload
+            payload.update(_resident_reload_payload(status, payload))
+        else:
+            payload["use_saved_settings"] = True
         try:
             # Read the whole body, not just headers: closing early discards the only in-band report of a late load failure.
             loaded = read_json_checking_deferred_error(
@@ -1107,25 +1259,76 @@ class HttpChatBackend:
                 self._request("POST", "/api/inference/load", payload),
             )
         except Exception as exc:
-            typer.echo(f"Model load failed: {exc}", err = True)
+            reason = _http_error_text(exc)
+            _exit_if_refused_load(model, reason, trust_remote_code)
+            typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
-        self.supports_images = isinstance(loaded, dict) and bool(loaded.get("is_vision"))
+        loaded = loaded if isinstance(loaded, dict) else {}
+        if self.image_generator and (
+            loaded.get("is_mlx")
+            or loaded.get("is_npu")
+            or loaded.get("is_audio")
+            or loaded.get("is_diffusion")
+            or loaded.get("engine", "auto") != "auto"
+        ):
+            raise typer.BadParameter(
+                "Image swapping requires a GGUF or Transformers chat model.",
+                param_hint = "--image-generator",
+            )
+        self.supports_images = bool(loaded.get("is_vision"))
+        self._model_id = self._pinned_model_id(loaded.get("model") or model, loaded, payload)
+        if _is_local(self._model_id):
+            serving = self._serving(self._model_id)
+            if serving and _path_key(serving[0]) == _path_key(self._model_id):
+                self._watched = (self._model_id, serving)
 
-    def _resident_gguf_variant(self, model: str) -> Optional[str]:
-        if model.lower().endswith(".gguf"):
-            return None
+    def _serving(self, model_id: str) -> Optional[tuple]:
+        """(checkpoint, quant) of the slot serving *model_id*, or None when status names none."""
+        status = self._inference_status(model_id) or {}
+        # A native (dragged-in) load reports only its label.
+        checkpoint = status.get("model_identifier") or status.get("active_model")
+        return (checkpoint, status.get("gguf_variant")) if checkpoint else None
+
+    def _pinned_model_id(self, model_id: str, loaded: dict, payload: dict) -> str:
+        """Name the loaded quant too: a bare repo id is answered by any quant of that repo."""
+        from unsloth_cli.commands.start import _display_model_spec, _is_hub_model_id
+
+        if not loaded.get("is_gguf"):
+            return model_id
+        # Ask by the load's own key: a low-disk load may serve a smaller quant than asked.
+        key, variant = payload["model_path"], payload.get("gguf_variant")
+        status = self._inference_status(f"{key}:{variant}" if variant else key) or {}
+        served_id = str(status.get("active_model") or "")
+        # The load can echo an ownerless or differently cased id (ModelConfig.from_identifier).
+        echoed = model_id if "/" in model_id else f"unsloth/{model_id}"
+        if not (status.get("is_gguf") and _is_hub_model_id(served_id)):
+            return model_id
+        if served_id.casefold() != echoed.casefold():
+            return model_id
+        return _display_model_spec(served_id, status.get("gguf_variant"))
+
+    def _inference_status(self, model: Optional[str] = None) -> Optional[dict]:
+        from urllib.parse import urlencode
+
+        query = f"?{urlencode({'model': model})}" if model else ""
         try:
-            with self._request("GET", "/api/inference/status", timeout = 30) as response:
+            with self._request("GET", f"/api/inference/status{query}", timeout = 30) as response:
                 status = json.loads(response.read())
         except Exception:
             return None
-        if not isinstance(status, dict) or not status.get("is_gguf"):
-            return None
+        return status if isinstance(status, dict) else None
+
+    def _serves(self, model: str, status: Optional[dict]) -> bool:
+        if not status:
+            return False
         # A local load's active_model is only its basename.
         loaded = status.get("model_identifier") or status.get("active_model")
         if not loaded:
-            return None
+            return False
         loaded = str(loaded)
+        quant = status.get("gguf_variant")
+        if quant and "/" in loaded and loaded.casefold().endswith(f":{quant}".casefold()):
+            loaded = loaded[: -len(quant) - 1]
         if model == status.get("model_identifier"):
             same = True
         elif os.path.exists(model):
@@ -1135,7 +1338,7 @@ class HttpChatBackend:
             # The server loads an ownerless id as unsloth/<id> (ModelConfig.from_identifier).
             requested = model if "/" in model else f"unsloth/{model}"
             same = requested.casefold() == loaded.casefold()
-        return status.get("gguf_variant") if same else None
+        return same
 
     def stream(
         self,
@@ -1151,16 +1354,35 @@ class HttpChatBackend:
         use_adapter: Optional[bool] = None,
     ):
         import json
+        import urllib.error
 
+        if self._watched:
+            path, loaded = self._watched
+            serving = self._serving(path)
+            if serving and _served_key(serving) != _served_key(loaded):
+                raise RuntimeError(
+                    f"The model '{path}' is no longer loaded: the Unsloth server now serves "
+                    f"{_served_label(serving)}, not {_served_label(loaded)}. Rerun the command, "
+                    "or load it again in Unsloth Studio."
+                )
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
         body = {
-            "model": "default",
+            "model": self._model_id,
             "messages": msgs,
             "stream": True,
             "enable_thinking": enable_thinking,
         }
+        if self.image_generator:
+            body.update(
+                enable_tools = True,
+                enabled_tools = ["generate_image"],
+                image_generator = self.image_generator,
+                max_tool_calls_per_message = 1,
+                parallel_tool_calls = False,
+                permission_mode = "off",
+            )
         sampling = dict(
             temperature = temperature,
             top_p = top_p,
@@ -1170,7 +1392,12 @@ class HttpChatBackend:
         body.update({key: value for key, value in sampling.items() if value is not None})
         if max_new_tokens is not None:
             body["max_tokens"] = max_new_tokens
-        resp = self._request("POST", "/v1/chat/completions", body)
+        if use_adapter is not None:
+            body["use_adapter"] = use_adapter
+        try:
+            resp = self._request("POST", "/v1/chat/completions", body)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(_http_error_text(exc)) from None
 
         self.reply_hit_token_limit = False
 
@@ -1191,6 +1418,27 @@ class HttpChatBackend:
                         parsed = json.loads(data)
                     except ValueError:
                         continue
+                    if (
+                        self.image_generator
+                        and parsed.get("type") == "tool_end"
+                        and parsed.get("tool_name") == "generate_image"
+                    ):
+                        result = str(parsed.get("result", ""))
+                        if result.startswith("Error:"):
+                            typer.echo(result, err = True)
+                        for line in result.splitlines():
+                            if line.startswith("__FILES__:"):
+                                for file in json.loads(line.removeprefix("__FILES__:")):
+                                    image_id = file.get("gallery_image_id")
+                                    if isinstance(image_id, str) and image_id:
+                                        url = self._signed_gallery_url(image_id)
+                                        receipt = f"Saved gallery image {image_id}"
+                                        typer.echo(
+                                            f"{receipt} at {url}"
+                                            if url
+                                            else f"{receipt}. Open the Studio Images gallery.",
+                                            err = True,
+                                        )
                     if "error" in parsed:
                         raise RuntimeError(
                             f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
@@ -1234,10 +1482,13 @@ class HttpChatBackend:
 
 
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop an untyped --load-in-4bit so the server can keep a resident model's precision."""
+    """Drop untyped load options so the server keeps a resident model's settings or applies
+    the model's saved ones."""
     opts = dict(load_opts)
-    if ctx.get_parameter_source("load_in_4bit").name != "COMMANDLINE":
-        opts["load_in_4bit"] = None
+    for name in ("load_in_4bit", "max_seq_length", "tensor_parallel"):
+        source = ctx.get_parameter_source(name)
+        if source is None or source.name != "COMMANDLINE":
+            opts[name] = None
     return opts
 
 
@@ -1251,6 +1502,8 @@ def connect_studio_server(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
+    image_generator: Optional[str] = None,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1286,18 +1539,19 @@ def connect_studio_server(
     if not token:
         return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
+    if image_generator:
+        backend._require_image_swap_support()
+        backend.image_generator = image_generator
     from unsloth_cli._npu import npu_model_path, prepare_npu_model
 
     npu_path = npu_model_path(model)
     if npu_path:
-        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
-        model = npu_path
         try:
-            prepare_npu_model(
+            model = prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(
                     method, path, payload, timeout = timeout
                 ),
-                model,
+                npu_path,
                 lambda line: typer.echo(line, err = True),
             )
         except RuntimeError as exc:
@@ -1312,5 +1566,6 @@ def connect_studio_server(
         speculative_type = speculative_type,
         spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
+        trust_remote_code = trust_remote_code,
     )
     return backend

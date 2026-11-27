@@ -85,9 +85,7 @@ def _triton_cc() -> str:
 
 
 def _needs_msvc_headers() -> bool:
-    """Only cl and clang-cl need them; Triton otherwise picks bundled TinyCC, which carries its own.
-    The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
-    the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
+    """Only cl and clang-cl need MSVC headers; unanswerable means ungated, as gating wrongly breaks it."""
     try:
         cc = _triton_cc()
     except Exception:  # noqa: BLE001
@@ -97,8 +95,7 @@ def _needs_msvc_headers() -> bool:
 
 
 def _toolchain_summary() -> str:
-    """0 include dirs means no Visual Studio; dirs missing only `vcruntime.h` means an SDK
-    without the VC toolset."""
+    """0 include dirs: no Visual Studio. Only vcruntime.h missing: an SDK without VC toolset."""
     try:
         cc = os.path.basename(_triton_cc())
     except Exception:  # noqa: BLE001
@@ -234,15 +231,24 @@ def _crt_headers_reachable() -> bool:
 def _triton_windows_spec() -> str:
     """The triton-windows range for the resident torch, as studio/setup.ps1 installs it.
 
-    Read from package metadata, not `import torch`: this runs before torch is imported. torch 2.12 and
-    2.13 pin triton 3.7 (2.12.0 exactly 3.7.0) and 2.14 pins 3.8; anything older (or unreadable)
-    keeps the long-standing <3.7. A ROCm torch 2.11 / 2.12 gets 3.8, the build setup.ps1 pairs it with.
-    A native ARM64 interpreter gets setup.ps1's Windows-on-ARM floor: no win_arm64 wheel predates it.
+    Read from package metadata: this runs before torch is imported. A ROCm torch 2.11 / 2.12 gets 3.8.
+    A native ARM64 interpreter gets the same per-minor upper bound, floored at setup.ps1's Windows-on-ARM
+    floor (no win_arm64 wheel predates 3.8.0.post28); torch below 2.14 keeps the open floor.
     """
     import platform  # noqa: PLC0415
 
     if platform.machine().lower() == "arm64":
+        import re  # noqa: PLC0415
+
+        x64 = re.fullmatch(r"triton-windows>=3\.(\d+),<(\S+)", _triton_windows_x64_spec())
+        if x64 and int(x64.group(1)) >= 8:
+            floor = "3.8.0.post28" if x64.group(1) == "8" else f"3.{x64.group(1)}"
+            return f"triton-windows>={floor},<{x64.group(2)}"
         return "triton-windows>=3.8.0.post28"
+    return _triton_windows_x64_spec()
+
+
+def _triton_windows_x64_spec() -> str:
     try:
         import re  # noqa: PLC0415
         from importlib.metadata import version  # noqa: PLC0415
@@ -262,6 +268,8 @@ def _triton_windows_spec() -> str:
         return "triton-windows>=3.7,<3.8"
     if (major, minor) == (2, 14):
         return "triton-windows>=3.8,<3.9"
+    if (major, minor) == (2, 15):
+        return "triton-windows>=3.9,<3.10"
     return "triton-windows<3.7"
 
 

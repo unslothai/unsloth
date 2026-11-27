@@ -206,9 +206,18 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    try:
         from .diffusion_compile_config import apply
-
         apply()
+    except Exception:  # noqa: BLE001 - best-effort; the tag below must not depend on it
+        pass
+    try:
+        import torch  # noqa: PLC0415
+
+        # Read on its own: a failure above (seen on a Windows torch 2.10 wheel) must not drop the fp8 dispatcher's tag,
+        # or a bundle compiled without the dispatcher would be reused with it.
         tag = getattr(getattr(torch, "compiler", None), "config", None)
         tag = getattr(tag, "cache_key_tag", None)
         if isinstance(tag, str) and tag:
@@ -245,6 +254,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_FP8_TRITON_GEMM": "on",
     "UNSLOTH_DIFFUSION_TF32": "on",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Keyed against the card's unset default (auto on sm_100-class, else off); a bare "0" protects step 0, not off.
@@ -279,6 +289,8 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
+    if value is None and name == "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE" and raw == "fallback":
+        return raw
     if value is None:
         return None
     return None if value == default else value
@@ -373,15 +385,22 @@ def _stored_weight(module: Any) -> tuple[Any, bool]:
     return packed, packed is not None
 
 
-def graph_variant(transformer: Any) -> dict[str, Any]:
+def _adapter_path(name: str) -> bool:
+    return any(part.startswith("lora_") for part in str(name).split("."))
+
+
+def graph_variant(transformer: Any, *, skip_adapters: bool = False) -> dict[str, Any]:
     """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
     plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
+    # skip_adapters: describe the base build (PEFT adapter modules ignored), for the learned-peak key.
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415
 
         counts: dict[str, int] = {}
-        for module in transformer.modules():
+        for name, module in transformer.named_modules():
+            if skip_adapters and _adapter_path(name):
+                continue
             weight, packed = _stored_weight(module)
             if not isinstance(weight, torch.Tensor):
                 continue
@@ -942,7 +961,13 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
             return False
     try:
         import torch  # noqa: PLC0415
-        from torch.compiler._cache import CacheArtifactManager  # noqa: PLC0415
+
+        # _merge_groups needs these (torch 2.8+), not just AppendingByteSerializer
+        from torch.compiler._cache import (  # noqa: F401, PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
         from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: F401, PLC0415
     except ImportError:
         # torch 2.7 bundles are a flat list that cannot be merged

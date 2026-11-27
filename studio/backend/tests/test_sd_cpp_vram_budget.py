@@ -951,3 +951,86 @@ def test_h3_card_probes_never_fall_back_to_a_torch_context(monkeypatch):
     assert video_mod._h3_card_memory_bytes("cuda", 0, allow_context = False) == (None, None)
     assert video_mod._h3_card_free_bytes("cuda", 0, allow_context = False) is None
     assert touched == []
+
+
+def test_image_vram_refusal_text_is_the_model_manager_declining_a_segment():
+    segment = (
+        "[E] MOSS-Image segment 1/43 (moss_image.layers.0) failed during {} --- ggml_runner.cpp:934"
+    )
+    for stage in ("weight preparation", "workspace capacity check", "allocated capacity check"):
+        assert args_mod.is_vram_refusal_text(segment.format(stage))
+    # The model manager's own warning beside it is not an allocation failure.
+    assert args_mod.is_vram_refusal_text(
+        "[W] model manager cannot make enough memory available on CUDA0: need 512.63 MB device / 0.63 MB "
+        "budget, available 0.00 MB device / 5549.38 MB budget --- model_manager.cpp:2101\n"
+        + segment.format("weight preparation")
+    )
+    assert not args_mod.is_vram_refusal_text("generation_failed: invalid sampler")
+    assert not args_mod.is_vram_refusal_text(None)
+
+
+def test_image_vram_refusal_text_leaves_failed_allocations_alone():
+    segment = "[E] MOSS-Image segment 12/43 (moss_image.layers.11) failed during {} --- ggml_runner.cpp:934"
+    allocator = (
+        "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 210.08 MiB on device 0: "
+        "cudaMalloc failed: out of memory\n"
+        "[E] ggml: alloc_tensor_range: failed to allocate CUDA0 buffer of size 220288512\n"
+    )
+    assert not args_mod.is_vram_refusal_text(segment.format("workspace allocation"))
+    assert not args_mod.is_vram_refusal_text(allocator + segment.format("workspace allocation"))
+    assert not args_mod.is_vram_refusal_text(allocator + segment.format("weight preparation"))
+    assert not args_mod.is_vram_refusal_text(
+        "vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n"
+        + segment.format("weight preparation")
+    )
+    assert not args_mod.is_vram_refusal_text(_AUDIT_OOM)
+    for host in (
+        "[E] ggml: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 220288512\n",
+        "[E] model manager alloc params backend buffer failed, size = 210.08MB --- model_manager.cpp:964\n",
+        "[E] vk::Device::allocateMemory: ErrorOutOfHostMemory\n",
+        "[E] ggml_vulkan: host malloc failed\n",
+    ):
+        assert not args_mod.is_vram_refusal_text(host + segment.format("weight preparation"))
+    assert args_mod.is_device_oom_text(_AUDIT_OOM)
+    assert args_mod.is_device_oom_text(segment.format("workspace allocation"))
+    assert not args_mod.is_device_oom_text(segment.format("weight preparation"))
+
+
+def test_image_vram_retry_budget_is_half_the_planned_free_vram():
+    assert args_mod.image_vram_retry_budget({"CUDA0": 6666}) == "3.25"
+    assert args_mod.image_vram_retry_budget({"Vulkan0": 24176}) == "11.80"
+    assert args_mod.image_vram_retry_budget({"CUDA0": 2048}) == "1.00"
+    assert args_mod.image_vram_retry_budget({"CUDA0": 2047}) is None
+    assert args_mod.image_vram_retry_budget({"CUDA0": 0}) is None
+    assert args_mod.image_vram_retry_budget({}) is None
+    assert args_mod.image_vram_retry_budget(None) is None
+
+
+def test_image_vram_retry_budget_is_per_card_and_needs_the_render_cards():
+    plan = {"CUDA0": 45979, "CUDA1": 5771}
+    assert args_mod.image_vram_retry_budget(plan) == "CUDA0=22.45,CUDA1=2.81"
+    assert args_mod.image_vram_retry_budget(plan, {"cuda1"}) == "CUDA0=22.45,CUDA1=2.81"
+    # A card under the floor is left out, unless the render is pinned to it or it is missing from the plan.
+    assert (
+        args_mod.image_vram_retry_budget({"CUDA0": 45979, "CUDA1": 1800}, {"cuda0"})
+        == "CUDA0=22.45"
+    )
+    assert args_mod.image_vram_retry_budget({"CUDA0": 45979, "CUDA1": 1800}, {"cuda1"}) is None
+    assert args_mod.image_vram_retry_budget({"CUDA0": 45979}, {"cuda1"}) is None
+
+
+def test_planned_free_vram_is_read_from_the_auto_fit_device_lines():
+    plan = (
+        "[I] auto-fit plan: --- backend_fit.cpp:334",
+        "[I]   devices: --- backend_fit.cpp:335",
+        "[I]     CUDA0        NVIDIA RTX 6000 Ada Generation   free  45979 MiB, budget  45467 MiB --- backend_fit.cpp:337",
+        "[I]     CUDA1        NVIDIA GeForce RTX 3090          free   5771 MiB, budget   5259 MiB --- backend_fit.cpp:337",
+        "[I]     RAM          free  69220 MiB, params budget  62298 MiB --- backend_fit.cpp:344",
+        "[I]     DiT          params   5228 MiB, compute reserve  2048 MiB -> compute CUDA0, params CUDA0 --- backend_fit.cpp:357",
+    )
+    found = {}
+    for line in plan:
+        match = srv._AUTO_FIT_DEVICE_FREE_RE.search(line)
+        if match is not None:
+            found[match.group(1)] = int(match.group(2))
+    assert found == {"CUDA0": 45979, "CUDA1": 5771}

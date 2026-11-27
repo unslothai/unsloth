@@ -13,13 +13,14 @@ import stat
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import account_path
 
 from .diffusion_content import ROLE_LORA, inspect_checkpoint
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
+from .sd_cpp_args import strip_lora_tags
 from utils.paths.path_utils import is_appledouble_metadata
 
 _ALL_EXTS = (".safetensors", ".gguf")
@@ -50,6 +51,14 @@ class LoraCatalogEntry:
     fine_tuned: bool = False
     # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
     copy_of: Optional[str] = None
+    # Two-expert video models (Wan2.2-A14B): weight_name adapts the high-noise transformer, this file the low-noise
+    # transformer_2. Set only on pairs, which load only on a two-expert family.
+    weight_name_2: Optional[str] = None
+    # Step-distilled adapters: the publisher's (steps, guidance), applied as the generation defaults when picked.
+    recommended_steps: Optional[int] = None
+    recommended_guidance: Optional[float] = None
+    # The publisher's sampler as scheduler config overrides on the loaded scheduler (empty = keep it).
+    recommended_scheduler: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen = True)
@@ -61,6 +70,8 @@ class ResolvedLora:
     path: str
     fmt: str
     weight: float
+    # The second expert's file of a two-expert pair (LoraCatalogEntry.weight_name_2), else None.
+    path_2: Optional[str] = None
 
 
 # Known-good diffusion LoRA catalog (single-file HF repos); any public HF LoRA repo id also works.
@@ -78,7 +89,100 @@ def _krea2_lora(style: str, display_name: str) -> LoraCatalogEntry:
     )
 
 
+def _distill_lora(
+    repo_id: str,
+    weight_name: str,
+    display_name: str,
+    family: str,
+    steps: int,
+    *,
+    weight_name_2: Optional[str] = None,
+    entry_id: Optional[str] = None,
+    scheduler: tuple[tuple[str, Any], ...] = (),
+) -> LoraCatalogEntry:
+    """A step-distilled adapter (CFG-free): picking it sets ``steps`` at guidance 1 as the defaults, and
+    ``scheduler`` (config overrides) as the sampler when the loaded scheduler differs from the publisher's."""
+    return LoraCatalogEntry(
+        id = entry_id or f"{repo_id}:{weight_name}",
+        display_name = display_name,
+        source = "hub",
+        fmt = "safetensors",
+        families = (family,),
+        repo_id = repo_id,
+        weight_name = weight_name,
+        weight_name_2 = weight_name_2,
+        recommended_steps = steps,
+        recommended_guidance = 1.0,
+        recommended_scheduler = scheduler,
+    )
+
+
+# First-order Euler on the Wan scheduler's own grid: UniPC at order 1 with the corrector off is the flow Euler step
+# x - (sigma - sigma_next) * v (data-prediction DDIM == Euler for a linear flow path), on the same shift-5 grid
+# [1, .9375, .833, .625] the lightx2v recipes sample (LightX2V WanStepDistillScheduler, sample_shift 5; the
+# Lightning V1.1 workflow's euler / simple at shift 5). The base Wan2.2 scheduler is 2nd-order UniPC with corrector.
+_WAN_EULER: tuple[tuple[str, Any], ...] = (
+    ("solver_order", 1),
+    ("disable_corrector", tuple(range(64))),
+)
+
+
+# lightx2v step-distill adapters (Apache-2.0). Wan2.2-A14B pairs: high-noise file -> transformer, low-noise ->
+# transformer_2; the publisher's recipe is 4 Euler steps at shift 5, CFG 1 (2 steps per expert at boundary 0.875).
+_DISTILL: tuple[LoraCatalogEntry, ...] = (
+    _distill_lora(
+        "lightx2v/Wan2.2-Distill-Loras",
+        "wan2.2_t2v_A14b_high_noise_lora_rank64_lightx2v_4step_1217.safetensors",
+        "Wan2.2 T2V A14B 4-step distill (lightx2v)",
+        "wan2.2-t2v-a14b",
+        4,
+        weight_name_2 = "wan2.2_t2v_A14b_low_noise_lora_rank64_lightx2v_4step_1217.safetensors",
+        entry_id = "lightx2v/Wan2.2-Distill-Loras",
+        scheduler = _WAN_EULER,
+    ),
+    _distill_lora(
+        "lightx2v/Wan2.2-Lightning",
+        "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors",
+        "Wan2.2 T2V A14B Lightning 4-step V1.1",
+        "wan2.2-t2v-a14b",
+        4,
+        weight_name_2 = "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors",
+        entry_id = "lightx2v/Wan2.2-Lightning",
+        scheduler = _WAN_EULER,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Lightning",
+        "Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors",
+        "Qwen-Image Lightning 8-step V2.0",
+        "qwen-image",
+        8,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Lightning",
+        "Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors",
+        "Qwen-Image Lightning 4-step V2.0",
+        "qwen-image",
+        4,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-2512-Lightning",
+        "Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors",
+        "Qwen-Image-2512 Lightning 8-step",
+        "qwen-image",
+        8,
+    ),
+    _distill_lora(
+        "lightx2v/Qwen-Image-Edit-2511-Lightning",
+        "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        "Qwen-Image-Edit-2511 Lightning 8-step",
+        "qwen-image-edit",
+        8,
+    ),
+)
+
+
 _CURATED: tuple[LoraCatalogEntry, ...] = (
+    *_DISTILL,
     _krea2_lora("retroanime", "Krea 2 Retro Anime"),
     _krea2_lora("neondrip", "Krea 2 Neon Drip"),
     _krea2_lora("darkbrush", "Krea 2 Dark Brush"),
@@ -346,11 +450,8 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
 def list_loras(
     *, family: Optional[str] = None, include_copies: bool = False
 ) -> list[LoraCatalogEntry]:
-    """The merged catalog (curated + local), optionally family-filtered.
-
-    Cheap: one directory scan plus the in-memory curated list. Network is only touched on
-    resolve(), when a hub adapter is selected.
-    """
+    """Merged curated and local catalog, optionally family-filtered; cheap (one directory scan plus
+    the in-memory curated list), with network touched only by resolve() for a hub adapter."""
     merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
@@ -360,8 +461,41 @@ def list_loras(
     return merged
 
 
+def two_expert_family(family: Optional[str]) -> bool:
+    """A two-expert video family (Wan2.2-A14B): it loads only high / low-noise pairs."""
+    if not family:
+        return False
+    try:
+        from .video_families import detect_video_family
+        fam = detect_video_family("", override = family)
+    except Exception:  # noqa: BLE001 - an image family name is not a video family
+        return False
+    return bool(getattr(fam, "is_moe", False))
+
+
 def _catalog_by_id() -> dict[str, LoraCatalogEntry]:
     return {e.id: e for e in (list(_CURATED) + _scan_local())}
+
+
+def recommended_scheduler(lora_ids: Any) -> tuple[tuple[str, Any], ...]:
+    """The publisher's scheduler overrides of the first curated adapter in ``lora_ids`` that has any, else ()."""
+    curated = {e.id: e for e in _CURATED if e.recommended_scheduler}
+    for lora_id in lora_ids or ():
+        entry = curated.get(str(lora_id))
+        if entry is not None:
+            return entry.recommended_scheduler
+    return ()
+
+
+def recommended_params(lora_ids: Any) -> Optional[tuple[int, float]]:
+    """The publisher's ``(steps, guidance)`` of the first step-distilled curated adapter in ``lora_ids``, else None.
+    Curated entries only (in memory, no folder scan), so a status poll may call it."""
+    curated = {e.id: e for e in _CURATED if e.recommended_steps}
+    for lora_id in lora_ids or ():
+        entry = curated.get(str(lora_id))
+        if entry is not None:
+            return int(entry.recommended_steps), float(entry.recommended_guidance or 1.0)
+    return None
 
 
 def _staging_name(dest_dir: Path, stem: str) -> str:
@@ -371,11 +505,9 @@ def _staging_name(dest_dir: Path, stem: str) -> str:
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
-    """Copy a local adapter into ``dest_dir`` with a ``<stem>.json`` sidecar carrying the image LoRA marker.
-
-    Takes a catalog id, never a path, so only listed image LoRAs can be read. Returns the copied weight
-    file; a stem already used by other bytes, another weight format or a foreign ``.json`` gets a suffix.
-    """
+    """Copy a listed local adapter (by catalog id, never a path) into dest_dir with an image LoRA
+    <stem>.json sidecar; returns the weight file; a stem used by other bytes, another weight
+    format or a foreign .json gets a suffix."""
     import filecmp
     import shutil
 
@@ -386,7 +518,8 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents = True, exist_ok = True)
 
     def _free(out: Path) -> bool:
-        if out.stem.lower() in _MODEL_SENTINEL_STEMS:
+        # A "<x>.index" stem would write a weight index sidecar (model.safetensors.index.json).
+        if out.stem.lower() in _MODEL_SENTINEL_STEMS or out.stem.lower().endswith(".index"):
             return False
         if out.exists() and os.path.samefile(src, out):
             return True
@@ -438,6 +571,29 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
     return out
 
 
+class LoraSelectionError(ValueError):
+    """A LoRA selection the loaded model cannot take; the caller's to fix."""
+
+
+# X-Unsloth-Refusal / OpenAI error code, so a client can offer the reload instead of a failure.
+LORA_RELOAD_REFUSAL = "lora-reload"
+LORA_RELOAD_OPENAI_CODE = "lora_reload_required"
+
+LORA_RELOAD_REMEDY = (
+    "Reload the model with the LoRA selection: on the Images page click Reapply (Generate and this error offer "
+    'the same reload), or send the adapters as "loras" in POST /api/inference/images/load. The reload rebuilds '
+    "the transformer from its full-precision weights, which may download them first."
+)
+
+
+class LoraReloadRequiredError(LoraSelectionError):
+    """The loaded build fixes its adapters at load time (int8 / fp8 / nvfp4 / mxfp8 bake, a merge into quantized or
+    streamed weights), so this selection needs a reload that bakes it; never a silent reload behind a generate."""
+
+    refusal = LORA_RELOAD_REFUSAL
+    openai_code = LORA_RELOAD_OPENAI_CODE
+
+
 def resolve_one(
     spec_id: str,
     weight: float,
@@ -446,6 +602,7 @@ def resolve_one(
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
     catalog: Optional[dict[str, LoraCatalogEntry]] = None,
+    local_files_only: bool = False,
 ) -> ResolvedLora:
     """Enforces family tags here, not only in the picker, so direct API calls cannot skip them."""
     # An empty token triggers an auth error instead of anonymous access; normalise to None.
@@ -454,7 +611,7 @@ def resolve_one(
     if entry is not None:
         req_fam = (family or "").strip().lower()
         if entry.families and req_fam and req_fam not in {f.lower() for f in entry.families}:
-            raise ValueError(
+            raise LoraSelectionError(
                 f"LoRA '{spec_id}' is for {', '.join(entry.families)}, not the loaded "
                 f"'{family}' model family; pick a LoRA built for this family."
             )
@@ -467,11 +624,20 @@ def resolve_one(
                 raise FileNotFoundError(f"LoRA '{spec_id}' is no longer present on disk")
             return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
         if not entry.repo_id or not entry.weight_name:
-            raise ValueError(f"LoRA '{spec_id}' has no downloadable weight")
-        path = hf_hub_download_with_xet_fallback(
-            entry.repo_id, entry.weight_name, hf_token, cancel_event = cancel_event
-        )
-        return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight)
+            raise LoraSelectionError(f"LoRA '{spec_id}' has no downloadable weight")
+
+        def fetch(name: str) -> str:
+            return hf_hub_download_with_xet_fallback(
+                entry.repo_id,
+                name,
+                hf_token,
+                cancel_event = cancel_event,
+                local_files_only = local_files_only,
+            )
+
+        path = fetch(entry.weight_name)
+        path_2 = fetch(entry.weight_name_2) if entry.weight_name_2 else None
+        return ResolvedLora(spec_id, sanitize_alias(spec_id), path, entry.fmt, weight, path_2)
 
     # Not in the catalog: allow a bare public HF repo id (owner/name[:weight_file]).
     if "/" in spec_id:
@@ -487,12 +653,18 @@ def resolve_one(
             ):
                 raise ValueError(f"invalid LoRA weight file path '{weight_name}'")
         if weight_name is None:
-            weight_name = _pick_repo_weight_file(repo_id, hf_token)
+            weight_name = _pick_repo_weight_file(
+                repo_id, hf_token, local_files_only = local_files_only
+            )
         ext = os.path.splitext(weight_name)[1].lower()
         if ext not in _ALL_EXTS:
             raise ValueError(f"unsupported LoRA file '{weight_name}' (need .safetensors/.gguf)")
         path = hf_hub_download_with_xet_fallback(
-            repo_id, weight_name, hf_token, cancel_event = cancel_event
+            repo_id,
+            weight_name,
+            hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
         )
         fmt = "gguf" if ext == ".gguf" else "safetensors"
         return ResolvedLora(spec_id, sanitize_alias(repo_id), path, fmt, weight)
@@ -502,13 +674,32 @@ def resolve_one(
     )
 
 
-def _pick_repo_weight_file(repo_id: str, hf_token: Optional[str]) -> str:
-    """Pick the single LoRA weight file in an HF repo (prefer safetensors)."""
+def _pick_repo_weight_file(
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool = False,
+) -> str:
+    """Pick the single LoRA weight file in an HF repo (prefer safetensors); cache-only lists the cached snapshot."""
     from huggingface_hub import HfApi
 
     from hub.utils.gguf import drop_shadowed_appledouble_names, is_imatrix_filename
 
-    files = drop_shadowed_appledouble_names(list(HfApi(token = hf_token).list_repo_files(repo_id)))
+    if local_files_only:
+        from huggingface_hub import snapshot_download
+
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        # Raises LocalEntryNotFoundError (a FileNotFoundError, so a 400) when the repo is not cached.
+        root = snapshot_download(
+            repo_id,
+            token = hf_token,
+            local_files_only = True,
+            cache_dir = str(get_hf_cache_paths().hub_cache),
+        )
+        listed = sorted(os.listdir(root))
+    else:
+        listed = list(HfApi(token = hf_token).list_repo_files(repo_id))
+    files = drop_shadowed_appledouble_names(listed)
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
@@ -541,6 +732,7 @@ def resolve_specs(
     family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
+    local_files_only: bool = False,
 ) -> list[ResolvedLora]:
     """Maps not-found and gated Hub errors to 400 (URL scrubbed), not base HfHubHTTPError so a Hub 5xx stays 500; mid-download cancel is 409."""
     from huggingface_hub.errors import (
@@ -565,6 +757,7 @@ def resolve_specs(
                     hf_token = hf_token,
                     cancel_event = cancel_event,
                     catalog = catalog,
+                    local_files_only = local_files_only,
                 )
             )
     except (
@@ -574,7 +767,7 @@ def resolve_specs(
         EntryNotFoundError,
         GatedRepoError,
     ) as exc:
-        raise ValueError(_scrub_hub_url(str(exc))) from exc
+        raise LoraSelectionError(_scrub_hub_url(str(exc))) from exc
     except RuntimeError as exc:
         if str(exc) == "Cancelled":
             raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -582,11 +775,152 @@ def resolve_specs(
     return out
 
 
+# sd.cpp maps FLUX.1 q/k/v(/proj_mlp) onto fused weights as numbered pieces, stops at the first missing
+# piece, and on quantized GGUFs drops a fused target its pieces do not cover. Staging adds rank-1 zero
+# pairs for missing pieces so e.g. a to_q/to_k/to_v-only adapter keeps its single-block updates.
+_FLUX1_SPLIT_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
+_FLUX1_SPLIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v")),
+    ("transformer_blocks", ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj")),
+    ("single_transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp")),
+)
+_FLUX1_SPLIT_KEY_RE = re.compile(
+    r"^(?P<block>(?:transformer\.)?(?P<kind>single_transformer_blocks|transformer_blocks)\.\d+\.)"
+    r"(?P<mod>attn\.to_[qkv]|attn\.add_[qkv]_proj|proj_mlp)\.lora_(?P<ab>[AB])\.weight$"
+)
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1,
+    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+}  # fmt: skip
+_FLUX1_MLP_RATIO = 4
+# Shapes come from the adapter's own header. Real FLUX.1 pieces (hidden 3072, rank 1) add well under 1 MiB in
+# total, so a header claiming more is not a FLUX.1 adapter and is staged as-is instead of padded.
+_FLUX1_MAX_SPLIT_PAD_BYTES = 256 * 1024 * 1024
+
+
+def _read_safetensors_header(path: str) -> tuple[int, dict]:
+    with open(path, "rb") as f:
+        raw = f.read(8)
+        if len(raw) != 8:
+            raise ValueError("not a safetensors file")
+        n = int.from_bytes(raw, "little")
+        if n <= 0 or n > 100 * 1024 * 1024:
+            raise ValueError("implausible safetensors header size")
+        header = json.loads(f.read(n))
+    if not isinstance(header, dict):
+        raise ValueError("safetensors header is not an object")
+    return n, header
+
+
+def flux1_missing_split_pieces(header: dict) -> dict[str, tuple[str, list[int]]]:
+    """New zero tensors (name -> (dtype, shape)) completing every partially-targeted FLUX.1 fused split."""
+    present: dict[tuple[str, str], dict[str, dict]] = {}
+    kinds: dict[str, str] = {}
+    for name, info in header.items():
+        m = _FLUX1_SPLIT_KEY_RE.match(name)
+        if m is None or not isinstance(info, dict):
+            continue
+        present.setdefault((m.group("block"), m.group("mod")), {})[m.group("ab")] = info
+        kinds[m.group("block")] = m.group("kind")
+    out: dict[str, tuple[str, list[int]]] = {}
+    for block in sorted(kinds):
+        kind = kinds[block]
+        for group_kind, mods in _FLUX1_SPLIT_GROUPS:
+            if group_kind != kind:
+                continue
+            have = [present.get((block, mod), {}) for mod in mods]
+            ref = next((p for p in have if "A" in p and "B" in p), None)
+            if ref is None:
+                continue
+            a_shape = ref["A"].get("shape") or []
+            if len(a_shape) != 2:
+                continue
+            hidden = int(a_shape[1])
+            dtype = str(ref["A"].get("dtype") or "F32")
+            if dtype not in _SAFETENSORS_DTYPE_BYTES:
+                continue
+            for mod, pair in zip(mods, have):
+                if "A" in pair and "B" in pair:
+                    continue
+                out_dim = hidden * _FLUX1_MLP_RATIO if mod == "proj_mlp" else hidden
+                out[f"{block}{mod}.lora_A.weight"] = (dtype, [1, hidden])
+                out[f"{block}{mod}.lora_B.weight"] = (dtype, [out_dim, 1])
+    return out
+
+
+def write_flux1_split_complete_copy(src: str, dst: Path) -> bool:
+    """Write ``src`` plus missing zero split pieces to ``dst``; False (nothing written) if unneeded or unreadable."""
+    try:
+        header_len, header = _read_safetensors_header(src)
+        extra = flux1_missing_split_pieces(header)
+        if not extra:
+            return False
+        data_end = 0
+        for name, info in header.items():
+            if name == "__metadata__" or not isinstance(info, dict):
+                continue
+            offsets = info.get("data_offsets") or [0, 0]
+            data_end = max(data_end, int(offsets[1]))
+    except (OSError, ValueError, TypeError, IndexError, KeyError):
+        return False
+    pad_bytes = sum(
+        _SAFETENSORS_DTYPE_BYTES[dtype] * shape[0] * shape[1] for dtype, shape in extra.values()
+    )
+    if pad_bytes > _FLUX1_MAX_SPLIT_PAD_BYTES:
+        return False
+    new_header = dict(header)
+    cursor = data_end
+    for name, (dtype, shape) in extra.items():
+        nbytes = _SAFETENSORS_DTYPE_BYTES[dtype] * shape[0] * shape[1]
+        new_header[name] = {
+            "dtype": dtype,
+            "shape": shape,
+            "data_offsets": [cursor, cursor + nbytes],
+        }
+        cursor += nbytes
+    blob = json.dumps(new_header, separators = (",", ":")).encode("utf-8")
+    blob += b" " * (-len(blob) % 8)
+    tmp = dst.with_name(dst.name + ".partial")
+    try:
+        with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            fout.write(len(blob).to_bytes(8, "little"))
+            fout.write(blob)
+            fin.seek(8 + header_len)
+            remaining = data_end
+            while remaining > 0:
+                chunk = fin.read(min(remaining, 16 * 1024 * 1024))
+                if not chunk:
+                    raise ValueError("truncated safetensors data")
+                fout.write(chunk)
+                remaining -= len(chunk)
+            pad = cursor - data_end
+            zeros = b"\0" * min(pad, 1024 * 1024)
+            while pad > 0:
+                fout.write(zeros[: min(pad, len(zeros))])
+                pad -= len(zeros)
+        os.replace(tmp, dst)
+    except (OSError, ValueError):
+        _unlink_quietly(tmp)
+        return False
+    except BaseException:
+        _unlink_quietly(tmp)
+        raise
+    return True
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def materialize_native_dir(
     resolved: list[ResolvedLora],
     dest: Path,
     *,
     real_files: bool = False,
+    family: Optional[str] = None,
 ) -> list[ResolvedLora]:
     """Populate ``dest`` with symlinks (copy fallback) to the resolved LoRA files.
 
@@ -596,6 +930,7 @@ def materialize_native_dir(
     ``real_files``: hard links (copy fallback) instead of symlinks. sd-server (master-982+) canonicalizes
     each file under ``--lora-model-dir`` and skips one that resolves outside it, so a symlink into the
     LoRA cache is never listed and a request naming it is rejected.
+    ``family``: FLUX.1 adapters with an incomplete fused split are staged as a completed copy.
     """
     dest.mkdir(parents = True, exist_ok = True)
     used: set[str] = set()
@@ -611,9 +946,16 @@ def materialize_native_dir(
             ".gguf" if r.fmt == "gguf" else ".safetensors"
         )
         link = dest / f"{alias}{ext}"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        if (
+            family in _FLUX1_SPLIT_FAMILIES
+            and ext == ".safetensors"
+            and write_flux1_split_complete_copy(r.path, link)
+        ):
+            out.append(ResolvedLora(r.id, alias, str(link), r.fmt, r.weight))
+            continue
         try:
-            if link.exists() or link.is_symlink():
-                link.unlink()
             if real_files:
                 os.link(os.path.realpath(r.path), link)
             else:
@@ -633,13 +975,9 @@ def materialize_native_dir(
     return out
 
 
-_TAG_RE = re.compile(r"<lora:([^:>]+):([^>]+)>")
-
-
 def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
     """Strips all user <lora:...> tags first so the validated weight wins over any typed weight."""
-    cleaned = _TAG_RE.sub("", prompt)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"[ \t]{2,}", " ", strip_lora_tags(prompt)).strip()
     tags = [f"<lora:{r.alias}:{_fmt_weight(r.weight)}>" for r in resolved]
     if not tags:
         return cleaned
@@ -653,10 +991,12 @@ def _fmt_weight(w: float) -> str:
     return s or "0"
 
 
-# Families sd-cli LoRA name conversion supports (not Qwen-Image); substring match.
+# Families sd-cli LoRA name conversion supports (not Qwen-Image); substring match. Qwen-Image-2.1's diffusers keys are
+# the GGUF's tensor names, and sd.cpp folds proj / gate_layer into the fused img_mlp.gate_up (upstream #2057).
 _NATIVE_LORA_FAMILY_TOKENS = (
     "flux.1",
     "flux.2",
+    "qwen-image-2.1",
     "z-image",
     "sd1",
     "sd2",
@@ -665,12 +1005,13 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "stable-diffusion",
 )
 # Adapters bake on the dense transformer BEFORE torchao quantize_ + compile: peft's
-# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks.
-_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
+# TorchaoLoraLinear needs quantizer metadata a manual quantize_ lacks. nvfp4 bakes the same way (FLUX.2 klein 4B, G4:
+# strength 0 renders the NVFP4 base bit for bit), except on a base with a per-layer NVFP4 policy (see below).
+_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8", "nvfp4")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
-_DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
-# In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
+_DIFFUSERS_LORA_BLOCKED_QUANT = ("mxfp8",)
+# Pipelines with no LoRA loader mixin; an adapter would otherwise fail mid-generate with an AttributeError.
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ("hunyuanimage-2.1",)
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:
@@ -693,6 +1034,19 @@ def _whole_pipeline_label(family: str) -> Optional[str]:
     return fam.label or fam.name
 
 
+def _nvfp4_policy_blocks_lora(family: str, base_repo: Optional[str]) -> bool:
+    """A per-layer NVFP4 policy assigns precisions by Linear name, and PEFT's wrapping renames every adapted Linear
+    (``to_q`` -> ``to_q.base_layer``), so a policy load with adapters cannot quantize. Without a base, any policy of
+    the family counts; an unanswerable check counts as a policy."""
+    try:
+        from .diffusion_nvfp4_policy import NVFP4_POLICIES, resolve_policy
+    except Exception:  # noqa: BLE001
+        return True
+    if base_repo:
+        return resolve_policy(family, base_repo) is not None
+    return any(policy.family == family for policy in NVFP4_POLICIES)
+
+
 def lora_unavailable_reason(
     *,
     engine: Optional[str],
@@ -700,6 +1054,7 @@ def lora_unavailable_reason(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
     compiled: bool = False,
+    base_repo: Optional[str] = None,
 ) -> Optional[str]:
     """Why ``engine`` cannot apply LoRAs to this build, shown on the Images page; None when it can."""
     fam = (family or "").lower()
@@ -712,10 +1067,21 @@ def lora_unavailable_reason(
     if engine == "sd_cpp":
         if any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS):
             return None
+        if fam == "minimax-h3-image":
+            # sd-cli has no key mapping for this DiT's adapters; the diffusers engine merges them at load.
+            return (
+                f"The native sd.cpp engine cannot apply LoRAs to {name}. LoRAs need the diffusers engine: load "
+                "MiniMaxAI/MiniMax-H3-Image (not a GGUF) with the LoRA selected."
+            )
         return f"The native sd.cpp engine cannot apply LoRAs to {name}."
     if not diffusers_lora_family_supported(fam):
         return f"LoRAs are not supported for {name} yet: its pipeline has no LoRA loader."
     quant = (transformer_quant or "").lower()
+    if quant == "nvfp4" and _nvfp4_policy_blocks_lora(fam, base_repo):
+        return (
+            f"LoRAs cannot be applied to {name} at NVFP4: its per-layer NVFP4 precision plan has no LoRA path. "
+            "Load it at FP8 or INT8 to use LoRAs."
+        )
     if quant in _DIFFUSERS_LORA_BAKED_QUANT:
         return None  # load-time bake; adapters ride inside the compiled quantized build
     if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
@@ -739,6 +1105,7 @@ def supports_lora(
     model_kind: Optional[str],
     transformer_quant: Optional[str],
     compiled: bool = False,
+    base_repo: Optional[str] = None,
 ) -> bool:
     return (
         lora_unavailable_reason(
@@ -747,6 +1114,7 @@ def supports_lora(
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             compiled = compiled,
+            base_repo = base_repo,
         )
         is None
     )

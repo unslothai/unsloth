@@ -1196,9 +1196,18 @@ def _fields_dict(fields: tuple) -> dict:
     return {name: list(value) if name == "tags" else value for name, value in fields}
 
 
+# A card's front matter sits at its top; the README itself is the publisher's and can be any size.
+_CARD_READ_MAX_BYTES = 2 * 1024 * 1024
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
-        text = path.read_text(encoding = "utf-8")
+        with open(path, "rb") as handle:
+            raw = handle.read(_CARD_READ_MAX_BYTES + 1)
+        if len(raw) > _CARD_READ_MAX_BYTES:
+            # Whole lines only, so a cut multibyte character cannot fail the decode.
+            raw = raw[: raw.rfind(b"\n", 0, _CARD_READ_MAX_BYTES) + 1]
+        text = raw.decode("utf-8")
     except Exception:
         return {}
     lines = text.splitlines()
@@ -1305,17 +1314,14 @@ def _scan_cached_models(
                 if not payload.has_runnable_weights:
                     skipped_no_weights += 1
                     continue
-                # A GGUF repo that also carries the official diffusers folders (it is the base's mirror): the folders,
-                # with or without the bf16 transformer, are part of the GGUF row (its size counts them), never a second
-                # row. Deletes are whole-repo or per-quant, so such a row's delete would wipe the quants, and a
-                # pipeline pick of the -GGUF id is refused anyway.
+                # Base folders in a GGUF repo count toward its GGUF row; a second row's delete would
+                # wipe quants.
                 any_root_gguf = has_main_gguf or repo_id.lower() in artifact_gguf_keys
                 if has_main_gguf and _hosts_artifacts(repo_id):
                     skipped_gguf += 1
                     continue
-                # Its GGUF in ANOTHER cache root: this copy holds only the folders that GGUF loads its companions
-                # from. Its own row, so its delete (scoped to this root) frees exactly what it shows, but a companion,
-                # never a pipeline or single-file pick.
+                # Holds only the companion folders for a GGUF in another root; own row, scoped
+                # delete, never a pipeline or single-file pick.
                 cross_root_folders = any_root_gguf and _hosts_artifacts(repo_id)
                 # The FP8 artifact mirror (unsloth/Qwen-Image-2.1-Turbo-FP8): its folders are what a pick of the BASE
                 # fetches, and a pipeline pick of the repo itself is refused, so the row stays the root checkpoint row

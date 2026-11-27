@@ -15,11 +15,8 @@ test("the More menu's side gutter sits inside its scroll viewport", () => {
   );
 });
 
-test("New badges keep More rows at the plain row height", () => {
+test("New tags keep More rows at the plain row height", () => {
   const sidebar = readSrc("components/app-sidebar.tsx");
-  assert.equal(
-    sidebar.match(/\{badge && <Badge variant="accent" className="-my-0\.5">\{badge\}<\/Badge>\}/g)?.length,
-    2,
-  );
-  assert.doesNotMatch(sidebar, /\{badge && <Badge variant="accent">\{badge\}<\/Badge>\}/);
+  assert.equal(sidebar.match(/\{badge && <span className=\{NAV_TAG\}>\{badge\}<\/span>\}/g)?.length, 2);
+  assert.match(sidebar, /const NAV_TAG =\s*"[^"]*\bpy-1\b[^"]*\btext-ui-10\b[^"]*\bleading-none\b/);
 });

@@ -772,8 +772,7 @@ def test_a_ui_session_download_is_not_marked_as_api_traffic(hub):
 
 
 def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
-    """The row is shared, so it needs the subject as well: without one the
-    attribution is reported to every logged-in browser instead of the caller."""
+    """Shared row needs the subject, or attribution reaches every logged-in browser."""
     from auth.authentication import API_KEY_PREFIX
 
     api_monitor.clear()
@@ -2143,8 +2142,7 @@ def test_the_downloaded_check_ignores_id_case(monkeypatch):
 
 
 def test_a_loaded_model_is_never_called_unservable(monkeypatch):
-    """Anything the listing serves is not withheld, so the servable set is what decides, not the
-    catalog alone."""
+    """Anything the listing serves is never withheld, so the servable set decides, not the catalog alone."""
     message = _unavailable_message(
         "unsloth/A-GGUF",
         downloaded = ["unsloth/A-GGUF"],
@@ -2166,9 +2164,7 @@ def _row(
 
 
 def test_a_scanner_row_without_a_model_id_still_counts_as_downloaded(monkeypatch):
-    """The ./models and LM Studio scanners report an absolute path as the id and set no model_id,
-    so the public-id fallback is what names those rows. Without it a scanned model reads as one
-    nobody downloaded."""
+    """Scanner rows (./models, LM Studio) have no model_id, so the public-id fallback must name them."""
     message = _unavailable_message(
         "Ornith-1.5-35B-A3B-MLX-4bit",
         downloaded = [],

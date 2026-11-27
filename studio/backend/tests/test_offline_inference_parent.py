@@ -21,9 +21,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 def _module_available(name: str) -> bool:
-    """True if the real module can be imported. Probed rather than imported: these stubs
-    land in sys.modules for the whole session, so an empty one breaks anything imported
-    later that actually uses the module."""
+    """Probe with find_spec: an empty stub left in sys.modules breaks later real imports."""
     try:
         return _importlib_util.find_spec(name) is not None
     except (ImportError, ValueError):
@@ -72,12 +70,11 @@ except ImportError:
     sys.modules.setdefault("httpx", _hx)
 
 
-from utils.models.model_config import _env_offline
 from utils.transformers_version import (
     _check_config_needs_550,
     _check_tokenizer_config_needs_v5,
-    _env_offline as _env_offline_tv,
 )
+from utils.utils import hf_env_offline
 import importlib.util
 import json
 import pathlib
@@ -91,23 +88,21 @@ def clean_offline_env(monkeypatch):
 
 class TestEnvOffline:
     def test_unset_is_false(self, clean_offline_env):
-        assert _env_offline() is False
-        assert _env_offline_tv() is False
+        assert hf_env_offline() is False
 
     def test_hf_hub_offline_truthy_values(self, monkeypatch, clean_offline_env):
         for val in ("1", "true", "yes", "TRUE", "Yes"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert _env_offline() is True
-            assert _env_offline_tv() is True
+            assert hf_env_offline() is True
 
     def test_transformers_offline_alone_triggers(self, monkeypatch, clean_offline_env):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-        assert _env_offline() is True
+        assert hf_env_offline() is True
 
     def test_falsy_values(self, monkeypatch, clean_offline_env):
         for val in ("", "0", "false", "no"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
-            assert _env_offline() is False
+            assert hf_env_offline() is False
 
 
 class TestTransformersVersionOfflineShortCircuits:
@@ -202,8 +197,7 @@ class TestLoraDetectOffline:
 
 
 class TestTrainingWorkerProbeNoGlobalTimeout:
-    """Training-worker DNS probe must run on a daemon thread, not mutate
-    process-wide socket.setdefaulttimeout (mirrors llama_cpp.py)."""
+    """Training-worker DNS probe uses a daemon thread, never socket.setdefaulttimeout."""
 
     def test_training_worker_source_uses_thread_probe(self):
         """Static-pin against regression to setdefaulttimeout."""
@@ -254,9 +248,8 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
 
 
 class TestInferenceWorkerProbesForItself:
-    """child_env deliberately scrubs the parent's scoped offline flag, so the inference
-    worker needs its own probe like the training and export workers, or it walks back
-    into the retry paths the parent already ruled out."""
+    """child_env scrubs the parent scoped offline flag, so the inference worker must probe itself or
+    it walks back into retry paths the parent already ruled out."""
 
     def _block(self):
         backend_root = pathlib.Path(__file__).resolve().parent.parent
@@ -281,8 +274,7 @@ class TestInferenceWorkerProbesForItself:
         assert 'if "HF_HUB_OFFLINE" not in os.environ' in block
 
     def test_lifetime_flags_use_the_fail_open_verdict(self):
-        """Same reasoning as the training worker: these last the whole process, so an
-        ambiguous answer must not strand it offline."""
+        """Workers live the whole process, so an ambiguous probe must not strand them offline."""
         block = self._block()
         assert "gateway_errors_offline = False" in block
         assert "proxy_timeouts_offline = False" in block
@@ -302,8 +294,7 @@ class TestInferenceWorkerProbesForItself:
 
 
 class TestWorkerProbesOnlyWhenTheHubIsNeeded:
-    """A filesystem-only job never reaches the Hub, so the probe is pure latency: this
-    was DNS-only on main for training, and absent entirely for inference."""
+    """A filesystem-only job never reaches the Hub, so probing it only adds latency."""
 
     def _load(self, relpath, name):
         backend_root = pathlib.Path(__file__).resolve().parent.parent
@@ -335,8 +326,7 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
         assert w._hub_targets_are_local(123) is False
 
     def test_inference_gate_reads_a_local_adapter_base_from_disk(self, tmp_path):
-        """A local adapter pointing at a REMOTE base still needs the probe, and the base
-        is readable without touching the network."""
+        """A local adapter naming a remote base needs the probe; its base is read from disk."""
         w = self._load("core/inference/worker.py", "inference_worker_gate_adapter")
         (tmp_path / "adapter_config.json").write_text(
             json.dumps({"base_model_name_or_path": "org/base"}),
@@ -366,8 +356,7 @@ class TestWorkerProbesOnlyWhenTheHubIsNeeded:
 
 
 class TestLocalLoraTrainingJobStillProbes:
-    """A local adapter can name a remote base, which activation resolves and later
-    training and security code fetches, so the job is not filesystem-only."""
+    """A local adapter can name a remote base, so the job still reaches the Hub."""
 
     def _worker(self):
         backend_root = pathlib.Path(__file__).resolve().parent.parent
@@ -432,9 +421,7 @@ class TestLocalLoraTrainingJobStillProbes:
 
 
 class TestFullCheckpointBaseKeepsTheProbe:
-    """A local full checkpoint's config.json can record a REMOTE base, which
-    _resolve_base_model returns and tier activation then reads Hub metadata for, so the
-    job is not filesystem-only even though every path on disk is local."""
+    """A local checkpoint's config.json can name a remote base, so the job is not filesystem-only."""
 
     def _module(self, relative_path, name):
         backend_root = pathlib.Path(__file__).resolve().parent.parent
@@ -463,8 +450,7 @@ class TestFullCheckpointBaseKeepsTheProbe:
         assert inf._recorded_local_base(target) == ("org/base", False)
 
     def test_a_self_reference_is_not_a_base(self, tmp_path):
-        """HF writes the checkpoint's own path into _name_or_path; that is not a base
-        and must not cost a probe."""
+        """A self-reference in _name_or_path is not a base, so it must not cost a probe."""
         target = self._checkpoint(tmp_path, {"_name_or_path": str(tmp_path)})
         inf = self._module("core/inference/worker.py", "inference_worker_self_gate")
         trn = self._module("core/training/worker.py", "training_worker_self_gate")
@@ -483,8 +469,7 @@ class TestFullCheckpointBaseKeepsTheProbe:
         assert inf._recorded_local_base(target) == ("org/from-adapter", False)
 
     def test_a_baseless_adapter_needs_the_hub(self, tmp_path):
-        """With no base on disk the resolver falls through to get_base_model_from_lora,
-        which is a Hub call, so the gate must fail closed."""
+        """Baseless adapters use get_base_model_from_lora, a Hub call; the gate fails closed."""
         (tmp_path / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
         inf = self._module("core/inference/worker.py", "inference_worker_baseless_gate")
         trn = self._module("core/training/worker.py", "training_worker_baseless_gate")
@@ -493,8 +478,7 @@ class TestFullCheckpointBaseKeepsTheProbe:
         assert trn._training_job_is_local({"model_name": str(tmp_path)}) is False
 
     def test_the_gate_agrees_with_the_resolver(self, tmp_path):
-        """Anti-drift: this bug was the gate reading less than _resolve_base_model does.
-        For every on-disk shape the two must name the same base."""
+        """The gate must name the same base as _resolve_base_model for every on-disk shape."""
         import sys
 
         backend_root = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
@@ -530,8 +514,7 @@ class TestFullCheckpointBaseKeepsTheProbe:
             assert (base or str(d)) == resolved, name
 
     def test_an_adapter_only_lora_keeps_the_probe(self, tmp_path):
-        """No JSON on disk, but the dir name resolves to a remote unsloth/... base that
-        tier activation reads Hub metadata for."""
+        """No JSON, but dir name resolves to a remote unsloth/... base, so the probe stays."""
         d = tmp_path / "unsloth_llama-3_1700000000"
         d.mkdir()
         (d / "adapter_model.safetensors").write_bytes(b"")

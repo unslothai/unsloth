@@ -27,8 +27,8 @@ import {
   warmPromptUpsampler,
 } from "./prompt-upsampler-api";
 import {
-  ENHANCE_PROMPT_HINT,
   ENHANCE_PROMPT_LABEL,
+  enhancePromptHint,
   type PromptUpsamplerPreviewRequest,
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
@@ -44,7 +44,7 @@ import {
 } from "./lib/prompt-enhance";
 
 /** Upsampler status, polled every second while a download runs and once otherwise. */
-function usePromptUpsamplerStatus(active: boolean) {
+function usePromptUpsamplerStatus(active: boolean, family?: string | null) {
   const [status, setStatus] = useState<PromptUpsamplerStatus | null>(null);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
@@ -52,11 +52,11 @@ function usePromptUpsamplerStatus(active: boolean) {
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    getPromptUpsamplerStatus(controller.signal)
+    getPromptUpsamplerStatus(controller.signal, family)
       .then(setStatus)
       .catch(() => {});
     return () => controller.abort();
-  }, [active, tick]);
+  }, [active, tick, family]);
   useEffect(() => {
     if (!active || !downloading) return;
     const id = window.setInterval(refresh, 1000);
@@ -87,9 +87,11 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 function UpsamplerDownloadNotice({
   status,
+  family,
   onChanged,
 }: {
   status: PromptUpsamplerStatus;
+  family?: string | null;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -102,7 +104,7 @@ function UpsamplerDownloadNotice({
   const start = async () => {
     setBusy(true);
     try {
-      await startPromptUpsamplerDownload(hfApiToken(getHfToken()));
+      await startPromptUpsamplerDownload(hfApiToken(getHfToken()), family);
     } catch (err) {
       toast.error("Could not download the prompt upsampler", {
         description: err instanceof Error ? err.message : undefined,
@@ -114,7 +116,7 @@ function UpsamplerDownloadNotice({
   };
   const cancel = async () => {
     try {
-      await cancelPromptUpsamplerDownload();
+      await cancelPromptUpsamplerDownload(family);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not cancel the download");
     } finally {
@@ -189,11 +191,14 @@ export function EnhancePromptControls({
   enabled,
   onEnabledChange,
   modelKey,
+  family,
   prompt,
   previewRequest,
   onUseCaption,
 }: {
   enabled: boolean;
+  /** The loaded family: MiniMax-H3-Image has its own enhancer model, status and download. */
+  family?: string | null;
   /** The resident model and its load; a switch or reload warms the upsampler for it. */
   modelKey: string;
   onEnabledChange: (on: boolean) => void;
@@ -203,7 +208,7 @@ export function EnhancePromptControls({
   /** Put the caption in the prompt box and turn enhancement off. */
   onUseCaption: (caption: string) => void;
 }) {
-  const { status, refresh } = usePromptUpsamplerStatus(true);
+  const { status, refresh } = usePromptUpsamplerStatus(true, family);
   // Re-read once a download ends, so the notice clears without a reload.
   const wasDownloading = useRef(false);
   useEffect(() => {
@@ -285,7 +290,7 @@ export function EnhancePromptControls({
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ENHANCE_PROMPT_LABEL}
-          <InfoHint>{ENHANCE_PROMPT_HINT}</InfoHint>
+          <InfoHint>{enhancePromptHint(family)}</InfoHint>
         </span>
         <div className="flex items-center gap-1.5">
           <Button
@@ -303,7 +308,9 @@ export function EnhancePromptControls({
           <Switch checked={enabled} onCheckedChange={onEnabledChange} aria-label={ENHANCE_PROMPT_LABEL} />
         </div>
       </div>
-      {needsDownload && status ? <UpsamplerDownloadNotice status={status} onChanged={refresh} /> : null}
+      {needsDownload && status ? (
+        <UpsamplerDownloadNotice status={status} family={family} onChanged={refresh} />
+      ) : null}
       {preview ? (
         <div
           data-testid="enhanced-prompt-preview"

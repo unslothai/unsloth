@@ -71,7 +71,6 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
         if not pending:
             start = number
         stripped = line.rstrip()
-        # Backslash for sh, backtick for PowerShell.
         if stripped.endswith("\\") or stripped.endswith("`"):
             pending.append(stripped[:-1])
             continue
@@ -88,8 +87,7 @@ def _install_commands_in(text: str) -> list[tuple[int, str]]:
 
 
 def _workflow_files(root: Path = WORKFLOWS) -> list[Path]:
-    """Both extensions: GitHub accepts .yaml, and scanning only .yml would leave one
-    silently unchecked while the .yml pins kept the anti-vacuity test satisfied."""
+    """GitHub accepts .yaml too, so scanning only .yml would silently miss those workflows."""
     return sorted(list(root.glob("*.yml")) + list(root.glob("*.yaml")))
 
 

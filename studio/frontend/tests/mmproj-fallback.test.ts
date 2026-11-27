@@ -201,3 +201,27 @@ test("a clean load is not degraded and carries no description", () => {
   assert.equal(notice.description, undefined);
   assert.equal(notice.degraded, false);
 });
+
+test("a placement note is said on a success toast and gives way to any warning", () => {
+  const note = "All 31 layers are on the GPU. The expert weights of 7 layers are on the CPU.";
+  const informed = loadFallbackNotice("X loaded", null, null, null, note);
+  assert.equal(informed.title, "X loaded");
+  assert.equal(informed.description, note);
+  assert.equal(informed.degraded, false);
+  // With a projector on the CPU the note still leads, and the load is a warning for the projector's sake.
+  const withProjector = loadFallbackNotice("X loaded", null, "cpu_offload", null, note);
+  assert.equal(
+    withProjector.description,
+    `${note} ${mmprojFallbackMessage("cpu_offload")}`,
+  );
+  assert.equal(withProjector.degraded, true);
+  const split = { titleSuffix: ", partly on CPU", description: "38 of 60 layers are on the GPU." };
+  assert.equal(
+    loadFallbackNotice("X loaded", null, null, split, note).description,
+    split.description,
+  );
+  assert.doesNotMatch(
+    loadFallbackNotice("X loaded", "vulkan_startup_crash", null, null, note).description ?? "",
+    /expert weights/,
+  );
+});

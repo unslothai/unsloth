@@ -570,3 +570,79 @@ def test_a_failed_adaln_launch_disables_the_fused_path_for_the_load(monkeypatch)
     with torch.no_grad():
         norm(x, cond)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "cls_name, call",
+    [
+        ("AdaLayerNormZero", lambda norm, x, emb: norm(x, emb = emb)[0]),
+        ("AdaLayerNormZeroSingle", lambda norm, x, emb: norm(x, emb = emb)[0]),
+        ("AdaLayerNormContinuous", lambda norm, x, emb: norm(x, emb)),
+    ],
+)
+def test_compiled_adaln_never_recompiles_per_call(fake_kernels, monkeypatch, cls_name, call):
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    assert rf.install_adaln(torch.bfloat16, "cuda") == 3
+    torch.manual_seed(0)
+    if cls_name == "AdaLayerNormContinuous":
+        norm = nm.AdaLayerNormContinuous(16, 16, elementwise_affine = False, eps = 1e-6)
+    else:
+        norm = getattr(nm, cls_name)(16)
+    x, emb = torch.randn(2, 5, 16), torch.randn(2, 16)
+    before = dict(rf.COUNTS)
+    with torch.no_grad():
+        want = call(norm, x, emb)
+    assert rf.COUNTS["adaln_stock"] == before["adaln_stock"] + 1
+    before = dict(rf.COUNTS)
+    torch._dynamo.reset()
+    compiled = torch.compile(call, backend = "eager", fullgraph = True, dynamic = False)
+    try:
+        with torch._dynamo.config.patch(error_on_recompile = True), torch.no_grad():
+            outs = [compiled(norm, x, emb) for _ in range(4)]
+    finally:
+        torch._dynamo.reset()
+    assert all(torch.equal(out, want) for out in outs)
+    assert rf.COUNTS == before
+
+
+def test_tiny_flux1_regional_compile_holds_its_graphs_across_steps(fake_kernels, monkeypatch):
+    from diffusers import FluxTransformer2DModel
+    from torch._dynamo.utils import counters
+
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    rf.install_adaln(torch.bfloat16, "cuda")
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel(
+        patch_size = 1,
+        in_channels = 16,
+        num_layers = 2,
+        num_single_layers = 3,
+        attention_head_dim = 32,
+        num_attention_heads = 4,
+        joint_attention_dim = 64,
+        pooled_projection_dim = 32,
+        axes_dims_rope = (8, 12, 12),
+    ).eval()
+    B, img, txt = 1, 64, 8
+    inputs = dict(
+        hidden_states = torch.randn(B, img, 16),
+        encoder_hidden_states = torch.randn(B, txt, 64),
+        pooled_projections = torch.randn(B, 32),
+        img_ids = torch.randint(0, 8, (img, 3)).float(),
+        txt_ids = torch.zeros(txt, 3),
+        return_dict = False,
+    )
+    torch._dynamo.reset()
+    counters.clear()
+    try:
+        # Studio's FLUX.1 settings (diffusion_speed: fullgraph, static shapes for a stream-merging block).
+        model.compile_repeated_blocks(backend = "eager", fullgraph = True, dynamic = False)
+        graphs = []
+        with torch.no_grad():
+            for t in (0.9, 0.6, 0.3):
+                model(timestep = torch.tensor([t]), **inputs)
+                graphs.append(counters["stats"]["unique_graphs"])
+    finally:
+        torch._dynamo.reset()
+    assert graphs[0] > 0
+    assert graphs[1:] == [graphs[0]] * 2, graphs

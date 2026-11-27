@@ -4,6 +4,7 @@
 import { LazyImportBoundary } from "@/components/lazy-import-boundary";
 import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
+import { ArrowRightIcon } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -31,6 +32,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  Cursor02Icon,
   Download01Icon,
   LayoutTwoColumnIcon,
   LibrariesIcon,
@@ -56,12 +58,19 @@ import {
   toolResultLimitChoices,
   updateToolResultLimit,
 } from "../api/tool-result-limit";
+import {
+  ChatWidthSelect,
+  ComposerOutlineSliderRow,
+  ComposerPositionSliderRow,
+  SentAttachmentsSelect,
+} from "../components/appearance-custom-controls";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { GenerationStatsUpdatesRow } from "../components/generation-stats-updates-row";
 import { SettingsRow } from "../components/settings-row";
 import {
   ComposerFormatRows,
+  RichTextPasteRow,
   ComposerSettings,
   ContextWindowUsageRow,
 } from "../components/composer-settings";
@@ -100,6 +109,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={CursorInWindowIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "computerUse",
+    labelKey: "settings.chat.menu.computerUse",
+    icon: (
+      <HugeiconsIcon
+        icon={Cursor02Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />
@@ -351,6 +371,18 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
+  const pickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.pickerExpandLoaded,
+  );
+  const setPickerExpandLoaded = useChatRuntimeStore(
+    (state) => state.setPickerExpandLoaded,
+  );
+  const pickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.pickerMonochromeIcons,
+  );
+  const setPickerMonochromeIcons = useChatRuntimeStore(
+    (state) => state.setPickerMonochromeIcons,
+  );
   const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore(
     (state) => state.setFitOnDeviceOnly,
@@ -505,12 +537,15 @@ export function ChatTab() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
             {t("settings.chat.library.action")}
+            <ArrowRightIcon data-icon="inline-end" strokeWidth={1.75} />
           </Button>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.chatDefaults")}>
+      {/* Chat owns composer preferences; the in-composer popovers are shortcuts. */}
+      <SettingsSection title={t("composerSettings.title")}>
         <ComposerSettings embedded={true} />
+        <ComposerFormatRows />
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
@@ -545,6 +580,40 @@ export function ChatTab() {
             ))}
           </div>
         </SettingsRow>
+        <GenerationStatsUpdatesRow />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.groups.customization.title")}>
+        <SettingsRow
+          label={t("settings.appearance.custom.chatWidth.label")}
+          description={t("settings.appearance.custom.chatWidth.description")}
+        >
+          <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.composerPosition")}
+          description={t("settings.chat.composerPositionDescription")}
+        >
+          <ComposerPositionSliderRow />
+        </SettingsRow>
+        <SettingsRow label={t("chatBackground.outline")}>
+          <ComposerOutlineSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+          description={t(
+            "settings.chat.modelSelection.pickerMonochromeIconsDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerMonochromeIcons")}
+            checked={pickerMonochromeIcons}
+            onCheckedChange={setPickerMonochromeIcons}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.chat.pastedTextThreshold")}
           description={
@@ -579,7 +648,16 @@ export function ChatTab() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <GenerationStatsUpdatesRow />
+        <ContextWindowUsageRow />
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
+        </SettingsRow>
+        <RichTextPasteRow />
       </SettingsSection>
 
       <LazyImportBoundary fallback={null}>
@@ -818,7 +896,6 @@ export function ChatTab() {
             onCheckedChange={setShowGenerationDetails}
           />
         </SettingsRow>
-        <ContextWindowUsageRow />
         <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
           description={t("settings.chat.inlineEditResponseDescription")}
@@ -839,7 +916,6 @@ export function ChatTab() {
             onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
-        <ComposerFormatRows />
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.modelSelection.title")}>
@@ -883,6 +959,18 @@ export function ChatTab() {
             aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
             checked={fitOnDeviceOnly}
             onCheckedChange={setFitOnDeviceOnly}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+          description={t(
+            "settings.chat.modelSelection.pickerExpandLoadedDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.pickerExpandLoaded")}
+            checked={pickerExpandLoaded}
+            onCheckedChange={setPickerExpandLoaded}
           />
         </SettingsRow>
       </SettingsSection>

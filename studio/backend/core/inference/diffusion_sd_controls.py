@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Optional, Sequence
 
 from .diffusion_prompt_weighting import (
+    _clip_chunk_counts,
     encode_weighted_prompts,
     exceeds_one_chunk,
     has_prompt_syntax,
@@ -166,10 +167,8 @@ def _clip_skip_engaged(controls: SdControls, family: Any) -> bool:
 def weighting_engaged(
     controls: Optional[SdControls], family: Any, pipe: Any, texts: Sequence[Optional[str]]
 ) -> bool:
-    """Whether this call encodes its prompts here instead of in the pipeline.
-
-    Engaged by weight syntax, a prompt past 75 tokens or a CLIP skip past the model's layer; otherwise the
-    pipeline encodes, bit-identically."""
+    """Encodes here for weight syntax, prompts past 75 tokens, or a CLIP skip past the model layer;
+    else the pipeline encodes, bit-identically."""
     if not supports_sd_controls(family, pipe):
         return False
     controls = controls or SdControls()
@@ -178,6 +177,30 @@ def weighting_engaged(
     if controls.prompt_weighting is not False and any(has_prompt_syntax(t) for t in texts):
         return True
     return any(exceeds_one_chunk(pipe, t) for t in texts)
+
+
+def chunk_count_runs(controls: Optional[SdControls], family: Any, pipe: Any, chunk: list) -> list:
+    """Split ``(prompt, seed)`` jobs into ordered runs of equal CLIP chunk count.
+
+    The chunked encoder pads a batch to its longest prompt with empty chunks, changing shorter rows' pixels."""
+    if len(chunk) < 2 or all(job[0] == chunk[0][0] for job in chunk):
+        return [chunk]
+    prompts = [job[0] for job in chunk]
+    if not weighting_engaged(controls, family, pipe, prompts):
+        return [chunk]
+    weighted = (controls or SdControls()).prompt_weighting is not False
+    unique = list(dict.fromkeys(prompts))
+    counts = dict(zip(unique, _clip_chunk_counts(pipe, unique, weighted = weighted)))
+    runs: list = []
+    previous = None
+    for job in chunk:
+        count = counts[job[0]]
+        if runs and count == previous:
+            runs[-1].append(job)
+        else:
+            runs.append([job])
+        previous = count
+    return runs
 
 
 def apply_prompt_controls(

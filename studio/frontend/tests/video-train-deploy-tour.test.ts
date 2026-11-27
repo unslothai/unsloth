@@ -5,16 +5,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-test("video-family adapters get no Deploy to Create", () => {
+test("video-family adapters deploy to Video, image families to Create", () => {
   const src = readSrc("features/images/train/diffusion-train-panel.tsx");
   assert.match(src, /\?\.is_video === true/);
   assert.match(
     src,
-    /viewRun\.catalog_path && !isVideoFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeploy\?\.\(/,
+    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeployVideo : onDeploy\)\?\.\(/,
   );
   assert.match(
     src,
-    /status\?\.catalog_path && !isVideoFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+    /status\?\.catalog_path && canDeployFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
   );
   assert.match(readSrc("features/images/api.ts"), /is_video\?: boolean;/);
 });
@@ -26,11 +26,11 @@ test("the tour attaches to the first visible target, not a hidden page's", () =>
   assert.doesNotMatch(src, /document\.querySelector\(sel\)/);
 });
 
-test("Video re-reads its model status when returning from Train to Create", () => {
+test("Video re-reads its model status when returning from Train or Restyle to Create", () => {
   const src = readSrc("features/video/video-page.tsx");
   assert.match(
     src,
-    /if \(pageMode === "train"\) \{\s*leftForTrain\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftForTrain\.current\) return;\s*leftForTrain\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
+    /if \(pageMode !== "create"\) \{\s*leftCreate\.current = true;\s*return;\s*\}\s*if \(!active \|\| !leftCreate\.current\) return;\s*leftCreate\.current = false;\s*void refreshStatus\(\);\s*\}, \[active, pageMode, refreshStatus\]\);/,
   );
 });
 
@@ -50,7 +50,13 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
       src,
       /\{trainMounted && \(\s*<div className=\{pageMode === "train" \? "contents" : "hidden"\} inert=\{pageMode !== "train" \|\| undefined\}>\s*<DiffusionTrainPanel/,
     );
-    assert.match(src, /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/);
+    // Video has a third mode, Restyle, so its Create view is gated on "create" rather than "not train".
+    assert.match(
+      src,
+      page.includes("video")
+        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} restore=\{restyleRecipe\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
+        : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
+    );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
   });
 }

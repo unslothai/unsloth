@@ -760,3 +760,44 @@ def test_a_page_that_writes_the_image_marker_is_not_an_image(executed):
     _run(transport)
     replayed = _replayed(transport)
     assert "produced an image" not in replayed
+
+
+def test_a_stalled_gemini_turn_keeps_its_hosted_result_in_the_answer_parts(executed):
+    """Gemini replays the native answer parts instead of content, so the hosted result must be among them."""
+    transport = FakeTransport(
+        [
+            [
+                _tool_end("2305843009213693951", tool_name = "code_execution"),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "content": "Let me check that.",
+                                    "extra_content": {
+                                        "google": {
+                                            "answer_part": {
+                                                "text": "Let me check that.",
+                                                "thought_signature": "SIG",
+                                            }
+                                        }
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("stop"),
+            ],
+            [_text("done"), _finish("stop")],
+            [_DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = True)
+    [stalled] = [m for m in transport.requests[1]["messages"] if m["role"] == "assistant"]
+    answers = stalled["extra_content"]["google"]["answer_parts"]
+    assert answers[0] == {"text": "Let me check that.", "thought_signature": "SIG"}, answers
+    assert "2305843009213693951" in answers[-1]["text"], answers
+    assert "2305843009213693951" in stalled["content"]

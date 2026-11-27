@@ -117,6 +117,8 @@ jobs:
 
       - name: Profile startup
         shell: bash
+        env:
+          REPEATS: ${{ inputs.repeats || '3' }}
         run: |
           # Explicit pipefail: the gate's exit code reaches this step only through the tee pipe.
           set -o pipefail
@@ -130,7 +132,7 @@ jobs:
           python3 scripts/profile_startup.py \
             --python "$PY" \
             ${BIN:+--bin "$BIN"} \
-            --repeats "${{ inputs.repeats || '3' }}" \
+            --repeats "$REPEATS" \
             --max-healthz-seconds "${{ matrix.max_healthz_seconds }}" \
             --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
 

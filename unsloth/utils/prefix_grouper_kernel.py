@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 from dataclasses import dataclass
@@ -29,6 +30,16 @@ from torch.nn.attention.flex_attention import (
 
 # torch 2.6 inductor fails on the dynamic mask + flex kernel; suppress_errors then runs eager T x T flex.
 PREFIX_GROUPER_MIN_TORCH = (2, 7)
+
+
+def _strict_dynamo():
+    """Dynamo with suppress_errors off; some torch builds (AMD's ROCm torch 2.11) have no such flag."""
+    config = torch._dynamo.config
+    return (
+        config.patch(suppress_errors = False)
+        if hasattr(config, "suppress_errors")
+        else contextlib.nullcontext()
+    )
 
 
 def torch_supports_prefix_grouper(version = None) -> bool:
@@ -56,7 +67,66 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 
 
 # dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
+_flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
+
+
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
+def _rocm_static_flex_entry(query, key, value, **kwargs):
+    # Its own code object, so static graphs keep their own recompile budget.
+    return flex_attention(query, key, value, **kwargs)
+
+
+# ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
+# calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
+_ROCM_FLEX_STATIC = _is_rocm_torch() and (os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0")
+_flex_attention_static = (
+    torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
+)
+# Inside an enclosing graph the dynamic = False compile above is inlined into the caller's graph, so the padded
+# length would stay symbolic there: unsloth_zoo specializes the Q / K / V sequence sizes at trace time instead.
+_specialize_flex_shapes = None
+if _ROCM_FLEX_STATIC:
+    try:
+        from unsloth_zoo.rocm_flex_static import specialize_flex_shapes as _specialize_flex_shapes
+    except Exception:
+        _specialize_flex_shapes = None
+
+
+def _without_dynamic_marks(tensor):
+    # A caller's mark_dynamic / maybe_mark_dynamic on an input wins over dynamic = False; a view carries no marks.
+    if getattr(tensor, "_dynamo_dynamic_indices", None) or getattr(
+        tensor, "_dynamo_weak_dynamic_indices", None
+    ):
+        return tensor.view_as(tensor)
+    return tensor
+
+
+def _uses_static_flex(query, key, value) -> bool:
+    """ROCm GPU call whose backward runs: compiled per padded length (always False on CUDA builds)."""
+    return (
+        _flex_attention_static is not None
+        and query.device.type == "cuda"
+        and torch.is_grad_enabled()
+        and (query.requires_grad or key.requires_grad or value.requires_grad)
+    )
+
+
+def _flex_attention_compiled(query, key, value, **kwargs):
+    if _uses_static_flex(query, key, value):
+        if torch.compiler.is_compiling():
+            if _specialize_flex_shapes is not None:
+                _specialize_flex_shapes(query, key, value)
+        else:
+            query, key, value = map(_without_dynamic_marks, (query, key, value))
+        return _flex_attention_static(query, key, value, **kwargs)
+    return _flex_attention_dynamic(query, key, value, **kwargs)
+
+
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
 # fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
@@ -66,9 +136,77 @@ _BF16_BLOCK_M = int(os.environ.get("PG_FLEX_BF16_BLOCK_M", "128"))
 _BF16_BLOCK_N = int(os.environ.get("PG_FLEX_BF16_BLOCK_N", "64"))
 
 
-def _kernel_options_for_dtype(dtype, one_stage = False):
+# The 16-bit 128 / 64 tile needs 98304 B of shared memory at head_dim 128 (one stage too), so it
+# cannot compile on 64 KB parts (T4 sm75; AMD parts with 64 KB LDS). Smaller forward and backward
+# tiles compile there, picked from the queried limit. Opt-in: Triton emits no tensor-core MMA for
+# flex on sm75, so on T4 GRPO steps are 40% slower for Qwen3-0.6B and 3% faster for Qwen3-1.7B.
+_SMALL_SMEM_BELOW_BYTES = 98304
+_SMALL_SMEM_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_SMALL_SMEM", "0")
+
+
+def _small_smem_opt_in(env, torch_version) -> bool:
+    # The fwd_ / bwd_ kernel_options keys are read from torch 2.10 on; older releases keep the opt-in off.
+    version = tuple(int(x) for x in re.findall(r"\d+", torch_version.split("+")[0])[:2])
+    return env.lower() in ("1", "true", "yes", "on") and version >= (2, 10)
+
+
+_SMALL_SMEM_OPT_IN = _small_smem_opt_in(_SMALL_SMEM_ENV, torch.__version__)
+# T4 sweep (head_dim 128, fp16): forward 64 / 64 needs 65536 B even with one stage; 32 / 32 is the
+# fastest forward that fits; backward 32 / 32 with 8 warps beats the 16 / 16 default (37 vs 86 ms).
+_SMALL_SMEM_16BIT_OPTIONS = {
+    "fwd_BLOCK_M": 32,
+    "fwd_BLOCK_N": 32,
+    "fwd_num_stages": 1,
+    "fwd_num_warps": 4,
+    "bwd_BLOCK_M1": 32,
+    "bwd_BLOCK_N1": 32,
+    "bwd_BLOCK_M2": 32,
+    "bwd_BLOCK_N2": 32,
+    "bwd_num_stages": 1,
+    "bwd_num_warps": 8,
+}
+_SMEM_LIMIT: Dict[str, Optional[int]] = {}
+
+
+@torch._dynamo.disable
+def _query_smem_limit(device) -> Optional[int]:
+    """Per-block shared memory limit the Triton compiler checks against; None off GPU / unknown."""
+    limit = None
+    if device.type == "cuda":
+        try:
+            import triton
+            props = triton.runtime.driver.active.utils.get_device_properties(device.index or 0)
+            limit = int(props["max_shared_mem"])
+        except Exception:
+            props = torch.cuda.get_device_properties(device)
+            for name in ("shared_memory_per_block_optin", "shared_memory_per_block"):
+                if getattr(props, name, 0):
+                    limit = int(getattr(props, name))
+                    break
+    _SMEM_LIMIT[str(device)] = limit
+    return limit
+
+
+def _small_smem(device) -> bool:
+    if device is None:
+        return False
+    key = str(device)
+    if key not in _SMEM_LIMIT:
+        _query_smem_limit(device)
+    limit = _SMEM_LIMIT[key]
+    return limit is not None and limit < _SMALL_SMEM_BELOW_BYTES
+
+
+def _kernel_options_for_dtype(
+    dtype,
+    one_stage = False,
+    device = None,
+):
     """Pick the numerically-safe flash block sizes for the Q dtype."""
     if dtype == torch.bfloat16 or dtype == torch.float16:
+        if _SMALL_SMEM_OPT_IN and _small_smem(device):
+            # Stages are already pinned per pass, so the one-stage retry has nothing to change.
+            return dict(_SMALL_SMEM_16BIT_OPTIONS)
         options = {"BLOCK_M": _BF16_BLOCK_M, "BLOCK_N": _BF16_BLOCK_N}
     else:
         options = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
@@ -76,8 +214,6 @@ def _kernel_options_for_dtype(dtype, one_stage = False):
         options["num_stages"] = 1
     return options
 
-
-_FLEX_KERNEL_OPTIONS = {"BLOCK_M": _FP32_BLOCK_M, "BLOCK_N": _FP32_BLOCK_N}
 
 # The compiled backward asserts unless T is a multiple of 128; pad tokens are fully masked and sliced off.
 _PAD_MULTIPLE = 128
@@ -166,9 +302,63 @@ def build_seg_info_multigroup(
     return seg, group_meta
 
 
+@dataclass
+class TreeSegInfo:
+    """A prefix trie laid out in DFS pre-order (TRL >= 1.17 AsyncGRPO rows), padded to T_pad.
+
+    Each segment's subtree is one contiguous token range, so kv token j is visible to query q iff
+    j <= q < reach_end[j], where reach_end[j] ends the subtree of j's segment; pad tokens hold -1.
+    """
+
+    reach_end: torch.Tensor
+    signature: Tuple
+    T: int
+    T_pad: int
+
+
+def build_tree_seg_info(segment_offsets, segment_parents, device: torch.device) -> TreeSegInfo:
+    """Raises ValueError unless segments are in DFS pre-order with every parent before its children."""
+    offsets = [int(x) for x in torch.as_tensor(segment_offsets).tolist()]
+    parents = [int(x) for x in torch.as_tensor(segment_parents).tolist()]
+    n = len(parents)
+    if n == 0 or len(offsets) != n + 1 or offsets[0] != 0:
+        raise ValueError("tree segments: expected S parents and S + 1 offsets starting at 0")
+    if any(b <= a for a, b in zip(offsets[:-1], offsets[1:])):
+        raise ValueError("tree segments: every segment needs at least one token")
+    end = list(range(1, n + 1))
+    for s in range(n - 1, -1, -1):
+        p = parents[s]
+        if p >= s:
+            raise ValueError("tree segments: a parent must precede its children")
+        if p >= 0:
+            end[p] = max(end[p], end[s])
+    # Pre-order check: each segment's parent is the innermost open subtree containing it.
+    stack = []
+    for s in range(n):
+        while stack and end[stack[-1]] <= s:
+            stack.pop()
+        if parents[s] != (stack[-1] if stack else -1):
+            raise ValueError("tree segments are not in DFS pre-order")
+        stack.append(s)
+    T = offsets[-1]
+    T_pad = _pad_len(T)
+    lengths = torch.tensor([b - a for a, b in zip(offsets[:-1], offsets[1:])], dtype = torch.long)
+    seg_end = torch.tensor([offsets[e] for e in end], dtype = torch.long)
+    reach_end = torch.full((T_pad,), -1, dtype = torch.long)
+    reach_end[:T] = torch.repeat_interleave(seg_end, lengths, output_size = T)
+    signature = ("tree", T_pad, tuple(offsets), tuple(parents))
+    return TreeSegInfo(reach_end = reach_end.to(device), signature = signature, T = T, T_pad = T_pad)
+
+
+def _make_tree_mask_mod(reach_end):
+    def mask_mod(b, h, q_idx, kv_idx):
+        return (kv_idx <= q_idx) & (q_idx < reach_end[kv_idx])
+
+    return mask_mod
+
+
 def _seg_labels_host(group_specs):
-    """CPU int64 [3, T_pad] rows (group_of_kv, is_prefix, suffix_of_kv), pad sentinels
-    included, plus T, T_pad, group_meta and signature parts."""
+    """CPU int64 [3, T_pad] rows (group_of_kv, is_prefix, suffix_of_kv); T, T_pad, group_meta."""
     group_meta = []
     sig_parts = []
     seg_lens = []
@@ -229,11 +419,8 @@ _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
 def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
-    """Same group and causal, and kv is a prefix token or in q's own suffix.
-
-    Every prefix index precedes every suffix index of its group, so the one ``kv <= q`` guard
-    gives prefix-causal and full-prefix visibility for suffixes, matching the SDPA oracle.
-    """
+    """Same group, and kv is a prefix token or in the same suffix as q; one kv <= q guard covers
+    both, since every prefix index precedes every suffix index; matches the SDPA oracle."""
 
     def mask_mod(b, h, q_idx, kv_idx):
         same_group = group_of_kv[q_idx] == group_of_kv[kv_idx]
@@ -262,9 +449,12 @@ def get_block_mask(
     compile_mask = compile_mask and seg.T_pad > _PAD_MULTIPLE
     builder = _create_block_mask_compiled if compile_mask else create_block_mask
     with torch.inference_mode(False):
-        mask_mod = _make_mask_mod(
-            seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
-        )
+        if isinstance(seg, TreeSegInfo):
+            mask_mod = _make_tree_mask_mod(seg.reach_end.to(device))
+        else:
+            mask_mod = _make_mask_mod(
+                seg.group_of_kv.to(device), seg.is_prefix.to(device), seg.suffix_of_kv.to(device)
+            )
         bm = builder(
             mask_mod,
             B = 1,
@@ -316,7 +506,7 @@ def _run_flex(
             block_mask = block_mask,
             enable_gqa = enable_gqa,
             scale = scale,
-            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage),
+            kernel_options = _kernel_options_for_dtype(qp.dtype, one_stage, qp.device),
         )
     else:
         out = flex_attention(
@@ -339,6 +529,9 @@ class PrefixGrouperCompileError(RuntimeError):
 _COMPILE_CHECKED: Dict[Tuple, bool] = {}
 # Setups whose 3-stage tiles overflow shared memory (sm86 / sm89 / sm120 on torch 2.7 / 2.8).
 _ONE_STAGE_KEYS: set = set()
+# Setup (key without the padded length) -> one stage, for setups that passed any check: an enclosing graph
+# reuses that verdict for an unseen ROCm padded length, since the eager check cannot run inside it.
+_CHECKED_SETUPS: Dict[Tuple, bool] = {}
 _COMPILE_FAILURE: Optional[str] = None
 _CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
 _COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
@@ -368,23 +561,67 @@ def _compile_failure_reason(root: BaseException) -> str:
     return f"{type(root).__name__}: {lines[0][:200] if lines else ''}"
 
 
+def _keep_saved(tensor):
+    return tensor
+
+
+def _detach_saved(tensor):
+    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
+    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    return tensor.detach()
+
+
+def _record_compile_failure(key, reason):
+    global _COMPILE_FAILURE
+    _COMPILE_CHECKED[key] = False
+    _COMPILE_FAILURE = reason
+    print(
+        f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
+        f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
+        flush = True,
+    )
+
+
+def _small_smem_skip_reason(q) -> Optional[str]:
+    """NVIDIA small-smem GPU, 16-bit, head_dim >= 128, no opt-in: the default tiles cannot fit, so
+    skip the failing compile (about 3 minutes on T4) and keep the packed path."""
+    if _SMALL_SMEM_OPT_IN or _is_rocm_torch():
+        return None
+    # User tile overrides (PG_FLEX_BF16_BLOCK_M / _N) go through the real compile check instead.
+    if (_BF16_BLOCK_M, _BF16_BLOCK_N) != (128, 64):
+        return None
+    if q.dtype not in (torch.float16, torch.bfloat16) or q.shape[-1] < 128:
+        return None
+    if not _small_smem(q.device):
+        return None
+    return (
+        f"head_dim {q.shape[-1]} tiles do not fit {_SMEM_LIMIT[str(q.device)]} B of shared memory; "
+        "UNSLOTH_GRPO_PREFIX_GROUPER_SMALL_SMEM=1 uses smaller tiles, faster only for larger models"
+    )
+
+
 @torch._dynamo.disable
 def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, key):
     """Real call plus fwd + bwd on detached copies, strict, so later calls reuse those graphs."""
-    global _COMPILE_FAILURE
 
     def strict_calls(one_stage):
         nonlocal block_mask
-        with torch._dynamo.config.patch(suppress_errors = False):
+        with _strict_dynamo():
             if block_mask is None:
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
-            with torch.inference_mode(False), torch.enable_grad():
+            # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
+            own_hooks = torch.autograd.graph.saved_tensors_hooks(_detach_saved, _keep_saved)
+            with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
                 oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
                 torch.autograd.grad(oc.float().sum(), (qc, kc, vc))
         return out
 
+    reason = _small_smem_skip_reason(q)
+    if reason is not None:
+        _record_compile_failure(key, reason)
+        raise PrefixGrouperCompileError(reason)
     try:
         try:
             out = strict_calls(False)
@@ -402,15 +639,10 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
         if isinstance(root, torch.cuda.OutOfMemoryError):
             raise root from exc
         reason = _compile_failure_reason(root)
-        _COMPILE_CHECKED[key] = False
-        _COMPILE_FAILURE = reason
-        print(
-            f"Unsloth: GRPO PrefixGrouper is off: its flex attention kernel does not compile with "
-            f"torch {torch.__version__} on this GPU ({reason}); using the packed path.",
-            flush = True,
-        )
+        _record_compile_failure(key, reason)
         raise PrefixGrouperCompileError(reason) from None
     _COMPILE_CHECKED[key] = True
+    _CHECKED_SETUPS[key[:6]] = _CHECKED_SETUPS.get(key[:6], False) or key in _ONE_STAGE_KEYS
     return out
 
 
@@ -418,7 +650,7 @@ def flex_shared_prefix_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
     V: torch.Tensor,
-    prefix_seg_info: PrefixSegInfo,
+    prefix_seg_info: PrefixSegInfo | TreeSegInfo,
     scale: Optional[float] = None,
     block_mask: Optional[BlockMask] = None,
     compiled: bool = True,
@@ -442,14 +674,31 @@ def flex_shared_prefix_attention(
         if _COMPILE_FAILURE is not None:
             raise PrefixGrouperCompileError(_COMPILE_FAILURE)
         key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
-        if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
+        # ROCm static flex compiles a new kernel per padded length, each of which can fail and fall back to
+        # eager T x T flex: check every length. The dynamic kernel (CUDA, no-grad calls) is checked once.
+        setup = key
+        if _uses_static_flex(q, k, v):
+            key = key + (T_pad,)
+        needs_check = _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED
+        # The check is Dynamo-disabled, so a fullgraph caller would fail on each new padded length.
+        in_graph_reuse = (
+            needs_check
+            and key != setup
+            and torch.compiler.is_compiling()
+            and setup in _CHECKED_SETUPS
+        )
+        if in_graph_reuse:
+            needs_check = False
+        if needs_check:
             out = _checked_first_call(
                 q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
             )
     if out is None:
         if block_mask is None:
             block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-        one_stage = compiled and key in _ONE_STAGE_KEYS
+        one_stage = compiled and (
+            key in _ONE_STAGE_KEYS or (in_graph_reuse and _CHECKED_SETUPS[setup])
+        )
         out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
     return out.transpose(1, 2).contiguous()
 
@@ -459,6 +708,8 @@ __all__ = [
     "TORCH_SUPPORTS_PREFIX_GROUPER",
     "torch_supports_prefix_grouper",
     "PrefixSegInfo",
+    "TreeSegInfo",
+    "build_tree_seg_info",
     "build_seg_info_multigroup",
     "build_seg_info_from_layout",
     "get_block_mask",

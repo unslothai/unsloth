@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Marks message rows far from the reader so index.css can skip their layout: a narrower chat
-// column (the browser pane halves it) then re-wraps only the rows near the viewport. A row is
-// marked two frames after the observer finds it distant, once it has rendered, so the engine
-// sizes it by its remembered height (contain-intrinsic-size: auto) rather than a guess.
+// Marks distant rows for index.css to skip, two frames after render, so remembered heights size
+// them.
 export const ROW_DISTANT_ATTRIBUTE = "data-row-distant";
 export const ROW_REACH_PX = 1500;
 const GATE_ATTRIBUTE = "data-message-row-containment";
@@ -12,12 +10,8 @@ const ROW_SELECTOR = "[data-role][data-message-id]";
 const NUMBERED_EQUATION = ".eqn-num, .mml-eqn-num";
 
 /**
- * The reach must exceed the engine's own content-visibility: auto margin, so a row is released
- * (and the reader compensated) before the engine lays it out on its own. Chromium renders a skipped
- * element within 150% of the window's height of the window (kViewportMarginPercentage in
- * third_party/blink/renderer/core/display_lock/display_lock_document_state.cc); WebKit only once
- * it intersects the window (no root margin, Source/WebCore/dom/ContentVisibilityDocumentState.cpp).
- * Twice the window height covers Chromium's margin plus the thread scroller's offset inside it.
+ * Twice window height exceeds content-visibility margins: 150% in Chromium, no root margin in
+ * WebKit.
  */
 export const rowReachPx = (windowHeight: number): number =>
   Math.max(ROW_REACH_PX, Math.ceil(2 * (Number.isFinite(windowHeight) ? windowHeight : 0)));

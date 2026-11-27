@@ -16,8 +16,10 @@ import torch
 import unsloth.models._decode_graphs as G
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
-# The unset default only turns graphs on for NVIDIA CUDA; ROCm keeps them off unless the flag is 1.
-rl_default = pytest.mark.skipif(not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA only")
+# The unset default turns graphs on for NVIDIA CUDA and gfx1151 ROCm; other ROCm archs need the flag at 1.
+rl_default = pytest.mark.skipif(
+    not G._DEFAULT_OK, reason = "RL default is NVIDIA CUDA / gfx1151 only"
+)
 MODEL = "trl-internal-testing/tiny-Qwen3ForCausalLM"
 PROMPTS = ["Once upon a time there was", "def f(x):"]
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
@@ -56,7 +58,71 @@ def test_rl_default_is_nvidia_cuda_only(runtime):
         runtime.setenv(ENV, "1")
         assert G.enabled() is True
     runtime.setattr(torch.version, "hip", "6.4.0", raising = False)
+    runtime.setattr(G, "_rocm_default_ok", lambda: False)
     assert G._default_ok() is False
+
+
+def test_rl_default_rocm_only_gfx1151_with_skinny_linear(runtime):
+    """ROCm turns the RL default on only for gfx1151 with the skinny decode linear enabled (measured exact
+    and faster there); other HIP archs, or the kill switch, keep it off."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 1)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for arch, want in (
+        ("gfx1151", True),
+        ("gfx1100", False),
+        ("gfx942", False),
+        ("gfx1201", False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = arch: types.SimpleNamespace(gcnArchName = a + ":xnack-"),
+        )
+        assert G._default_ok() is want, arch
+        runtime.setenv("UNSLOTH_ROCM_SKINNY_LINEAR", "0")
+        assert G._default_ok() is False
+        runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR")
+    runtime.setattr(S, "triton", None)
+    runtime.setattr(
+        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    assert G._default_ok() is False
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G._default_ok() is True
+
+
+def test_rl_default_rocm_needs_every_visible_gpu_measured(runtime):
+    """Decode can run on any visible GPU, not only the one current at import: a gfx1151 beside another arch (either
+    order) keeps the ROCm default off, two gfx1151 keep it on."""
+    import types
+
+    from unsloth.kernels import rocm_skinny_linear as S
+
+    runtime.delenv("UNSLOTH_ROCM_SKINNY_LINEAR", raising = False)
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    runtime.setattr(torch.cuda, "is_available", lambda: True)
+    runtime.setattr(torch.cuda, "current_device", lambda: 0)
+    runtime.setattr(torch.cuda, "device_count", lambda: 2)
+    runtime.setattr(S, "triton", types.SimpleNamespace())
+    for archs, want in (
+        (("gfx1151", "gfx1151"), True),
+        (("gfx1151", "gfx1100"), False),
+        (("gfx1100", "gfx1151"), False),
+    ):
+        runtime.setattr(
+            torch.cuda,
+            "get_device_properties",
+            lambda i, a = archs: types.SimpleNamespace(gcnArchName = a[i] + ":xnack-"),
+        )
+        assert G._default_ok() is want, archs
 
 
 def test_rl_scope_is_per_thread(runtime):
@@ -116,6 +182,32 @@ def _decode_buffers(model):
     return sum("paged_attention" in m.__dict__ for m in model.modules())
 
 
+def _resident_graph_buffers(model):
+    """Graph KV caches whose pages are mapped (a VMM cache asleep through training holds none)."""
+    from unsloth.models import _decode_vmm as V
+    return sum(
+        V.buffer_of(bufs[0]) is None or V.buffer_of(bufs[0]).awake
+        for m in model.modules()
+        for bufs in (m.__dict__.get("_unsloth_graph_buffers") or {}).values()
+    )
+
+
+def _vmm(runtime, vmm):
+    from unsloth.models import _decode_vmm as V
+    runtime.setenv("UNSLOTH_DECODE_GRAPHS_VMM", vmm)
+    if vmm == "1" and not V.available(torch.device("cuda", torch.cuda.current_device())):
+        pytest.skip("CUDA virtual memory management")
+
+
+def _assert_training_got_the_memory(model, vmm):
+    # VMM: the caches sleep (pages freed, addresses and graphs kept); else everything is released.
+    assert _resident_graph_buffers(model) == 0 and _decode_buffers(model) == 0
+    if vmm == "1":
+        assert _graph_buffers(model) > 0 and _Stats(model)()["graphs"] > 0
+    else:
+        assert _graph_buffers(model) == 0 and _Stats(model)()["graphs"] == 0
+
+
 def _gen(
     model,
     tok,
@@ -130,9 +222,11 @@ def _gen(
 
 
 @rl_default
-def test_plain_generate_on_by_default_bitwise_and_released(runtime):
+@pytest.mark.parametrize("vmm", ["0", "1"])
+def test_plain_generate_on_by_default_bitwise_and_released(runtime, vmm):
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
+    _vmm(runtime, vmm)
     model, tok = _load()
     FastLanguageModel.for_inference(model)
     runtime.setenv(ENV, "0")
@@ -160,14 +254,23 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
     model.generate(**enc, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id)
     assert _graph_buffers(model) > 0
     FastLanguageModel.for_training(model)
-    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
-    assert _Stats(model)()["graphs"] == 0
+    _assert_training_got_the_memory(model, vmm)
 
-    # generate() called on a model in training mode returns to training: everything released.
+    # The returned cache views the decode buffers: everything is released, VMM or not.
     _gen(model, tok)
     assert model.training
     assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
     assert _Stats(model)()["graphs"] == 0
+
+
+def test_release_rearms_a_disabled_model():
+    """A capture failure (e.g. an OOM mid-GRPO) must not keep the model eager for life."""
+    model = torch.nn.Linear(2, 2)
+    state = G._state(model)
+    for drop in (G.release, G.invalidate):
+        state.disabled = "capture failed: OutOfMemoryError"
+        drop(model)
+        assert state.disabled is None
 
 
 def test_generate_scope_turns_graphs_on(runtime):
@@ -186,15 +289,18 @@ def test_generate_scope_turns_graphs_on(runtime):
 
 
 @rl_default
-def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
-    """A real GRPOTrainer step: its generate() runs graphed with the variable unset, completions
-    match the eager rollout, and the decode buffers are gone before the loss is computed."""
+@pytest.mark.parametrize("keep", ["0", "1"])
+def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path, keep):
+    """Real GRPOTrainer step: generate() runs graphed with the variable unset and matches the eager
+    rollout; keep=0 frees decode buffers before the loss, keep=1 keeps graphs and their store
+    (only attention attributes go), so the second step replays without capture."""
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
+    runtime.setenv("UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING", keep)
     model, tok = _load()
     rows = [{"prompt": p} for p in PROMPTS * 4]
-    seen = {"replays": [], "buffers_at_loss": []}
+    seen = {"replays": [], "buffers_at_loss": [], "captures": []}
 
     def reward(completions, **kw):
         return [float(len(c)) for c in completions]
@@ -215,24 +321,30 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     gen = getattr(trainer, hook)
 
     def recorded(*a, **k):
-        before = _Stats(model)().get("replays", 0)
+        before = _Stats(model)()
         out = gen(*a, **k)
-        seen["replays"].append(_Stats(model)().get("replays", 0) - before)
-        seen["buffers_at_loss"].append((_graph_buffers(model), _decode_buffers(model)))
+        after = _Stats(model)()
+        seen["replays"].append(after.get("replays", 0) - before.get("replays", 0))
+        seen["captures"].append(after.get("captures", 0) - before.get("captures", 0))
+        seen["buffers_at_loss"].append((_graph_buffers(model) > 0, _decode_buffers(model)))
         return out
 
     setattr(trainer, hook, recorded)
     trainer.train()
     assert len(seen["replays"]) == 2 and all(r > 0 for r in seen["replays"]), seen
-    assert seen["buffers_at_loss"] == [(0, 0), (0, 0)], seen
+    if keep == "0":
+        assert seen["buffers_at_loss"] == [(False, 0), (False, 0)], seen
+        assert seen["captures"] == [1, 1], seen
+    else:
+        assert seen["buffers_at_loss"] == [(True, 0), (True, 0)], seen
+        assert seen["captures"] == [1, 0], seen
     assert _Stats(model)()["disabled"] is None
 
 
 @rl_default
 def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
-    """A real CUDA allocator OOM raised only while graphs are on (the first graph-mode buffer
-    allocation asks for 1 PiB): generate() frees the graphs, redoes the call eagerly once, counts it,
-    warns once, and returns the eager tokens and logits."""
+    """A real CUDA OOM only with graphs on (first graph buffer asks for 1 PiB): generate() frees
+    graphs, redoes it eagerly once, counts it, warns once, returns eager tokens and logits."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
     model, tok = _load()
@@ -263,11 +375,13 @@ def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
 
 
 @rl_default
-def test_training_forward_without_for_training_frees_generate_memory(runtime):
-    """Sampling in a trainer callback: generate() on an inference-mode model, then training resumes
-    with model.train() only. The first training forward frees the graphs and decode caches."""
+@pytest.mark.parametrize("vmm", ["0", "1"])
+def test_training_forward_without_for_training_frees_generate_memory(runtime, vmm):
+    """Sampling in a trainer callback, then model.train() alone: the first training forward frees
+    decode caches (and graphs without VMM); with VMM graphs replay on the next generate()."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
+    _vmm(runtime, vmm)
     model, tok = _load()
     FastLanguageModel.for_inference(model)
     enc = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda")
@@ -276,8 +390,15 @@ def test_training_forward_without_for_training_frees_generate_memory(runtime):
     model.train()
     out = model(**enc, labels = enc.input_ids)
     out.loss.backward()
-    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
-    assert _Stats(model)()["graphs"] == 0
+    _assert_training_got_the_memory(model, vmm)
+    model.zero_grad(set_to_none = True)
+    FastLanguageModel.for_inference(model)
+    captures = _Stats(model)()["captures"]
+    graphed = _gen_tokens(model, tok, PROMPTS, 8)
+    if vmm == "1":
+        assert _Stats(model)()["captures"] == captures  # woken caches, same addresses: replayed
+    runtime.setenv(ENV, "0")
+    assert torch.equal(graphed, _gen_tokens(model, tok, PROMPTS, 8))
 
 
 def _gen_tokens(model, tok, prompts, new):
@@ -329,3 +450,58 @@ def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     )
     check("two", two, 24)
     assert _Stats(model)()["captures"] == before["captures"], (before, _Stats(model)())
+
+
+def test_rocm_default_skips_unmeasured_quantized_models(runtime):
+    """gfx1151 graph replay was measured with 16-bit projections only: under the unset default a quantized model
+    there decodes eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=1 or ENABLED still force graphs); NVIDIA is unchanged."""
+
+    class Params4bit(torch.nn.Parameter):
+        pass
+
+    def model(quantized):
+        m = torch.nn.Module()
+        m.config = type("C", (), {"model_type": "qwen3"})()
+        lora = torch.nn.Module()
+        lora.base_layer = torch.nn.Linear(8, 8, bias = False).to(torch.bfloat16)
+        if quantized:
+            w = Params4bit(torch.zeros(32, 1, dtype = torch.uint8), requires_grad = False)
+            w.quant_state = object()
+            lora.base_layer.weight = w
+        m.layers = torch.nn.ModuleList([torch.nn.Module()])
+        m.layers[0].q_proj = lora
+        m.layers[0].o_proj = torch.nn.Linear(8, 8, bias = False).to(torch.float16)
+        return m
+
+    runtime.setattr(torch.version, "hip", "7.1.0", raising = False)
+    assert G.default_covers(model(False)) is True
+    assert G.default_covers(model(True)) is False
+    runtime.setenv(ENV, "1")
+    assert G.default_covers(model(True)) is True
+    runtime.delenv(ENV)
+    runtime.setattr(G, "ENABLED", True)
+    assert G.default_covers(model(True)) is True
+    runtime.setattr(G, "ENABLED", None)
+    runtime.setattr(torch.version, "hip", None, raising = False)
+    assert G.default_covers(model(True)) is True
+
+
+def test_generate_applies_the_rocm_default_coverage_before_planning():
+    import ast
+    import inspect
+
+    import unsloth.models.llama as L
+
+    body = ast.unparse(ast.parse(textwrap_dedent(inspect.getsource(L.unsloth_fast_generate))))
+    gate = body.index("if graphs and (not _decode_graphs.default_covers(self)):")
+    assert (
+        body.index("graphs = _decode_graphs.enabled()")
+        < gate
+        < body.index("_decode_graphs.plan_call(")
+    )
+    assert "graphs, plan = (False, 'eager')" in body
+
+
+def textwrap_dedent(src):
+    import textwrap
+    return textwrap.dedent(src)

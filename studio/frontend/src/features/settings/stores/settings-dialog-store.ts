@@ -15,12 +15,14 @@ export const SETTINGS_TABS = [
   "voice",
   "connections",
   "library",
+  "knowledge",
   "data",
   "api-keys",
   "remote-lan",
   "agents",
   "keyboard-shortcuts",
   "browser",
+  "computer-use",
   "debugging",
   "about",
 ] as const;
@@ -37,7 +39,9 @@ export type SettingsScrollTarget =
   | "api-keys-agents"
   | "api-keys-mcp"
   | "appearance-sidebar-nav"
+  | "appearance-profile-menu"
   | "chat-composer"
+  | "chat-memory"
   | "browser-html-network"
   | "general-hub"
   | "general-rag-embedding"
@@ -46,6 +50,7 @@ export type SettingsScrollTarget =
   | "library-storage"
   | "remote-lan-keyless"
   | "resources-caches"
+  | "resources-engines"
   | "resources-model-memory"
   | "sandbox-os"
   | "sandbox-permissions";
@@ -84,6 +89,7 @@ export interface TrainingApiRequest {
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 
 interface OpenDialogOptions {
+  memoryScope?: { projectId: string | null };
   scrollTarget?: SettingsScrollTarget;
   focusFallback?: HTMLElement | null;
   opener?: HTMLElement | null;
@@ -110,6 +116,8 @@ interface SettingsDialogState {
   decisionTryRequested: string | null;
   mediaApiRequested: MediaApiRequest | null;
   trainingApiRequested: TrainingApiRequest | null;
+  memoryScopeRequested: NonNullable<OpenDialogOptions["memoryScope"]> | null;
+  consumeMemoryScopeRequest: () => void;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
@@ -182,6 +190,7 @@ function loadInitialTab(): SettingsTab {
 /** A navigation elsewhere abandons the scroll target. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
+  "chat-memory": "chat",
   "about-updates": "about",
   "agents-mcp": "agents",
   "api-keys-audio-api": "api-keys",
@@ -191,6 +200,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "api-keys-agents": "api-keys",
   "api-keys-mcp": "api-keys",
   "appearance-sidebar-nav": "appearance",
+  "appearance-profile-menu": "appearance",
   "browser-html-network": "browser",
   "general-hub": "general",
   "general-rag-embedding": "general",
@@ -198,6 +208,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "library-storage": "library",
   "remote-lan-keyless": "remote-lan",
   "resources-caches": "resources",
+  "resources-engines": "resources",
   "resources-model-memory": "resources",
   "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
@@ -231,6 +242,7 @@ function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
     connectionRequested:
       tab === "connections" ? state.connectionRequested : null,
     audioApiRequested: tab === "api-keys" ? state.audioApiRequested : null,
+    memoryScopeRequested: tab === "chat" ? state.memoryScopeRequested : null,
   };
 }
 
@@ -251,6 +263,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),
   scrollTarget: null,
+  memoryScopeRequested: null,
   opener: null,
   openerFallback: null,
   archivedRequested: null,
@@ -272,6 +285,10 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
         activeTab: next,
         // A caller that names a target replaces whatever was still pending.
         scrollTarget: target ?? pending.scrollTarget,
+        memoryScopeRequested:
+          next === "chat"
+            ? options?.memoryScope ?? pending.memoryScopeRequested
+            : null,
         archivedRequested: pending.archivedRequested,
         logFamilyRequested: pending.logFamilyRequested,
         logSourcePathRequested: pending.logSourcePathRequested,
@@ -285,6 +302,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
+      memoryScopeRequested: null,
       archivedRequested: "chats",
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -297,6 +315,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "data",
       scrollTarget: null,
+      memoryScopeRequested: null,
       archivedRequested: shelf,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -309,6 +328,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "connections",
       scrollTarget: null,
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -321,6 +341,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "api-keys",
       scrollTarget: "api-keys-audio-api",
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -335,6 +356,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "debugging",
       scrollTarget: null,
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: family ?? null,
       logSourcePathRequested: sourcePath ?? null,
@@ -351,6 +373,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "api-keys",
       scrollTarget: "api-keys-decision-api",
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -364,6 +387,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "api-keys",
       scrollTarget: "api-keys-media-api",
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -379,6 +403,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: "api-keys",
       scrollTarget: "api-keys-training-api",
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,
@@ -389,6 +414,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       ...focusForOpen(state),
     })),
   consumeTrainingApiRequest: () => set({ trainingApiRequested: null }),
+  consumeMemoryScopeRequest: () => set({ memoryScopeRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -398,6 +424,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
     set({
       open: false,
       scrollTarget: null,
+      memoryScopeRequested: null,
       archivedRequested: null,
       logFamilyRequested: null,
       logSourcePathRequested: null,

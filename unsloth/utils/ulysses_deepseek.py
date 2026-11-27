@@ -57,11 +57,9 @@ def _gather_seq(
     group,
     dim = 1,
 ):
-    """All-gather sequence shards along ``dim``; backward reduce-scatters the summed gradient.
-
-    torch.distributed.nn.all_gather's gloo backward scatters from group ranks as if they were global
-    ranks, so it fails on every CP group but the first under DP x CP.
-    """
+    """All-gather sequence shards along dim; backward reduce-scatters the summed gradient, since
+    torch.distributed.nn.all_gather's gloo backward treats group ranks as global, failing on
+    every CP group but the first under DP x CP."""
     from ..context_parallel import _GatherSequence
 
     out = _GatherSequence.apply(
@@ -77,11 +75,9 @@ def _attn_chunk() -> int:
 def _sink_attention_chunk(
     q, kv, block_bias, sinks, q_start, full_seq, window, scaling, dropout_p, training
 ):
-    """Sink-softmax attention for the query rows ``[q_start, q_start + q.shape[2])``.
-
-    q: [B, H, rows, D]; kv: [B, 1, full_seq + n_blocks, D] (K == V); block_bias: [B, 1, rows, n_blocks].
-    Returns [B, rows, H, D].
-    """
+    """Sink-softmax attention for query rows [q_start, q_start + q.shape[2]): q [B, H, rows, D], kv
+    [B, 1, full_seq + n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows,
+    H, D]."""
     batch, _, rows, _ = q.shape
     dtype = q.dtype
     q_idx = torch.arange(q_start, q_start + rows, device = q.device)
@@ -116,11 +112,9 @@ def _refuse_dropout(dropout_p, training):
 
 
 def _recompute_rows(chunk, full_seq, run, grad_out, row_inputs, full_inputs, needs):
-    """Backward of a query-chunked op: recompute each chunk and accumulate its input gradients.
-
-    run(start, end, *rows, *full) -> [B, rows, H, D]; row_inputs are sliced on dim 2, full_inputs are
-    not; needs is ctx.needs_input_grad for row_inputs + full_inputs, in that order.
-    """
+    """Backward of a query-chunked op: recomputes each chunk and accumulates input grads; run(start,
+    end, *rows, *full) -> [B, rows, H, D]; row_inputs sliced on dim 2, full_inputs not; needs is
+    ctx.needs_input_grad for row_inputs + full_inputs."""
     row_need, full_need = needs[: len(row_inputs)], needs[len(row_inputs) :]
     row_grads = [torch.zeros_like(t) if n else None for t, n in zip(row_inputs, row_need)]
     full_grads = [
@@ -204,11 +198,9 @@ class _ChunkedSinkAttention(torch.autograd.Function):
 
 
 def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, training):
-    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S, S].
-
-    With grad, chunks are recomputed in backward (_ChunkedSinkAttention), so peak memory is
-    O(chunk * S) per layer.
-    """
+    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S,
+    S]; with grad, chunks are recomputed in backward (_ChunkedSinkAttention), keeping peak memory
+    O(chunk * S) per layer."""
     _refuse_dropout(dropout_p, training)
     full_seq = q.shape[2]
     chunk = _attn_chunk()
@@ -234,6 +226,50 @@ def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, traini
     return outs[0] if len(outs) == 1 else torch.cat(outs, dim = 1)
 
 
+def _position_key(position_ids, group):
+    # Under inference mode the gathered tensor is an inference tensor (no version counter): gather every call.
+    if torch.is_inference_mode_enabled():
+        return None
+    try:
+        version = position_ids._version
+    except RuntimeError:  # inference tensors carry no version counter
+        return None
+    return (
+        position_ids.data_ptr(),
+        version,
+        tuple(position_ids.shape),
+        position_ids.stride(),
+        position_ids.dtype,
+        position_ids.device,
+        id(group),
+    )
+
+
+def _full_position_ids(position_ids, group):
+    """All-gather the local position shard once per step: every compressor layer, and its gradient
+    checkpoint recompute, sees the same positions. Cached on the active CP manager, which drops it
+    when the step's scope exits. The cache holds the local tensor, so its storage cannot be reused
+    within the step, and an in-place write bumps _version, so neither gives a stale hit. Hits are
+    rank-consistent: every rank passes the same layers the same positions object (or a detached
+    alias of it), so all ranks gather on the same calls."""
+    from ..context_parallel import get_cp_manager
+
+    manager = get_cp_manager()
+    key = _position_key(position_ids, group)
+    cached = getattr(manager, "_deepseek_full_position_ids", None)
+    if key is not None and cached is not None and cached[0] == key:
+        full, version = cached[2], cached[3]
+        if full._version == version:
+            return full
+    pos_local = position_ids.contiguous()
+    pos_list = [torch.empty_like(pos_local) for _ in range(dist.get_world_size(group))]
+    dist.all_gather(pos_list, pos_local, group = group)
+    full = torch.cat(pos_list, dim = -1)
+    if manager is not None and key is not None:
+        manager._deepseek_full_position_ids = (key, position_ids, full, full._version)
+    return full
+
+
 def ulysses_deepseek_v4_forward(
     module,
     hidden_states,
@@ -247,7 +283,7 @@ def ulysses_deepseek_v4_forward(
 ):
     """Training forward of a DeepSeek-V4 attention layer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V4 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(
@@ -270,8 +306,7 @@ def ulysses_deepseek_v4_forward(
 
     # Scatter query heads across cp ranks and gather full sequence [B, H/cp, S_full, D].
     q = _AllToAll.apply(q, 1, 2, group)
-    # Gather single-head KV across sequence [B, 1, S_full, D]; backward sums the gradients
-    # of all head-partitioned ranks back to each rank's token shard.
+    # Gather single-head KV [B, 1, S_full, D]; backward sums head-rank grads per token shard.
     kv = _gather_seq(kv, group, dim = 2)
 
     local_heads = q.shape[1]
@@ -279,10 +314,7 @@ def ulysses_deepseek_v4_forward(
     if module.compressor is not None:
         full_hidden = _gather_seq(hidden_states, group)
         full_q_res = _gather_seq(q_residual, group)
-        pos_local = position_ids.contiguous()
-        pos_list = [torch.empty_like(pos_local) for _ in range(cp)]
-        dist.all_gather(pos_list, pos_local, group = group)
-        full_pos_ids = torch.cat(pos_list, dim = -1)
+        full_pos_ids = _full_position_ids(position_ids, group)
         compressed_kv, block_bias = module.compressor(
             full_hidden, full_q_res, full_pos_ids, None, module.layer_idx
         )
@@ -441,7 +473,7 @@ def ulysses_deepseek_v32_forward(
 ):
     """Training forward of DeepSeek-V3.2 MLA + DSA indexer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V3.2 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(
@@ -517,9 +549,8 @@ def wrap_deepseek_attention_forward(module, get_cp_manager) -> None:
             raise NotImplementedError(
                 f"Unsloth: Ulysses context parallelism does not support packing for {name}."
             )
-        # Looked up per call (tests substitute it). Eager even inside Unsloth's per-layer compiled
-        # region: traced, the list all_gather / sequence gather / no_grad indexer top-k crashed the
-        # first CP step (SIGSEGV on L4, torch 2.8 and 2.14).
+        # Looked up per call (tests substitute it); eager even in the compiled region: traced
+        # all_gather, sequence gather or indexer top-k crashed CP (SIGSEGV on L4, torch 2.8, 2.14).
         ulysses_forward = ulysses_deepseek_v4_forward if v4 else ulysses_deepseek_v32_forward
         return _run_eager(ulysses_forward, module, *args, group = manager.group, **kwargs)
 

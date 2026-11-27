@@ -31,8 +31,7 @@ def test_there_is_a_nightly_schedule():
 
 
 def test_the_nightly_does_not_pile_onto_the_hour_mark():
-    """Every scheduled workflow on GitHub asks for :00, and this one has no
-    reason to join that queue."""
+    """Scheduled workflows pile onto the :00 mark; the nightly should not join that queue."""
     minute = TRIGGERS["schedule"][0]["cron"].split()[0]
     assert minute not in ("0", "00", "30"), f"minute {minute} is the mark everyone else picks"
 
@@ -76,8 +75,7 @@ def test_the_schedule_runs_the_nightly_only_legs(leg, why):
 
 
 def test_every_leg_the_nightly_names_exists():
-    """A typo here produces a build that selects nothing and a run that proves
-    nothing, with no error anywhere."""
+    """A typo in a leg name builds a kernel that selects nothing and proves nothing, silently."""
     named = _nightly_legs()
     assert named, "no scheduled leg name found at all"
     for name in named:
@@ -85,9 +83,7 @@ def test_every_leg_the_nightly_names_exists():
 
 
 def test_the_nightly_set_fits_in_one_kernel():
-    """`--legs` builds ONE kernel, and MAX_LEGS_PER_KERNEL is what the driver's
-    scheduling was measured against. A list longer than that silently packs a
-    kernel nobody has run."""
+    """Stay within MAX_LEGS_PER_KERNEL, which the driver's scheduling was measured against."""
     assert len(_nightly_legs()) <= legs.MAX_LEGS_PER_KERNEL
 
 
@@ -102,9 +98,7 @@ def test_no_nightly_leg_is_ALSO_in_the_per_pr_set():
 
 
 def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():
-    """``--all-kernels`` derives BOTH the kernel plan and the payload count the
-    launcher waits on. A filter applied afterwards leaves it expecting payloads
-    that were never built, which times out rather than failing."""
+    """Filtering after --all-kernels waits on payloads never built, so the launcher times out."""
     assert 'KERNEL_SELECT="--legs $LEG_LIST"' in TEXT
     assert 'KERNEL_SELECT="--all-kernels"' in TEXT
     assert "$KERNEL_SELECT \\" in TEXT
@@ -114,8 +108,7 @@ def test_a_leg_list_replaces_all_kernels_rather_than_filtering_after_it():
 
 
 def test_the_schedule_bypasses_the_sampling_gate():
-    """A nightly sampled at 15% is a weekly, and the difference is invisible
-    until someone goes looking for a result that never existed."""
+    """A nightly sampled at 15% runs about weekly, so the schedule must bypass the gate."""
     assert "github.event_name == 'schedule' && 'true'" in TEXT, (
         "the schedule does not force the gate, so most nights it will draw a "
         "stand-down and report nothing"
@@ -123,8 +116,7 @@ def test_the_schedule_bypasses_the_sampling_gate():
 
 
 def test_the_leg_list_default_survives_a_schedule_event():
-    """``inputs`` is null on a schedule, so an input default cannot supply the
-    value; it has to come from the fallback."""
+    """inputs is null on a schedule, so the value must come from the workflow's fallback."""
     assert "inputs.legs || (github.event_name == 'schedule'" in TEXT
 
 
@@ -228,8 +220,7 @@ def test_the_nightly_command_line_is_one_the_builder_accepts(tmp_path):
 
 
 def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
-    """The pair to the rule above: narrowing one branch until it parses while
-    breaking the other would satisfy that one on its own."""
+    """Pairs with the rule above: narrowing one branch to parse must not break the other."""
     argv, log, printed = _compose_argv("push", tmp_path)
     proc = _run_builder(argv, tmp_path)
     assert proc.returncode == 0, (
@@ -241,9 +232,7 @@ def test_the_per_pr_command_line_is_one_the_builder_accepts(tmp_path):
 
 
 def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
-    """The pair that was mutually exclusive, asserted in BOTH directions:
-    dropping Studio from the nightly is only a fix if the per-PR kernel still
-    carries it, else the payload is covered by nothing."""
+    """Studio and leg lists are exclusive; the nightly drops Studio only if per-PR keeps it."""
     nightly, _, _ = _compose_argv("schedule", tmp_path)
     assert "--with-studio" not in nightly, (
         "the nightly still asks for Studio alongside a leg list, which "
@@ -257,9 +246,8 @@ def test_studio_rides_the_wired_set_and_only_the_wired_set(tmp_path):
 
 
 def test_studio_concurrent_still_reaches_the_builder_on_the_per_pr_run(tmp_path):
-    """The flag moved inside the Studio branch. One that stops being passed is
-    the failure run 32674263571 shipped: the variant of an A/B ran the
-    control's schedule and nothing was red."""
+    """The --studio-concurrent flag moved inside the Studio branch; if it stops being passed, the
+    A/B variant runs the control's schedule and nothing turns red, as in run 32674263571."""
     argv, _, _ = _compose_argv("push", tmp_path)
     assert "--studio-concurrent" in argv, (
         "the default per-PR build no longer shares a card, so Studio waits for "
@@ -268,15 +256,13 @@ def test_studio_concurrent_still_reaches_the_builder_on_the_per_pr_run(tmp_path)
 
 
 def test_a_leg_list_dispatch_is_told_studio_is_not_aboard(tmp_path):
-    """A run that drops Studio and a run whose Studio silently stopped being
-    packed look identical in the summary, so the first one says so."""
+    """A dropped Studio and a silently unpacked one look alike in the summary; the log says so."""
     _, log, _ = _compose_argv("schedule", tmp_path)
     assert "Studio is not in this kernel" in log, log
 
 
 def test_an_explicit_leg_dispatch_takes_the_same_path_as_the_nightly(tmp_path):
-    """`legs` is a dispatch input as well as a schedule fallback and reaches
-    the same branch, so a hand dispatch hit the identical build failure."""
+    """legs input shares the nightly's branch, so a hand dispatch hit the same build failure."""
     argv, _, printed = _compose_argv("workflow_dispatch", tmp_path, legs_input = "grpo")
     assert "--with-studio" not in argv, printed
     proc = _run_builder(argv, tmp_path)
@@ -301,8 +287,7 @@ def test_studio_concurrent_false_actually_removes_the_flag(tmp_path):
 
 
 def test_the_studio_reporter_is_told_when_studio_is_not_aboard(tmp_path):
-    """Without this gate, an empty studio-gpu report set renders PARTIAL on runs that never packed
-    Studio."""
+    """Without the gate, an empty studio-gpu report set renders PARTIAL on runs without Studio."""
     for event, expected in (("schedule", "false"), ("push", "true")):
         outfile = tmp_path / f"out_{event}"
         outfile.write_text("", encoding = "utf-8")

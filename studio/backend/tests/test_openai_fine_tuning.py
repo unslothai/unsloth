@@ -935,6 +935,8 @@ def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
 
     monkeypatch.setattr(openai_fine_tuning, "_alias_db", spy)
     monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_spy)
+    # The drainer only starts jobs of live accounts.
+    monkeypatch.setattr("core.training.account_jobs.job_accounts", lambda: [bob])
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
@@ -1138,6 +1140,10 @@ def test_jobs_differing_only_in_member_fields_batch_in_queue_order(batching, tmp
         {"optim": "adamw_torch_fused"},
         {"gpu_ids": [0, 1]},
         {"start_request_id": "retry-1"},
+        {"target_modules": ["q_proj", "embed_tokens"]},
+        {"target_modules": ["q_proj", "lm_head"]},
+        {"target_modules": ["model.embed_tokens", "v_proj"]},
+        {"target_modules": ["all-linear", "lm_head"]},
     ],
 )
 def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
@@ -1149,6 +1155,16 @@ def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
     plain = _entry(tmp_path, "c")
     batching.insert(0, plain)
     assert openai_fine_tuning._batch_for(plain) == [plain]
+
+
+@pytest.mark.parametrize(
+    "targets", [[], ["all-linear"], ["q_proj", "v_proj"], ["model.layers.0.self_attn.q_proj"]]
+)
+def test_projection_targets_still_batch(batching, tmp_path, targets):
+    head = _entry(tmp_path, "a", target_modules = targets)
+    other = _entry(tmp_path, "b", target_modules = targets)
+    batching.extend([head, other])
+    assert openai_fine_tuning._batch_for(head) == [head, other]
 
 
 @pytest.mark.parametrize(
@@ -2212,3 +2228,36 @@ def test_a_queue_poll_reads_one_history_row_when_the_backlog_waited(monkeypatch)
     page = openai_fine_tuning._list_job_page(pending, {}, None, None, 1, False)
     assert [job["id"] for job in page["data"]] == ["ftjob_q0"]
     assert page["has_more"] and pulled == ["run300"]
+
+
+def test_job_parameters_too_large_to_keep_are_refused(queue):
+    client, _calls, _live, _gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        return await _create(
+            client, uploaded.id, extra_body = {"custom_format_mapping": {"x": "a" * 2_000_000}}
+        )
+
+    with pytest.raises(openai.BadRequestError, match = "too large"):
+        _run(flow())
+    assert openai_fine_tuning._QUEUE == []
+
+
+def test_an_account_can_queue_only_so_many_jobs(queue, monkeypatch):
+    client, _calls, _live, _gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_MAX_QUEUED_PER_ACCOUNT", 3, raising = False)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        queued = [await _create(client, uploaded.id, suffix = f"job{i}") for i in range(3)]
+        try:
+            await _create(client, uploaded.id, suffix = "one too many")
+        except openai.RateLimitError as exc:
+            return queued, exc
+        return queued, None
+
+    queued, refused = _run(flow())
+    assert all(job.status == "queued" for job in queued)
+    assert refused is not None and "At most 3" in str(refused)
+    assert len(openai_fine_tuning._QUEUE) == 3

@@ -4,7 +4,7 @@
 """Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
 and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
 int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
-CUDA+Triton only, else stock."""
+CUDA+Triton only; ROCm and MPS take only the exact single-frame encoder lowering, else stock."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
 H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
-# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles.
+# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles (only with the canvas off: by default the
+# tiles are composited into one canvas, diffusion_vae_canvas).
 H3_VAE_STREAM_STITCH_ENV = "UNSLOTH_H3_VAE_STREAM_STITCH"
 # sha256[:16] of the mirrored AutoencoderKLMiniMaxH3._stitch_tiles source (0.42.1).
 _STITCH_TILES_SHA = frozenset({"ae481626afa30528"})
@@ -30,8 +31,17 @@ LEVER_FUSED_ENCODER = "fused_encoder"
 LEVER_FP16_ENCODER = "fp16_encoder"
 LEVER_FUSED_DECODER = "fused_decoder"
 LEVER_TILE_BATCH = "tile_batch"
+# composited-canvas stitch inside the batched tile loop (diffusion_vae_canvas)
+LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
+# ROCm: T = 1 causal Conv3d runs as Conv2d of its last tap (other taps see only zero pad; exact, not bitwise).
+LEVER_ROCM_SINGLE_FRAME_ENCODER = "rocm_single_frame_encoder"
+H3_ROCM_SINGLE_FRAME_ENV = "UNSLOTH_H3_ROCM_SINGLE_FRAME_ENCODER"
+# Apple Silicon: the same lowering on MPS, where a T = 1 Conv3d pays for its two zero-pad taps.
+LEVER_MPS_SINGLE_FRAME_ENCODER = "mps_single_frame_encoder"
+H3_MPS_SINGLE_FRAME_ENV = "UNSLOTH_H3_MPS_SINGLE_FRAME_ENCODER"
+H3_VAE_LEVER_CALLS_ATTR = "_unsloth_h3_vae_lever_calls"
 
 _TILE_BATCH_MAX = 4
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
@@ -1053,7 +1063,9 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
     batch = _tile_batch_size(z)
     cols = len(x_indices)
     stitch = None
-    if _stream_stitch(self) and all(o > 0 for o in (*y_overlaps, *x_overlaps)):
+    canvas = None
+    plan = _canvas_plan(self, z)
+    if plan is None and _stream_stitch(self) and all(o > 0 for o in (*y_overlaps, *x_overlaps)):
         stitch = _TileStitcher(self, len(y_indices), cols, y_overlaps, x_overlaps)
     decoded: list = []
     start = 0
@@ -1072,17 +1084,51 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
             continue
         parts = out.split(per) if len(group) > 1 else [out]
         del out
-        if stitch is None:
+        if plan is not None:
+            from .diffusion_vae_canvas import Canvas
+            if canvas is None:
+                (ys, yl, _), (xs, xl, _), _ = plan
+                canvas = Canvas(parts[0], ys[-1] + yl[-1], xs[-1] + xl[-1], plan[0], plan[1])
+            for k in range(len(parts)):
+                i, j = divmod(start + k, cols)
+                canvas.add(i, j, parts[k])
+        elif stitch is None:
             decoded.extend(parts)
         else:
             for k in range(len(parts)):
                 stitch.add(start + k, parts[k])
         del parts  # a live view pins its whole decoder batch
         start += len(group)
+    if canvas is not None:
+        return canvas.out
     if stitch is not None:
         return stitch.result()
     rows = [decoded[r * cols : (r + 1) * cols] for r in range(len(y_indices))]
     return self._stitch_tiles(rows, y_overlaps, x_overlaps)
+
+
+def _canvas_plan(vae: Any, z: Any) -> Optional[tuple]:
+    """The composited-canvas layout (``diffusion_vae_canvas``) for this clip, or None to keep the stock stitch."""
+    import torch
+
+    from .diffusion_vae_canvas import canvas_enabled, layout, stock_tiling
+
+    if not canvas_enabled():
+        return None
+    known = _CANVAS_KNOWN.get(type(vae))
+    if known is None:
+        # inspect.getsource is untraceable; _install_tile_batch fills the verdict eagerly, so this is a fallback.
+        if torch.compiler.is_compiling():
+            return None
+        known = _CANVAS_KNOWN[type(vae)] = stock_tiling(vae)
+    if not known or any(
+        n in getattr(vae, "__dict__", {}) for n in ("_blend", "_stitch_tiles", "_split_tiles")
+    ):
+        return None
+    return layout(vae, z)
+
+
+_CANVAS_KNOWN: dict = {}
 
 
 def _stream_stitch(vae: Any) -> bool:
@@ -1091,6 +1137,11 @@ def _stream_stitch(vae: Any) -> bool:
     cls = type(vae)
     known = _STITCH_KNOWN.get(cls)
     if known is None:
+        import torch
+
+        # inspect.getsource is untraceable; _install_tile_batch fills the verdict eagerly, so this is a fallback.
+        if torch.compiler.is_compiling():
+            return False
         import hashlib
         import inspect
 
@@ -1106,7 +1157,7 @@ _STITCH_KNOWN: dict = {}
 
 
 class _TileStitcher:
-    """``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
+    """With the canvas off (``UNSLOTH_DIFFUSION_VAE_CANVAS=0``), ``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
     so each decoder batch is freed), fills one row buffer at a time and joins the rows at the end; bit-identical."""
 
     __slots__ = (
@@ -1178,6 +1229,10 @@ def _install_tile_batch(vae: Any) -> bool:
     ):
         return False
     vae._decode_clip = types.MethodType(_batched_decode_clip, vae)
+    _stream_stitch(vae)
+    from .diffusion_vae_canvas import stock_tiling
+
+    _CANVAS_KNOWN.setdefault(type(vae), stock_tiling(vae))
     return True
 
 
@@ -1466,6 +1521,98 @@ def _triton_jit_toolchain_ok() -> bool:
         return True
 
 
+def h3_vae_lever_calls(vae: Any) -> dict[str, int]:
+    return dict(getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None) or {})
+
+
+def _single_frame_conv_forward(
+    conv: Any,
+    calls: Optional[dict] = None,
+    lever: str = LEVER_ROCM_SINGLE_FRAME_ENCODER,
+) -> Any:
+    """``conv.forward`` with T = 1 calls lowered to a Conv2d over the last temporal tap."""
+    import torch.nn.functional as F
+
+    stock = conv.forward
+    conv._unsloth_rocm_single_frame_calls = 0
+
+    def forward(hidden_states: Any) -> Any:
+        kt = conv.kernel_size[0]
+        if (
+            hidden_states.dim() == 5
+            and hidden_states.shape[2] == 1
+            and kt > 1
+            and int(getattr(conv, "temporal_padding", 0) or 0) == kt - 1
+            and tuple(conv.padding) == (0, 0, 0)
+            and conv.dilation[0] == 1
+        ):
+            x = hidden_states[:, :, 0]
+            pad = int(getattr(conv, "spatial_padding", 0) or 0)
+            if pad > 0:
+                x = F.pad(x, (pad, pad, pad, pad), mode = conv.spatial_padding_mode)
+            out = F.conv2d(
+                x,
+                conv.weight[:, :, -1],
+                conv.bias,
+                stride = tuple(conv.stride[1:]),
+                padding = 0,
+                dilation = tuple(conv.dilation[1:]),
+                groups = conv.groups,
+            )
+            conv._unsloth_rocm_single_frame_calls += 1
+            if calls is not None:
+                calls[lever] = calls.get(lever, 0) + 1
+            return out.unsqueeze(2)
+        return stock(hidden_states)
+
+    return forward
+
+
+def _single_frame_lever() -> Optional[str]:
+    """The single-frame lever this host takes (ROCm or MPS), None elsewhere or when its kill switch is set."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return None
+    if torch.cuda.is_available():
+        if is_rocm_torch(torch) and _env(H3_ROCM_SINGLE_FRAME_ENV) not in _FALSE:
+            return LEVER_ROCM_SINGLE_FRAME_ENCODER
+        return None
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available() and _env(H3_MPS_SINGLE_FRAME_ENV) not in _FALSE:
+        return LEVER_MPS_SINGLE_FRAME_ENCODER
+    return None
+
+
+def _install_rocm_single_frame_encoder(vae: Any) -> int:
+    return _install_single_frame_encoder(vae)[1]
+
+
+def _install_single_frame_encoder(vae: Any) -> tuple:
+    """``(lever, wrapped conv count)``; ``(None, 0)`` when no single-frame lever applies."""
+    lever = _single_frame_lever()
+    if lever is None:
+        return None, 0
+    if type(vae).__name__ != "AutoencoderKLMiniMaxH3":
+        return None, 0
+    encoder = getattr(vae, "encoder", None)
+    if encoder is None:
+        return None, 0
+    calls = getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None)
+    if not isinstance(calls, dict):
+        calls = {}
+    n = 0
+    for module in encoder.modules():
+        if type(module).__name__ != "MiniMaxH3VideoCausalConv3d" or "forward" in module.__dict__:
+            continue
+        module.forward = _single_frame_conv_forward(module, calls, lever)
+        n += 1
+    if n > 0:
+        calls.setdefault(lever, 0)
+        setattr(vae, H3_VAE_LEVER_CALLS_ATTR, calls)
+    return lever, n
+
+
 def cuda_fast_path_available(vae: Any = None) -> bool:
     try:
         import torch
@@ -1526,11 +1673,25 @@ def apply_h3_vae_speedups(
     planned = plan_h3_vae_levers(speed_mode, workflow = workflow, consumer_gpu = consumer_gpu)
     engaged: list[str] = []
     if not planned or not cuda_fast_path_available(vae):
+        # not bitwise, so off when the plan is empty (speed_mode="off")
         try:
-            vae._unsloth_h3_vae_levers = ()
+            if planned:
+                lever, wrapped = _install_single_frame_encoder(vae)
+                if wrapped > 0:
+                    engaged.append(lever)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            if logger is not None:
+                logger.warning(
+                    "video.h3_vae_fast: single_frame_encoder failed, keeping the stock path: %s",
+                    exc,
+                )
+        try:
+            vae._unsloth_h3_vae_levers = tuple(engaged)
         except Exception:  # noqa: BLE001
             pass
-        return ()
+        if engaged and logger is not None:
+            logger.info("video.h3_vae_fast: engaged %s", ", ".join(engaged))
+        return tuple(engaged)
 
     def _try(name: str, fn) -> None:
         try:
@@ -1558,6 +1719,9 @@ def apply_h3_vae_speedups(
         _try(LEVER_FUSED_DECODER, lambda: _install_decoder(vae))
     if LEVER_TILE_BATCH in planned:
         _try(LEVER_TILE_BATCH, lambda: _install_tile_batch(vae))
+        from .diffusion_vae_canvas import canvas_enabled
+        if LEVER_TILE_BATCH in engaged and canvas_enabled() and _CANVAS_KNOWN.get(type(vae)):
+            engaged.append(LEVER_CANVAS)
     fp16_accum = LEVER_FP16_ACCUM in planned
     # always installed: also holds the flag OFF when float16 accumulation is not planned
     try:

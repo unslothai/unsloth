@@ -150,14 +150,11 @@ def _get_flash_adamw_class():
                 )
             super().__init__(params, *args, master_weight_bits = master_weight_bits, **kwargs)
 
-        # flashoptim stores unquantized moments in the param dtype, so an fp16 variance
-        # (grad**2 * (1 - beta2)) underflows to 0 for small grads and the update becomes
-        # momentum / eps. quantize=True keeps the variance as sqrt with per-group scales.
-        # Checked per group after flashoptim fills its defaults (so positional and per-group
-        # quantize both count), for groups added at construction and by add_param_group later.
+        # Unquantized fp16 variance underflows to 0 for small grads; quantize=True stores it as sqrt
+        # with per-group scales; checked per group after flashoptim fills its defaults, including
+        # add_param_group groups.
         def _group_quantizes(self, group):
-            # flashoptim resolves a group without the key (a vanilla AdamW state dict) to the
-            # optimizer-wide setting.
+            # A group without `quantize` takes the optimizer-wide setting, like flashoptim.
             return group.get("quantize", getattr(self, "_quantize", True))
 
         def add_param_group(self, param_group):
@@ -255,7 +252,9 @@ def _on_param_device(p):
 
 def _variance_update(var, grad, beta2):
     """fp32 `var * beta2 + grad**2 * (1 - beta2)`, as flashoptim's fused kernel computes it."""
-    global _VARIANCE_UPDATE_KERNEL
+    # `tl` is a module global: Triton < 3.4 (torch 2.6 / 2.7) resolves kernel names from the module
+    # globals only, so a function-local `tl` fails to compile with NameError('tl is not defined').
+    global _VARIANCE_UPDATE_KERNEL, tl
     import triton
 
     if _VARIANCE_UPDATE_KERNEL is None:
@@ -263,8 +262,13 @@ def _variance_update(var, grad, beta2):
 
         @triton.jit
         def kernel(
-            var_ptr, grad_ptr, out_ptr, n, beta2, BLOCK: tl.constexpr
-        ):  # elements per program
+            var_ptr,
+            grad_ptr,
+            out_ptr,
+            n,
+            beta2,
+            BLOCK: tl.constexpr,  # elements per program
+        ):
             offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
             mask = offsets < n
             v = tl.load(var_ptr + offsets, mask = mask)
@@ -274,7 +278,9 @@ def _variance_update(var, grad, beta2):
         _VARIANCE_UPDATE_KERNEL = kernel
     out = torch.empty_like(var)
     n = var.numel()
-    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](var, grad, out, n, beta2, BLOCK = 1024)
+    _VARIANCE_UPDATE_KERNEL[(triton.cdiv(n, 1024),)](
+        var, grad, out, n, beta2, BLOCK = 1024, enable_fp_fusion = True
+    )
     return out
 
 

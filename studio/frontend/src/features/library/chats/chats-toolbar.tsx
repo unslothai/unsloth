@@ -138,7 +138,7 @@ function FilterMenu({
             data-active={chatFiltersActive(filters)}
             className={ROUND_BUTTON}
           >
-            <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+            <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 -translate-y-[0.5px]" />
           </button>
         </DropdownMenuTrigger>
       </ToolbarTip>

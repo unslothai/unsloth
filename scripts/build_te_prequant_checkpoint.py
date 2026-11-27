@@ -72,8 +72,7 @@ def main(argv = None) -> int:
             p.error("--loader ideogram4 reads <base>/text_encoder only")
         from core.inference.diffusion_ideogram4 import load_ideogram4_text_encoder
 
-        # The exact module the runtime builds (vendor fp8 dequantized to bf16, rope remapped), so the cast below
-        # matches dense-load-then-cast in Studio.
+        # Same module Studio builds, so the cast below matches its dense-load-then-cast.
         encoder = load_ideogram4_text_encoder(args.base, torch.bfloat16, hf_token = args.hf_token)
         encoder_cls_name = type(encoder).__name__
     else:

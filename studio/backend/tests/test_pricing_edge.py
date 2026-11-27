@@ -333,8 +333,7 @@ def test_anthropic_prompt_tokens_details_fallback_when_native_key_missing():
 
 
 def test_anthropic_native_key_takes_precedence_over_mirrored():
-    """When both native and mirrored cache-read fields are present, the native
-    Anthropic field wins (mirror is fallback-only)."""
+    """The native cache-read key wins over the mirrored one, which is only a fallback."""
     r = calculate_cost(
         provider = "anthropic",
         model = "claude-opus-4-7",
@@ -369,8 +368,7 @@ def test_anthropic_native_zero_takes_precedence_over_mirrored():
 
 
 def test_build_usage_chunk_forwards_anthropic_cache_creation_breakdown():
-    """Chat-style envelope must carry the 5m/1h cache-write breakdown so
-    downstream cost calc applies the 2x 1h premium."""
+    """Chat envelope must carry the 5m/1h cache-write breakdown so the 2x 1h premium applies."""
     import json
     from core.inference.external_provider import _build_usage_chunk
 

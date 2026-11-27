@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 import os
 
 from core.inference.lookup_tables import is_per_layer_embedding
@@ -71,6 +71,13 @@ class ModelLayout:
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
+    # Looped GGUFs: the layer row (physical layer, the -ngl unit) of each KV cache slot; empty = one slot per row.
+    cache_slot_rows: tuple[int, ...] = ()
+
+    @property
+    def n_cache_slots(self) -> int:
+        """KV cache slots: a looped GGUF has one per visit, more than its n_layers weight rows."""
+        return len(self.cache_slot_rows) or self.n_layers
 
     @property
     def spillable_bytes(self) -> int:
@@ -109,8 +116,7 @@ _SPLIT_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 
 
 def split_shard_paths(path: str) -> Optional[list[str]]:
-    """Every shard of the split *path* belongs to, in order, or None when the name
-    is not llama.cpp's ``<prefix>-NNNNN-of-MMMMM.gguf`` (llama_split_path)."""
+    """Every shard of the split, in order; None unless the name is llama.cpp's split pattern."""
     directory, name = os.path.split(path)
     match = _SPLIT_SHARD_RE.match(name)
     if not match:
@@ -122,8 +128,14 @@ def split_shard_paths(path: str) -> Optional[list[str]]:
     ]
 
 
-def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
-    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present"""
+def layout_from_gguf(
+    path: str,
+    *,
+    all_shards: bool = False,
+    files: Optional[Sequence[str]] = None,
+) -> ModelLayout:
+    """Returns an incomplete layout rather than raising, so the planner abstains; all_shards reads every sibling shard, and all must be present.
+    ``files`` (with all_shards) is the exact set llama-server reads instead, ``path`` first: a split whose Engram table comes from --ple."""
     try:
         import struct
 
@@ -152,6 +164,10 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
                 return offs - orig_offs, [raw_itype, alen], [], types
 
         readers = [_LayoutReader(path)]
+        if all_shards and files:
+            return _layout_from_readers(
+                readers + [_LayoutReader(p) for p in files[1:]], complete = True
+            )
         if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
             shards = split_shard_paths(path)
             if not shards or not all(os.path.isfile(p) for p in shards):
@@ -169,15 +185,49 @@ def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
         return ModelLayout()
 
 
+def _loop_slot_rows(reader, arch: str, n_blocks: int) -> Optional[tuple[int, tuple[int, ...]]]:
+    """(physical layers, physical layer of each cache slot) for a looped GGUF, None otherwise.
+
+    llama.cpp counts -ngl / -ts in physical layers (llama_model_n_layer_weights) and keeps KV per slot. The
+    physical-layer layout (``loop.start/end/count``) stores block_count physical layers and appends the repeat
+    passes as slots n_phys + k -> start + k % span; the visit-indexed one (``loop.core_start/core_end``,
+    ``num_loops``) counts visits in block_count and stores only the physical layers.
+    """
+    visit_indexed = _field(reader, f"{arch}.loop.start") is None
+    prefix = f"{arch}.loop.core_" if visit_indexed else f"{arch}.loop."
+    start = _field(reader, f"{prefix}start")
+    end = _field(reader, f"{prefix}end")
+    count = _field(reader, f"{arch}.num_loops" if visit_indexed else f"{arch}.loop.count")
+    try:
+        start, end, count = int(start), int(end), int(count)
+    except (TypeError, ValueError):
+        return None
+    if count <= 1 or not 0 <= start < end:
+        return None
+    span = end - start
+    repeats = (count - 1) * span
+    n_phys = n_blocks - repeats if visit_indexed else n_blocks
+    if end > n_phys:
+        return None
+    if visit_indexed:
+        rows = (
+            list(range(end)) + [start + k % span for k in range(repeats)] + list(range(end, n_phys))
+        )
+    else:
+        rows = list(range(n_phys)) + [start + k % span for k in range(repeats)]
+    return n_phys, tuple(rows)
+
+
 def _layout_from_reader(reader) -> ModelLayout:
     return _layout_from_readers([reader])
 
 
-def _layout_from_readers(readers) -> ModelLayout:
-    """One reader per shard, the first carrying the metadata."""
+def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
+    """One reader per file, the first carrying the metadata; ``complete`` vouches that they are
+    every file llama-server reads, whatever split.count says."""
     reader = readers[0]
     # Split GGUF: GGUFReader maps one shard, so a partial read undercounts and can OOM under --fit off; abstain unless every shard is given
-    if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
+    if not complete and (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
     arch = str(_field(reader, "general.architecture") or "")
@@ -189,10 +239,10 @@ def _layout_from_readers(readers) -> ModelLayout:
         return ModelLayout()
     blocks_total = int(blocks_total)
 
-    # llama.cpp keeps embedded MTP blocks out of the target context and prices their cache separately, so the attention
-    # count must not include them.
+    # MTP blocks sit outside llama.cpp's target context, so the attention count excludes them.
     nextn = int(_field(reader, f"{arch}.nextn_predict_layers") or 0)
     n_layers = max(0, blocks_total - nextn)
+    loop = _loop_slot_rows(reader, arch, n_layers)
 
     # Hybrid: only 1 in full_attention_interval layers carries a KV cache, the rest are recurrent. Absent (or 0) means
     # every layer is attention.
@@ -226,14 +276,27 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_attention = sum(1 for h in heads if h > 0)
         n_recurrent = sum(1 for h, f in zip(heads, ffn) if h == 0 and f == 0)
         kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
+    elif loop is not None:
+        # Rows are the physical layers; every slot carries its own cache, at its physical layer's heads.
+        n_rows, slot_rows = loop
+        if isinstance(n_kv_head, (list, tuple)):
+            heads = [int(h) for h in n_kv_head]
+            if len(heads) == n_rows:
+                heads = [heads[r] for r in slot_rows]
+            if len(heads) != len(slot_rows):
+                return ModelLayout()
+        else:
+            heads = [int(n_kv_head)] * len(slot_rows)
+        n_layers = n_rows
+        n_attention = len(slot_rows)
+        kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
     else:
         kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
     # Full context on every layer is safe for TOTAL but cannot show which layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
 
-    # Mamba conv + SSM state, one f32 copy per sequence. Mirrors llama.cpp's own sizing; zero when the model has no
-    # recurrent layers.
+    # Mamba conv and SSM state, one f32 copy per sequence; zero without recurrent layers.
     d_inner = int(_field(reader, f"{arch}.ssm.inner_size") or 0)
     d_state = int(_field(reader, f"{arch}.ssm.state_size") or 0)
     n_group = int(_field(reader, f"{arch}.ssm.group_count") or 0)
@@ -267,8 +330,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         if match:
             index = int(match.group(1))
             tail = match.group(2)
-            # Shared experts (ffn_*_shexp) and routers (ffn_gate_inp*) run on every token: dense-FFN bandwidth for a
-            # rounding error of size. Not spillable.
+            # Shared experts and routers run on every token, so they are not spillable.
             spillable = _MOE_EXPERT_RE.match(tail) or (not is_moe and _DENSE_FFN_RE.match(tail))
             if spillable:
                 spill[index] = spill.get(index, 0) + nbytes
@@ -329,6 +391,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         has_excluded_blocks = has_excluded,
         excluded_block_bytes = excluded_bytes,
         complete = True,
+        cache_slot_rows = loop[1] if loop is not None else (),
     )
 
 

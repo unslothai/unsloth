@@ -40,7 +40,6 @@ UPSTREAM_TAG = "v1.9.1"
 SOURCE_COMMIT = "0" * 40
 STUDIO_PROTOCOL = "inference/multipart-v1"
 
-# The substrings the setup scripts grep.
 KEEP_TOKEN = "keeping the existing complete install"
 MATCH_TOKEN = "already matches"
 FAIL_TOKEN = "prebuilt install failed"
@@ -378,8 +377,7 @@ def test_an_explicit_request_never_keeps(tmp_path, monkeypatch, capsys, extra_ar
 
 
 def test_the_keep_arm_names_the_reason_and_the_release_it_kept(tmp_path, monkeypatch, capsys):
-    """The kept line has to be readable on its own: setup.sh prints one status line and
-    throws the installer log away, so the release and the reason both belong in it."""
+    """setup.sh shows only its status line, so that line must name the release and reason."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "http_403")
@@ -433,8 +431,7 @@ def _macos_listing_failure(tmp_path, monkeypatch, host):
 def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_install(
     tmp_path, monkeypatch, capsys
 ):
-    """Unreachable listing rules nothing out, so keeping a min_os-compatible install is the right
-    verdict."""
+    """Unreachable listing rules nothing out, so keep the min_os-compatible install."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = _seed_install(tmp_path, host, min_os = "13.0")
     before = _tree_snapshot(install_dir)
@@ -456,8 +453,7 @@ def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_ins
 def test_macos_incompatible_newest_plus_unreachable_listing_fails_without_an_install(
     tmp_path, monkeypatch, capsys
 ):
-    """With no install and an unreachable listing, the run must exit 1 rather than report a false
-    success."""
+    """With no install and an unreachable listing, exit 1 rather than report a false success."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = tmp_path / "whisper.cpp"
 
@@ -787,12 +783,8 @@ def test_setup_ps1_status_labels(tmp_path, name, status, output, label):
     "name, status, output", FAILURE_CASES, ids = [case[0] for case in FAILURE_CASES]
 )
 def test_setup_sh_never_reports_success_for_a_non_zero_exit(tmp_path, name, status, output):
-    """Success TEXT on a failed run must not become a success LABEL.
-
-    The installer writes its progress log and its error to the same stream, so a run that
-    got as far as printing either token and then died is exactly the shape that would turn
-    a broken dictation runtime into a green line if the grep ran before the exit check.
-    """
+    """Success text printed before a non-zero exit must not become a success label; progress and
+    errors share one stream, so the exit check must come before the grep."""
     result = _run_bash(_sh_whisper_script(tmp_path, status, output))
     assert result.returncode == 0, result
     label = _steps(result.stdout).get("whisper.cpp")
@@ -822,11 +814,7 @@ def test_setup_ps1_never_reports_success_for_a_non_zero_exit(tmp_path, name, sta
     "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
 )
 def test_both_shells_agree_on_the_label(tmp_path, name, status, output, label):
-    """Windows and POSIX must tell the user the same thing.
-
-    Asserting each side against a constant leaves them free to drift apart via the
-    constant; comparing the two measured labels is what makes "mirrored" a measurement.
-    """
+    """Compare the two shells' labels directly, not each to a constant, so they cannot drift."""
     sh = _run_bash(_sh_whisper_script(tmp_path, status, output))
     ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
     assert sh.returncode == 0 and ps.returncode == 0, (sh, ps.stdout, ps.stderr)
@@ -917,12 +905,8 @@ _LLAMA_KEEP_LOG = (
 
 @requires_bash
 def test_setup_sh_reports_each_component_separately(tmp_path):
-    """llama keeps its install while whisper's update fails: two labels, no cross-talk.
-
-    Both blocks read from their own log file and their own status variable, and llama's
-    keep arm must not leak into whisper's line (or the reverse) just because the same
-    token appears in the same setup run.
-    """
+    """llama's keep arm and whisper's failure must yield two separate labels; each block reads its
+    own log file and status variable, so there is no cross-talk."""
     llama_log = tmp_path / "prebuilt.log"
     llama_log.write_text(_LLAMA_KEEP_LOG + "\n", encoding = "utf-8")
     whisper_log = tmp_path / "whisper.log"
@@ -983,12 +967,7 @@ def test_setup_ps1_reports_each_component_separately(tmp_path):
 
 @requires_bash
 def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):
-    """End to end: the real installer log, fed to the real setup.sh block.
-
-    Every other test in this file asserts one half. This one runs the installer offline over
-    an intact install, takes whatever it printed, and hands it to the shipped shell block --
-    so a reworded log line shows up as the wrong user-facing label, not as a passing test.
-    """
+    """Feeds real offline installer log to setup.sh; a reworded line shows as a wrong label."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "offline")
@@ -1001,8 +980,7 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     ), result.stdout
 
 
-# A digest mismatch is a tamper signal, not an offline notice; only an end-to-end CLI run caught
-# the removed re-raise.
+# Digest mismatch is tamper, not offline; only end-to-end CLI run caught the removed re-raise.
 def test_a_tampered_release_is_not_reported_as_an_unavailable_update(tmp_path, monkeypatch, capsys):
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)

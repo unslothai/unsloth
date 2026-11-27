@@ -200,7 +200,7 @@ def test_video_load_runs_inside_the_scope():
     from core.inference.video import VideoBackend
 
     source = inspect.getsource(VideoBackend._run_load)
-    scope = source.index("with pread_safetensors():")
+    scope = source.index("with pread_safetensors(integrated_cuda = integrated_cuda):")
     assert scope < source.index("self.load_pipeline(**kwargs)", scope)
 
 
@@ -294,8 +294,7 @@ print("PEAK_MIB", (counters().PeakPagefileUsage - base) >> 20)
 @pytest.mark.skipif(sys.platform != "win32", reason = "process commit is a Windows counter")
 @requires_backend
 def test_windows_converting_load_commits_about_one_copy(tmp_path):
-    """Real Windows commit for a 1.5 GB bf16 checkpoint loaded at fp16: mmap charges the stored bytes on top of the
-    fp16 copy, pread does not."""
+    """Windows bf16 load as fp16: mmap commits stored bytes plus the fp16 copy; pread does not."""
     import subprocess
     import warnings
     from pathlib import Path

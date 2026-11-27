@@ -27,7 +27,7 @@ const NAMED_THEMES = {
   "github-dark": () => import("@shikijs/themes/github-dark"),
 };
 
-const createHighlighter = createBundledHighlighter<
+export const createHighlighter = createBundledHighlighter<
   BundledLanguage,
   NamedTheme
 >({
@@ -104,6 +104,7 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
 };
 
 export const MIN_INCREMENTAL_CHARS = 2000;
+export const LIVE_TAIL_CHARS = 1024;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;
 // A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
@@ -486,7 +487,16 @@ export function createCodePlugin(
     dropCodeIndex(fence);
     fence.code = code;
     fence.result = result;
-    fencesByCode.set(codeKey(fence.key, code), fence);
+    // A fence that already tokenized all of this body keeps the index: a throttled refresh of another
+    // fence reaching the same body later (mid-body, or done) must not replace the exact result callers hold.
+    const indexed = fencesByCode.get(codeKey(fence.key, code));
+    const keepIndexed =
+      indexed !== undefined &&
+      indexed !== fence &&
+      indexed.code === code &&
+      indexed.result !== null &&
+      indexed.committedLength > code.lastIndexOf("\n");
+    if (!keepIndexed) fencesByCode.set(codeKey(fence.key, code), fence);
     evict();
     return result;
   };
@@ -659,7 +669,8 @@ export function createCodePlugin(
       const grewLargeFence =
         fence.result !== null &&
         fence.code.length >= MIN_INCREMENTAL_CHARS &&
-        opts.code.length > fence.code.length;
+        opts.code.length > fence.code.length &&
+        opts.code.length - fence.committedLength > LIVE_TAIL_CHARS;
       if (!exact && grewLargeFence && elapsed < REFRESH_MS) {
         const result = approximateResult(fence, opts.code);
         queuePending(fence, opts.code, callback);

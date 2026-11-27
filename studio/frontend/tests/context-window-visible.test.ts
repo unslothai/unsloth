@@ -137,7 +137,7 @@ test("the header renders the bar for single chats and active project threads", (
   );
   assert.match(
     page,
-    /used=\{contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
+    /used=\{contextUsage\?\.recountedTokens \?\? contextUsage\?\.contextTokens \?\? contextUsage\?\.totalTokens \?\? null\}/,
   );
 });
 

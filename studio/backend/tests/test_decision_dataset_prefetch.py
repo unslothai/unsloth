@@ -298,7 +298,7 @@ def test_warmup_ratio_rounds_up_like_transformers(
     model_api.from_pretrained = lambda *_a, **_kw: (object(), object())
     model_api.build_dataset = lambda *_a: (
         [{"state": "row"}],
-        {"total": 1, "skipped": 0, "reason": None},
+        {"total": 1, "skipped": 0, "reason": None, "json_text_states": 0},
     )
     model_api.split_holdout = lambda items, seed: (items, [])
     config = _decision_config(
@@ -319,6 +319,26 @@ def test_warmup_ratio_rounds_up_like_transformers(
     with pytest.raises(ReachedArguments):
         decision._run(Queue(), Queue(), config, "unused-output")
     assert seen["warmup_steps"] == expected
+
+
+def test_json_text_states_warn_before_no_decisions(fake_decision_runtime, monkeypatch):
+    model_api, _ = fake_decision_runtime
+    train, held_out = [{"state": "[1, 2]"}], [{"state": '{"b": 1, "a": 2}'}] * 2
+    monkeypatch.setattr(decision, "_load_rows", lambda *_a: (train, held_out))
+    model_api.from_pretrained = lambda *_a, **_kw: (object(), object())
+
+    def build(rows, *_a):
+        # Both splits hold JSON text, so the warning counts each.
+        counted = len(rows)
+        return [], {"total": 1, "skipped": 1, "reason": "does not fit", "json_text_states": counted}
+
+    model_api.build_dataset = build
+    events = Queue()
+    decision._run(events, Queue(), _decision_config(), "unused-output")
+    sent = [event for event in events.queue if event["type"] in ("warning", "error")]
+    # Every row stopped fitting, yet the warning that explains why reaches the UI.
+    assert [event["type"] for event in sent] == ["warning", "error"]
+    assert "states that read differently from the object they hold: 3." in sent[0]["message"]
 
 
 def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):

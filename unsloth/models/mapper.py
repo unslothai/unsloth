@@ -15,7 +15,18 @@ __all__ = [
     "MAP_TO_UNSLOTH_16bit",
     "FLOAT_TO_FP8_BLOCK_MAPPER",
     "FLOAT_TO_FP8_ROW_MAPPER",
+    "bf16_repo_loads_16bit",
 ]
+
+
+def bf16_repo_loads_16bit(model_name, load_in_16bit = False):
+    """A '-bf16' Hub repo loads in 16bit whatever 4bit / 8bit / fp8 flag is set; a local directory keeps the
+    requested quantization unless load_in_16bit is set."""
+    import os
+
+    return str(model_name).lower().endswith("-bf16") and (
+        bool(load_in_16bit) or not os.path.isdir(os.path.expanduser(str(model_name)))
+    )
 
 __INT_TO_FLOAT_MAPPER = \
 {
@@ -1380,6 +1391,10 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen3.8-27B",
         "Qwen/Qwen3.8-27B",
         "unsloth/Qwen3.8-27B-unsloth-bnb-4bit",
+    ),
+    "unsloth/Inkling-2-Mini-unsloth-bnb-4bit" : (
+        "unsloth/Inkling-2-Mini",
+        "thinkingmachines/Inkling-2-Mini",
     ),
 }
 

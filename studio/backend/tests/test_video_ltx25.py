@@ -243,18 +243,20 @@ def test_companion_base_must_be_the_same_release(tmp_path, monkeypatch):
     backend.validate_load_request("vantagewithai/LTX-2.5-GGUF", base_repo = str(folder), **ltx25)
 
 
-def test_training_still_refuses_ltx25(tmp_path):
+def test_training_routes_ltx25_to_its_own_family(tmp_path):
     from core.training.diffusion_train_common import resolve_trainable_family
 
-    for family in (None, "ltx-2", "ltx-2.5"):
-        with pytest.raises(ValueError, match = r"ltx-2\.5|LTX-2\.5"):
-            resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family)
+    for family in (None, "ltx-2.5"):
+        assert resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", family) == "ltx-2.5"
+    # The LTX-2 trainer never takes 2.5 weights, by name or by model_index.json.
+    with pytest.raises(ValueError, match = r"ltx-2\.5|LTX-2\.5"):
+        resolve_trainable_family("Lightricks/LTX-2.5-Diffusers", "ltx-2")
     folder = tmp_path / "my-video-base"
     folder.mkdir()
     _write_index(folder, "Gemma4UnifiedForConditionalGeneration")
-    for family in (None, "ltx-2"):
-        with pytest.raises(ValueError, match = "model_index.json"):
-            resolve_trainable_family(str(folder), family)
+    assert resolve_trainable_family(str(folder)) == "ltx-2.5"
+    with pytest.raises(ValueError, match = "model_index.json"):
+        resolve_trainable_family(str(folder), "ltx-2")
     _write_index(folder, "Gemma3ForConditionalGeneration")
     assert resolve_trainable_family(str(folder), "ltx-2") == "ltx-2"
 
@@ -1338,8 +1340,7 @@ def test_model_offload_holds_the_dit_across_the_stage_boundary_only_when_stage_t
 @pytest.mark.parametrize("fits", [True, False])
 def test_image_to_video_frees_between_stages_only_when_stage_two_does_not_fit(monkeypatch, fits):
     pytest.importorskip("diffusers")  # the image path builds diffusers' LTX2VideoCondition
-    # The condition pipeline has no hook list, so it never offloads at its stage end: pipe's hooks are reset there
-    # when stage 2 would not fit beside the DiT.
+    # Condition pipeline has no hook list; hooks reset at stage end only if stage 2 won't fit.
     monkeypatch.setattr(MS, "companions_fit_beside_denoiser", lambda pipe, companions: fits)
     pipe = _OffloadedPipe(SimpleNamespace(keep_tokens = None))
     cond = _FakePipe(pipe.scheduler)
@@ -2387,8 +2388,7 @@ def test_offloaded_encoder_is_released_after_each_encode_and_reloaded_for_the_ne
 
 
 def test_offloaded_encoder_borrows_only_budget_the_server_leaves(monkeypatch):
-    """A free card is not enough: the plan did not budget the encoder, so it may only use the load's budget minus what
-    the server holds at encode time."""
+    """Free VRAM is not enough: the encoder may use budget the server leaves at encode time."""
     from core.inference import video_ltx25_te_worker as worker
 
     model = _FakeEncoderModel()  # 2 MiB

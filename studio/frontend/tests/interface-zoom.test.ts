@@ -228,7 +228,7 @@ test("the zoom popup takes the find bar's corner", () => {
   assert.match(provider, /"--studio-content-top-inset": "34px"/);
   assert.match(
     provider,
-    /set\("--studio-content-top-inset", usesCustomTitlebar \? "34px" : null\);/,
+    /const customTop = customTitlebarHidden \? "0px" : "34px";[\s\S]*set\("--studio-content-top-inset", usesCustomTitlebar \? customTop : null\);/,
   );
   const top =
     /top-\[calc\(var\(--studio-content-top-inset,0px\)\+3\.5rem\)\] right-4 z-50 flex h-13/;

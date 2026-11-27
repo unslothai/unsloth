@@ -7,7 +7,7 @@ import contextvars
 import functools
 import os
 
-from .cells import cell_text
+from .cells import cell_text, content_text
 from .iterable import is_streaming_dataset
 from .remote_images import (
     fetch_opted_in_image_bytes,
@@ -80,7 +80,7 @@ def standardize_chat_format(
         if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
             is_vlm = True
 
-    column_names = set(next(iter(dataset)).keys())
+    column_names = set((next(iter(dataset), None) or {}).keys())
 
     if chat_column:
         if chat_column not in column_names:
@@ -126,14 +126,24 @@ def standardize_chat_format(
         content_key = "content"
     elif len(uniques.keys()) == 2:
         keys = list(uniques.keys())
-        length_first = len(set(uniques[keys[0]]))
-        length_second = len(set(uniques[keys[1]]))
-        if length_first < length_second:
-            role_key = keys[0]
-            content_key = keys[1]
-        else:
-            role_key = keys[1]
-            content_key = keys[0]
+        distinct = [set(uniques[key]) for key in keys]
+        known_roles = {
+            _normalize_role_alias(alias)
+            for aliases in (aliases_for_system, aliases_for_user, aliases_for_assistant)
+            for alias in aliases
+        }
+        hits = [sum(_normalize_role_alias(v) in known_roles for v in values) for values in distinct]
+        role_index = 0 if len(distinct[0]) < len(distinct[1]) else 1
+        other = 1 - role_index
+        if len(distinct[0]) == len(distinct[1]):
+            role_like = [2 * hits[i] >= len(distinct[i]) for i in (0, 1)]
+            if role_like[0] != role_like[1]:
+                role_index = 0 if role_like[0] else 1
+        elif hits[other] == len(distinct[other]) and hits[role_index] == 0:
+            # Canned replies (identical text) only; a few "Human" lines in text must not overrule cardinality.
+            role_index = other
+        role_key = keys[role_index]
+        content_key = keys[1 - role_index]
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
@@ -267,14 +277,7 @@ def normalize_chatml_roles(
     )
 
 
-def _content_text(content):
-    if isinstance(content, list):
-        return "\n".join(
-            part["text"]
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
-        )
-    return cell_text(content)
+_SOURCE_COLUMN = "__unsloth_source_row"
 
 
 def convert_chatml_to_alpaca(
@@ -282,8 +285,9 @@ def convert_chatml_to_alpaca(
     batch_size = 1000,
     num_proc = None,
     chat_column: str | None = None,
+    stats: dict | None = None,
 ):
-    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
+    """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys. ``stats`` receives {"conversations", "dropped"} counts for non-streaming datasets."""
     is_iterable = is_streaming_dataset(dataset)
     roles = {
         "system": "system",
@@ -295,7 +299,47 @@ def convert_chatml_to_alpaca(
         "output": "assistant",
     }
 
-    def _convert(examples):
+    def _convo_rows(convo, column_system):
+        turns = []
+        for msg in convo or []:
+            role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
+            content = content_text(msg.get("content") or msg.get("value"))
+            if role is None or not content:
+                continue
+            if turns and turns[-1][0] == role:
+                turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+            else:
+                turns.append([role, content])
+        # A separate system column fills in only when the conversation has no leading system turn.
+        if (
+            isinstance(column_system, str)
+            and column_system.strip()
+            and not (turns and turns[0][0] == "system")
+        ):
+            turns.insert(0, ["system", column_system])
+
+        rows = []
+        system = ""
+        context = []
+        instruction = None
+        for role, content in turns:
+            if role == "system":
+                system = f"{system}\n\n{content}" if system else content
+            elif role == "user":
+                instruction = content
+            elif instruction is not None:
+                rows.append(
+                    (
+                        instruction,
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part),
+                        content,
+                    )
+                )
+                context += [f"User: {instruction}", f"Assistant: {content}"]
+                instruction = None
+        return rows
+
+    def _convert(examples, indices = None):
         chatml_data = examples.get(chat_column) if chat_column else None
         if chatml_data is None:
             chatml_data = (
@@ -308,45 +352,22 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        sources = []
         column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo, column_system in zip(chatml_data, column_systems):
-            turns = []
-            for msg in convo or []:
-                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
-                content = _content_text(msg.get("content") or msg.get("value"))
-                if role is None or not content:
-                    continue
-                if turns and turns[-1][0] == role:
-                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
-                else:
-                    turns.append([role, content])
-            # A separate system column fills in only when the conversation has no leading system turn.
-            if (
-                isinstance(column_system, str)
-                and column_system.strip()
-                and not (turns and turns[0][0] == "system")
-            ):
-                turns.insert(0, ["system", column_system])
+        for index, convo, column_system in zip(
+            indices or range(len(chatml_data)), chatml_data, column_systems
+        ):
+            for instruction, input_text, output in _convo_rows(convo, column_system):
+                instructions.append(instruction)
+                inputs.append(input_text)
+                outputs.append(output)
+                sources.append(index)
 
-            system = ""
-            context = []
-            instruction = None
-            for role, content in turns:
-                if role == "system":
-                    system = f"{system}\n\n{content}" if system else content
-                elif role == "user":
-                    instruction = content
-                elif instruction is not None:
-                    instructions.append(instruction)
-                    inputs.append(
-                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
-                    )
-                    outputs.append(content)
-                    context += [f"User: {instruction}", f"Assistant: {content}"]
-                    instruction = None
-
-        return {"instruction": instructions, "input": inputs, "output": outputs}
+        converted = {"instruction": instructions, "input": inputs, "output": outputs}
+        if indices is not None:
+            converted[_SOURCE_COLUMN] = sources
+        return converted
 
     dataset_map_kwargs = {
         "batched": True,
@@ -354,6 +375,7 @@ def convert_chatml_to_alpaca(
         "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
+    count = stats is not None and not is_iterable
     if not is_iterable:
         from utils.hardware import light_map_num_proc
 
@@ -361,6 +383,7 @@ def convert_chatml_to_alpaca(
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
+        dataset_map_kwargs["with_indices"] = count
 
     result = dataset.map(_convert, **dataset_map_kwargs)
 
@@ -372,6 +395,14 @@ def convert_chatml_to_alpaca(
             raise ValueError(
                 f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
             ) from exc
+
+    if count:
+        import pyarrow.compute as pc
+
+        answered = pc.count_distinct(result.data.column(_SOURCE_COLUMN)).as_py()
+        result = result.remove_columns(_SOURCE_COLUMN)
+        stats["conversations"] = len(dataset)
+        stats["dropped"] = len(dataset) - answered
 
     return result
 
@@ -516,6 +547,7 @@ def convert_to_vlm_format(
     image_column = "image",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
@@ -559,6 +591,7 @@ def convert_to_vlm_format(
             dataset_name,
             _image_lookup[name],
             repo_type = "dataset",
+            revision = dataset_revision,
             cache_dir = active_hf_hub_cache(),
         )
         return Image.open(local_path).convert("RGB")
@@ -639,7 +672,9 @@ def convert_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -893,6 +928,22 @@ def convert_to_vlm_format(
     return converted_list
 
 
+# A real video container never starts like this. A playlist / manifest saved as clip.mp4 would make
+# FFmpeg open the URLs inside it itself, outside the guarded remote-media fetch.
+_PLAYLIST_HEADS = (b"#EXTM3U", b"<", b"ffconcat", b"\xef\xbb\xbf", b" ", b"\t", b"\r", b"\n")
+
+
+def _refuse_hub_playlist(local_path, name):
+    try:
+        with open(local_path, "rb") as handle:
+            head = handle.read(64)
+    except OSError:
+        return local_path  # unreadable: the decoder reports it
+    if head.startswith(_PLAYLIST_HEADS):
+        raise ValueError(f"Video '{name}' is a playlist or text document, not a video file.")
+    return local_path
+
+
 class _HubClips:
     """Repo-relative clip names of a Hub dataset, resolved by download the way bare image filenames are."""
 
@@ -944,7 +995,7 @@ class _HubClips:
                 return None
             # Offline: an exact repo path may still be in the cache.
             try:
-                return hf_hub_download(
+                cached = hf_hub_download(
                     self.repo,
                     path,
                     repo_type = "dataset",
@@ -954,17 +1005,21 @@ class _HubClips:
                 )
             except Exception:  # noqa: BLE001 -- not cached: the path stays local
                 return None
+            return _refuse_hub_playlist(cached, path)
         if isinstance(self.files[path], list):
             raise ValueError(
                 f"Video '{path}' matches several files in {self.repo} ({', '.join(self.files[path])}); "
                 "use the repo-relative path."
             )
-        return hf_hub_download(
-            self.repo,
-            self.files[path],
-            repo_type = "dataset",
-            revision = self.revision,
-            cache_dir = active_hf_hub_cache(),
+        return _refuse_hub_playlist(
+            hf_hub_download(
+                self.repo,
+                self.files[path],
+                repo_type = "dataset",
+                revision = self.revision,
+                cache_dir = active_hf_hub_cache(),
+            ),
+            path,
         )
 
 
@@ -1039,6 +1094,51 @@ def own_message_videos(
         for part in video_parts(row["messages"]):
             part["video"] = _own_video_part(part["video"], account, hub)
     return rows
+
+
+def _message_image_path(value):
+    """The local file a messages-row image value names, else None (decoded images, bytes, URLs)."""
+    if isinstance(value, dict):
+        if value.get("bytes"):
+            return None
+        value = value.get("url") or value.get("path")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://", "data:")):
+        return None
+    if lowered.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        return unquote(urlparse(text).path)
+    return text
+
+
+def require_own_message_images(rows) -> None:
+    """Managed accounts: every local image a messages row names must be one the account may read.
+    The vision collator opens these strings itself, outside the typed media and flat-column checks."""
+    from utils.account_context import current_account
+
+    account = current_account()
+    if account.is_owner or is_streaming_dataset(rows):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        values = []
+        for key in ("images", "image"):
+            cell = row.get(key)
+            values.extend(cell if isinstance(cell, list) else [cell])
+        messages = row.get("messages")
+        for message in messages if isinstance(messages, list) else []:
+            content = message.get("content") if isinstance(message, dict) else None
+            for part in content if isinstance(content, list) else []:
+                if isinstance(part, dict):
+                    values.extend(part.get(key) for key in ("image", "image_url"))
+        for value in values:
+            path = _message_image_path(value)
+            if path is not None:
+                _own_image_path(path, account)
 
 
 def convert_video_to_vlm_format(
@@ -1120,6 +1220,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     messages_column = "conversations",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Image lists match placeholders in conversation order. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
@@ -1166,7 +1267,9 @@ def convert_sharegpt_with_images_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -1203,6 +1306,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    revision = dataset_revision,
                     cache_dir = active_hf_hub_cache(),
                 )
                 return Image.open(local_path).convert("RGB")

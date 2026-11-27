@@ -64,6 +64,21 @@ export function exportedItemToRecord(
       createdAt: toEpochMillis(message.createdAt),
     };
   }
+  if (message.role === "system") {
+    const custom = message.metadata?.custom;
+    return {
+      id: message.id,
+      threadId,
+      parentId: parentId ?? null,
+      role: "system",
+      content: content as Extract<
+        ThreadMessage,
+        { role: "system" }
+      >["content"],
+      ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
+      createdAt: toEpochMillis(message.createdAt),
+    };
+  }
   const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
   return {
     id: message.id,
@@ -127,6 +142,9 @@ export async function syncExportedRepositoryToBackend(
     {
       pruneMissing: options.pruneMissing,
       deletedMessageIds: options.deletedMessageIds,
+      echo:
+        options.pruneMissing === true ||
+        (options.deletedMessageIds?.length ?? 0) > 0,
     },
   );
 }

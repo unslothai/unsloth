@@ -280,9 +280,8 @@ def test_int8_gemm_path_rotates_each_shared_input_once(monkeypatch):
 
 
 def test_shared_qkv_reported_and_gated_on_the_transformer_cards(monkeypatch):
-    """The shared-QKV helper installs when a card holding the transformer (every visible card while it is off the
-    GPU) is one the int8 GEMM swap covers, whatever the current card is, and its count is reported even though the
-    fused-QKV module path declines on such a card."""
+    """Shared-QKV installs on the transformer's card (not the current one) if int8 GEMM covers it;
+    its count is reported even where fused-QKV declines."""
     import core.inference.diffusion_qwenimage21_fused as mod
 
     model = type("QwenImage21Transformer2DModel", (torch.nn.Module,), {})()

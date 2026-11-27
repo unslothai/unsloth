@@ -314,3 +314,110 @@ def test_q21_kill_switch(monkeypatch):
         "QwenImage21Transformer2DModel has no paired block loop"
     )
     assert cb.cfg_pair_decline(_Pipe(_offload(_tiny())), offload_policy = "group") is None
+
+
+_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
+
+
+def test_compile_warmup_env_name():
+    assert cb.CFG_PAIR_COMPILE_WARMUP_ENV == _WARMUP_ENV
+
+
+def _q21_compiled_below_hooks(layers = 1):
+    """Every block's forward compiled below its offload hook (diffusion_block_graph), counting Dynamo frames."""
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    model = _offload(_q21(layers = layers))
+    counter = CompileCounter()
+    for block in model.transformer_blocks:
+        ref = cp.below_hook_ref(block)
+        ref.forward = torch.compile(ref.forward, backend = counter)
+        block._unsloth_below_hook_ref = ref
+    return model, counter
+
+
+def _q21_renders(
+    model,
+    renders = 3,
+    steps = 4,
+):
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "group") is None
+    router = cb.router_for(pipe)
+    counts = _block_calls(model)
+    per_render, outs = [], []
+    for _ in range(renders):
+        before = list(counts)
+        got, _ = _q21_loop(model, steps = steps)
+        outs.append(got)
+        per_render.append([a - b for a, b in zip(counts, before)])
+        cb.end_cfg_batch_render(pipe)
+    return router, per_render, outs
+
+
+def test_q21_lazy_compile_in_the_first_render_keeps_pairing(monkeypatch):
+    """The prefill and the first decode step compile their graphs during render 1: that is warm-up, not churn."""
+    monkeypatch.delenv(_WARMUP_ENV, raising = False)
+    ref, _ = _q21_loop(_offload(_q21(layers = 1)), steps = 4)
+    model, counter = _q21_compiled_below_hooks()
+    router, per_render, outs = _q21_renders(model)
+    assert router.disabled is None and router.pending_disable is None
+    # step 1 prefills plain (2 calls), steps 2-4 pair (1 call each), every render
+    assert per_render == [[5], [5], [5]]
+    assert router.stats["paired_steps"] == 9
+    assert all(torch.equal(o, ref) for o in outs)
+    graphs = counter.frame_count
+    assert graphs > 0
+    _q21_loop(model, steps = 4)
+    assert counter.frame_count == graphs  # no graph after warm-up
+    assert not torch._dynamo.utils.counters["graph_break"]
+
+
+def test_q21_compile_warmup_kill_switch(monkeypatch):
+    monkeypatch.setenv(_WARMUP_ENV, "0")
+    model, _ = _q21_compiled_below_hooks()
+    router, per_render, _ = _q21_renders(model)
+    assert router.disabled == "the paired call compiled a new graph"
+    assert per_render == [[5], [8], [8]]
+
+
+def test_q21_a_graph_after_the_warm_up_render_still_turns_pairing_off(monkeypatch):
+    monkeypatch.delenv(_WARMUP_ENV, raising = False)
+    graphs = {"n": 0, "churn": False}
+    monkeypatch.setattr(cb, "_graph_count", lambda: graphs["n"])
+    model = _offload(_q21(layers = 1))
+    model.transformer_blocks[0].register_forward_pre_hook(
+        lambda *_a: graphs.__setitem__("n", graphs["n"] + (graphs["churn"] or graphs["n"] == 0))
+    )
+    pipe = _Pipe(model)
+    cb.install_cfg_batch(pipe, offload_policy = "group")
+    router = cb.router_for(pipe)
+    _q21_loop(model, steps = 4)
+    cb.end_cfg_batch_render(pipe)
+    assert router.disabled is None
+    graphs["churn"] = True  # render 2: every block call compiles again
+    _q21_loop(model, steps = 4)
+    cb.end_cfg_batch_render(pipe)
+    assert router.disabled == "the paired call compiled a graph after its warm-up render"
+    counts = _block_calls(model)
+    _q21_loop(model, steps = 4)
+    assert counts == [8]
+
+
+def test_q21_pair_warm_up_key_separates_cache_mode_and_negative_length():
+    router = cb.CfgBatchRouter.__new__(cb.CfgBatchRouter)
+    router.paired = type(
+        "P", (), {"branch_cache": cp.BRANCH_CACHES["QwenImage21Transformer2DModel"]}
+    )()
+    router.render_compiled = None
+    shape = cb._Shape(((1, 4),))
+
+    def key(n, mode):
+        return router._pair_key(shape, ((), {"x": torch.zeros(1, n), "kv_cache_mode": mode}))
+
+    assert key(5, "cached") == key(5, "cached")
+    eager = key(5, "cached")
+    assert len({eager, key(7, "cached"), key(5, "extract")}) == 3
+    router.render_compiled = "the denoiser runs a compiled forward below its hooks"
+    assert key(5, "cached") != eager

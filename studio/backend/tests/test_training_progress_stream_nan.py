@@ -41,8 +41,7 @@ class _Progress:
 
 
 class _FakeBackend:
-    """Finite history stops at step 2; live progress is at step 5 with NaN
-    (loss=None). Active for a few polls, then done."""
+    """Fake backend: finite history stops at step 2, live progress at step 5 with NaN loss."""
 
     def __init__(self, active_polls = 2):
         self.current_job_id = "job-1"

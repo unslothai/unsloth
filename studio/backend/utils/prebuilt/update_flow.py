@@ -52,6 +52,10 @@ _PREBUILT_VERDICT_RE = re.compile(
 _VERDICT_CONTINUATION_LIMIT = 8
 
 
+# install_llama_prebuilt.py logs this when the CUDA runtime it needs could not be installed.
+CPU_FALLBACK_NOTICE = "llama.cpp will run on the CPU"
+
+
 def is_github_rate_limit_text(text: str) -> bool:
     """Whether installer output blames a GitHub API rate limit. Both halves are required: huggingface.co rate-limits the validation model download with its own 429, and that failure also reaches the updater as installer exit 2, so rate-limit wording alone would hand a user GH_TOKEN advice that cannot fix it. GitHub itself answers an exceeded primary or secondary limit with 403 or 429."""
     lowered = text.lower()
@@ -387,8 +391,8 @@ def stream_installer(
     job: Optional[dict] = None,
     job_lock: Optional[threading.Lock] = None,
     set_progress: Optional[Callable[[float], None]] = None,
-) -> None:
-    """Run the installer, streaming its progress lines into job["progress"] (or through set_progress when given, e.g. a chained-phase progress window). Raises RuntimeError on timeout or a nonzero exit (with an output tail)."""
+) -> bool:
+    """Run the installer, streaming its progress lines into job["progress"] (or through set_progress when given, e.g. a chained-phase progress window). Raises RuntimeError on timeout or a nonzero exit (with an output tail). Returns whether it said llama.cpp will run on the CPU, which it exits 0 on (#17663)."""
     if set_progress is None:
         assert job is not None and job_lock is not None
 
@@ -435,10 +439,12 @@ def stream_installer(
     verdict_lines: list[str] = []
     hint_lines: list[str] = []
     open_verdict = False
+    runs_on_cpu = False
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             tail_lines.append(line)
+            runs_on_cpu = runs_on_cpu or CPU_FALLBACK_NOTICE in line
             if len(tail_lines) > 80:
                 del tail_lines[0]
             stripped = line.strip()
@@ -488,6 +494,7 @@ def stream_installer(
                 returncode, tail_lines, verdict_lines, hint_lines, env = env
             ),
         )
+    return runs_on_cpu
 
 
 def _new_phase_record(spec: dict) -> dict:

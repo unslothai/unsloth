@@ -60,8 +60,7 @@ def _normalize_py(src: str) -> str:
 
 
 def _strip_shell_comments(s: str) -> str:
-    """Strip shell comments and collapse blank lines. Heuristic: skips lines
-    with an odd quote count (open string)."""
+    """Strip shell comments and blank lines; skip lines with an odd quote count (open string)."""
     out = []
     for line in s.splitlines():
         stripped = line.lstrip()

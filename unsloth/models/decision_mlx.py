@@ -49,6 +49,9 @@ from unsloth._decision_common import (
     _option_keys,
     _parsed,
     _predicted,
+    _reads_apart_from_its_object,
+    _refuse_private_push_to_public_repo,
+    _report_json_text_states,
     _row_images,
     _rows_problem,
     _served_lengths,
@@ -87,13 +90,21 @@ def _row_audio(row: dict) -> list:
     return found
 
 
-def _decision_clef_items(rows, options: Callable, encode: Callable, validate, report, skip) -> list:
+def _decision_clef_items(
+    rows,
+    options: Callable,
+    encode: Callable,
+    validate,
+    report,
+    skip,
+    d1 = False,
+) -> list:
     # One item per row. `options(question)` names a question's options in the head's order and
     # `encode(state, questions, images, audio)` returns the backend's tokenized fields, raising when they do not fit.
-    items = []
+    items, read, json_text = [], 0, 0
     for index, row in enumerate(rows):
         row = row if isinstance(row, dict) else {}
-        state = _parsed(row.get("state"))
+        state = row.get("state")
         questions = _parsed(row.get("questions"))
         gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
         if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
@@ -122,6 +133,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
             )
         if not kept:
             continue
+        read, json_text = read + 1, json_text + _reads_apart_from_its_object(state, d1)
         try:
             encoded = encode(state, kept, _row_images(row), _row_audio(row))
         except (TypeError, ValueError, OSError) as exc:
@@ -137,6 +149,7 @@ def _decision_clef_items(rows, options: Callable, encode: Callable, validate, re
                 "source": {"state": state, "questions": kept},
             }
         )
+    _report_json_text_states(json_text, read, report, d1)
     return items
 
 
@@ -150,7 +163,11 @@ def _decision_dataset(
     # `clef` builds a Clef model's items: the backend's (rows, tokenizer, max_len, validate, report, skip).
     max_len = int(config.get("max_len", 512))
     head_max_len = int(config.get("head_max_len", 192))
-    items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
+    items, report, skips = (
+        [],
+        {"total": 0, "skipped": 0, "reason": None, "truncated": 0, "json_text_states": 0},
+        {},
+    )
 
     def skip(
         index,
@@ -392,6 +409,7 @@ def _clef_push(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained(folder, tokenizer)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -482,6 +500,7 @@ def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> l
         validate,
         report,
         skip,
+        d1 = _is_d1(pipeline),
     )
 
 
@@ -562,6 +581,7 @@ def _decision_push_merged(
 
     api = HfApi(token = token)
     repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+    _refuse_private_push_to_public_repo(repo_id, private, api)
     with tempfile.TemporaryDirectory() as folder:
         self.save_pretrained_merged(folder, tokenizer, save_method)
         api.upload_folder(folder_path = folder, repo_id = repo_id)
@@ -681,6 +701,20 @@ def _d1_temperatures(folder) -> dict:
     }
 
 
+def _refuse_model_file(folder):
+    # mlx-lm / mlx-vlm exec a config.json `model_file` on load, and decision models never take remote code.
+    path = Path(folder) / "config.json"
+    try:
+        declared = json.loads(path.read_text(encoding = "utf-8")).get("model_file")
+    except (OSError, ValueError, AttributeError):
+        return
+    if declared:
+        raise ValueError(
+            f"Unsloth: {folder} names its own model code ({declared!r}) in config.json. "
+            "Decision models do not run repository code, so it cannot be loaded."
+        )
+
+
 def _load_lm_as_d1(
     zoo,
     folder,
@@ -753,6 +787,7 @@ def _load_lm_as_clef(
             f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
             "Merge them into the base model first."
         )
+    _refuse_model_file(folder)
     zoo = _decision_zoo()
     d1 = getattr(zoo, "FAMILIES", {}).get("d1")
     if decision_head == "d1" or (d1 is not None and d1.matches(folder)):
@@ -814,6 +849,7 @@ class FastDecisionModel:
         lm = kwargs.get("decision_head") is not None
         if not lm:
             folder = _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
+            _refuse_model_file(folder)
         if (lm or is_clef_checkpoint(folder)) and dtype is not None:
             raise NotImplementedError(
                 f"Unsloth: Clef on MLX trains at its checkpoint's precision, not {dtype}."
@@ -993,19 +1029,16 @@ class FastDecisionModel:
         images = None,
         audio = None,
     ) -> dict:
-        """Answers one Decision API request: {name: answer} at the calibrated temperatures.
-        `images` (as in a row: PIL images, data URLs, or bytes / path dicts) are read by a Clef whose base model has a vision tower.
-        `audio` (as in a row: data URLs, bytes / path dicts, or decoded 16 kHz mono clips) is heard by a Clef whose base model has an audio tower.
-        Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
-        "answer" (the option, True / False for noul, the level number for score) and
-        "probabilities" over every option."""
+        """Answers a Decision API request at calibrated temperatures; images (PIL, data URLs, bytes
+        or path dicts) need a vision tower, audio (data URLs, bytes, path dicts or decoded 16 kHz
+        mono clips) an audio tower; each answer adds answer and probabilities"""
         import torch
 
         from unsloth._vendor.clef.joint_schema_model import systemone_answer
 
         if not isinstance(questions, dict) or not questions:
             raise DecisionDataError("questions must be a non-empty dict of name to question")
-        state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+        config, zoo = model.decision_config, _decision_zoo()
         images, audio = _row_images({"images": images}), _row_audio({"audio": audio})
         if _is_clef(model):
             pipeline = model._unsloth_pipeline
@@ -1021,7 +1054,7 @@ class FastDecisionModel:
                 raise DecisionDataError("Laya reads text only; images and audio need a Clef model.")
             common, max_len = _laya().common, int(config.get("max_len", 512))
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
-            items, keys = [], []
+            state, items, keys = _parsed(state), [], []
             for name, question in questions.items():
                 internal = _internal(question, name)
                 ids, markers = common.build_sequence(

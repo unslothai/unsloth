@@ -601,7 +601,8 @@ def test_backend_resolver_rejects_cross_repository_switches(monkeypatch):
     payload = ilp.resolve_backends_payload("latest", args = args, install_dir = Path("unused"))
 
     assert not any(entry["available"] for entry in payload["backends"])
-    assert all(entry["reason"] == "no_prebuilt" for entry in payload["backends"])
+    # Its own reason, so the picker says "update" rather than "no build for this machine".
+    assert all(entry["reason"] == "other_release" for entry in payload["backends"])
 
 
 def test_backend_resolver_fails_when_every_option_hits_an_unexpected_error(monkeypatch):
@@ -737,8 +738,7 @@ def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tm
     with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "")
 
-    # EXIT_ERROR, not the source fallback: a source build would pick its own
-    # backend, which is the outcome refusing this update exists to prevent.
+    # EXIT_ERROR, not a source fallback: a source build would choose its own backend.
     assert raised.value.code == ilp.EXIT_ERROR
     assert seen == []
     marker = json.loads((marker_path / "UNSLOTH_PREBUILT_INFO.json").read_text())

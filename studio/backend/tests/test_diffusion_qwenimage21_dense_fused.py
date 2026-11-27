@@ -345,3 +345,149 @@ def test_cfg_replica_rebuild_frees_the_copied_parts(monkeypatch):
     replica = mg._copy_module(m, torch.device("cpu"))
     assert alive_after_rebuild == [False] * len(replica.blocks)
     assert all(dfu._intact(b) is not None for b in replica.blocks)
+
+
+# Native int8 layers with int8 activations (the W8A8 linear on ROCm RDNA): same fusion over int8 codes.
+
+
+def _native(
+    linear,
+    act_int8 = True,
+    group = 16,
+):
+    from core.inference.diffusion_native_quant import NATIVE_INT8, native_linear_class
+    return native_linear_class()(linear, NATIVE_INT8, act_int8 = act_int8, rot_group = group)
+
+
+class QwenImage21Attention(nn.Module):
+    def __init__(
+        self,
+        dim = 64,
+        bias = True,
+    ):
+        super().__init__()
+        self.to_q = nn.Linear(dim, dim, bias = bias)
+        self.to_k = nn.Linear(dim, dim, bias = bias)
+        self.to_v = nn.Linear(dim, dim, bias = bias)
+
+
+def _native_model(
+    act_int8 = True,
+    dim = 64,
+    group = 16,
+):
+    m = QwenImage21Transformer2DModel(dim = dim).to(torch.bfloat16).eval()
+    m.attn = QwenImage21Attention(dim).to(torch.bfloat16)
+    for b in m.blocks:
+        for name in ("gate_layer", "proj", "out"):
+            setattr(b, name, _native(getattr(b, name), act_int8, group))
+    for name in ("to_q", "to_k", "to_v"):
+        setattr(m.attn, name, _native(getattr(m.attn, name), act_int8, group))
+    return m
+
+
+def _int8_rows(lin, x):
+    """The W8A8 maths the GPU runs (rotation, row quant, int32 GEMM, row x column scale epilogue)."""
+    x2 = x.reshape(-1, lin.in_features)
+    if lin.rot_group:
+        x2 = lin._rotate(x2)
+    return lin._int_mm_rows(x2)
+
+
+def test_native_int8_fusion_is_exact_and_shares_the_codes(monkeypatch):
+    from core.inference import diffusion_qwenimage21_fused as q21f
+
+    monkeypatch.setattr(q21f, "_patch_prepare", lambda logger = None: True)
+    m = _native_model()
+    x = torch.randn(40, 64, dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref_ff = [
+            torch.cat([_int8_rows(b.gate_layer, x), _int8_rows(b.proj, x)], -1) for b in m.blocks
+        ]
+        ref_qkv = torch.cat(
+            [_int8_rows(getattr(m.attn, n), x) for n in ("to_q", "to_k", "to_v")], -1
+        )
+        ref_fwd = [b(x) for b in m.blocks]
+    codes_before = sum(t.numel() for t in m.buffers() if t.dtype == torch.int8)
+    assert dfu.install(m) == {"gate_up": 2, "qkv": 1}
+    with torch.no_grad():
+        for b, want, want_fwd in zip(m.blocks, ref_ff, ref_fwd):
+            fused = dfu._intact(b)
+            assert fused is not None and fused.out_features == 2 * 192
+            assert (
+                b.gate_layer.weight_q.untyped_storage().data_ptr()
+                == fused.weight_q.untyped_storage().data_ptr()
+            )
+            assert (
+                b.proj.weight_q.untyped_storage().data_ptr()
+                == fused.weight_q.untyped_storage().data_ptr()
+            )
+            assert torch.equal(_int8_rows(fused, x), want)
+            assert torch.equal(b(x), want_fwd)
+        qkv = q21f._qkv_intact(m.attn)
+        assert qkv is not None and qkv.out_features == 3 * 64
+        assert torch.equal(_int8_rows(qkv, x), ref_qkv)
+        assert torch.equal(
+            qkv.bias.float(),
+            torch.cat([m.attn.to_q.bias, m.attn.to_k.bias, m.attn.to_v.bias]).float(),
+        )
+    assert sum(t.numel() for t in m.buffers() if t.dtype == torch.int8) == codes_before
+    dfu.uninstall(m)
+    assert q21f._qkv_intact(m.attn) is None and dfu._intact(m.blocks[0]) is None
+
+
+def test_native_int8_reloaded_part_falls_back(monkeypatch):
+    from core.inference import diffusion_qwenimage21_fused as q21f
+
+    monkeypatch.setattr(q21f, "_patch_prepare", lambda logger = None: True)
+    m = _native_model()
+    dfu.install(m)
+    b = m.blocks[0]
+    b.proj.weight_q = (
+        b.proj.weight_q.clone()
+    )  # load_state_dict(assign=True) / a move replaced the buffer
+    assert dfu._intact(b) is None
+    x = torch.randn(3, 64, dtype = torch.bfloat16)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            b(x), b.out(b.activation_fn(b.gate_layer(x)) * b.proj(x)), rtol = 0, atol = 0
+        )
+    m.attn.to_k.weight_q = m.attn.to_k.weight_q.clone()
+    assert q21f._qkv_intact(m.attn) is None
+
+
+@pytest.mark.parametrize("why", ["weight_only", "mixed", "hook", "group"])
+def test_native_int8_declines(monkeypatch, why):
+    from core.inference import diffusion_qwenimage21_fused as q21f
+
+    monkeypatch.setattr(q21f, "_patch_prepare", lambda logger = None: True)
+    m = _native_model(act_int8 = why != "weight_only")
+    b = m.blocks[0]
+    if why == "mixed":
+        b.proj = nn.Linear(64, 192, bias = False).to(torch.bfloat16)
+        m.attn.to_v = nn.Linear(64, 64).to(torch.bfloat16)
+    elif why == "hook":
+        b.proj.register_forward_hook(lambda *a: None)
+        m.attn.to_v.register_forward_pre_hook(lambda *a: None)
+    elif why == "group":
+        b.proj = _native(nn.Linear(64, 192, bias = True).to(torch.bfloat16), True, 64)
+        m.attn.to_v = _native(nn.Linear(64, 64).to(torch.bfloat16), True, 64)
+    out = dfu.install(m)
+    assert dfu._intact(b) is None
+    assert q21f._qkv_intact(m.attn) is None
+    if why == "weight_only":
+        assert out == {"gate_up": 0, "qkv": 0}
+    else:
+        assert out == {"gate_up": 1, "qkv": 0}
+
+
+def test_native_int8_compiles_without_graph_breaks():
+    m = _native_model()
+    dfu.install(m)
+    torch._dynamo.reset()
+    try:
+        explain = torch._dynamo.explain(m.blocks[0])(torch.randn(2, 4, 64, dtype = torch.bfloat16))
+    finally:
+        torch._dynamo.reset()
+    assert explain.graph_break_count == 0
+    assert explain.graph_count == 1

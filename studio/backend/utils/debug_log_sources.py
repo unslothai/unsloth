@@ -12,11 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from utils.log_retention import DEFAULT_KEEP
+
+MANAGED_ENGINE_LOG_FAMILIES = {
+    "sglang": ("logs/sglang", "sglang-*.log"),
+    "vllm": ("logs/vllm", "vllm-*.log"),
+}
 # (subdirectory under a studio home, filename glob). backend-* is the Tauri shell's capture of backend stdout, and the only record that exists when the backend dies before disk logging starts. Python writers are run.py:_setup_server_disk_logging and the llama / diffusion runners in core/inference/llama_cpp.py; the desktop families come from src-tauri/src/diagnostics/phase_log.rs and land in the logs directory ITSELF, with tauri.log at the home root.
 FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
     "diffusion-server": ("logs/diffusion-server", "diffusion-*.log"),
+    "lemonade": ("logs/lemonade", "lemonade-*.log"),
+    **MANAGED_ENGINE_LOG_FAMILIES,
     "desktop-backend": ("logs", "backend-*.log"),
     "desktop-install": ("logs", "install-*.log"),
     "desktop-update": ("logs", "update-*.log"),
@@ -42,44 +50,11 @@ class LogSource:
 
 
 def candidate_roots() -> list[Path]:
-    """Every studio home a log file might be under, most specific first. studio_root() infers a root from the installer venv while the runners resolve their own base (llama_cpp.py:_swa_cache_path) without that inference, so on a venv install with no env var set the two disagree and scanning only one loses the runtime logs a failed model load is chased through."""
-    roots: list[Path] = []
-
-    def _add(path: Optional[Path]) -> None:
-        if path is None:
-            return
-        try:
-            resolved = Path(os.path.realpath(path))
-        except (OSError, ValueError):
-            return
-        # Folded, so a case-only difference is not scanned twice on a case-insensitive volume.
-        if not any(_identity(resolved) == _identity(known) for known in roots):
-            roots.append(resolved)
-
     try:
         from utils.paths import studio_root
-        _add(studio_root())
+        return [Path(os.path.realpath(studio_root()))]
     except Exception:
-        pass
-
-    # Mirror _swa_cache_path exactly: env override if set, else the legacy home. Both would pull a DIFFERENT installation's logs into this one.
-    env_home = (
-        os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
-    ).strip()
-    if env_home:
-        # Both spellings, because writer and reader disagree about the tilde: _swa_cache_path builds Path(home) raw, so an unexpanded value (systemd EnvironmentFile, dotenv) makes the runners write to a directory NAMED "~" while expanduser looks in the real home. Safe unlike the env-versus-legacy case above: one value, two spellings.
-        for spelling in (Path(env_home).expanduser(), Path(env_home)):
-            try:
-                _add(spelling)
-            except (OSError, ValueError):
-                pass
-    else:
-        try:
-            _add(Path.home() / ".unsloth" / "studio")
-        except (OSError, RuntimeError):
-            pass
-
-    return roots
+        return []
 
 
 def _identity(path) -> str:
@@ -104,6 +79,7 @@ def _digest(realpath: str) -> str:
 def _family_files(family: str) -> list[Path]:
     """Real, contained, regular files for one family, newest first."""
     subdir, pattern = FAMILIES[family]
+    limit = DEFAULT_KEEP if family in MANAGED_ENGINE_LOG_FAMILIES else MAX_SOURCES_PER_FAMILY
     found: dict[str, tuple[Path, float]] = {}
     for root in candidate_roots():
         directory = root / subdir
@@ -114,12 +90,13 @@ def _family_files(family: str) -> list[Path]:
         except OSError:
             continue
         try:
-            entries = list(directory.glob(pattern))
+            # Names, not a Path per file; fnmatch.filter folds case exactly as glob does (Windows only).
+            names = fnmatch.filter(os.listdir(directory), pattern)
         except OSError:
             continue
         # Nothing prunes logs/llama-server and one file is written per load ATTEMPT (11,794 on this host), so a filename presort, which tracks time order, leaves a handful to stat. Every family's filename embeds its creation time (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>, desktop ms epoch), and realpath + stat on every file cost ~356ms at a 1 Hz poll.
-        entries.sort(key = lambda entry: entry.name, reverse = True)
-        entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
+        names.sort(reverse = True)
+        entries = [directory / name for name in names[: limit * 3]]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
@@ -136,7 +113,7 @@ def _family_files(family: str) -> list[Path]:
             # Keyed on the folded spelling so a case-insensitive volume cannot list one file twice; the first spelling seen is kept, so the id digest stays over the real path.
             found.setdefault(_identity(real), (real, stat.st_mtime))
     ordered = sorted(found.values(), key = lambda item: item[1], reverse = True)
-    return [path for path, _ in ordered[:MAX_SOURCES_PER_FAMILY]]
+    return [path for path, _ in ordered[:limit]]
 
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:

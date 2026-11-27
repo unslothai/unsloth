@@ -204,7 +204,6 @@
     "tests/test_diffusion_backend.py"
   ],
   "core.inference.diffusion_transformer_quant.apply_small_m_padding": [
-    "tests/test_diffusion_h3_trainer.py",
     "tests/test_diffusion_prequant.py",
     "tests/test_diffusion_prequant.py"
   ],
@@ -1432,9 +1431,6 @@
     "tests/test_cached_gguf_routes.py",
     "tests/test_cached_gguf_routes.py"
   ],
-  "utils.models.model_config._env_offline": [
-    "tests/test_vision_cache.py"
-  ],
   "utils.models.model_config._is_vision_model_subprocess": [
     "tests/test_vision_cache.py",
     "tests/test_vision_cache.py",
@@ -1500,6 +1496,9 @@
     "tests/test_training_transformers_upgrade_gate.py",
     "tests/test_training_transformers_upgrade_gate.py",
     "tests/test_training_transformers_upgrade_gate.py"
+  ],
+  "utils.models.model_config.hf_env_offline": [
+    "tests/test_vision_cache.py"
   ],
   "utils.models.model_config.is_audio_input_type": [
     "tests/test_trained_model_scan.py"

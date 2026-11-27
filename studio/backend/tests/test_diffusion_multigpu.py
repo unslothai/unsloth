@@ -127,8 +127,7 @@ def test_no_split_keeps_single_card_behaviour(overrides):
 
 
 def test_text_encoders_alone_when_the_decode_needs_the_runtime_room():
-    # Video-like: the secondary cannot also hold the decode headroom, but the encoders alone fit it, and the denoiser +
-    # VAE fit the primary.
+    # Secondary can't hold decode headroom: encoders alone fit, denoiser+VAE go on primary.
     kwargs = dict(
         companion_dense_mib = 11500,
         text_encoder_dense_mib = 11000,
@@ -1672,8 +1671,7 @@ def test_split_video_request_is_guarded_on_every_card():
     assert (
         vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
     )
-    # the decode card is priced for the decoded clip; the denoiser card for its weights, the base headroom and the
-    # decoded frames copied back to it
+    # Decode card: the decoded clip; denoiser card: weights, base headroom, frames copied back.
     frames_mib = -(-1280 * 720 * 121 * 3 * 4 // (1 << 20))
     home_mib = max(frames_mib, vid._VIDEO_DENOISE_ACTIVATION_MIB)
     tight = {0: 4 + home_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
@@ -1781,26 +1779,195 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     assert refined.fallback_plan is plan
 
 
-def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
+def _ltx25_split(single, **estimates):
+    return dataclasses.replace(
+        single,
+        offload_policy = dm.OFFLOAD_NONE,
+        secondary_ordinal = 1,
+        fallback_plan = single,
+        estimates = {**single.estimates, **estimates},
+    )
+
+
+def test_ltx25_sidecar_encoder_keeps_one_card_without_the_lever(monkeypatch):
     import types as _types
 
     from core.inference import video as vid
 
     single = _plan()
-    split = dataclasses.replace(
-        single, offload_policy = dm.OFFLOAD_NONE, secondary_ordinal = 1, fallback_plan = single
-    )
+    split = _ltx25_split(single, multigpu_secondary_required_mib = 9000)
     ltx25 = _types.SimpleNamespace(name = "ltx-2.5")
     wan = _types.SimpleNamespace(name = "wan2.2")
+    refined = []
+    monkeypatch.setattr(
+        vid,
+        "refine_plan_for_multigpu",
+        lambda pipe, plan, logger = None, **kw: refined.append(kw) or split,
+    )
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    # no selection: one card, whatever the lever says
     assert vid._video_single_card_for_sidecar(ltx25, split) is single
     assert vid._video_single_card_for_sidecar(wan, split) is split
     assert vid._video_single_card_for_sidecar(ltx25, single) is single
-    refined = []
-    monkeypatch.setattr(
-        vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split
-    )
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
-    assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
+    assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [{}]
+    monkeypatch.setenv(vid.LTX25_MULTI_GPU_ENV, "0")
+    refined.clear()
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert vid._video_single_card_for_sidecar(ltx25, split) is single
+        assert vid._video_sidecar_worker_card(ltx25, split) is None
+        assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
+    assert refined == []
+
+
+def test_ltx25_split_keeps_the_worker_on_the_partner_when_it_fits(monkeypatch):
+    import types as _types
+
+    from core.inference import video as vid
+
+    single = _plan()
+    ltx25 = _types.SimpleNamespace(name = "ltx-2.5")
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    fits = _ltx25_split(single, multigpu_secondary_required_mib = 13600 - 1024)
+    short = _ltx25_split(single, multigpu_secondary_required_mib = 13600 - 1023)
+    unpriced = _ltx25_split(single)
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert vid._video_single_card_for_sidecar(ltx25, fits) is fits
+        assert vid._video_sidecar_worker_card(ltx25, fits) == 1
+        assert vid._video_single_card_for_sidecar(ltx25, short) is single
+        assert vid._video_single_card_for_sidecar(ltx25, unpriced) is single
+        assert vid._video_sidecar_worker_card(ltx25, single) is None
+        monkeypatch.setattr(mg, "_rocm_torch", lambda: True)
+        assert vid._video_single_card_for_sidecar(ltx25, fits) is single
+        assert vid._video_sidecar_worker_card(ltx25, fits) is None
+
+
+class _FakeEncoderClient:
+    def __init__(self, device, info):
+        self.config = {"device": device}
+        self._info = info
+        self.waits = 0
+
+    def wait_ready(self, cancel = None):
+        self.waits += 1
+        if isinstance(self._info, Exception):
+            raise self._info
+        return self._info
+
+
+def test_ltx25_worker_reserve_prices_its_card():
+    from core.inference import video as vid
+
+    def reserve(
+        device,
+        info,
+        plan = None,
+    ):
+        pipe = _types_ns(_unsloth_ltx25_encoder = _FakeEncoderClient(device, info))
+        return vid._video_sidecar_card_reserve_mib(pipe, plan)
+
+    assert reserve("cuda:0", {"resident": True, "weights_mib": 13000}) == {0: 13000 + 1024}
+    assert reserve(
+        "cuda:1", {"resident": False, "weights_mib": 13000, "stream_need_mib": 6000}
+    ) == {1: 6000 + 1024}
+    assert reserve("cuda:0", {"resident": False, "weights_mib": 13000}) == {0: 13000 + 4096 + 1024}
+    # on the primary a non-resident encode reuses the denoise headroom; resident weights and the partner never do
+    plan = _types_ns(estimates = {"runtime_headroom_mib": 5000})
+    streamed = {"resident": False, "weights_mib": 13000, "stream_need_mib": 6000}
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert reserve("cuda:0", streamed, plan) == {0: 1000 + 1024}
+        assert reserve(
+            "cuda:0", {"resident": False, "weights_mib": 16, "stream_need_mib": 4112}, plan
+        ) == {0: 1024}
+        assert reserve("cuda:0", {"resident": True, "weights_mib": 13000}, plan) == {
+            0: 13000 + 1024
+        }
+        assert reserve("cuda:1", streamed, plan) == {1: 6000 + 1024}
+    assert reserve("cuda:0", streamed, plan) == {0: 6000 + 1024}
+    assert reserve("cpu", {"resident": True, "weights_mib": 13000}) is None
+    assert reserve("cuda:0", {"resident": True}) is None
+    with pytest.raises(RuntimeError, match = "worker died"):
+        reserve("cuda:0", RuntimeError("worker died"))
+    assert vid._video_sidecar_card_reserve_mib(_types_ns()) is None
+
+
+def _types_ns(**kw):
+    import types as _types
+    return _types.SimpleNamespace(**kw)
+
+
+def test_ltx25_refinement_is_charged_for_the_worker(monkeypatch):
+    """A companion split that fits without the worker's charge must not fit with it."""
+    from core.inference import diffusion_layer_split_plan as lsp
+    from core.inference import video as vid
+
+    plan = _plan()
+    assert plan.offload_policy != dm.OFFLOAD_NONE
+    sizes = {"transformer": (9000, "dit"), "connectors": (3000, "other"), "vae": (300, "other")}
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
+    monkeypatch.setattr(mg, "encoder_card_limit_mib", lambda o: 12750)
+    limits = []
+
+    def layer_split(pipe, plan, *, primary_limit_mib, secondary_limit_mib, **kw):
+        limits.append((primary_limit_mib, secondary_limit_mib(1)))
+        return plan
+
+    monkeypatch.setattr(lsp, "refine_plan_for_layer_split", layer_split)
+    ltx25 = _types_ns(name = "ltx-2.5")
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        free = mg.refine_plan_for_multigpu(object(), plan)
+        assert free.secondary_ordinal == 1 and free.offload_policy == dm.OFFLOAD_NONE
+        budget = int(plan.estimates["safe_device_budget_mib"])
+        unreserved = (
+            budget
+            if dm.plan_keeps_transformer_resident(plan)
+            else int(budget * mg._RESIDENT_FRACTION)
+        )
+        worker = _FakeEncoderClient("cuda:0", {"resident": True, "weights_mib": unreserved})
+        charged = vid._video_refine_for_multigpu(
+            ltx25, _types_ns(_unsloth_ltx25_encoder = worker), plan
+        )
+        assert charged is plan and worker.waits == 1
+        assert limits[-1] == (unreserved - unreserved - 1024, 12750)
+        partner = _FakeEncoderClient("cuda:1", {"resident": True, "weights_mib": 12000})
+        assert (
+            vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = partner), plan)
+            is plan
+        )
+        assert limits[-1] == (unreserved, 12750 - 12000 - 1024)
+        small = _FakeEncoderClient("cuda:1", {"resident": True, "weights_mib": 100})
+        split = vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = small), plan)
+        assert split.secondary_ordinal == 1
+        unpriced = _FakeEncoderClient("cuda:0", {"resident": True})
+        assert (
+            vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = unpriced), plan)
+            is plan
+        )
+        resident = dataclasses.replace(plan, offload_policy = dm.OFFLOAD_NONE)
+        idle = _FakeEncoderClient("cuda:0", {"resident": True, "weights_mib": 1})
+        kept = vid._video_refine_for_multigpu(
+            ltx25, _types_ns(_unsloth_ltx25_encoder = idle), resident
+        )
+        assert kept is resident and idle.waits == 0
+
+
+def test_refinement_without_a_reserve_is_unchanged(monkeypatch):
+    plan = _plan()
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None, **_: 1)
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        a = mg.refine_plan_for_multigpu(object(), plan)
+        b = mg.refine_plan_for_multigpu(object(), plan, card_reserve_mib = {})
+        c = mg.refine_plan_for_multigpu(object(), plan, card_reserve_mib = {1: 0, 5: 99999})
+    assert a == b == c and a.secondary_components == ("text_encoder", "vae")
 
 
 def _fake_cuda_host(
@@ -2173,18 +2340,20 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
     )
     pipe = Pipe()
     mg._PLACEMENTS[pipe] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
+    other = None
     try:
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
             reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
         assert reason is not None and "holds the split's components" in reason
+        # a card holding only this load's text encoders takes the replica beside them (they run before the steps)
         te_only = Pipe()
         mg._PLACEMENTS[te_only] = {
             "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
         }
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
-            assert "holds the split's components" in mg.install_cfg_parallel(
-                te_only, offload_policy = "none"
-            )
+            assert mg.install_cfg_parallel(te_only, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[te_only].secondary) == "cuda:1"
+        mg.uninstall_cfg_parallel(te_only)
         other = Pipe()
         mg._PLACEMENTS[other] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
@@ -2192,7 +2361,8 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
         assert str(mg._CFG_ROUTERS[other].secondary) == "cuda:2"
     finally:
         mg.uninstall_cfg_parallel(pipe)
-        mg.uninstall_cfg_parallel(other)
+        if other is not None:
+            mg.uninstall_cfg_parallel(other)
 
 
 def test_background_compile_declines_cfg_parallel(monkeypatch):
@@ -2838,3 +3008,42 @@ def test_automatic_partner_skips_a_card_holding_the_splits_components(monkeypatc
     finally:
         mg.uninstall_cfg_parallel(pipe)
         mg._PLACEMENTS.pop(pipe, None)
+
+
+def _interval_cfg_loop(
+    dit,
+    latents,
+    steps,
+    stop,
+    scale = 4.0,
+):
+    """Fast CFG: both branches for the first ``stop`` fraction of the steps, the conditional one alone after."""
+    cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+    uncond = torch.randn(3, 4, generator = torch.Generator().manual_seed(2))
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps)
+        c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
+        if i < int(stop * steps):
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond)[0]
+            pred = u + scale * (c - u)
+        else:
+            pred = c
+        latents = latents - 0.1 * pred
+    return latents
+
+
+def test_a_fast_cfg_tail_stays_exact_across_renders():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(1, 4)
+    fast = _interval_cfg_loop(dit, latents.clone(), steps = 10, stop = 0.8)
+    full = _cfg_loop(dit, latents.clone(), steps = 10)
+    router, replicas = _router(dit)
+    for _ in range(2):
+        assert torch.equal(_interval_cfg_loop(dit, latents.clone(), steps = 10, stop = 0.8), fast)
+        router.end_render()
+    assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 10), full)
+    assert router.describe()["disabled_reason"] is None
+    assert len(replicas) == 1
+    assert router.stats["steps_parallel"] > 0
+    router.drop_replica()

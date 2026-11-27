@@ -26,8 +26,7 @@ interface PendingRetry {
 }
 
 /**
- * Load anyway toast: the action only opens a confirmation; only Confirm retries the pick once with the
- * override. ``dismiss`` retires an open prompt when a newer pick or load begins.
+ * The toast action only opens a confirmation; only Confirm retries, and dismiss retires the prompt.
  */
 export function useLoadAnywayPrompt(): {
   offer: (message: string, retry: () => void) => void;

@@ -508,3 +508,29 @@ def test_the_triton_widen_of_a_layer_on_a_non_current_gpu(monkeypatch, fmt):
     assert launches and fd._TRITON_STATE["failed"] is None, fd._TRITON_STATE["failed"]
     assert got.device == torch.device("cuda", 1)
     _assert_bitwise(got.cpu(), _old(codes, scale, torch.bfloat16, fmt))
+
+
+def test_one_element_scale_broadcasts_on_kernel_and_chunked_paths(monkeypatch):
+    # A per-tensor scale (ComfyUI scaled checkpoints) must reach the kernel as one value per row, since it reads
+    # scale[row]; a 1-element buffer there would be read out of bounds on CUDA / ROCm.
+    import core.inference.diffusion_fp8_dequant as fd
+
+    codes = torch.randint(-127, 127, (6, 5), dtype = torch.int8)
+    scale = torch.tensor([0.5], dtype = torch.float32)
+    want = (codes.float() * 0.5).to(torch.bfloat16)
+    seen = []
+
+    def fake_launch(codes_, scale_, out, fmt):
+        seen.append(scale_.numel())
+        out.copy_((codes_.float() * scale_[: codes_.shape[0], None]).to(out.dtype))
+
+    monkeypatch.setattr(fd, "_triton_ok", lambda *a: True)
+    monkeypatch.setattr(fd, "launch_triton", fake_launch)
+    got = fd.dequant_rows(codes, scale, torch.bfloat16, lambda c: c.float())
+    assert seen == [6] and torch.equal(got, want)
+
+    monkeypatch.setattr(fd, "chunk_rows", lambda *a, **k: 2)
+    got = fd.dequant_rows(codes, scale, torch.bfloat16, lambda c: c.float(), triton_ok = False)
+    assert torch.equal(got, want)
+    with pytest.raises(ValueError):
+        fd.dequant_rows(codes, torch.ones(3), torch.bfloat16, lambda c: c.float(), triton_ok = False)

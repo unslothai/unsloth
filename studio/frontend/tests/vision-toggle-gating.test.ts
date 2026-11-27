@@ -46,8 +46,8 @@ test("the composer's own mirror of the flag stays unguarded", () => {
   );
 });
 
-test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
-  // MLX has no mmproj, so the row must not render for it.
+test("one Vision switch serves both halves of Advanced Settings, each with its own hint", () => {
+  // MLX honours disableVision too: it stops image input and, where it can, loads the text model alone.
   const lines = CONFIG_PAGE.split("\n");
   const bodyOf = (name: string): string => {
     const start = lines.findIndex((line) =>
@@ -72,19 +72,10 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
     1,
     "expected exactly one Vision switch in the file",
   );
-  assert.ok(
-    gguf.includes(wiring),
-    "Vision switch is not in GgufAdvancedSettings",
-  );
-  assert.ok(
-    !mlx.includes(wiring),
-    "Vision switch leaked into MlxAdvancedSettings",
-  );
-  assert.ok(
-    !mlx.includes("disableVision"),
-    "MlxAdvancedSettings reads disableVision, which it cannot act on",
-  );
-  assert.ok(gguf.includes(">Vision</span>"));
+  assert.ok(bodyOf("VisionRow").includes(wiring));
+  assert.ok(gguf.includes("<VisionRow config={config} update={update} hint={GGUF_VISION_HINT} />"));
+  assert.ok(mlx.includes("<VisionRow config={config} update={update} hint={MLX_VISION_HINT} />"));
+  assert.ok(bodyOf("VisionRow").includes(">Vision</span>"));
 
   const gateAbove = (index: number): string => {
     for (let i = index; i >= 0; i--) {
@@ -245,7 +236,7 @@ test("the Vision row is gated out for diffusion models", () => {
 
   const lines = CONFIG_PAGE.split("\n");
   const visionAt = lines.findIndex((line) =>
-    line.includes("checked={!config.disableVision}"),
+    line.includes("hint={GGUF_VISION_HINT}"),
   );
   assert.notEqual(visionAt, -1, "no Vision switch to gate");
 

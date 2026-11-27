@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 import click
 import typer
@@ -218,6 +218,15 @@ _CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _CLAUDE_COMPACT_BUFFER = 3_000
 # claude 2.1 ignores a smaller CLAUDE_CODE_AUTO_COMPACT_WINDOW and warns about it on every launch.
 _CLAUDE_MIN_AUTO_COMPACT_WINDOW = 100_000
+# Headroom in case the agent's token estimate runs low: 10% of the window, capped at 32_768.
+_CLAUDE_COMPACT_HEADROOM_MAX = 32_768
+
+
+def claude_autocompact_pct(window: int) -> str:
+    headroom = min(window // 10, _CLAUDE_COMPACT_HEADROOM_MAX)
+    return str((window - headroom) * 100 // window)
+
+
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -250,6 +259,15 @@ class _PassthroughCommand(TyperCommand):
             remaining.insert(insert_at, "--")
             ctx.args = remaining
         return remaining
+
+    def invoke(self, ctx: click.Context):
+        global _agent_ctx
+        _agent_ctx = ctx
+        ctx.meta["unsloth_raw_args"] = list(ctx.args)
+        return super().invoke(ctx)
+
+
+_agent_ctx: Optional[typer.Context] = None
 
 
 # provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
@@ -1849,11 +1867,8 @@ def _loaded_models_response(
     key: str,
     timeout = 30,
 ) -> dict:
-    """Raw listing of what this server has resident. Startup and key checks need no more.
-
-    /v1/models answers the same question but waits for disk and media discovery first,
-    which on a slow scan folder outlasts the deadline below.
-    """
+    """Raw listing of resident models, enough for startup and key checks; unlike /v1/models it skips
+    disk and media discovery, which can outlast the deadline on a slow scan folder."""
     try:
         answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
         if isinstance(answer.get("data"), list):
@@ -2113,6 +2128,10 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             )
         return None, None
     identifier = status.get("model_identifier")
+    quant = status.get("gguf_variant")
+    if identifier and quant and identifier.casefold().endswith(f":{quant}".casefold()):
+        if _is_hub_model_id(identifier[: -len(quant) - 1]):
+            identifier = identifier[: -len(quant) - 1]
     if identifier:
         return identifier, public_id
     # A native path lease redacts the internal path; inventing one from the basename would address the wrong file, so only a hub id can be posted back.
@@ -2192,6 +2211,97 @@ def _resident_serves_variant(status: dict, wanted: Optional[str]) -> bool:
     return str(resident).strip().lower() == str(wanted).strip().lower()
 
 
+# Carried field -> strip_shadowing_flags groups a sent copy makes the server strip from inherited extras.
+_EXTRAS_SHADOW_GROUPS = {
+    "max_seq_length": ("strip_context",),
+    "cache_type_kv": ("strip_cache",),
+    "speculative_type": ("strip_spec",),
+    "spec_draft_n_max": ("strip_spec",),
+    "chat_template_override": ("strip_template",),
+    "tensor_parallel": ("strip_split_mode",),
+    "tensor_split": ("strip_tensor_split",),
+    "gpu_memory_mode": ("strip_offload",),
+    "gpu_layers": ("strip_offload",),
+    "n_cpu_moe": ("strip_offload",),
+    "reasoning_budget": ("strip_reasoning_budget",),
+    "reasoning_budget_message": ("strip_reasoning_budget_message",),
+    "n_batch": ("strip_batch",),
+    "n_ubatch": ("strip_ubatch",),
+    "load_mode": ("strip_load_mode", "strip_load_mode_aliases"),
+    "ctx_checkpoints": ("strip_ctx_checkpoints",),
+    "cache_ram": ("strip_cache_ram",),
+    "spec_draft_cache_type": ("strip_spec_draft_cache",),
+}
+
+
+def _fields_extras_override(extras, carried: dict) -> set:
+    """The carried fields one of ``extras`` overrides; all of them when the flags cannot be read here."""
+    if not extras:
+        return set()
+    try:
+        ensure_studio_backend_path(seed_cache_env = False)
+        from core.inference.llama_server_args import selects_spec_type, strip_shadowing_flags
+    except ImportError:
+        return set(carried)
+    off = dict.fromkeys(
+        (group for groups in _EXTRAS_SHADOW_GROUPS.values() for group in groups), False
+    )
+    present = {
+        group for group in off if strip_shadowing_flags(extras, **{**off, group: True}) != extras
+    }
+    overridden = {
+        name for name in carried if present.intersection(_EXTRAS_SHADOW_GROUPS.get(name, ()))
+    }
+    # Left home, "off" reloads as auto; stripping a disabled drafter's tuning flags changes nothing.
+    if carried.get("speculative_type") == "off" and not selects_spec_type(extras):
+        overridden.discard("speculative_type")
+    return overridden
+
+
+def _selects_device(extras) -> bool:
+    if not extras:
+        return False
+    try:
+        ensure_studio_backend_path(seed_cache_env = False)
+        from core.inference.llama_server_args import strip_shadowing_flags
+    except ImportError:
+        return True
+    return strip_shadowing_flags(
+        extras,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_device = True,
+    ) != list(extras)
+
+
+def _resident_reload_payload(status: dict, payload: dict) -> dict:
+    carried = _resident_runtime_payload(status, payload)
+    # A sent gpu_ids makes the server drop the caller's own --device / --main-gpu (_strip_device_extra_args).
+    if "gpu_ids" in carried and _selects_device(payload.get("llama_extra_args")):
+        carried.pop("gpu_ids")
+        carried.pop("tensor_split", None)
+    # Extras are inherited server-side and shadow-stripped against sent fields, so a carried field would strip its group's flags.
+    for name in _fields_extras_override(status.get("requested_llama_extra_args"), carried):
+        carried.pop(name, None)
+    carried.pop("llama_extra_args", None)
+    # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
+    if {**payload, **carried}.get("gpu_memory_mode") != "manual":
+        carried.pop("tensor_split", None)
+    # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
+    carried.pop("n_parallel", None)
+    return carried
+
+
+def _names_another_quant(status: dict, load: LoadOptions) -> bool:
+    """Whether the load asks for a different quant than the resident runs: another checkpoint, with saved settings of its own."""
+    return bool(load.gguf_variant and _resident_variant(status)) and not _resident_serves_variant(
+        status, load.gguf_variant
+    )
+
+
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
     """Whether applying these settings can restart the resident. Unproven equality counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
@@ -2246,6 +2356,51 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
     return False
 
 
+def _pin_loaded_quant(
+    entry: dict,
+    models: list,
+    variant: str,
+    gguf: bool = False,
+) -> dict:
+    """A bare repo id reaches whichever of its loaded quants was used last, so name the chosen one."""
+    model_id = str(entry.get("id") or "")
+    if not model_id or model_id.casefold().endswith(f":{variant}".casefold()):
+        return entry
+    pinned = f"{model_id}:{variant}"
+    loaded = [m for m in models if m.get("loaded") is not False]
+    named = next(
+        (m for m in loaded if str(m.get("id") or "").casefold() == pinned.casefold()), None
+    )
+    if named is not None:
+        return named
+    prefix = f"{model_id}:".casefold()
+    sibling = any(str(m.get("id") or "").casefold().startswith(prefix) for m in loaded)
+    # Pinned up front too: a sibling loaded later would take the agent's bare id mid-session.
+    alone = gguf and _is_hub_model_id(model_id)
+    return {**entry, "id": pinned} if sibling or alone else entry
+
+
+def _status_is_for(model_id: object, status: dict, allow_casefold: bool) -> bool:
+    """Whether ``status`` describes ``model_id``, which may name its quant as ``repo:QUANT``."""
+    quant = status.get("gguf_variant")
+    names = [status.get("active_model"), status.get("model_identifier")]
+    names += [f"{name}:{quant}" for name in names if name and quant]
+    return any(
+        _model_id_matches(model_id, name, allow_casefold = allow_casefold) for name in names if name
+    )
+
+
+def _pin_served_quant(base: str, key: str, entry: dict, variant: str) -> dict:
+    # A low-disk fallback can serve another quant than the one asked for: pin what runs.
+    named = _inference_status(base, key, f"{entry.get('id')}:{variant}")
+    # An unmatched scoped read answers with another model's status.
+    ours = _model_id_matches(named.get("active_model"), entry.get("id"), allow_casefold = True)
+    if not ours or str(named.get("gguf_variant") or "").casefold() != variant.casefold():
+        named = _inference_status(base, key, entry["id"])
+        variant = named.get("gguf_variant") or variant
+    return _pin_loaded_quant(entry, _loaded_models(base, key), variant, bool(named.get("is_gguf")))
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -2271,6 +2426,7 @@ def _resolve_model(
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
+        same_checkpoint = not _names_another_quant(status_snapshot, load)
         # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). An older server answers this listing from the full catalog, which also carries cached-but-unloaded entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
     loaded_match = next(
         (
@@ -2303,6 +2459,7 @@ def _resolve_model(
                     if status_snapshot.get(field)
                 )
             )
+            same_checkpoint = same_checkpoint and not _names_another_quant(status_snapshot, load)
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
         # A load of a model already served replaces it in its own slot, which may not be the primary.
         active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
@@ -2485,21 +2642,19 @@ def _resolve_model(
             )
         if attach_public_id is not None or loaded_match is not None:
             # A resident reload is a full load, not a PATCH: carry the knobs the user did not name, or changing the context alone drops their KV dtype, slot count, batch sizes and GPU placement.
-            carried = _resident_runtime_payload(status_snapshot, payload)
-            if attach_public_id is None:
-                # Omitted extras are inherited server-side, shadow-stripped against the fields sent: a copied list would beat --context-length, and a carried field would strip an extra that won. So extras mean no carry.
-                if not same_checkpoint or status_snapshot.get("requested_llama_extra_args"):
-                    carried = {}
-                carried.pop("llama_extra_args", None)
-                # Outside manual, status reports the planner's emitted ratio, not the request (LlamaCppBackend.tensor_split); sending it pins an Auto split and reloads.
-                if {**payload, **carried}.get("gpu_memory_mode") != "manual":
-                    carried.pop("tensor_split", None)
-                # Status cannot say whether the slot count was the default, and a sent count stops Auto cutting slots to keep a drafter (n_parallel_from_default).
-                carried.pop("n_parallel", None)
+            if not same_checkpoint:
+                carried = {}
+            elif attach_public_id is None:
+                carried = _resident_reload_payload(status_snapshot, payload)
+            else:
+                carried = _resident_runtime_payload(status_snapshot, payload)
             payload.update(carried)
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
+        if not same_checkpoint or (attach_public_id is None and loaded_match is None):
+            # Nothing of this checkpoint is resident to carry from; named fields still win.
+            payload["use_saved_settings"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -2875,7 +3030,7 @@ def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     _fail(message)
 
 
-# Mirrors the frontend's NO_MLX_REASONS: an Apple Silicon host that still cannot load MLX.
+# Mirrors the frontend's NO_MLX_REASONS; only for a server that does not send mlx_inference.
 _NO_MLX_REASONS = frozenset(
     {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
 )
@@ -2909,12 +3064,15 @@ def _server_loads_mlx(base: str, key: str) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(1)
-    return (
+    if not (
         isinstance(health, dict)
         and health.get("device_type") == "mac"
         and health.get("apple_silicon") is True
-        and health.get("chat_only_reason") not in _NO_MLX_REASONS
-    )
+    ):
+        return False
+    if isinstance(health.get("mlx_inference"), bool):
+        return health["mlx_inference"]
+    return health.get("chat_only_reason") not in _NO_MLX_REASONS
 
 
 def _refuse_non_gguf(
@@ -3345,7 +3503,7 @@ def _claude_local_env(
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = (
             str(int(window)) if int(window) >= _CLAUDE_MIN_AUTO_COMPACT_WINDOW else ""
         )
-        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = claude_autocompact_pct(int(window))
         # claude reserves min(max output, 20k) + 3k before compacting, so its 32k default output would take 20k of a 32k window; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
@@ -5181,6 +5339,22 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
+def _served_window(base: str, key: str, model_id: str) -> Optional[int]:
+    provider_id, _, model = model_id[len(_CONNECTION_MODEL_PREFIX) :].partition("::")
+    query = urlencode({"model": unquote(model)})
+    try:
+        answer = _http_json(
+            "POST",
+            f"{base}/api/providers/{quote(provider_id, safe = '')}/served-window?{query}",
+            key,
+            timeout = 150,
+        )
+    except (OSError, ValueError):
+        return None
+    window = answer.get("context_length")
+    return window if isinstance(window, int) and window > 0 else None
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -5229,6 +5403,8 @@ def _connect(
             and server is None
             and any(
                 entry.get("loaded") is not False
+                # A loaded quant's own repo:QUANT alias is a split, not a tagged id.
+                and not entry.get("quant")
                 and _model_id_matches(
                     entry.get("id"), requested, allow_casefold = is_loopback_url(base)
                 )
@@ -5245,9 +5421,10 @@ def _connect(
                     "`unsloth start codex` and `unsloth start opencode`."
                 )
             typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
-            # A Connection reports no context window; an explicit one lets agents size compaction.
-            if load.max_seq_length > 0:
-                connection["context_length"] = load.max_seq_length
+            served = _served_window(base, key, connection["id"])
+            window = min(filter(None, (served, max(load.max_seq_length, 0))), default = None)
+            if window:
+                connection["context_length"] = window
             else:
                 typer.echo(
                     "Pass --max-seq-length with the model's context window so the agent can "
@@ -5279,14 +5456,12 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
+        if load.gguf_variant:
+            entry = _pin_served_quant(base, key, entry, load.gguf_variant)
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
-        if status.get("memory_warning") and any(
-            _model_id_matches(
-                (entry or {}).get("id"), status_id, allow_casefold = is_loopback_url(base)
-            )
-            for status_id in (status.get("active_model"), status.get("model_identifier"))
-            if status_id
+        if status.get("memory_warning") and _status_is_for(
+            (entry or {}).get("id"), status, is_loopback_url(base)
         ):
             typer.echo(f"Warning: {status['memory_warning']}", err = True)
     except BaseException:
@@ -5324,6 +5499,7 @@ def _run(
             typer.echo(f"Unsloth Studio is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
+    _remember_start(base, entry)
     try:
         code = _launch(
             command,
@@ -5354,6 +5530,121 @@ def _run(
 
 def _agents_config_root() -> Path:
     return _studio_auth_root() / "agents"
+
+
+_CONTINUE_ARGS = {
+    "claude": ["--continue"],
+    "opencode": ["--continue"],
+    "vibe": ["--continue"],
+    "codex": ["resume", "--last"],
+    "hermes": ["--continue"],
+    "pi": ["--continue"],
+    # Both reopen their saved sessions on a plain launch of a kept home.
+    "openclaw": [],
+    "dsh": [],
+}
+_OWN_HOME_AGENTS = ("claude", "opencode", "vibe")
+# api_key is cached per server; --yolo is never re-granted silently; --app never reaches _run.
+_NOT_REPLAYED = frozenset({"model", "api_key", "launch", "yolo", "app"})
+
+
+def _last_start_path() -> Path:
+    return _studio_auth_root() / "last_start.json"
+
+
+def _typed_options(ctx) -> list:
+    args = []
+    for param in ctx.command.params:
+        opts = getattr(param, "opts", None)
+        if not opts or param.name in _NOT_REPLAYED:
+            continue
+        try:
+            source = ctx.get_parameter_source(param.name)
+        except Exception:
+            continue
+        if getattr(source, "name", None) != "COMMANDLINE":
+            continue
+        value = ctx.params.get(param.name)
+        if getattr(param, "is_flag", False):
+            flag = opts if value else getattr(param, "secondary_opts", None)
+            args += flag[:1] if flag else []
+        elif value is not None:
+            args += [opts[0], str(value)]
+    return args
+
+
+def _remember_start(base: str, entry: dict) -> None:
+    ctx = _agent_ctx
+    if ctx is None or ctx.info_name not in _CONTINUE_ARGS:
+        return
+    agent = ctx.info_name
+    positional, _ = _consume_positional_model(
+        ctx.params.get("model"), ctx.meta.get("unsloth_raw_args") or []
+    )
+    subagent = ctx.params.get("as_subagent") or ctx.params.get("auto_route")
+    args = _typed_options(ctx)
+    # A path-loaded resident's public id is a bare name that would resolve to unsloth/<name>.
+    model = positional or (entry["id"] if _looks_like_model(entry["id"]) else None)
+    # Pin the resident's quant: subagent entries carry it in the id, primary ones as "quant".
+    resident, quant = _split_repo_variant(entry["id"])
+    quant = quant or entry.get("quant")
+    if model and quant and model == resident and "--gguf-variant" not in args:
+        model = f"{resident}:{quant}"
+    last = {
+        "agent": agent,
+        "model": model,
+        "args": args,
+        # Subagent modes keep the user's own Pi dir, and link the user's Codex sessions dir.
+        "kept": bool(
+            ctx.params.get("persist")
+            or agent in _OWN_HOME_AGENTS
+            or (agent == "pi" and subagent)
+            or (agent == "codex" and subagent and (_codex_source_home() / "sessions").is_dir())
+        ),
+        "server": base,
+    }
+    try:
+        _write_private_json(_last_start_path(), last)
+    except OSError:
+        pass
+
+
+@start_app.callback(invoke_without_command = True)
+def _start_group(
+    ctx: typer.Context,
+    resume: bool = typer.Option(
+        False,
+        "--continue",
+        "-c",
+        help = "Reopen the last launched agent and model in its most recent session.",
+    ),
+):
+    if not resume:
+        return
+    if ctx.invoked_subcommand is not None:
+        _fail(f"Put --continue after the agent: unsloth start {ctx.invoked_subcommand} --continue")
+    last = _read_json_object(_last_start_path()) or {}
+    agent = last.get("agent")
+    args = last.get("args")
+    if (
+        agent not in _CONTINUE_ARGS
+        or not isinstance(last.get("model"), (str, type(None)))
+        or not isinstance(args, list)
+        or not all(isinstance(arg, str) for arg in args)
+    ):
+        _fail("Nothing to continue yet. Start an agent first, e.g. `unsloth start claude`.")
+    if not last.get("kept"):
+        _fail(
+            f"The last {agent} session was not kept, so there is nothing to resume. "
+            f"Start it with `unsloth start {agent} --persist` to keep sessions you can continue."
+        )
+    if isinstance(last.get("server"), str):
+        os.environ.setdefault("UNSLOTH_STUDIO_URL", last["server"])
+    command = ctx.command.get_command(ctx, agent)
+    model = ["--model", last["model"]] if last.get("model") else []
+    argv = [*model, *args, *_CONTINUE_ARGS[agent]]
+    with command.make_context(agent, argv, parent = ctx) as sub:
+        command.invoke(sub)
 
 
 @contextlib.contextmanager
@@ -5554,9 +5845,12 @@ def _openclaw_provider(
     key: str,
     model: dict,
     max_tokens: Optional[int] = None,
+    vision: bool = False,
 ) -> dict:
     # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
+    if vision:
+        provider_model["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -5596,6 +5890,7 @@ def write_openclaw_config(
     embedding_model: Optional[str] = None,
     request_body: Optional[dict] = None,
     max_tokens: Optional[int] = None,
+    vision: bool = False,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -5608,7 +5903,9 @@ def write_openclaw_config(
     before = json.dumps(config, sort_keys = True)
     models = _subdict(config, "models")
     models.setdefault("mode", "merge")
-    _subdict(models, "providers")["unsloth"] = _openclaw_provider(base, key, model, max_tokens)
+    _subdict(models, "providers")["unsloth"] = _openclaw_provider(
+        base, key, model, max_tokens, vision
+    )
     # Memory search is on by default and defaults to openai, so a local session reaches OpenAI unless this block is written.
     search = _subdict(_subdict(config, "memory"), "search")
     if embedding_model:
@@ -5861,7 +6158,10 @@ def _check_agent_context(
         suggested = min(suggested, native)
     if entry.get("connection"):
         # --max-seq-length only labels a Connection's window; it cannot grow the provider's.
-        hint = "A Connection's context is set by its provider, so pick a model with a longer one."
+        hint = (
+            "A Connection's context is set by its provider, so raise it there (Ollama reads "
+            "OLLAMA_CONTEXT_LENGTH) or pick a model with a longer one."
+        )
     elif native and (
         native <= window or _agent_compacts_at(agent, native, max_tokens) < prompt_tokens
     ):
@@ -5937,8 +6237,12 @@ def _opencode_provider(
     model: dict,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
     model_entry = {"name": model["id"]}
+    if vision:
+        model_entry["attachment"] = True
+        model_entry["modalities"] = {"input": ["text", "image"], "output": ["text"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -5972,6 +6276,7 @@ def write_opencode_config(
     as_subagent: bool = False,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -5990,7 +6295,7 @@ def write_opencode_config(
         reserved = opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = _opencode_provider(
-        base, key, model, max_tokens, request_body
+        base, key, model, max_tokens, request_body, vision
     )
     # Normal mode pins this as the session model. Subagent mode leaves the user's main/small models alone and exposes the local model to @unsloth and /models.
     opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
@@ -6091,12 +6396,13 @@ def _set_hermes_provider(
     legacy = providers.get(_HERMES_LEGACY_PROVIDER)
     if isinstance(legacy, dict) and legacy.get("key_env") == _HERMES_ENV_KEY:
         del providers[_HERMES_LEGACY_PROVIDER]
-    providers[_HERMES_PROVIDER] = {
-        "base_url": f"{base}/v1",
-        "api_mode": "openai",
-        "key_env": _HERMES_ENV_KEY,
-        **({"extra_body": request_body} if request_body else {}),
-    }
+    # Merge, not replace: Hermes refuses to resume a session once a field it froze on this entry (a user's api_key) is gone.
+    provider = _subdict(providers, _HERMES_PROVIDER)
+    provider.update(base_url = f"{base}/v1", api_mode = "openai", key_env = _HERMES_ENV_KEY)
+    if request_body:
+        provider["extra_body"] = request_body
+    else:
+        provider.pop("extra_body", None)
 
 
 def _hermes_mcp_manifest(home: Path) -> tuple:
@@ -6253,10 +6559,12 @@ def _vibe_env(
     base: str,
     model: dict,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> dict:
-    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
-    nothing is written to the user's Vibe config."""
+    """VIBE_* env vars outrank config.toml, so the user's Vibe config is never written."""
     entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
+    if vision:
+        entry["supports_images"] = True
     # Vibe sends its own temperature (0.2 by default) with every request.
     temperature = (request_body or {}).get("temperature")
     if temperature is not None:
@@ -6297,6 +6605,7 @@ def write_pi_config(
     *,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -6309,6 +6618,8 @@ def write_pi_config(
     before = json.dumps(config, sort_keys = True)
     # Pi reads custom providers from $PI_CODING_AGENT_DIR/models.json; the key lives there, not in the env, matching openclaw/opencode.
     provider_model = {"id": model["id"]}
+    if vision:
+        provider_model["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -6548,6 +6859,7 @@ def write_pi_subagent_config(
     approve: bool = False,
     max_tokens: Optional[int] = None,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
@@ -6562,6 +6874,7 @@ def write_pi_subagent_config(
             "maxTokens": _agent_output_limit(window, max_tokens),
             "approve": approve,
             **({"samplingParams": request_body} if request_body else {}),
+            **({"vision": True} if vision else {}),
         },
     )
 
@@ -6571,17 +6884,15 @@ def write_dsh_patch(
     model: dict,
     path: Path,
     request_body: Optional[dict] = None,
+    vision: bool = False,
 ) -> None:
-    """Write the dsh loader patch that points the booted profile at Unsloth.
-
-    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
-    after the first boot has settled, so that boot still runs on the DeepSeek default. A
-    `--patch` overlay is read at boot on every dsh release this supports, and the file is
-    Unsloth's own, so it is rewritten whole rather than merged.
-    """
+    """dsh 0.1.7 dropped settings.yaml, which only applies after a first boot still on the DeepSeek
+    default; the --patch overlay is read at boot and rewritten whole, as it is Unsloth's own."""
     import yaml
 
     model_entry = {"id": model["id"]}
+    if vision:
+        model_entry["input"] = ["text", "image"]
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
@@ -7227,7 +7538,9 @@ def _opencode_app_target(
     path = next((root / n for n in names if os.path.lexists(root / n)), root / "opencode.json")
 
     def updates(text, path, base, key, entry):
-        provider = _opencode_provider(base, key, entry, max_tokens, request_body)
+        provider = _opencode_provider(
+            base, key, entry, max_tokens, request_body, _accepts_images(base, key, entry)
+        )
         changes = [(("provider", _OPENCODE_PROVIDER), provider)]
         config = _parse_app_config(path, text) or {}
         enabled = config.get("enabled_providers")
@@ -7257,9 +7570,8 @@ def _openclaw_app_updates(
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}
     ref = f"unsloth/{entry['id']}"
-    changes = [
-        (("models", "providers", "unsloth"), _openclaw_provider(base, key, entry, max_tokens))
-    ]
+    provider = _openclaw_provider(base, key, entry, max_tokens, _accepts_images(base, key, entry))
+    changes = [(("models", "providers", "unsloth"), provider)]
     # The picker only offers allowlisted models once an allowlist exists; never create one.
     policy = defaults.get("modelPolicy")
     allowed = policy.get("allow") if isinstance(policy, dict) else None
@@ -7488,11 +7800,7 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
         status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
     except Exception:
         status = {}
-    resident = any(
-        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
-        for status_id in (status.get("active_model"), status.get("model_identifier"))
-        if status_id
-    )
+    resident = _status_is_for(entry["id"], status, is_loopback_url(base))
     if not resident:
         # Only a status about this model can vouch for it; an older server reports nothing.
         return True, False, False
@@ -7501,6 +7809,10 @@ def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
         status.get("is_vision") is True,
         status.get("supports_reasoning") is True,
     )
+
+
+def _accepts_images(base: str, key: str, entry: dict) -> bool:
+    return _vscode_capabilities(base, key, entry)[1]
 
 
 def _container_engine() -> Optional[str]:
@@ -8079,6 +8391,7 @@ def openclaw(
             embedding_model = _studio_embedding_model(base, key),
             request_body = server_options.request_body(),
             max_tokens = max_tokens,
+            vision = _accepts_images(base, key, entry),
         )
         # Scope config and state so OpenClaw never touches ~/.openclaw. Shell env off, else it re-imports keys.
         env = {
@@ -8241,6 +8554,7 @@ def opencode(
                 as_subagent = True,
                 max_tokens = max_tokens,
                 request_body = server_options.request_body(),
+                vision = _accepts_images(base, key, entry),
             )
             env = {
                 "OPENCODE_CONFIG": str(config_path),
@@ -8322,6 +8636,7 @@ def opencode(
             yolo = yolo and not native_auto,
             max_tokens = max_tokens,
             request_body = server_options.request_body(),
+            vision = _accepts_images(base, key, entry),
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -8510,6 +8825,7 @@ def pi(
                 approve = yolo,
                 max_tokens = max_tokens,
                 request_body = server_options.request_body(),
+                vision = _accepts_images(base, key, entry),
             )
             command = [
                 "pi",
@@ -8553,6 +8869,7 @@ def pi(
             pi_agent_dir / "models.json",
             max_tokens = max_tokens,
             request_body = server_options.request_body(),
+            vision = _accepts_images(base, key, entry),
         )
         write_pi_user_resources(pi_agent_dir)
         env = {"PI_CODING_AGENT_DIR": str(pi_agent_dir)}
@@ -8635,7 +8952,9 @@ def dsh(
         )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
-        write_dsh_patch(base, entry, patch, server_options.request_body())
+        write_dsh_patch(
+            base, entry, patch, server_options.request_body(), _accepts_images(base, key, entry)
+        )
         # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
         command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
@@ -8709,17 +9028,15 @@ def vibe(
     # Vibe keeps its own home; the env layer pins provider and model above its config files.
     request_body = server_options.request_body()
     if "temperature" not in request_body:
-        # Vibe always sends a temperature, which the server honours over the model's
-        # recommended one, so pass the recommendation along explicitly.
+        # Vibe always sends a temperature that beats the model's recommendation; pass that on.
         status = _inference_status(base, key, entry["id"])
         recommended = (status.get("inference") or {}).get("temperature")
-        if recommended is not None and any(
-            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
-            for status_id in (status.get("active_model"), status.get("model_identifier"))
-            if status_id
-        ):
+        if recommended is not None and _status_is_for(entry["id"], status, is_loopback_url(base)):
             request_body = {**request_body, "temperature": recommended}
-    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
+    env = {
+        _VIBE_ENV_KEY: key,
+        **_vibe_env(base, entry, request_body, _accepts_images(base, key, entry)),
+    }
     _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 

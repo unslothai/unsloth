@@ -118,6 +118,70 @@ def test_a_d1_trains_saves_and_tokenizes_as_one(decision_mlx, monkeypatch, tmp_p
     assert calls["saved"][3] == {"choice": 2.0, "score": 3.0, "noul": 6.0}
 
 
+def test_a_d1_trains_on_json_text_as_written_and_counts_it(decision_mlx, monkeypatch, tmp_path):
+    zoo, pipeline, _ = _d1_zoo(tmp_path)
+    zoo.clef_option_keys = lambda pipeline, question: ["true", "false"]
+    encoded = []
+    zoo.d1_training_item = lambda pipeline, state, *a: encoded.append(state) or {
+        "slots": [],
+        "input_ids": [0] * 8,
+    }
+    monkeypatch.setattr(decision_mlx, "_decision_zoo", lambda: zoo)
+    questions = {"q": {"type": "noul", "instructions": "Urgent?"}}
+    indented = json.dumps({"b": 1, "a": 2}, indent = 2)
+    states = ["plain", '{"b": 1, "a": 2}', '{"a":2,"b":1}', "[1,2]", {"a": 2}, indented, "{}"]
+    rows = [{"state": s, "questions": questions, "gold": {"q": "true"}} for s in states]
+    report = {"total": 0, "skipped": 0, "reason": None, "truncated": 0, "json_text_states": 0}
+    items = decision_mlx._clef_items(pipeline, rows, None, 64, None, report, lambda *args: None)
+    # A d1 writes an object indented in its own key order, so only that text reads as its object.
+    assert encoded == [item["source"]["state"] for item in items] == states
+    assert report["json_text_states"] == 3
+    # Read as text a state can stop fitting; it is counted all the same.
+    report = {"total": 0, "skipped": 0}
+    assert decision_mlx._clef_items(pipeline, rows, None, 7, None, report, lambda *a: None) == []
+    assert report["json_text_states"] == 3
+
+
+@pytest.mark.parametrize("d1, apart", [(False, [1, 1, 0, 0, 0]), (True, [1, 1, 1, 0, 0])])
+def test_json_text_holding_media_reads_apart_from_its_object(decision_mlx, d1, apart):
+    user = lambda *parts: {"role": "user", "content": list(parts)}
+    audio = {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}
+    values = [
+        [user({"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}})],
+        {
+            "messages": [
+                {"role": "system", "content": "x"},
+                user({"type": "text", "text": "hi"}, audio),
+            ]
+        },
+        [user({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}})],
+        [user({"type": "image_url", "text": "no image"})],
+        {"note": "café 東京"},
+    ]
+    # In the form the family writes its objects, so only the media parts decide.
+    form = {"indent": 2} if d1 else {"separators": (",", ":"), "sort_keys": True}
+    seen = [
+        decision_mlx._reads_apart_from_its_object(json.dumps(value, ensure_ascii = False, **form), d1)
+        for value in values
+    ]
+    assert seen == [bool(a) for a in apart]
+
+
+@pytest.mark.parametrize("d1", [False, True])
+def test_json_text_nested_too_deep_to_check_is_left_uncounted(decision_mlx, monkeypatch, d1):
+    reads_apart, deep = decision_mlx._reads_apart_from_its_object, "[" * 100_000 + "]" * 100_000
+    # Too deep to decode stays text, so neither the count nor the dataset check aborts on it.
+    assert reads_apart(deep, d1) is False
+    row = {"state": deep, "questions": {"q": {"type": "noul"}}, "gold": {"q": "true"}}
+    assert decision_mlx._rows_problem([row], True) is None
+
+    def too_deep(*_a):
+        raise RecursionError
+
+    monkeypatch.setitem(reads_apart.__globals__, "_object_form", too_deep)
+    assert reads_apart("[[0]]", d1) is False
+
+
 def test_a_reloaded_d1_answers_at_its_calibration_until_it_trains(
     decision_mlx, monkeypatch, tmp_path
 ):
@@ -202,3 +266,41 @@ def test_an_older_zoo_is_told_to_upgrade_for_a_d1(decision_mlx, monkeypatch, tmp
     monkeypatch.setattr(decision_mlx, "_decision_zoo", lambda: zoo)
     with pytest.raises(ImportError, match = "newer unsloth-zoo"):
         _load_d1(decision_mlx, tmp_path)
+
+
+@pytest.mark.parametrize("head", ["d1", "clef"])
+def test_a_language_model_naming_its_own_model_file_is_refused(
+    decision_mlx, monkeypatch, tmp_path, head
+):
+    # mlx-vlm / mlx-lm exec a config.json model_file, so it must never reach the zoo loaders.
+    zoo, *_ = _d1_zoo(tmp_path)
+    zoo.load_language_model_as_d1 = lambda *args, **kwargs: pytest.fail(
+        "model_file reached the d1 loader"
+    )
+    zoo.load_language_model_as_clef = lambda *args, **kwargs: pytest.fail(
+        "model_file reached the Clef loader"
+    )
+    monkeypatch.setattr(decision_mlx, "_decision_zoo", lambda: zoo)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "lfm3_vl", "model_file": "evil.py"}), encoding = "utf-8"
+    )
+    with pytest.raises(ValueError, match = "repository code"):
+        _load_d1(decision_mlx, tmp_path, head)
+
+
+def test_a_decision_checkpoint_naming_its_own_model_file_is_refused(
+    decision_mlx, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(decision_mlx, "_checkpoint_folder", lambda *args: tmp_path)
+    monkeypatch.setattr(decision_mlx, "is_clef_checkpoint", lambda folder: True)
+    monkeypatch.setattr(decision_mlx, "_is_plain_lm", lambda *args: False)
+    monkeypatch.setattr(
+        decision_mlx,
+        "_load_clef",
+        lambda *args, **kwargs: pytest.fail("model_file reached the loader"),
+    )
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["D1Model"], "model_file": "evil.py"}), encoding = "utf-8"
+    )
+    with pytest.raises(ValueError, match = "repository code"):
+        decision_mlx.FastDecisionModel.from_pretrained(str(tmp_path))

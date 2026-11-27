@@ -11,14 +11,6 @@
   ],
   "entries": [
     {
-      "file": "unsloth/models/float8_training.py",
-      "rule": "dynamic-import",
-      "sink": "spec_from_file_location",
-      "digest": "78b864cf6acb1555",
-      "count": 1,
-      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
-    },
-    {
       "file": "scripts/prequant_probe.py",
       "rule": "unsafe-deserialize",
       "sink": "torch.load",
@@ -99,6 +91,14 @@
       "reason": "Imports a name from the constant _TORCHAO_INTMM_MODULES tuple (torchao's safe_int_mm homes); never a model, request or download name."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_minimax_h3_image.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Loads only the two vendored diffusers model files shipped in studio/backend/vendor/diffusers_minimax_h3_image, by a path built from __file__ and a literal module name; no model metadata or caller input selects the module name or path."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_prequant.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -155,6 +155,14 @@
       "reason": "install_rope only imports a name already in _ROPE_FNS, which is built from the fixed _MODULES tuple of two diffusers Flux transformer modules."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_sage_hub.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "382035b607a2dab9",
+      "count": 1,
+      "reason": "Imports the SageAttention build the kernels package would load: the constant kernels-community/sage-attention repo at a version tag, a build directory picked from this torch, every file checked against the build's sha256 digests, and builds that declare Python dependencies refused."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_torchao_patches.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -167,7 +175,7 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "0d420008334333ee",
-      "count": 3,
+      "count": 6,
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
@@ -217,6 +225,14 @@
       "digest": "df424636e7148b98",
       "count": 2,
       "reason": "Loader is _FrontmatterLoader, a yaml.SafeLoader subclass that only adds a merge-key pair budget; no Python object construction."
+    },
+    {
+      "file": "studio/backend/core/inference/video_cosmos3.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "e0a86e3c9895326a",
+      "count": 1,
+      "reason": "Imports GUARDRAIL_PACKAGE, the module constant 'cosmos_guardrail', only after guardrail_installed() confirmed it is installed; no user-controlled module name."
     },
     {
       "file": "studio/backend/core/inference/video_wan_fused.py",
@@ -305,6 +321,14 @@
       "digest": "9eb7902991e3aa20",
       "count": 1,
       "reason": "Job module and target come from Studio's own spawn spec (account_process_spec callers), not a request."
+    },
+    {
+      "file": "studio/backend/core/training/parallel_plan.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "341bed3c3f0b36ac",
+      "count": 1,
+      "reason": "Loads Unsloth's own installed parallel_env.py and parallel_capabilities.py (fixed file names, located via find_spec('unsloth')) to read the parallel layout parser and capability table without importing unsloth in the server."
     },
     {
       "file": "studio/backend/core/training/worker.py",
@@ -427,6 +451,14 @@
       "reason": "Loads the repo's own scripts/scan_packages.py scanner from this checkout or install."
     },
     {
+      "file": "studio/backend/utils/security/st_config_args.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
+    },
+    {
       "file": "studio/backend/utils/ssm_runtime.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -451,6 +483,14 @@
       "reason": "Iterates the fixed _DIFFUSERS_PREWARM_MODEL_MODULES tuple."
     },
     {
+      "file": "studio/backend/utils/transformers_backports.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3a02e64348d87116",
+      "count": 1,
+      "reason": "Loads import_fixes.py from the installed unsloth package's own directory (find_spec('unsloth')), never a model or download path."
+    },
+    {
       "file": "studio/backend/utils/utils.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -473,6 +513,14 @@
       "digest": "59e72c01edb14c86",
       "count": 2,
       "reason": "Iterates fixed packaging / pip._vendor.packaging module names."
+    },
+    {
+      "file": "studio/install_python_stack.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "86a4baabc0246936",
+      "count": 1,
+      "reason": "Loads studio/install_hnsw_prebuilt.py from the fixed sibling path HNSW_INSTALLER (derived from __file__); no caller or Hub input selects the module name or path."
     },
     {
       "file": "unsloth/__init__.py",
@@ -505,6 +553,14 @@
       "digest": "4aa05e0119cd9062",
       "count": 1,
       "reason": "Loads unsloth/dataprep/raw_text.py and ebooks.py on the CPU backend from a fixed path derived from this package's __file__, with only those two constant names passed and the helper deleted after import, to skip dataprep/__init__ (which needs a GPU device type); never a dataset-provided or downloaded code path."
+    },
+    {
+      "file": "unsloth/_cpu_init.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
+      "count": 1,
+      "reason": "Unsloth's own unsloth/utils/run_report.py, loaded by its fixed path next to _cpu_init.py (importing unsloth.utils would pull in the GPU model stack on the CPU route), not external input."
     },
     {
       "file": "unsloth/_gpu_init.py",
@@ -543,8 +599,8 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "59e72c01edb14c86",
-      "count": 4,
-      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES and the transformers symbol homes); remote code can only name an attribute, which resolves inside an already installed transformers module."
+      "count": 5,
+      "reason": "Module names come from fixed in-file tables (_PEFT_TORCHAO_TENSOR_SUBCLASSES, _TORCHAO_IMPORT_TIME_MODULES, the transformers symbol homes and the two literal tokenizer owners of _patch_mistral_regex); remote code can only name an attribute, which resolves inside an already installed transformers module."
     },
     {
       "file": "unsloth/import_fixes.py",
@@ -667,12 +723,12 @@
       "reason": "Fallback when this file is loaded on its own: loads unsloth/precision/__init__.py from the sibling directory of the shipped package, a fixed path, never a user-supplied one."
     },
     {
-      "file": "unsloth/models/fsdp2_save.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
+      "file": "unsloth/models/float8_training.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "78b864cf6acb1555",
       "count": 1,
-      "reason": "_share_from_writer: unpickles only what the export's writer rank stored under an unsloth_fsdp2_export_* key in the job's own default c10d store; a party able to write that store already controls the job's collectives."
+      "reason": "Standalone import fallback loads only unsloth/kernels/fp8_lora.py beside this shipped module, from __file__; no model metadata or caller input selects the module name or path."
     },
     {
       "file": "unsloth/models/loader.py",
@@ -718,6 +774,22 @@
       "file": "unsloth/models/rl.py",
       "rule": "dynamic-import",
       "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 2,
+      "reason": "Two TRL module loads, neither from external input: the async GRPO trainer from a fixed tuple of two literal names (trl.trainer.async_grpo_trainer, trl.experimental.async_grpo.async_grpo_trainer), and the tree gated DeltaNet kernels from the literal trl.kernels.tree_gated_delta_rule or, on TRL 1.17, the sibling of TRL's own packing function module (original.__module__)."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "d5aa483b6d3b65d5",
+      "count": 1,
+      "reason": "Imports {prefix}.{module} with prefix in ('trl.kernels', the package of TRL's own patch_tree_recurrent) and module from the fixed _TREE_RECURRENT_OPS table."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
       "digest": "fe73e10b8cc4e18a",
       "count": 1,
       "reason": "Prefix-bounded to trl.trainer.<config module>; name comes from the installed TRL trainer classes."
@@ -732,19 +804,19 @@
     },
     {
       "file": "unsloth/models/sentence_transformer.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
+    },
+    {
+      "file": "unsloth/models/sentence_transformer.py",
       "rule": "trust-remote-code",
       "sink": "keyword",
       "digest": "9a08f32d1af83ea3",
       "count": 1,
       "reason": "Reached only after the trust_remote_code gate in _resolve_module_class raises for an untrusted non sentence_transformers class."
-    },
-    {
-      "file": "unsloth/models/tp_replica.py",
-      "rule": "unsafe-deserialize",
-      "sink": "pickle.loads",
-      "digest": "bf2d3c412d57fd50",
-      "count": 1,
-      "reason": "Reads the result rank 0 published to this job's own torch.distributed c10d store (the same trust boundary as broadcast_object_list); no file or network payload from outside the process group."
     },
     {
       "file": "unsloth/save.py",
@@ -809,6 +881,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "Module-level __getattr__ for the lazily loaded command names: the module name comes only from the literal _LAZY_ATTRIBUTES table of unsloth_cli.commands.* modules, and an unknown name raises AttributeError before any import."
+    },
+    {
+      "file": "unsloth_cli/_npu.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "a6119de2dc199e0a",
+      "count": 1,
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False. Only the module name passed to spec_from_file_location changed (#19401)."
     },
     {
       "file": "unsloth_cli/_studio_deps.py",

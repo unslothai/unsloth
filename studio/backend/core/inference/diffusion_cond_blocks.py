@@ -5,7 +5,12 @@
 and end of each pipeline call; installed only on matching diffusers forward hash, else stock;
 UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables. Offloaded (CUDA): computed inside the hooked forward,
 UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE=0 keeps stock. Modulation heads project one row per sample,
-not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows"""
+not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows. With reference
+images the joint blocks take one row per span (image, references) instead of a per-token copy, bit-identical;
+UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows. Text-to-image renders on a resident denoiser cache the
+text stream too (its five blocks were 1.4-1.6% of a 1024^2 step on L4 / A100);
+UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE=0 runs them every step again. Guided steps on a resident denoiser compute the
+image prefix once and share it across both branches; UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX=0 disables"""
 
 from __future__ import annotations
 
@@ -20,14 +25,29 @@ from .rocm_bf16 import is_rocm_torch
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
+SPAN_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD"
+TEXT_COND_ENV = "UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE"
+IMAGE_PREFIX_ENV = "UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX"
+PREFIX_KWARG = "unsloth_prefix"
+_PREFIX_ATTR = "_unsloth_prefix_entry"
+_GUIDED_ATTR = "_unsloth_prefix_guided"
+SPAN_KWARG = "unsloth_cond_mod"
+SPAN_LEN_KWARG = "unsloth_cond_span"
 COND_KWARG = "unsloth_cond"
 _COMPACT_ATTR = "_unsloth_compact_mod"
+_SPAN_ATTR = "_unsloth_span_mod"
 _OFFLOADED_ATTR = "_unsloth_cond_offloaded"
 
 # sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
+# Same, for Flux3SingleTransformerBlock.forward (the span-modulated joint block mirrors it).
+_FLUX3_SINGLE_SHA = frozenset({"92269bb072da8335"})
 
 _PATCHED: dict[type, Any] = {}
+_PATCHED_SINGLE: dict[type, Any] = {}
+# (attention output, MLP output) of a joint block on its combined input, bit-identical to ``self.attn`` / ``self.ff``,
+# or None for the modules: set by diffusion_flux_convrot_fused (one shared int8 ConvRot quant) while installed.
+JOINT_ATTN_FF: Any = None
 
 
 def _switch(name: str) -> bool:
@@ -44,6 +64,26 @@ def offload_cache_enabled() -> bool:
 
 def compact_enabled() -> bool:
     return _switch(COMPACT_MOD_ENV)
+
+
+def text_cond_enabled() -> bool:
+    return _switch(TEXT_COND_ENV)
+
+
+def image_prefix_enabled() -> bool:
+    return _switch(IMAGE_PREFIX_ENV)
+
+
+def _text_only(module: Any) -> bool:
+    """Cache the text stream when there is no reference stream; offloaded denoisers keep stock (prefetch order)."""
+    flag = module.__dict__.get("_unsloth_cond_text_only")
+    if flag is not None:
+        return bool(flag)
+    return text_cond_enabled() and not module.__dict__.get(_OFFLOADED_ATTR)
+
+
+def span_enabled() -> bool:
+    return _switch(SPAN_MOD_ENV)
 
 
 def _forward_sha(cls: type) -> Optional[str]:
@@ -170,6 +210,40 @@ def flux3_conditioning(
     return out
 
 
+def flux3_image_prefix(
+    module: Any, *, hidden_states: Any, timestep: Any, img_ids: Any, compact: bool
+) -> dict:
+    """Stock image half of ``Flux3Transformer2DModel.forward`` before the joint blocks; depends only on latents,
+    timestep and ``img_ids``."""
+    import torch.nn.functional as F
+
+    batch_size, image_seq_len = hidden_states.shape[:2]
+    dtype = hidden_states.dtype
+    image_temb = module.time_proj(timestep.to(dtype) * 1000)
+    image_temb = module.timestep_embedder(image_temb.to(dtype))[:, None, :]
+    if not compact:
+        image_temb = image_temb.expand(batch_size, image_seq_len, -1)
+    image_temb_act = F.silu(image_temb)
+    image_early_mod = module.early_stream_modulations["image"](image_temb_act)
+    image_single_mod = module.single_stream_modulations["image"](image_temb_act)
+    image_states = module.x_embedders["image"](hidden_states)
+    image_cos, image_sin = module.pos_embed(img_ids)
+    for block in module.mode_blocks["image"]:
+        image_states = block(image_states, image_early_mod, (image_cos, image_sin))
+    return {
+        "image_temb": image_temb,
+        "image_single_mod": image_single_mod,
+        "image_states": image_states,
+        "image_cos": image_cos,
+        "image_sin": image_sin,
+    }
+
+
+def _prefix_fits(prefix: Any, hidden_states: Any) -> bool:
+    states = prefix.get("image_states") if isinstance(prefix, dict) else None
+    return states is not None and tuple(states.shape[:2]) == tuple(hidden_states.shape[:2])
+
+
 def _compact_call(module: Any, attention_kwargs: Any) -> bool:
     """Inference without a per-call LoRA scale (stock ``apply_lora_scale`` handles it)."""
     import torch
@@ -234,8 +308,9 @@ def _flux3_cached_forward(
     attention_kwargs: Optional[dict] = None,
     return_dict: bool = True,
     unsloth_cond: Optional[dict] = None,
+    unsloth_prefix: Optional[dict] = None,
 ) -> Any:
-    """Stock forward op for op, with precomputed ``unsloth_cond`` and / or compact modulation; else stock."""
+    """Stock forward op for op, with precomputed ``unsloth_cond`` / ``unsloth_prefix`` and / or compact modulation."""
     if isinstance(unsloth_cond, Pending):
         unsloth_cond = _claim_pending(
             self,
@@ -265,8 +340,16 @@ def _flux3_cached_forward(
     dtype = hidden_states.dtype
     compact = bool(self.__dict__.get(_COMPACT_ATTR))
 
-    image_temb = self.time_proj(timestep.to(dtype) * 1000)
-    image_temb = self.timestep_embedder(image_temb.to(dtype))[:, None, :]
+    if (
+        unsloth_cond is not None
+        and unsloth_prefix is not None
+        and _prefix_fits(unsloth_prefix, hidden_states)
+    ):
+        prefix = unsloth_prefix
+    else:
+        prefix = None
+        image_temb = self.time_proj(timestep.to(dtype) * 1000)
+        image_temb = self.timestep_embedder(image_temb.to(dtype))[:, None, :]
     if unsloth_cond is not None:
         if target_timestep is not None or bool(self.config.flow_map):
             raise ValueError(
@@ -302,35 +385,52 @@ def _flux3_cached_forward(
             not torch.compiler.is_compiling()
         ):  # a module int Dynamo would guard on: one recompile per call
             _stats(self)["compact"] = _stats(self).get("compact", 0) + 1
-    if not compact:
-        image_temb = image_temb.expand(batch_size, image_seq_len, -1)
-
     encoder_hidden_states = unsloth_cond["txt_states"]
     txt_single_mod = unsloth_cond["txt_single_mod"]
     txt_rotary_emb = (unsloth_cond["txt_cos"], unsloth_cond["txt_sin"])
 
-    image_temb_act = F.silu(image_temb)
-    image_early_mod = self.early_stream_modulations["image"](image_temb_act)
-    image_single_mod = self.single_stream_modulations["image"](image_temb_act)
-    hidden_states = self.x_embedders["image"](hidden_states)
-    image_rotary_emb = self.pos_embed(img_ids)
+    if prefix is not None:
+        image_temb = prefix["image_temb"]
+        image_single_mod = prefix["image_single_mod"]
+        hidden_states = prefix["image_states"]
+        image_rotary_emb = (prefix["image_cos"], prefix["image_sin"])
+    else:
+        if not compact:
+            image_temb = image_temb.expand(batch_size, image_seq_len, -1)
+        image_temb_act = F.silu(image_temb)
+        image_early_mod = self.early_stream_modulations["image"](image_temb_act)
+        image_single_mod = self.single_stream_modulations["image"](image_temb_act)
+        hidden_states = self.x_embedders["image"](hidden_states)
+        image_rotary_emb = self.pos_embed(img_ids)
+        for block in self.mode_blocks["image"]:
+            hidden_states = block(hidden_states, image_early_mod, image_rotary_emb)
 
     has_cond = "cond_states" in unsloth_cond
-    for block in self.mode_blocks["image"]:
-        hidden_states = block(hidden_states, image_early_mod, image_rotary_emb)
 
+    block_kwargs: dict = {}
     if has_cond:
         cond_states = unsloth_cond["cond_states"]
         cond_rotary_emb = (unsloth_cond["cond_cos"], unsloth_cond["cond_sin"])
         content_states = torch.cat([hidden_states, cond_states], dim = 1)
-        # image and reference spans carry different timesteps: per token here
-        content_mod = torch.cat(
-            [
-                _rows(image_single_mod, batch_size, image_seq_len),
-                _rows(unsloth_cond["cond_single_mod"], batch_size, cond_states.shape[1]),
-            ],
-            dim = 1,
-        )
+        cond_single_mod = unsloth_cond["cond_single_mod"]
+        if (
+            self.__dict__.get(_SPAN_ATTR)
+            and image_single_mod.shape[1] == 1
+            and cond_single_mod.shape[1] == 1
+        ):
+            # one row per span; the span length rides on a storage-free tensor so block graphs can copy every input
+            content_mod = image_single_mod
+            block_kwargs[SPAN_KWARG] = cond_single_mod
+            block_kwargs[SPAN_LEN_KWARG] = cond_states.new_empty((cond_states.shape[1], 0))
+        else:
+            # image and reference spans carry different timesteps: per token here
+            content_mod = torch.cat(
+                [
+                    _rows(image_single_mod, batch_size, image_seq_len),
+                    _rows(cond_single_mod, batch_size, cond_states.shape[1]),
+                ],
+                dim = 1,
+            )
         joint_rotary_emb = (
             torch.cat([txt_rotary_emb[0], image_rotary_emb[0], cond_rotary_emb[0]], dim = 0),
             torch.cat([txt_rotary_emb[1], image_rotary_emb[1], cond_rotary_emb[1]], dim = 0),
@@ -350,6 +450,7 @@ def _flux3_cached_forward(
             temb_mod = content_mod,
             temb_mod_context = txt_single_mod,
             image_rotary_emb = joint_rotary_emb,
+            **block_kwargs,
         )
 
     hidden_states = content_states[:, :image_seq_len]
@@ -359,6 +460,100 @@ def _flux3_cached_forward(
     if not return_dict:
         return (output,)
     return Transformer2DModelOutput(sample = output)
+
+
+def _flux3_span_single_forward(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    temb_mod: Any,
+    temb_mod_context: Any,
+    image_rotary_emb: Any,
+    unsloth_cond_mod: Any = None,
+    unsloth_cond_span: Any = None,
+) -> Any:
+    """Stock joint block, op for op, with one ``[B, 1, 3D]`` modulation row per span: ``temb_mod`` (image),
+    ``unsloth_cond_mod`` (reference, length = ``unsloth_cond_span``'s ``[reference_tokens, 0]`` shape)."""
+    if unsloth_cond_mod is None or unsloth_cond_span is None:
+        return _stock_single_forward(self)(
+            self,
+            hidden_states = hidden_states,
+            encoder_hidden_states = encoder_hidden_states,
+            temb_mod = temb_mod,
+            temb_mod_context = temb_mod_context,
+            image_rotary_emb = image_rotary_emb,
+        )
+    import torch
+
+    n_cond = unsloth_cond_span.shape[0]
+    n_image = hidden_states.shape[1] - n_cond
+    mod_shift, mod_scale, mod_gate = torch.chunk(temb_mod, 3, dim = -1)
+    r_shift, r_scale, r_gate = torch.chunk(unsloth_cond_mod, 3, dim = -1)
+    c_mod_shift, c_mod_scale, c_mod_gate = torch.chunk(temb_mod_context, 3, dim = -1)
+
+    norm_hidden_states = self.norm(hidden_states)
+    norm_image, norm_cond = torch.split(norm_hidden_states, [n_image, n_cond], dim = 1)
+    norm_hidden_states = torch.cat(
+        [(1 + mod_scale) * norm_image + mod_shift, (1 + r_scale) * norm_cond + r_shift], dim = 1
+    )
+
+    norm_encoder_hidden_states = self.norm(encoder_hidden_states)
+    norm_encoder_hidden_states = (1 + c_mod_scale) * norm_encoder_hidden_states + c_mod_shift
+
+    combined = torch.cat([norm_encoder_hidden_states, norm_hidden_states], dim = 1)
+
+    both = JOINT_ATTN_FF(self, combined, image_rotary_emb) if JOINT_ATTN_FF is not None else None
+    if both is None:
+        attn_output = self.attn(hidden_states = combined, image_rotary_emb = image_rotary_emb)
+        ff_output = self.ff(combined)
+    else:
+        attn_output, ff_output = both
+    output = attn_output + ff_output
+
+    context_output, image_output, cond_output = torch.split(
+        output, [encoder_hidden_states.shape[1], n_image, n_cond], dim = 1
+    )
+    encoder_hidden_states = encoder_hidden_states + c_mod_gate * context_output
+    image_states, cond_states = torch.split(hidden_states, [n_image, n_cond], dim = 1)
+    hidden_states = torch.cat(
+        [image_states + mod_gate * image_output, cond_states + r_gate * cond_output], dim = 1
+    )
+
+    return encoder_hidden_states, hidden_states
+
+
+def _stock_single_forward(module: Any) -> Any:
+    for cls in type(module).__mro__:
+        stock = _PATCHED_SINGLE.get(cls)
+        if stock is not None:
+            return stock
+    raise RuntimeError(f"{type(module).__name__} has no stock forward recorded")
+
+
+def patch_single_class(cls: type) -> Optional[str]:
+    """Install the span-aware joint block forward on ``cls`` (at load, before compile or a hook binds it)."""
+    if any(c in _PATCHED_SINGLE for c in cls.__mro__):
+        return None
+    sha = _forward_sha(cls)
+    if sha not in _FLUX3_SINGLE_SHA:
+        return f"diffusers joint block changed (source {sha})"
+    _PATCHED_SINGLE[cls] = cls.forward
+    cls.forward = _flux3_span_single_forward
+    return None
+
+
+def _span_ready(transformer: Any) -> Optional[str]:
+    """None when every joint block runs the span-aware forward; else why the per-token rows stay."""
+    blocks = list(getattr(transformer, "single_transformer_blocks", None) or ())
+    if not blocks:
+        return "no joint blocks"
+    for block in blocks:
+        why = patch_single_class(type(block))
+        if why is not None:
+            return why
+        if type(block).forward is not _flux3_span_single_forward:
+            return "the joint block forward is not the patched one"
+    return None
 
 
 def _stock_forward(module: Any) -> Any:
@@ -431,8 +626,7 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     iid = kwargs.get("image_cond_ids")
     if hidden_states is None or ehs is None or txt_ids is None or (ich is None) != (iid is None):
         return None
-    if ich is None and not module.__dict__.get("_unsloth_cond_text_only"):
-        # Text alone is ~0.6% of a 1024^2 step (noise on B200); the saving is the ~4k-token reference stream.
+    if ich is None and not _text_only(module):
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
@@ -478,7 +672,55 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
             _match_prefetch_order(module, ich is not None, skipping = True)
     new_kwargs = dict(kwargs)
     new_kwargs[COND_KWARG] = states
+    if not offloaded:
+        prefix = _step_prefix(module, kwargs, hidden_states, stats)
+        if prefix is not None:
+            new_kwargs[PREFIX_KWARG] = prefix
     return args, new_kwargs
+
+
+def _guided(module: Any) -> bool:
+    probe = module.__dict__.get(_GUIDED_ATTR)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _version(t: Any) -> Optional[int]:
+    """None for inference tensors (no counter): then object identity alone ties the branches."""
+    try:
+        return int(t._version)
+    except RuntimeError:
+        return None
+
+
+def _step_prefix(module: Any, kwargs: dict, hidden_states: Any, stats: dict) -> Optional[dict]:
+    """Image prefix computed by the first branch, reused by the second if its inputs are the same unmodified objects."""
+    if not image_prefix_enabled() or not _guided(module):
+        return None
+    timestep = kwargs.get("timestep")
+    img_ids = kwargs.get("img_ids")
+    if timestep is None or img_ids is None:
+        return None
+    sources = (hidden_states, timestep, img_ids)
+    versions = tuple(_version(t) for t in sources)
+    held = module.__dict__.get(_PREFIX_ATTR)
+    if held is not None and held[1] == versions and held[0].matches(sources):
+        stats["prefix_hits"] = stats.get("prefix_hits", 0) + 1
+        return held[0].states
+    prefix = flux3_image_prefix(
+        module,
+        hidden_states = hidden_states,
+        timestep = timestep,
+        img_ids = img_ids,
+        compact = bool(module.__dict__.get(_COMPACT_ATTR)),
+    )
+    module.__dict__[_PREFIX_ATTR] = (_Entry(sources, prefix), versions)
+    stats["prefix_misses"] = stats.get("prefix_misses", 0) + 1
+    return prefix
 
 
 def _applies(transformer: Any) -> Optional[str]:
@@ -511,6 +753,13 @@ def prepare(transformer: Any, logger: Any = None) -> bool:
     transformer.__dict__[_COMPACT_ATTR] = compact
     if compact and logger is not None:
         logger.info("diffusion.cond_blocks: FLUX.3 modulation heads project one row per sample")
+    span = False
+    if compact and span_enabled():
+        why = _span_ready(transformer)
+        span = why is None
+        if why is not None and logger is not None:
+            logger.info("diffusion.cond_blocks: reference modulation stays per token (%s)", why)
+    transformer.__dict__[_SPAN_ATTR] = span
     if not cond_on:
         return False
     if applies is not None:
@@ -521,13 +770,18 @@ def prepare(transformer: Any, logger: Any = None) -> bool:
     return True
 
 
-def begin_render(transformer: Any, logger: Any = None) -> bool:
+def begin_render(
+    transformer: Any,
+    logger: Any = None,
+    guided: Any = None,
+) -> bool:
     """Arm for one pipeline call. The pre-hook must stay LAST so it runs inside earlier hooks' scope (dynamic text
-    dims marks the text length dynamic for the compiled blocks)."""
+    dims marks the text length dynamic for the compiled blocks). ``guided()``: this step runs both CFG branches."""
     if transformer is None:
         return False
     clear(transformer)
     transformer.__dict__["_unsloth_cond_live"] = False
+    transformer.__dict__[_GUIDED_ATTR] = guided
     if not enabled() or _applies(transformer) is not None:
         return False
     if (
@@ -568,6 +822,7 @@ def end_render(transformer: Any) -> None:
     if transformer is not None:
         clear(transformer)
         transformer.__dict__["_unsloth_cond_live"] = False
+        transformer.__dict__.pop(_GUIDED_ATTR, None)
 
 
 def clear(transformer: Any) -> None:
@@ -575,6 +830,7 @@ def clear(transformer: Any) -> None:
         cache = transformer.__dict__.get("_unsloth_cond_cache")
         if cache:
             cache.clear()
+        transformer.__dict__.pop(_PREFIX_ATTR, None)
 
 
 def status(transformer: Any) -> Optional[dict]:

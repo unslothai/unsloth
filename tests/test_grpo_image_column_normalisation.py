@@ -4,6 +4,7 @@
 """A singular `image` column holding a list takes the plural path: TRL wraps the cell
 again, so two images reach the processor as [[[img, img]]]. unslothai/unsloth#3605."""
 
+import ast
 import textwrap
 
 import pytest
@@ -135,20 +136,38 @@ def test_the_guard_reads_every_row_not_only_the_first():
         _unsloth_reject_grpo_image_list(rows)
 
 
+def _assert_guard_runs_before_inputs_is_read(patched):
+    """The guard must be the first statement of the rewritten body that reads ``inputs``.
+
+    Other rewrites may put their own preamble ahead of it (the untruncated vLLM logprob
+    setter does), so the guard's line number is not the contract. What matters is that no
+    statement reads the rows before the guard has refused a multi image list."""
+    tree = ast.parse(textwrap.dedent(patched))
+    func = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_generate_and_score_completions"
+    )
+
+    def reads_inputs(stmt):
+        return any(isinstance(node, ast.Name) and node.id == "inputs" for node in ast.walk(stmt))
+
+    first = next(stmt for stmt in func.body if reads_inputs(stmt))
+    assert ast.unparse(first) == "_unsloth_reject_grpo_image_list(inputs)", ast.unparse(first)
+
+
 def test_guard_is_injected_when_no_anchor_matches():
     source = "    def _generate_and_score_completions(self, inputs):\n        return inputs\n"
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", source
     )
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    lines = patched.splitlines()
-    assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_guard_is_injected_when_the_legacy_reference_calls_drift():
-    """Rewriting the cell is half the job. A legacy TRL also has to carry the image counts
-    into the reference logprob calls; without them the images are sliced by sample index and
-    all but the first are dropped, which the model reports as a token/feature mismatch."""
+    """A legacy TRL must also pass image counts into the reference logprob calls, or images are
+    sliced by sample index and dropped, showing as a token/feature mismatch."""
     source = (
         "    def _generate_and_score_completions(self, inputs):\n"
         '        has_images = "image" in inputs[0]\n'
@@ -166,8 +185,7 @@ def test_guard_is_injected_when_the_legacy_reference_calls_drift():
     )
     assert "_unsloth_grpo_image_cell(img)" in patched
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    lines = patched.splitlines()
-    assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
@@ -228,16 +246,14 @@ def _legacy_source(*, with_placeholder_helper):
 
 
 def test_a_trl_that_cannot_size_its_placeholders_refuses_the_multi_image_row():
-    """The cell rewrite alone would hand the processor two images while the prompt still
-    carries one placeholder, and nothing else in the batch disagrees, because the prologue
-    counts the same cells. That surfaces inside the processor naming neither the column nor
-    the fix, which is exactly what the guard exists to replace."""
+    """Without the guard, a TRL that cannot size its placeholders gets two images for one
+    placeholder and fails inside the processor, naming neither the column nor the fix."""
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", _legacy_source(with_placeholder_helper = False)
     )
     assert "_unsloth_grpo_image_cell(img)" in patched
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    assert patched.splitlines()[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_a_trl_that_can_size_its_placeholders_is_not_refused():
@@ -277,9 +293,8 @@ def _run_legacy_placeholders(cells):
 
 
 def test_an_empty_cell_takes_no_placeholder_so_a_mixed_batch_stays_in_step():
-    """One placeholder for a row with no image leaves the prompt a token ahead of the pixels,
-    which the processor rejects. Measured against a real Gemma 3 processor: this batch fails
-    with one placeholder for the empty row and succeeds with none."""
+    """An image-less row must take no placeholder: one placeholder leaves the prompt a token ahead
+    of the pixels, which a real Gemma 3 processor rejects."""
     a, b = _Img("a"), _Img("b")
     assert _run_legacy_placeholders([a, []]) == ([[a], []], [1, 0])
     assert _run_legacy_placeholders([[a, b], []]) == ([[a, b], []], [2, 0])

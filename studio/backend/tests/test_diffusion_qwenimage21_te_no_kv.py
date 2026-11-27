@@ -143,3 +143,31 @@ def test_other_pipelines_are_left_alone():
     other = _Other()
     assert te.skip_text_encoder_kv_cache(other) is False
     assert te.skip_text_encoder_kv_cache(object()) is False
+
+
+def test_final_state_selection_keeps_the_embeddings_bitwise(monkeypatch):
+    from core.inference import diffusion_te_select as sel
+
+    monkeypatch.delenv(sel.SELECT_ENV, raising = False)
+    pipe = _Pipe()
+    (embeds, mask, pad), _ = _encode(pipe)
+    assert te.skip_text_encoder_kv_cache(pipe) is True
+    assert te.select_final_hidden_state(pipe) is True
+    wrapped = pipe._get_qwen_prompt_embeds
+    assert te.select_final_hidden_state(pipe) is True and pipe._get_qwen_prompt_embeds is wrapped
+    assert te.skip_text_encoder_kv_cache(pipe) is True and pipe._get_qwen_prompt_embeds is wrapped
+    before = sel.call_count()
+    (embeds2, mask2, pad2), caches = _encode(pipe)
+    assert sel.call_count() == before + 1  # the selective encode ran (no stock fallback)
+    assert caches == [None]
+    assert torch.equal(embeds2.view(torch.int32), embeds.view(torch.int32))
+    assert torch.equal(mask2, mask) and torch.equal(pad2, pad)
+
+
+def test_final_state_selection_kill_switch(monkeypatch):
+    from core.inference import diffusion_te_select as sel
+
+    monkeypatch.setenv(sel.SELECT_ENV, "0")
+    pipe = _Pipe()
+    assert te.select_final_hidden_state(pipe) is False
+    assert te.select_final_hidden_state(object()) is False

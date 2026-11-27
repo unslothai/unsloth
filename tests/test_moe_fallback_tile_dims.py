@@ -82,8 +82,7 @@ def _divides(old, n, k):
 
 @pytest.fixture
 def no_smem_fit(ac, monkeypatch):
-    # The dims fit alone: on a card with less shared memory (L4, A10: 101,376 B) the smem fit also steps the
-    # heuristic dX down to 3 stages, which the smem tests below cover.
+    # Disables the smem fit: on L4 / A10 (101,376 B) it would also step dX to 3 stages.
     monkeypatch.setattr(ac, "_device_smem_per_block", lambda *a, **k: None)
 
 
@@ -195,6 +194,8 @@ def test_get_or_autotune_wires_dims(ac, monkeypatch, hidden, inter):
 def _device(ac, monkeypatch, capability, smem):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
+    # An NVIDIA card: _fit_configs_to_smem leaves ROCm configs alone, also on a real ROCm host.
+    monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setattr(ac, "_device_smem_per_block", lambda: smem)
 
 

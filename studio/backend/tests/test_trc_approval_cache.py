@@ -127,7 +127,7 @@ def test_combined_sha_none_when_any_unresolvable(monkeypatch):
 def test_resolve_commit_sha_local_and_offline_are_none(monkeypatch):
     monkeypatch.setattr("utils.paths.is_local_path", lambda t: t.startswith("/"))
     assert approvals.resolve_commit_sha("/local/model") is None
-    monkeypatch.setattr(approvals, "_env_offline", lambda: True)
+    monkeypatch.setattr(approvals, "hf_env_offline", lambda: True)
     assert approvals.resolve_commit_sha("org/remote") is None
 
 
@@ -175,8 +175,7 @@ def test_sha_moved_forces_reprompt(monkeypatch):
 
 
 def test_local_offline_uses_fingerprint_only(monkeypatch):
-    # SHA unresolvable (local/offline): the fingerprint alone governs, so unchanged code
-    # still auto-approves.
+    # No SHA (local/offline): the fingerprint alone governs, so unchanged code still approves.
     _approve(monkeypatch, sha = None)
     d = _gate("org/m")
     assert d.blocked is False and d.reason == "approved by fingerprint"

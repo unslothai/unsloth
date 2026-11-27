@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Frontend CI is ubuntu-only, so two Windows-only breakages are caught from source:
-// 1. a fileURLToPath result as an import() specifier (ERR_UNSUPPORTED_ESM_URL_SCHEME);
-// 2. a file: URL's pathname as an fs path ("/D:/..." opens as "D:\D:\...").
-// Both APIs accept a URL directly. fileURLToPath into existsSync is fine.
+// Frontend CI is ubuntu-only, so Windows breakages are caught from source: fileURLToPath passed to
+// import() fails (ERR_UNSUPPORTED_ESM_URL_SCHEME), and a file: URL pathname as an fs path opens a
+// doubled drive path; both APIs take a URL, and fileURLToPath into existsSync is fine.
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";

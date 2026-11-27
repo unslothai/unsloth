@@ -57,6 +57,9 @@ export interface ScheduledTask {
   allowModelLoad: boolean;
   archiveSuccessful: boolean;
   projectId: string | null;
+  webSearch?: boolean;
+  mcpServerIds?: string[];
+  threadId?: string | null;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
   createdAt: number;
@@ -76,6 +79,9 @@ export interface ScheduledTaskInput {
   allowModelLoad?: boolean;
   archiveSuccessful?: boolean;
   projectId?: string | null;
+  webSearch?: boolean;
+  mcpServerIds?: string[];
+  threadId?: string | null;
 }
 
 export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boolean };

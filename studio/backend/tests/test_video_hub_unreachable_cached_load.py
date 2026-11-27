@@ -488,5 +488,5 @@ def test_hosted_encoder_cache_miss_survives_dense_memory_refusal(monkeypatch, mi
         )
     reply = replies.get_nowait()
     assert reply["type"] == "error"
-    assert "24 GB of free memory (16 GB free)" in reply["error"]
+    assert "23.9 GB of free memory (16.0 GB free)" in reply["error"]
     assert reply["cache_miss"] is expected

@@ -915,8 +915,7 @@ def test_probe_hides_reap_for_an_older_modelopt_export(tmp_path, monkeypatch):
     ],
 )
 def test_custom_reap_dataset_is_validated_with_the_callers_token(route, request_cls):
-    # Managed accounts refuse a remote dataset without the caller's own token (403), so the
-    # dataset check must carry the token the request supplied.
+    # Remote dataset checks need the caller's own token; managed accounts 403 without it.
     from routes import export as export_route
 
     class Stop(Exception):
@@ -970,6 +969,17 @@ def test_calibration_dataset_with_several_splits_and_no_train_is_refused(monkeyp
     )
     with pytest.raises(ValueError, match = r"no train split .*\(test, validation\)"):
         reap_mod._calibration_dataset("org/calib", None)
+
+
+@pytest.mark.parametrize("name", ["pandas", "json"])
+def test_calibration_dataset_refuses_a_datasets_builder_name(monkeypatch, name):
+    # load_dataset takes its own builders ahead of the Hub and reads the worker's cwd with them.
+    import datasets
+    monkeypatch.setattr(
+        datasets, "load_dataset", lambda *a, **k: pytest.fail("a builder name was loaded")
+    )
+    with pytest.raises(ValueError, match = "not a Hugging Face dataset id"):
+        reap_mod._calibration_dataset(name, None)
 
 
 def test_probe_follows_an_adapter_even_beside_a_dense_config(tmp_path):

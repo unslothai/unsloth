@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -41,7 +42,12 @@ def _python_retention_sources() -> str:
     """Every Python file that could plausibly prune a log directory."""
     backend = Path(_BACKEND_DIR)
     parts = []
-    for relative in ("run.py", "utils/log_retention.py", "core/inference/llama_cpp.py"):
+    for relative in (
+        "run.py",
+        "utils/log_retention.py",
+        "core/inference/llama_cpp.py",
+        "core/inference/lemonade_server.py",
+    ):
         path = backend / relative
         if path.is_file():
             parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
@@ -54,7 +60,11 @@ class TestFamiliesAreBounded:
         source = _python_retention_sources()
         unbounded = []
         for family, (_subdir, glob) in debug_log_sources.FAMILIES.items():
-            if family in _DESKTOP_FAMILIES:
+            # Managed engines prune through ManagedEngineLog.open: proved by running it, below.
+            if (
+                family in _DESKTOP_FAMILIES
+                or family in debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES
+            ):
                 continue
             if glob not in source:
                 unbounded.append(f"{family} ({glob})")
@@ -92,6 +102,9 @@ class TestFamiliesAreBounded:
             "server",
             "llama-server",
             "diffusion-server",
+            "lemonade",
+            "sglang",
+            "vllm",
             "desktop-backend",
             "desktop-install",
             "desktop-update",
@@ -106,6 +119,32 @@ class TestFamiliesAreBounded:
             + "\n\nGive each one retention, then add it to the reviewed list here. A "
             "family with no pruning is an install that grows until the disk is full."
         )
+
+
+@pytest.mark.parametrize("engine", sorted(debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES))
+def test_a_managed_engine_log_prunes_its_family_on_open(engine, tmp_path, monkeypatch):
+    """Each managed engine attempt opens one log; opening it keeps the newest DEFAULT_KEEP, the new one included."""
+    from core.inference.managed_engine_log import ManagedEngineLog
+    from utils.log_retention import DEFAULT_KEEP
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    subdirectory, glob = debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES[engine]
+    directory = tmp_path / subdirectory
+    directory.mkdir(parents = True)
+    for i in range(DEFAULT_KEEP + 5):
+        old = directory / glob.replace("*", f"old-{i:03d}")
+        old.write_text("old\n", encoding = "utf-8")
+        os.utime(old, (1_000_000 + i, 1_000_000 + i))
+    log = ManagedEngineLog.open(engine)
+    assert log is not None
+    try:
+        kept = sorted(p.name for p in directory.glob(glob))
+        assert Path(log.path).name in kept
+        assert len(kept) == DEFAULT_KEEP, kept
+        # The oldest go first.
+        assert glob.replace("*", "old-000") not in kept
+    finally:
+        log.close()
 
 
 class TestLineCapsAgree:

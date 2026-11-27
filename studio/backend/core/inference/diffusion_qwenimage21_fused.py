@@ -92,6 +92,12 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    codes = lin.__dict__.get("_unsloth_q21_part_codes")
+    if codes is not None:
+        # Native int8 (diffusion_qwenimage21_dense_fused): never read ``.weight``, it dequantises.
+        if q.weight_q is not codes[0] or k.weight_q is not codes[1] or v.weight_q is not codes[2]:
+            return None
+        return lin
     if lin.weight.device != q.weight.device:
         return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
@@ -101,15 +107,18 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
     import torch
 
     from .diffusion_int8_fused import ensure_intmm_module, int8_linear
-    from .diffusion_int8_gemm import shared_rotq_linears
+    from .diffusion_int8_gemm import resolve_peft_forward, shared_rotq_linears
 
     ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
+    resolve_peft_forward()
 
     def _qwenimage21_prepare_qkv(
         attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         fused = _qkv_intact(attn) if torch.compiler.is_compiling() else None
-        if fused is not None:
+        if fused is not None and "_unsloth_q21_part_codes" in fused.__dict__:
+            query, key, value = fused(hidden_states).chunk(3, dim = -1)
+        elif fused is not None:
             query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
         else:
             qkv = shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
@@ -190,15 +199,21 @@ def _patch_prepare(logger: Any = None) -> bool:
 
 
 def _rotated_attention(root: Any) -> list:
-    """(attention, [to_q, to_k, to_v]) whose Q / K / V share one ConvRot group on one device."""
+    """(attention, [to_q, to_k, to_v]) whose Q / K / V share one ConvRot group on one device; a baked LoRA's PEFT
+    layers are judged by their base Linears (``shared_rotq_linears`` adds the adapters after the shared GEMMs)."""
+    from .diffusion_zimage_fused import _lora_base
+
     todo = []
     for _name, module in root.named_modules():
         if type(module).__name__ != "QwenImage21Attention":
             continue
         parts = [getattr(module, n, None) for n in ("to_q", "to_k", "to_v")]
-        if any(p is None for p in parts) or not _rotated_group(parts):
+        if any(p is None for p in parts):
             continue
-        if len({p.weight.device for p in parts}) != 1:
+        bases = [_lora_base(p) for p in parts]
+        if not _rotated_group(bases):
+            continue
+        if len({b.weight.device for b in bases}) != 1:
             continue
         todo.append((module, parts))
     return todo
@@ -319,7 +334,7 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     cards = resident_cuda_cards(root)  # one card, or each card of a layer split
     if not cards or not all(arch_ok(torch.device("cuda", index)) for index in cards):
         return result
-    from .diffusion_zimage_fused import _fuse_linears, _share_storage
+    from .diffusion_zimage_fused import _fuse_linears, _lora_base, _share_storage
 
     todo = _rotated_attention(root)
     if not todo or not _patch_prepare(logger):
@@ -330,13 +345,19 @@ def install_modules(root: Any, logger: Any = None) -> dict:
     note = _rotq_note(cards, armed)
     with _LOCK:
         for module, parts in todo:
-            if _QKV_ATTR not in module.__dict__ and all(_plain(p) for p in parts):
+            # never over LoRA layers: the fused GEMM would skip their adapters (the shared quant path adds them)
+            if (
+                _QKV_ATTR not in module.__dict__
+                and all(_lora_base(p) is p for p in parts)
+                and all(_plain(p) for p in parts)
+            ):
                 fused = _fuse_linears(parts)
                 if fused is not None and _share_storage(fused, parts):
                     module.__dict__[_QKV_ATTR] = (fused, *parts)
             if _QKV_ATTR in module.__dict__:
                 result["fused_qkv"] += 1
-            out = module.to_out[0]
+            # a LoRA layer's base Linear: the wrapper calls it, then adds its adapters
+            out = _lora_base(module.to_out[0])
             if _OUT_MARK in out.__dict__:
                 result["out"] += 1
             elif _rotated_group([out]) and _plain(out):

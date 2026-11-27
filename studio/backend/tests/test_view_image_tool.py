@@ -118,8 +118,14 @@ def test_invalid_large_and_pixel_bomb_files(workdir, monkeypatch):
     monkeypatch.setattr(module, "MAX_FILE_BYTES", 10)
     assert "file limit" in view_image("image.png", str(workdir))
     monkeypatch.undo()
+    import collections
+
     from core.inference import mcp_images
 
+    # image.png was normalized by earlier tests, and the PNG memo (#18256) answers it without
+    # re-checking a budget that is fixed in production; start from an empty memo.
+    monkeypatch.setattr(mcp_images, "_PNG_MEMO", collections.OrderedDict())
+    monkeypatch.setattr(mcp_images, "_png_memo_chars", 0)
     monkeypatch.setattr(mcp_images, "MAX_IMAGE_PIXELS", 100)
     assert "megapixel limit" in view_image("image.png", str(workdir))
 

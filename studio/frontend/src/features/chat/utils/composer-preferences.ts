@@ -203,3 +203,30 @@ export function steeringInsertionIndex(
   const index = Math.max(0, runIndex);
   return Math.min(items.length, index + (items[index]?.dispatched ? 1 : 0));
 }
+
+export type ParkedSendSteerState = {
+  behavior: ComposerFollowUpBehavior;
+  /** held behind a response, queue or pre-stream send. */
+  parkedBehindResponse: boolean;
+  /** an upload or chat settings still hold the send. */
+  otherHoldActive: boolean;
+  promptQueueActive: boolean;
+  researchActive: boolean;
+  threadRunning: boolean;
+};
+
+/** Binary attachments cannot be queued, so steer cancels the response instead; null keeps waiting. */
+export function parkedSendSteer(
+  state: ParkedSendSteerState,
+): { cancelRun: boolean } | null {
+  if (
+    state.behavior !== "steer" ||
+    !state.parkedBehindResponse ||
+    state.otherHoldActive ||
+    state.promptQueueActive ||
+    state.researchActive
+  ) {
+    return null;
+  }
+  return { cancelRun: state.threadRunning };
+}

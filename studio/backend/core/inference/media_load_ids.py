@@ -15,18 +15,12 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-# A cancellation is kept until its load arrives and is refused (which consumes it) or this long
-# has passed. No hard bound on a load POST's lifetime exists to derive it from (the MCP forwards
-# in-process with no client timeout, studio_mcp/forward.py, and the route's waits before
-# admission, the chat context save and the arbiter's eviction, have none either), so it is set far
-# beyond any real one: a load still on its way after a day is not one an unload is racing.
+# A cancellation waits for its load or a day; no hard bound on a load POST exists to derive it.
 _CANCELLED_TTL_S = 24 * 3600.0
-# Memory guard per (slot, account): only an account's own newer tokens can push one out, never
-# another account's.
+# Per (slot, account) guard: a newer token evicts only its own account's entries.
 _PER_ACCOUNT = 4096
 _now = time.monotonic
-# Bumped under _lock on every admission and token unload, so a status read can tell whether its
-# state changed while it ran.
+# Bumped under _lock on each admission and token unload, so a status read can spot a change.
 _generation = 0
 # Status reads snapshot() tries before answering with no load id (an admission landed in each).
 _SNAPSHOT_TRIES = 3
@@ -50,10 +44,8 @@ class _Record:
 
 
 def _weak(state: Any) -> Callable[[], Any]:
-    """``state`` without keeping it alive: a torn-down model (pipeline, weights) must be freed as soon
-    as its engine drops it, not when this registry is next cleared. Call it to get the state back,
-    or None once it is gone. The engines' states are plain dataclasses, so weakly referable; anything
-    that is not is held as is."""
+    """Holds state weakly so a torn-down model is freed once its engine drops it; states that cannot
+    be weakly referenced are held strongly; call it for the state, or None once gone"""
     if state is None:
         return lambda: None
     try:
@@ -64,14 +56,11 @@ def _weak(state: Any) -> Callable[[], Any]:
 
 _lock = threading.Lock()
 _current: dict[str, _Record] = {}
-# The load that published the resident state before the last admission, as (token, engine, state):
-# a newer load that failed leaves it resident.
+# Previous publisher (token, engine, state) of the resident state; a failed load keeps it.
 _published: dict[str, tuple[str, Any, Any]] = {}
-# Per (slot, account) whose load was admitted with the token. Losing an old one only turns a
-# superseded answer into cancelled, which touches nothing either.
+# Per (slot, account) admitted tokens; losing one turns a superseded answer into cancelled.
 _seen: dict[tuple[str, str], "OrderedDict[str, None]"] = {}
-# Per (slot, account) that sent the unload: token -> expiry (time.monotonic()). An unload cancels
-# a token for its own account only.
+# Per (slot, account) that unloaded: token to expiry; cancels only that account's tokens.
 _cancelled: dict[tuple[str, str], "OrderedDict[str, float]"] = {}
 
 
@@ -118,12 +107,8 @@ def refuse_cancelled(modality: str, load_token: Optional[str]) -> None:
 
 
 def admitting(modality: str, engine: Any, load_token: Optional[str]) -> Any:
-    """Before the engine's begin_load: refuse a cancelled token, and snapshot what is resident.
-
-    Called inside ``account_access.admit_media_load``, so under ``media_load_lock``, as is
-    ``admitted`` once begin_load returned. Every image and video load goes through both, with or
-    without a token, so a stale record never outlives a newer load.
-    """
+    """Refuses a cancelled token and snapshots resident state before begin_load, under
+    media_load_lock; every image and video load goes through it, with or without a token"""
     refuse_cancelled(modality, load_token)
     with _lock:
         record = _current.get(modality)
@@ -151,14 +136,12 @@ def admitted(modality: str, engine: Any, load_token: Optional[str], prior: Any) 
         _current[modality] = _Record(
             token, engine, getattr(engine, "_load_token", None), _weak(prior)
         )
-        # Per account like _cancelled: another account's earlier use of a token never answers
-        # superseded for this one, which then records its own cancellation.
+        # Per account, like _cancelled: other accounts' tokens never supersede this one.
         _remember(_seen, modality, token)
 
 
 def _describes(record: _Record, engine: Any) -> bool:
-    # The engine still holds the load this record names: no begin_load or unload since, and
-    # either a load in flight or the state that load published.
+    # Engine still holds this record's load, in flight or published, with no unload since.
     if record.engine is not engine or getattr(engine, "_load_token", None) != record.epoch:
         return False
     loading = getattr(engine, "loading_repo_ids", None)
@@ -204,15 +187,9 @@ def _resident_token(modality: str, engine: Any) -> Optional[str]:
 def snapshot(
     modality: str, engine: Any, read_status: Callable[[], Any]
 ) -> tuple[Any, Optional[str]]:
-    """``read_status()`` and the ``load_id`` of the same state, so the id never names a load the status
-    does not show.
-
-    The read runs outside every lock (it can block, and must not hold up admissions or unloads); the
-    id is taken only if no admission or token unload landed while it ran, else the read is retried.
-    After ``_SNAPSHOT_TRIES`` the answer carries no id. A load still starting when the read begins
-    records its token only at its admission, which moves the generation, and an engine that began a
-    load since its record was taken is not named by it, so neither pairing can mix two states.
-    """
+    """Status and load_id pair only if no admission or token unload landed during the read; the read
+    runs outside all locks, must not block admissions, is retried, and after _SNAPSHOT_TRIES
+    gives no id"""
     status, load_id, _ = snapshot_ids(modality, engine, read_status)
     return status, load_id
 
@@ -276,12 +253,8 @@ def _still_named(record: Optional[_Record], published: Any, engine: Any) -> Call
 def unload_if_current(
     modality: str, engine: Any, load_token: str, unload: Callable[[Callable[[], bool]], Any]
 ) -> tuple[str, Any]:
-    """Unload only the load ``load_token`` names: ("unloaded", status), ("superseded", None) or ("cancelled", None).
-
-    ``unload(only_if)`` runs the engine's unload with that recheck: it answers None, and tears
-    nothing down, if the named load ended in between (a replacement whose worker failed leaves the
-    previous model resident, which is not this token's to unload).
-    """
+    """Unload only the load load_token names; returns (unloaded, status), (superseded, None) or
+    (cancelled, None); a failed replacement leaves the previous model resident"""
     global _generation
     with _media_lock():
         with _lock:
@@ -295,8 +268,7 @@ def unload_if_current(
                 return "cancelled", None
             named = record if record is not None and record.token == load_token else None
             only_if = _still_named(named, _published.get(modality), engine)
-        # Still under media_load_lock, so no load is admitted before this unload has run
-        # (as retire_media_load does).
+        # Under media_load_lock, so no load is admitted before this unload runs.
         status = unload(only_if)
         if status is None:
             return "superseded", None

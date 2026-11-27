@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
@@ -78,6 +80,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
+import { readAfterUnload } from "@/lib/read-after-unload";
 import { Switch } from "@/components/ui/switch";
 import { DeferredTextarea } from "@/components/deferred-textarea";
 import { Textarea } from "@/components/ui/textarea";
@@ -87,7 +90,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
+// eslint-disable-next-line no-restricted-imports -- leaf import; the UI barrels would cycle.
+import { VramBudgetControl } from "@/features/settings/components/vram-budget-control";
+import { useDiffusionGpuChoices, useGpuDevices } from "@/hooks/use-gpu-info";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -106,6 +111,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -114,7 +120,16 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { reseedAction } from "@/lib/failed-load-reseed";
+import {
+  activePrecisionDenials,
+  deniedSelectionFallback,
+  gpuSelectionKey,
+  type PlannedPrecision,
+  precisionResidentKey,
+  withPrecisionDenials,
+} from "@/lib/precision-denials";
+import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -138,6 +153,7 @@ import {
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type NewRecordProbeBaseline,
+  PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
   fetchWhileStable,
@@ -163,7 +179,9 @@ import {
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { isWorkflowEnabled, useImageWorkflowStore } from "./stores/image-workflow-store";
+import { useVideoDeployStore } from "@/features/video/video-deploy-store";
 import {
+  CONNECTION_WORKFLOWS,
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
@@ -176,7 +194,7 @@ import {
   parseExternalModelId,
   useExternalProvidersStore,
 } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { ModelLoadCompactStatus, ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
@@ -212,21 +230,38 @@ import {
   denseTextEncoderBuildLabel,
   denseTransformerBuildLabel,
   isNativeEngineStatus,
+  engagedAttentionBackend,
   formatResolvedValue,
   isDenseQuantKind,
+  loadedTransformerPrecisionLabel,
   isPrecisionRefusal,
   denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
+  resolvedRequestSelectValue,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
 import {
-  routedGgufFilename,
+  ATTENTION_SELECT_HINT,
+  INT8_ATTENTION_HINT,
+  INT8_ATTENTION_LABEL,
+  INT8_ATTENTION_OPTIONS,
+  int8AttentionSelection,
+  type Int8AttentionChoice,
+} from "@/lib/int8-attention";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
+import {
+  routedImageFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
+import { createMediaLoadToast } from "@/lib/media-load-toast";
 import { toast } from "@/lib/toast";
+import { ejectWithToast } from "@/lib/media-eject";
 import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
 import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
@@ -238,8 +273,10 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
+  defaultSizeFor,
   defaultsFor,
   defaultsKeyFor,
+  maxStepsFor,
   loadedRecipeFor,
   residentDefaultsKey,
   residentRecipeFor,
@@ -263,11 +300,18 @@ import {
   TRANSPARENCY_CHECKER,
   additionalImageNumber,
   conditionedRequestFields,
+  familyPresetsCopy,
+  familyPresetsWithin,
+  inputImageWord,
+  matchSizeChoosable,
   maxAdditionalImages,
-  presetsWithin,
+  raiseToEditResolution,
+  type ReferenceRaise,
   resolveEditSize,
   restoreInputsNote,
+  seedMatchResolution,
   seedReferenceResolution,
+  sizeAfterReference,
   withLocalizedHint,
   withTransparencyPrompt,
 } from "./edit-conditioning";
@@ -293,6 +337,7 @@ import {
 
 import {
   type ControlNetSpecInput,
+  type ChatImageSwapSetting,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionGenerateRequest,
@@ -308,6 +353,7 @@ import {
   GenerateResponseLostError,
   cancelDiffusionGeneration,
   cancelDiffusionQueueJob,
+  chatImageSwapSetting,
   clearDiffusionQueue,
   deleteGalleryImage,
   enqueueDiffusionImage,
@@ -323,13 +369,17 @@ import {
   listDiffusionLoras,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
+  withSettledVramBudget,
+  VramBudgetSaveError,
   loadDiffusionModel,
   moveDiffusionQueueJob,
   type ImageQueueJob,
   unloadDiffusionModel,
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
-import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { collectGalleryWindow } from "./lib/gallery-window";
+import { promptBoundaryIds } from "./lib/prompt-boundaries";
+import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
@@ -381,6 +431,9 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import { LORA_RELOAD_ACTION, LORA_RELOAD_TITLE, LoraReloadRefusalError, loraReloadReason } from "./lib/lora-reload";
+import { loraPresetRecipe, pickRecipe, type StepRecipe } from "./lib/lora-preset";
+import { generateGate, pickReleasedWhileNewest } from "./lib/generate-gate";
 import { HELD_BY_OTHER_ACCOUNT_NOTICE, heldByOtherAccount, ownDiffusionStatus } from "./lib/resident-owner";
 import {
   AUTOMATIC_SCHEDULE,
@@ -405,7 +458,15 @@ import {
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
 import { addGalleryImageToProject, listDiffusionControlNets, moveGalleryImage } from "./images-page-api";
-import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import { EmbeddingsField, FastCfgField, ShiftField } from "./shift-embeddings-controls";
+import {
+  FAST_CFG_STORAGE_KEY,
+  fastCfgAvailable,
+  fastCfgEndFromRecipe,
+  fastCfgLabel,
+  fastCfgNotApplied,
+  fastCfgRequestFields,
+} from "./lib/fast-cfg";
 import { HiresControls, UpscaleModelField } from "./hires-controls";
 import {
   HIRES_OFF,
@@ -437,8 +498,19 @@ import {
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
 import {
+  LORA_FUSE_CONTROL_HINT,
+  LORA_FUSE_CONTROL_LABEL,
+  LORA_FUSE_OPTIONS,
+  loraFuseLabel,
+  loraFuseSelection,
+  type LoraFuseChoice,
+} from "./lib/lora-fuse";
+import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
+import {
   ENGINE_HINT,
-  ENGINE_OPTIONS,
+  ENGINE_HINT_CPU_ONLY,
+  engineOptionsFor,
+  hostEngineChoice,
   type EngineChoice,
   engineModelKey,
   engineRequestField,
@@ -472,6 +544,7 @@ import {
   varyBlockedReason,
 } from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
@@ -776,61 +849,64 @@ const LOAD_TOAST_CLASSNAMES = {
   description: "mt-0 w-full",
 } as const;
 
-function loadToastDescription(p: DiffusionLoadProgress) {
+function loadStatus(p: DiffusionLoadProgress) {
   if (p.phase === "saving_chat_context") {
-    return (
-      <ModelLoadDescription
-        title="Saving chat context…"
-        message="Saving the chat model's context so it can resume after this load."
-      />
-    );
+    return {
+      title: "Saving chat context…",
+      brief: "Saving chat context",
+      message: "Saving the chat model's context so it can resume after this load.",
+      progressPercent: null,
+      progressLabel: null,
+    };
   }
   // "Downloading" only when bytes actually remain: a cached model must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
-  const title = downloading
-    ? "Downloading model requirements…"
-    : p.phase === "finalizing"
-      ? "Loading to GPU…"
-      : "Starting model…";
   const hasTotal = p.bytes_total > 0;
+  return {
+    title: downloading
+      ? "Downloading model requirements…"
+      : p.phase === "finalizing"
+        ? "Loading to GPU…"
+        : "Starting model…",
+    brief: downloading ? "Downloading" : p.phase === "finalizing" ? "Loading to GPU" : "Starting",
+    message: downloading
+      ? "Downloading the files required to load this model."
+      : "Loading the model.",
+    progressPercent: hasTotal ? p.fraction * 100 : null,
+    progressLabel: hasTotal
+      ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
+      : p.bytes_downloaded > 0
+        ? `${formatBytes(p.bytes_downloaded)} downloaded`
+        : null,
+  };
+}
+
+function LoadInlineStatus({ p }: { p: DiffusionLoadProgress }) {
+  const s = loadStatus(p);
   return (
-    <ModelLoadDescription
-      title={title}
-      message={
-        downloading
-          ? "Downloading the files required to load this model."
-          : "Loading the model."
-      }
-      progressPercent={hasTotal ? p.fraction * 100 : null}
-      progressLabel={
-        hasTotal
-          ? `${formatBytes(p.bytes_downloaded)} of ${formatBytes(p.bytes_total)}`
-          : p.bytes_downloaded > 0
-            ? `${formatBytes(p.bytes_downloaded)} downloaded`
-            : null
-      }
+    <ModelLoadCompactStatus
+      label={s.brief}
+      title={[s.title, s.message, s.progressLabel].filter(Boolean).join(" ")}
+      progressPercent={s.progressPercent}
     />
   );
 }
 
 // `onCancel` is the only control that reaches a first load in flight.
-function loadToastArgs(
-  p: DiffusionLoadProgress,
-  id?: string | number,
-  onCancel?: () => void,
-) {
+function loadToastArgs(p: DiffusionLoadProgress, onCancel: () => void) {
   return {
-    ...(id != null ? { id } : {}),
-    description: loadToastDescription(p),
+    description: <ModelLoadDescription {...loadStatus(p)} />,
     duration: Infinity,
     closeButton: true,
-    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
+    cancel: { label: "Cancel", onClick: onCancel },
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
+// Merges LoRA adapters into its weights at load, so a selection change is always a reload.
+const H3_IMAGE_FAMILY = "minimax-h3-image";
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1009,7 +1085,7 @@ function AdvancedSelect({
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<SelectOption>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1024,9 +1100,19 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
-                {l}
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem key={v} value={v} className="text-xs" disabled={!!disabledReason}>
+                {disabledReason ? (
+                  // Disabled items take no pointer events, so the reason is shown inline rather than as a tooltip.
+                  <span className="flex flex-col items-start gap-0.5">
+                    <span>{l}</span>
+                    <span className="max-w-[calc(16rem*var(--ui-space-scale,1))] whitespace-normal text-ui-10 leading-snug text-muted-foreground">
+                      {disabledReason}
+                    </span>
+                  </span>
+                ) : (
+                  l
+                )}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1459,6 +1545,9 @@ function RecipePopover({
           ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
+          {fastCfgLabel(image.cfg_interval_end) ? (
+            <RecipeRow label="Fast CFG" value={fastCfgLabel(image.cfg_interval_end) ?? ""} />
+          ) : null}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
@@ -1512,6 +1601,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
+  const loraFuse = loraFuseLabel(status.lora_fuse);
+  const multiGpu = multiGpuPlacementRow(status.multi_gpu);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1563,11 +1654,25 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
           badge={<InfoHint>{placement.detail}</InfoHint>}
         />
       ) : null}
+      {multiGpu ? (
+        <BuildRow
+          label="Multi-GPU"
+          value={multiGpu.label}
+          badge={<InfoHint>{multiGpu.detail}</InfoHint>}
+        />
+      ) : null}
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
-          status.attention_backend
-            ? formatResolvedValue("attention_backend", status.attention_backend)
+          engagedAttentionBackend(status)
+            ? formatResolvedValue("attention_backend", engagedAttentionBackend(status))
             // sd.cpp reports no attention backend, so "Native SDPA" would be wrong there.
             :
               isNativeEngineStatus(status)
@@ -1591,7 +1696,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
-  toast.error(text || fallback);
+  modelErrorToast(text || fallback);
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
@@ -1619,6 +1724,8 @@ type LoadAdvanced = Pick<
   | "transformer_quant"
   | "text_encoder_quant"
   | "attention_backend"
+  | "int8_attention"
+  | "lora_fuse"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -1677,6 +1784,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite,
   dragging,
   cueEdge,
+  promptBoundary,
   actions,
 }: {
   image: GalleryImage;
@@ -1687,6 +1795,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite: boolean;
   dragging: boolean;
   cueEdge: StripDropCue["edge"] | null;
+  promptBoundary: boolean;
   actions: StripTileActionsBox;
 }) {
   const id = image.id;
@@ -1707,6 +1816,9 @@ const GalleryStripTile = memo(function GalleryStripTile({
       }}
       className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
     >
+      {promptBoundary && (
+        <span data-prompt-boundary aria-hidden="true" className="pointer-events-none absolute -left-1 top-2 bottom-2 w-px bg-border" />
+      )}
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
@@ -1771,7 +1883,8 @@ export function ImagesPage({
   const initialReadySent = useRef(false);
   const imageInfoStamp = useLibrarySettingsStore((state) => state.imageInfoStamp);
   const [rememberedModel, setRememberedModel] = useState(readImageModel);
-  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
+  // `load: "next"` waits for a staged load to start (planning / companion downloads bump no sequence) and binds to it then.
+  const pendingRecalledGeneration = useRef<{ model: RememberedImageModel; load: number | "next"; workflow: WorkflowId; allowOversized?: boolean } | null>(null);
   const { isMobile, pinned } = useSidebar();
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
@@ -1920,6 +2033,7 @@ export function ImagesPage({
   const [referenceResolution, setReferenceResolution] = useState<number | null>(null);
   const [editSizing, setEditSizing] = useState<EditSizing>("source");
   const [matchResolution, setMatchResolution] = useState(1024);
+  const [referenceRaise, setReferenceRaise] = useState<ReferenceRaise | null>(null);
   const [pickedLocalizedMode, setLocalizedMode] = useState<LocalizedEditMode | null>(null);
   const [localizedLayer, setLocalizedLayer] = useState<string | null>(null);
   const [localizedColor, setLocalizedColor] = useState(ANNOTATION_COLORS[0].value);
@@ -1936,6 +2050,15 @@ export function ImagesPage({
   );
   // Trimmed like the request payload, whose duplicate-id check this mirrors.
   const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
+  // Read at pick time without re-creating the pick callbacks on every LoRA edit.
+  const lorasRef = useRef(loras);
+  const sortedLorasRef = useRef(sortedLoras);
+  useEffect(() => {
+    lorasRef.current = loras;
+    sortedLorasRef.current = sortedLoras;
+  }, [loras, sortedLoras]);
+  // A pick that kept a selected distilled LoRA's recipe, with the model recipe to restore if the load drops that LoRA.
+  const heldLoraRecipe = useRef<{ preset: StepRecipe; model: StepRecipe } | null>(null);
   const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
@@ -1971,6 +2094,16 @@ export function ImagesPage({
   );
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
+  const [fastCfgOn, setFastCfgOn] = usePersistedToggle(FAST_CFG_STORAGE_KEY);
+  // A restored recipe's own stop, sent until the switch is touched (null: the preset).
+  const [fastCfgEnd, setFastCfgEnd] = useState<number | null>(null);
+  const changeFastCfg = useCallback(
+    (next: boolean) => {
+      setFastCfgOn(next);
+      setFastCfgEnd(null);
+    },
+    [setFastCfgOn],
+  );
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
@@ -1997,6 +2130,12 @@ export function ImagesPage({
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
   const [engineSeed, setEngineSeed] = useState("");
+  // Bumped once a failed load's status re-read lands: the resident record did not move, so without it Precision and
+  // the other Advanced selects would keep showing the refused pick while Generate runs the resident build.
+  const [failedLoadReseed, setFailedLoadReseed] = useState(0);
+  const handledFailedLoadReseed = useRef(0);
+  // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2006,6 +2145,8 @@ export function ImagesPage({
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
   );
+  const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
+  const [loraFuse, setLoraFuse] = useState<LoraFuseChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -2034,6 +2175,7 @@ export function ImagesPage({
   );
   const componentsReconciled = useRef(false);
   const [initialLoadProbe, setInitialLoadProbe] = useState<"pending" | "loading" | "idle">("pending");
+  const [generateProbed, setGenerateProbed] = useState(false);
   const reconcileInitialComponents = useCallback(
     (loaded: DiffusionStatus) => {
       if (componentsReconciled.current || initialLoadProbe === "pending") return;
@@ -2054,6 +2196,7 @@ export function ImagesPage({
     "auto",
   );
   const gpuChoices = useDiffusionGpuChoices();
+  const imageGpuDevices = useGpuDevices(true);
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
@@ -2078,6 +2221,34 @@ export function ImagesPage({
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const isOwner = useIsAccountOwner();
+  const [swapSetting, setSwapSetting] = useState<ChatImageSwapSetting | null>(null);
+  const [savingSwap, setSavingSwap] = useState(false);
+  useEffect(() => {
+    if (!isOwner || !advancedOpen) return;
+    const request = new AbortController();
+    setSwapSetting(null);
+    void chatImageSwapSetting(undefined, request.signal)
+      .then((value) => {
+        if (!request.signal.aborted) setSwapSetting(value);
+      })
+      .catch((error) => {
+        if (!request.signal.aborted) {
+          toast.error("Could not load chat image swapping", { description: String(error) });
+        }
+      });
+    return () => request.abort();
+  }, [advancedOpen, isOwner]);
+  async function toggleChatImageSwap(on: boolean) {
+    setSavingSwap(true);
+    try {
+      setSwapSetting(await chatImageSwapSetting(on));
+    } catch (error) {
+      toast.error("Could not save chat image swapping", { description: String(error) });
+    } finally {
+      setSavingSwap(false);
+    }
+  }
   const residentReconciledFor = useRef<DiffusionStatus | null>(null);
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
@@ -2111,8 +2282,21 @@ export function ImagesPage({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const promptBoundaries = useMemo(() => promptBoundaryIds(images), [images]);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
+  const [pickedDuringRun, setPickedDuringRun] = useState(false);
+  const pickedDuringRunRef = useRef(false);
+  useEffect(() => {
+    pickedDuringRunRef.current = pickedDuringRun;
+  }, [pickedDuringRun]);
+  const pickImage = useCallback((id: string) => {
+    // Set now, not after the render: an in-flight gallery refresh reads it.
+    galleryCache.selectedId = id;
+    setSelectedId(id);
+    setPickedDuringRun(true);
+  }, []);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
   // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
@@ -2172,19 +2356,23 @@ export function ImagesPage({
     setStopping(false);
   }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const loadToastId = useRef<string | number | null>(null);
+  const [closedLoad, setClosedLoad] = useState<DiffusionLoadProgress | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
   const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // `{ prev }` distinguishes "revert to null" from "nothing pending"; also carries the recipe.
   const quantRevert = useRef<PickRevert | null>(null);
+  // Mirrors quantRevert != null (busy is not set while a pick plans or downloads); keeps Generate off.
+  const [pickInFlight, setPickInFlight] = useState(false);
   // Staging does not set `busy`, so a second pick can overwrite quantRevert meanwhile.
   const stagedQuantRevert = useRef<PickRevert | null>(null);
   const pickSeq = useRef(0);
   // handleLoad overwrites lastLoad.current at load start.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
-  const pendingDeploy = useRef<{ loraId: string; family: string } | null>(null);
+  const pendingDeploy = useRef<{ loraId: string; family: string; families: string[] } | null>(
+    null,
+  );
   // Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
 
@@ -2277,33 +2465,45 @@ export function ImagesPage({
       }
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename));
+      const recipeKey = defaultsKeyFor(repoId, effectiveFamilyOverride, ggufFilename);
+      const recommended = defaultsFor(recipeKey);
       pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
-      setSteps(recommended.steps);
-      setGuidance(recommended.guidance);
+      // A still-selected step-distilled LoRA (Lightning) keeps its own steps / CFG, as the video page does.
+      const preset = loraPresetRecipe(lorasRef.current, sortedLorasRef.current);
+      heldLoraRecipe.current = preset ? { preset, model: recommended } : null;
+      const applied = pickRecipe(recommended, lorasRef.current, sortedLorasRef.current);
+      setSteps(applied.steps);
+      setGuidance(applied.guidance);
+      const nativeSize = defaultSizeFor(recipeKey);
+      if (nativeSize) {
+        setWidth(nativeSize.width);
+        setHeight(nativeSize.height);
+      }
       if (revert) {
-        revert.appliedSteps = recommended.steps;
-        revert.appliedGuidance = recommended.guidance;
+        revert.appliedSteps = applied.steps;
+        revert.appliedGuidance = applied.guidance;
       }
     },
     [claimImageRecipe, familyOverride, imageFormClaimId, modelSelectionAction],
   );
 
-  const dismissLoadToast = useCallback(() => {
-    if (loadToastId.current != null) toast.dismiss(loadToastId.current);
-    loadToastId.current = null;
-  }, []);
+  const [loadToast] = useState(() =>
+    createMediaLoadToast<DiffusionLoadProgress>({
+      toastOptions: loadToastArgs,
+      onClosedChange: setClosedLoad,
+    }),
+  );
+  const dismissLoadToast = loadToast.dismiss;
   const pickToast = useDiffusionPickToast();
 
-  const cancelLoadRef = useRef<() => void>(() => {});
-  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
   // In-flight requests compare against this and discard their result after a cancel.
   const cancelSeq = useRef(0);
   // The compensating unload carries no identity, so it must not fire once a newer load owns the page.
   const loadSeq = useRef(0);
   // Settles only after handleLoad finishes, since begin_load refuses a second load while one is live.
   const pendingStart = useRef<Promise<unknown> | null>(null);
+  const pendingUnload = useRef<Promise<boolean> | null>(null);
 
   // Set when the compensating unload failed, so the cancelled load is STILL running.
   const loadTrackingRestored = useRef(false);
@@ -2326,6 +2526,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [dismissLoadToast, pickGuard, pickToast, revertPick]);
 
@@ -2339,6 +2540,8 @@ export function ImagesPage({
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
   const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
+  // An INT8 / FP8 build that did not bake this selection: Generate reloads with it first instead of a refused run.
+  const loraReload = loraCapable ? loraReloadReason(status, loras) : null;
   const loraOffNote = external ? null : loraUnavailableNote(status);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
@@ -2351,14 +2554,22 @@ export function ImagesPage({
     }
     const fam = status?.family ?? null;
     const prev = prevLoraFamilyRef.current;
+    const held = heldLoraRecipe.current;
+    heldLoraRecipe.current = null;
     if (prev != null && prev !== fam) {
       setLoras([]);
+      // The LoRA whose recipe the pick kept is gone: an untouched form takes the model's recipe.
+      if (held) {
+        setSteps((cur) => (cur === held.preset.steps ? held.model.steps : cur));
+        setGuidance((cur) => (cur === held.preset.guidance ? held.model.guidance : cur));
+      }
     }
     prevLoraFamilyRef.current = fam;
     const deploy = pendingDeploy.current;
     if (deploy) {
       pendingDeploy.current = null;
-      if (!deploy.family || deploy.family === fam) {
+      // The adapter runs on every family it was published for (Klein Base trains, Klein deploys).
+      if (!deploy.family || (fam != null && deploy.families.includes(fam))) {
         setLoras([{ id: deploy.loraId, weight: 1 }]);
       } else {
         toast.error(
@@ -2392,12 +2603,13 @@ export function ImagesPage({
     if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
     checkedBuildForBake.current = residentBuildKey;
     const engaged = status?.resolved?.transformer_quant?.value;
-    if (engaged !== "int8" && engaged !== "fp8") return;
+    // MiniMax-H3-Image merges adapters into its weights at load at every precision.
+    if (engaged !== "int8" && engaged !== "fp8" && status?.family !== H3_IMAGE_FAMILY) return;
     if (bakedLorasOnLoad.current || loras.length === 0) return;
     setLoras([]);
     toast.info("LoRA selection cleared", {
       description:
-        "This quantized load bakes adapters in at load time. Pick them, then load again.",
+        "This quantized build takes LoRAs only when it loads. Pick them again and Generate reloads the model with them.",
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
@@ -2410,9 +2622,15 @@ export function ImagesPage({
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const maxSteps = !external && status?.loaded === true ? maxStepsFor(status.family) : null;
+  useEffect(() => {
+    if (maxSteps !== null && steps > maxSteps) setSteps(maxSteps);
+  }, [maxSteps, steps]);
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
+  const fastCfgShown = fastCfgAvailable(status, effectiveGuidance, Boolean(external));
+  const cfgIntervalSupported = !external && status?.loaded === true && status.supports_cfg_interval === true;
   // The guidance a negative prompt needs: 0 with no model loaded or on an older backend, the old rule.
   const negativeMinGuidance =
     status?.loaded && status.negative_prompt_min_guidance !== undefined
@@ -2555,6 +2773,7 @@ export function ImagesPage({
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
   const livePreviewSrc =
     busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
+  const stagePreviewSrc = pickedDuringRun ? undefined : livePreviewSrc;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -2643,6 +2862,7 @@ export function ImagesPage({
   const stripEpoch = useRef(0);
   const pageEpoch = useRef(0);
   const resyncSeq = useRef(0);
+  const refreshSeq = useRef(0);
   // The epoch is an EDGE, so a page starting after the bump sees it unchanged.
   const pendingShelfMutations = useRef(0);
 
@@ -2789,22 +3009,19 @@ export function ImagesPage({
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
       const ticket = (resyncSeq.current += 1);
+      const fresh = () => resyncSeq.current === ticket && (!stillFresh || stillFresh());
       for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
         const paged = pageEpoch.current;
-        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
-        const collected: GalleryImage[] = [];
-        let more = false;
-        while (collected.length < wanted) {
-          const page = await getGallery(
-            collected.length,
-            Math.min(PAGE_SIZE, wanted - collected.length),
-          );
-          collected.push(...page.images);
-          more = page.has_more;
-          if (!page.has_more || page.images.length === 0) break;
-        }
-        if (stillFresh && !stillFresh()) return;
-        if (resyncSeq.current !== ticket) return;
+        const result = await collectGalleryWindow(
+          (offset, limit) => getGallery(offset, limit),
+          galleryCache.images,
+          Math.max(count, galleryCache.images.length, PAGE_SIZE),
+          PAGE_SIZE,
+          () => galleryCache.selectedId,
+          fresh,
+        );
+        if (!result) return false;
+        const { images: collected, hasMore: more } = result;
         if (pageEpoch.current !== paged) continue;
         galleryCache.images = collected;
         galleryCache.hasMore = more;
@@ -2813,26 +3030,31 @@ export function ImagesPage({
         if (typeof IntersectionObserver === "undefined") {
           collected.forEach((image) => void ensureThumb(image));
         }
-        return;
+        return true;
       }
+      return false;
     },
     [ensureThumb],
   );
 
-  // This page stays mounted across routes, so an archive restore needs a resync.
-  useEffect(
-    () =>
-      subscribeGalleryChanged("images", () => {
-        // Bumped FIRST so in-flight reads are discarded.
-        stripEpoch.current += 1;
+  const refreshLoadedGallery = useCallback(() => {
+    const ticket = (refreshSeq.current += 1);
+    // Bumped FIRST so in-flight reads are discarded.
+    stripEpoch.current += 1;
+    void (async () => {
+      // Retried: a pin or archive mid-fetch discards it, and nothing else refetches the new image.
+      for (let attempt = 0; attempt < PAGE_MAX_ATTEMPTS && refreshSeq.current === ticket; attempt += 1) {
+        // After pending pin PATCHes, or this read could undo a pin on screen.
+        if (attempt > 0) await serializeById("image-pin", async () => {});
         const epoch = stripEpoch.current;
-        void resyncWindow(
-          galleryCache.images.length,
-          () => stripEpoch.current === epoch,
-        ).catch(() => void loadGallery());
-      }),
-    [loadGallery, resyncWindow],
-  );
+        const fresh = () => stripEpoch.current === epoch && refreshSeq.current === ticket;
+        if (await resyncWindow(galleryCache.images.length, fresh)) return;
+      }
+    })().catch(() => void loadGallery());
+  }, [loadGallery, resyncWindow]);
+
+  // This page stays mounted across routes, so an archive restore needs a resync.
+  useEffect(() => subscribeGalleryChanged("images", refreshLoadedGallery), [refreshLoadedGallery]);
 
   const { isFavorite, toggleFavorite } = useLibraryFavorites();
   const pinAttempt = useRef(new Map<string, number>());
@@ -2995,6 +3217,9 @@ export function ImagesPage({
     setHeight(restored.height);
     setBatchSize(image.batch_size ?? 1);
     setShiftValue(shiftFromRecipe(image));
+    const restoredFastCfgEnd = fastCfgEndFromRecipe(image);
+    setFastCfgOn(restoredFastCfgEnd !== null);
+    setFastCfgEnd(restoredFastCfgEnd);
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -3068,13 +3293,14 @@ export function ImagesPage({
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
       // Restored into the hidden control, which Generate omits: say so, as an import does.
       ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
+      ...(via === "restore" ? fastCfgNotApplied(image.cfg_interval_end, cfgIntervalSupported) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3153,7 +3379,6 @@ export function ImagesPage({
           id: "",
           url: "",
           seed: settings.seed ?? 0,
-          batch_index: 0,
           created_at: 0,
           localized_edit:
             localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
@@ -3198,6 +3423,7 @@ export function ImagesPage({
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...shiftNotApplied(recipe, shiftControl),
+        ...fastCfgNotApplied(recipe.cfg_interval_end, cfgIntervalSupported),
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
@@ -3264,7 +3490,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, cfgIntervalSupported, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -3379,6 +3605,8 @@ export function ImagesPage({
   );
 
   const refreshStatus = useCallback(async () => {
+    // A read during teardown can still see the resident and supersede the unload response.
+    if (pendingUnload.current) await pendingUnload.current;
     const ticket = ++statusTicket.current;
     try {
       setStatusIfNewest(ticket, ownDiffusionStatus(await getDiffusionStatus()));
@@ -3535,6 +3763,7 @@ export function ImagesPage({
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
         setPendingModelDefaults(null);
         lastLoadRevert.current = null;
         return;
@@ -3550,6 +3779,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -3559,8 +3789,9 @@ export function ImagesPage({
         // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
-        // A failed load may have freed a previously-loaded model, so resync to the real backend state.
-        void refreshStatus();
+        // A failed load may have freed a previously-loaded model, so resync to the real backend state, then snap the
+        // Advanced selects to what that state says is loaded.
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return;
       }
       if (p.phase === null) {
@@ -3574,6 +3805,7 @@ export function ImagesPage({
         if (quantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (lastLoadRevert.current) {
           lastLoad.current = lastLoadRevert.current.prev;
@@ -3585,25 +3817,25 @@ export function ImagesPage({
       }
       // Include bytes_total: the estimate lands as a 0->real jump while the rest holds.
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
-      if (loadToastId.current != null && sig !== lastLoadSig.current) {
+      if (sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
+        loadToast.update(p);
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor, rememberFinishedLoad]);
+  }, [dismissLoadToast, refreshStatus, loadToast, offerLoadAnywayFor, rememberFinishedLoad]);
 
   // The unload failed, so restore the poll and toast. refreshStatus cannot: a first load is not resident.
   const restoreLoadTracking = useCallback(() => {
     loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
-    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    loadToast.open(IDLE_PROGRESS);
     void pollLoadProgress();
-  }, [pollLoadProgress, cancelLoadFromToast]);
+  }, [pollLoadProgress, loadToast]);
 
   // generate-progress carries no terminal record, so refresh the gallery on completion.
   const resumeGeneratePoll = useCallback(() => {
@@ -3625,9 +3857,9 @@ export function ImagesPage({
             genVisibilityListener.current = null;
           }
           if (!isMounted.current) return;
-          setBusy(null);
+          setBusy((prev) => (prev === "generating" ? null : prev));
           setGenStep(null);
-          void loadGallery();
+          refreshLoadedGallery();
           void refreshStatus();
           return;
         }
@@ -3646,14 +3878,10 @@ export function ImagesPage({
     };
     document.addEventListener("visibilitychange", genVisibilityListener.current);
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
-  }, [loadGallery, refreshStatus]);
+  }, [refreshLoadedGallery, refreshStatus]);
 
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) {
-      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
-      stripEpoch.current += 1;
-      void loadGallery();
-    }
+    if (finished.some((job) => job.status === "done")) refreshLoadedGallery();
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
@@ -3669,6 +3897,16 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  if (
+    pickedDuringRun &&
+    pickReleased({
+      statusKnown: generateProbed && imageQueue.polled,
+      generating: busy === "generating",
+      queueBusy: queueBusy(imageQueue.jobs),
+    })
+  ) {
+    setPickedDuringRun(false);
+  }
   useEffect(() => {
     if (busy !== null) return;
     followingJob.current = null;
@@ -3713,13 +3951,13 @@ export function ImagesPage({
       // A load runs on the backend as a daemon thread that survives navigation, so resume tracking one still in flight.
       let inFlight = false;
       try {
-        const p = await getDiffusionLoadProgress();
+        const p = await readAfterUnload(pendingUnload, () => getDiffusionLoadProgress());
         inFlight = isLoadInFlightPhase(p.phase);
         if (inFlight) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
+          loadToast.open(p);
           void pollLoadProgress();
         } else if (p.phase === "ready") {
           const ticket = ++statusTicket.current;
@@ -3738,7 +3976,7 @@ export function ImagesPage({
       setInitialLoadProbe(inFlight ? "loading" : "idle");
       // Resume tracking a generation started elsewhere so the page shows the in-flight run. Mirrors the video page.
       try {
-        const g = await getGenerateProgress();
+        const g = await readAfterUnload(pendingUnload, getGenerateProgress);
         if (g.active) {
           runTarget.current = g.target ?? undefined;
           setBusy("generating");
@@ -3748,6 +3986,7 @@ export function ImagesPage({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setGenerateProbed(true);
     })();
     return () => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -3758,7 +3997,7 @@ export function ImagesPage({
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast, rememberFinishedLoad]);
+  }, [refreshStatus, setStatusIfNewest, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, loadToast, rememberFinishedLoad]);
 
   // Seed from a resident model's recipe, else flux.1-dev generates garbage at 9 steps.
   const residentSeeded = useRef(false);
@@ -3801,6 +4040,7 @@ export function ImagesPage({
     const matched = matchAspect(size.width, size.height);
     setAspect(matched.key);
     setPortrait(matched.portrait);
+    setReferenceRaise(null);
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
@@ -3826,19 +4066,20 @@ export function ImagesPage({
     setEngineChoice(loadedEngine);
   }
   const engineForced = status?.engine_forced ?? null;
-  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced });
+  const engineStatus = status;
+  const engineSelection = useRef({ key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus });
   useEffect(() => {
-    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced };
-  }, [loadedEngineKey, engineChoice, engineChoices, engineForced]);
+    engineSelection.current = { key: loadedEngineKey, choice: engineChoice, stored: engineChoices, forced: engineForced, status: engineStatus };
+  }, [loadedEngineKey, engineChoice, engineChoices, engineForced, engineStatus]);
   // A load's engine: an explicit one it was handed, else the Engine select for the loaded checkpoint, else
   // the choice that checkpoint last loaded with. GGUF only; Auto omits the field.
   const engineFor = useCallback(
     (repoId: string, opts: ImageLoadOptions, advanced: LoadAdvanced) => {
       if (!sendsEngine(opts.kind, opts.filename)) return undefined;
-      if (advanced.engine) return engineRequestField(advanced.engine);
-      const { key, choice, stored } = engineSelection.current;
+      const { key, choice, stored, status: hostStatus } = engineSelection.current;
+      if (advanced.engine) return engineRequestField(hostEngineChoice(advanced.engine, hostStatus));
       const target = engineModelKey(repoId, opts.filename);
-      return engineRequestField(target && target === key ? choice : stored[target]);
+      return engineRequestField(hostEngineChoice(target && target === key ? choice : stored[target], hostStatus));
     },
     [],
   );
@@ -3847,10 +4088,42 @@ export function ImagesPage({
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
   // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
+  // Schemes the loaded (else last planned) family or card refuses: disabled in Precision with the reason, and a held
+  // one falls back to Auto rather than being refused at load.
+  // A plan's denials die with the resident it was made beside: a load landing, an eject or an eviction drops them.
+  const residentPrecisionKey = precisionResidentKey(status);
+  useEffect(() => {
+    setPlannedPrecisionOptions(null);
+  }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
+  useEffect(() => {
+    setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
+  }, [precisionDenials, transformerQuant]);
+
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    const afterFailedLoad = failedLoadReseed !== handledFailedLoadReseed.current;
+    handledFailedLoadReseed.current = failedLoadReseed;
+    const action = reseedAction(status, record != null, afterFailedLoad);
+    if (action === "auto") {
+      setTransformerQuant("auto");
+      setTextEncoderQuant("auto");
+      setMemoryMode("auto");
+      setAttentionBackend("auto");
+      setInt8Attention("auto");
+      setLoraFuse("auto");
+      return;
+    }
+    if (action !== "record" || !record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
@@ -3871,14 +4144,18 @@ export function ImagesPage({
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
     if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+    const attention = resolvedRequestSelectValue(record.attention_backend, (v) =>
       (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
         (o) => o === v || `_native_${o}` === v,
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
+    const int8 = int8AttentionSelection(record.int8_attention);
+    if (int8) setInt8Attention(int8);
+    const fuse = loraFuseSelection(record.lora_fuse);
+    if (fuse) setLoraFuse(fuse);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+  }, [resolvedKey, failedLoadReseed]);
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
@@ -3900,6 +4177,10 @@ export function ImagesPage({
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
         text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
+        // Always sent: the backend reads "auto" as no per-load override.
+        int8_attention: int8Attention,
+        // Only an explicit choice: auto leaves the env switch in charge, as on an older backend.
+        lora_fuse: loraFuse === "auto" ? undefined : loraFuse,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -3923,6 +4204,8 @@ export function ImagesPage({
       transformerQuant,
       textEncoderQuant,
       attentionBackend,
+      int8Attention,
+      loraFuse,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -3947,6 +4230,7 @@ export function ImagesPage({
       // Read BEFORE the start request: a Cancel's unload can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      if (pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current.load = startLoad;
       // An older pick's Load anyway prompt would retry a model this load supersedes.
       dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
@@ -3963,8 +4247,7 @@ export function ImagesPage({
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      const handedOver = pickToast.take(pickToastId);
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, handedOver, cancelLoadFromToast));
+      loadToast.open(IDLE_PROGRESS, pickToast.take(pickToastId));
       // Snapshot first: a load that fails to START leaves the previous model resident.
       const prevLastLoad = lastLoad.current;
       // A torchao int8/fp8 transformer takes adapters only at LOAD time and /images/generate then
@@ -4004,8 +4287,8 @@ export function ImagesPage({
       lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
-        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
-          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current) {
+          loadToast.update(SAVING_PROGRESS);
         }
       });
       try {
@@ -4024,6 +4307,8 @@ export function ImagesPage({
             : undefined,
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
+          int8_attention: advanced.int8_attention,
+          lora_fuse: advanced.lora_fuse,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -4047,7 +4332,7 @@ export function ImagesPage({
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
-        void refreshStatus();
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return settle(false);
       } finally {
         savePoll.stop();
@@ -4072,7 +4357,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, loadToast, pickToast, engineFor, offerLoadAnywayFor, dismissLoadAnyway],
   );
 
   const handleInitChange = useCallback((dataUrl: string | null) => {
@@ -4149,7 +4434,7 @@ export function ImagesPage({
   useLayoutEffect(() => {
     stripTileActions.set({
       tileProps: stripReorder.tileProps,
-      select: setSelectedId,
+      select: pickImage,
       setMenuId: setTileMenuId,
       togglePin: (id, pinned) => void handleTogglePin(id, pinned),
       archive: (id) => void handleArchive(id),
@@ -4195,6 +4480,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
       });
@@ -4241,10 +4527,13 @@ export function ImagesPage({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // Staging starts no load, so the optimistic label must be reverted here, for this job's pick only.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
       stagedQuantRevert.current = null;
       startQueuedDownload();
@@ -4373,6 +4662,16 @@ export function ImagesPage({
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       // Only load intents have an owner; a download-only pick holds no token and answers true.
       const owns = () => token === undefined || downloadOnly || pickGuard.holds(token);
+      // Hidden mid-plan (pickGuard.release) and still the newest pick: nothing else settles it, so take it back.
+      const dropReleasedPick = (owned: PickRevert | null) => {
+        if (downloadOnly || downloadSnapshot || pick !== pickSeq.current) return;
+        if (!pickReleasedWhileNewest(pickGuard, token)) return;
+        if (owned && quantRevert.current === owned) {
+          revertPick(owned);
+          quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
+        }
+      };
       // A download-only pick must not retire a staged load, or that model never loads.
       if (!downloadSnapshot && !downloadOnly) {
         pendingStagedLoad.current = null;
@@ -4380,7 +4679,10 @@ export function ImagesPage({
         stagedLoadDeferred.current = false;
         stagedQuantRevert.current = null;
         pickToast.dismissAll();
-        if (!owns()) return true;
+        if (!owns()) {
+          dropReleasedPick(quantRevert.current);
+          return true;
+        }
       }
       const picked = downloadSnapshot || downloadOnly ? null : pickComponentFiles({ repoId, ...opts });
       const withPicked = (a: LoadAdvanced): LoadAdvanced =>
@@ -4403,20 +4705,33 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
       let incompatible: string | null = null;
       let incompatibleCode: string | null = null;
       try {
-        const plan = retiredSnapshot
-          ? await requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
-          : await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
+        const plan = await withSettledVramBudget(() =>
+          retiredSnapshot
+            ? requestDownloadPlan(repoId, opts, advanced, opts.displayRepoId)
+            : requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced),
+        );
         // Only load intents are superseded; accepted downloads keep their own plans.
         if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
           pickToast.dismiss(pickToastId);
+          dropReleasedPick(ownRevert);
           return true;
+        }
+        if (!downloadOnly) {
+          setPlannedPrecisionOptions({
+            gpu: gpuSelectionKey(advanced.gpu_ids),
+            options: plan.precision_options ?? null,
+            repos: [repoId, opts.displayRepoId],
+          });
         }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
@@ -4455,16 +4770,29 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
         }
       } catch (error) {
+        // Not a plan failure: the fallback load below would run on the budget the user replaced.
+        if (error instanceof VramBudgetSaveError) {
+          pickToast.dismiss(pickToastId);
+          if (ownRevert && quantRevert.current === ownRevert) {
+            revertPick(ownRevert);
+            quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
+          }
+          toast.error(error.message);
+          return true;
+        }
         if (downloadOnly) {
           toast.error("Could not plan the download", {
             description: error instanceof Error ? error.message : "Try selecting the model again.",
@@ -4475,6 +4803,7 @@ export function ImagesPage({
       // Re-checked: a plan rejected after a newer pick would otherwise reach the fallback load.
       if (!downloadOnly && (pick !== pickSeq.current || !owns())) {
         pickToast.dismiss(pickToastId);
+        dropReleasedPick(ownRevert);
         return true;
       }
       if (incompatible) {
@@ -4581,6 +4910,7 @@ export function ImagesPage({
         onResolved: (filename) => {
           if (downloadOnly) return;
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId, effectiveFamilyOverride, false, filename);
         },
@@ -4588,6 +4918,7 @@ export function ImagesPage({
           if (!downloadOnly && quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         },
         load: (filename) =>
@@ -4617,11 +4948,17 @@ export function ImagesPage({
     }
     // `routeSearch` is rebuilt every render, so depend on the two fields.
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
-    const routedFilename = routedGgufFilename(routed);
-    const routedLabel = routedGgufLabel(routed);
+    const routedFilename = routedImageFilename(routed);
+    const routedLabel = routedFilename ? null : routedGgufLabel(routed);
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/images", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked, replace: true }));
+      return;
+    }
     // A Download only arrival owns nothing and must leave a staging load its claim.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
@@ -4650,18 +4987,20 @@ export function ImagesPage({
       : (quantRevert.current ?? { prev: quant, steps, guidance });
     if (revert) {
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
       applyImageModelDefaults(
         wanted,
         "auto",
         false,
-        pick.opts.kind === "gguf" ? (pick.opts.filename ?? null) : null,
+        pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null),
       );
     }
     void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
       if (!started && revert && token !== undefined && pickGuard.holds(token) && quantRevert.current === revert) {
         revertPick(revert);
         quantRevert.current = null;
+        setPickInFlight(quantRevert.current !== null);
       }
     });
   }, [
@@ -4701,33 +5040,77 @@ export function ImagesPage({
     }).then((found) => {
       if (lookup !== routedLookup.current) return;
       if (found) {
-        setSelectedId(routedItem);
+        pickImage(routedItem);
       } else {
         toast(translate("library.toast.imageNotFound"), {
           description: translate("library.toast.notFoundDescription"),
         });
       }
     });
-  }, [routedItem, navigateSelf, loadGallery, loadMore]);
+  }, [routedItem, navigateSelf, loadGallery, loadMore, pickImage]);
 
-  // Reload the current model with the current advanced options.
-  const handleReapply = useCallback(() => {
+  // `keepLoras` carries the selection even when this page did not load the resident model.
+  const reapplyLoad = useCallback((keepLoras: boolean): boolean => {
     // Against the current status: another client may have replaced the model this page last loaded.
     const l = reapplyTarget(lastLoad.current, status);
-    if (!l) return;
+    if (!l) return false;
     const opts = { kind: l.kind, filename: l.filename, displayRepoId: l.displayRepoId, baseRepo: l.baseRepo };
     // An engine change reads the other engine's companion files: plan and stage them first.
     if (reapplyChangesEngine(engineChoice, status)) {
-      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true);
-      return;
+      void loadOrStage(l.repoId, opts, reloadSource(l.repoId), undefined, true, undefined, true).then((started) => {
+        // A stage that never loads must not leave a Generate waiting for some later load.
+        if (!started && pendingRecalledGeneration.current?.load === "next") pendingRecalledGeneration.current = null;
+      });
+      return true;
     }
     const files = pickComponentFiles({ repoId: l.repoId, kind: l.kind, filename: l.filename });
     void handleLoad(l.repoId, opts, {
-      ...currentLoadAdvanced(l.repoId),
+      ...currentLoadAdvanced(l.repoId, true, keepLoras),
       text_encoder_file: files.textEncoderFiles?.length ? files.textEncoderFiles : undefined,
       vae_file: files.vaeFile || undefined,
     });
+    return true;
   }, [currentLoadAdvanced, engineChoice, handleLoad, loadOrStage, pickComponentFiles, status]);
+  const handleReapply = useCallback(() => {
+    reapplyLoad(false);
+  }, [reapplyLoad]);
+
+  // INT8 / FP8 builds take LoRAs only at load: reload via the Reapply path, then generate.
+  const reloadWithLoras = useCallback(
+    (thenGenerate: boolean) => {
+      if (busy !== null || !status?.loaded || !status.repo_id) return;
+      const kind = status.model_kind;
+      const resumable =
+        kind === "pipeline" || ((kind === "gguf" || kind === "single_file") && Boolean(status.gguf_filename));
+      if (thenGenerate && resumable) {
+        const model = withEngagedFamily(
+          lastLoad.current && matchesRememberedModel(lastLoad.current, status)
+            ? lastLoad.current
+            : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
+        pendingRecalledGeneration.current = {
+          model,
+          load: "next",
+          workflow,
+          allowOversized: oversizedOnce.current,
+        };
+      }
+      if (!reapplyLoad(true)) {
+        pendingRecalledGeneration.current = null;
+        toast.error(LORA_RELOAD_TITLE, { description: "Load the model again with the LoRAs selected." });
+        return;
+      }
+      toast.info("Reloading the model with your LoRAs", {
+        id: "images-lora-reload",
+        description:
+          thenGenerate && resumable
+            ? "Quantized builds take LoRAs only when they load. Generate runs once the model is ready."
+            : "Quantized builds take LoRAs only when they load.",
+      });
+    },
+    [busy, status, workflow, reapplyLoad],
+  );
 
   // The LoRA note's action: the same GGUF pick, on the native engine. A resident model the page did not load
   // reloads from its status, which names the checkpoint.
@@ -4754,6 +5137,7 @@ export function ImagesPage({
     if (quantRevert.current) {
       revertPick(quantRevert.current);
       quantRevert.current = null;
+      setPickInFlight(quantRevert.current !== null);
     }
   }, [revertPick]);
 
@@ -4768,6 +5152,7 @@ export function ImagesPage({
         if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
           revertPick(quantRevert.current);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
         pickGuard.cancel();
         pickToast.dismissAll();
@@ -4794,6 +5179,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(null);
           applyImageModelDefaults(id, nextFamilyOverride);
         }
@@ -4806,6 +5192,7 @@ export function ImagesPage({
             if (!started && revert && stillOwnsPick()) {
               revertPick(revert);
               quantRevert.current = null;
+              setPickInFlight(quantRevert.current !== null);
             }
           });
         return;
@@ -4816,6 +5203,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(meta.ggufVariant);
           applyImageModelDefaults(id, nextFamilyOverride, false, meta.ggufFilename);
         }
@@ -4828,6 +5216,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4852,6 +5241,7 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
           applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
@@ -4859,6 +5249,7 @@ export function ImagesPage({
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4874,13 +5265,15 @@ export function ImagesPage({
           : (quantRevert.current ?? { prev: quant, steps, guidance });
         if (revert) {
           quantRevert.current = revert;
+          setPickInFlight(quantRevert.current !== null);
           setQuant(filename);
-          applyImageModelDefaults(id, nextFamilyOverride);
+          applyImageModelDefaults(id, nextFamilyOverride, false, filename);
         }
         void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
           if (!started && revert && stillOwnsPick()) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         });
         return;
@@ -4907,6 +5300,7 @@ export function ImagesPage({
         : (quantRevert.current ?? { prev: quant, steps, guidance });
       if (revert) {
         quantRevert.current = revert;
+        setPickInFlight(quantRevert.current !== null);
         setQuant(null);
         applyImageModelDefaults(id, nextFamilyOverride);
       }
@@ -4914,6 +5308,7 @@ export function ImagesPage({
         if (!started && revert && stillOwnsPick()) {
           revertPick(revert);
           quantRevert.current = null;
+          setPickInFlight(quantRevert.current !== null);
         }
       });
     },
@@ -4935,7 +5330,13 @@ export function ImagesPage({
   );
 
   const handleDeployAdapter = useCallback(
-    (args: { baseRepo: string; family: string; catalogPath: string; trigger: string }) => {
+    (args: {
+      baseRepo: string;
+      family: string;
+      families?: string[];
+      catalogPath: string;
+      trigger: string;
+    }) => {
       if (busy !== null) {
         toast.error("Finish the current model load before deploying the adapter.");
         return;
@@ -4950,24 +5351,49 @@ export function ImagesPage({
       pickGuard.cancel();
       pickToast.dismissAll();
       setExternalModelId(null);
-      pendingDeploy.current = { loraId: stem, family: args.family };
+      pendingDeploy.current = {
+        loraId: stem,
+        family: args.family,
+        families: args.families?.length ? args.families : [args.family],
+      };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
+      setPickInFlight(quantRevert.current !== null);
       setQuant(null);
       applyImageModelDefaults(args.baseRepo, "auto", true);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      // Sent with the load: an int8 / fp8 build takes adapters only at load time and refuses one picked after.
+      const deployLoras: LoraSpecInput[] = [{ id: stem, weight: 1 }];
+      const prevLoras = loras;
+      setLoras(deployLoras);
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, {
+        ...currentLoadAdvanced(args.baseRepo),
+        loras: deployLoras,
+      }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
+          setLoras(prevLoras);
           if (quantRevert.current === revert) {
             revertPick(revert);
             quantRevert.current = null;
+            setPickInFlight(quantRevert.current !== null);
           }
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, pickToast, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      loras,
+      pickGuard,
+      pickToast,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
   const deployFromVideo = useImageWorkflowStore((s) => s.pendingDeploy);
   useEffect(() => {
@@ -4980,35 +5406,47 @@ export function ImagesPage({
     if (trainingCompletions > 0) setLoraRefreshKey((k) => k + 1);
   }, [trainingCompletions]);
 
-  const handleUnload = useCallback(async (): Promise<boolean> => {
+  const handleUnload = useCallback((): Promise<boolean> => {
+    if (pendingUnload.current) return pendingUnload.current;
+
     pendingRecalledGeneration.current = null;
     dropResidentState();
     loadTrackingRestored.current = false;
     setBusy("unloading");
-    try {
-      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
-      setQuant(null);
-      // Wait for any in-flight load start to finish, compensating unload included, or the older load
-      // keeps running with no toast or cancel control.
-      const pending = pendingStart.current;
-      if (pending) {
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
+
+    async function unload(): Promise<boolean> {
+      try {
+        setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
+        setQuant(null);
+        // Wait for any in-flight load start to finish, compensating unload included, or the older load
+        // keeps running with no toast or cancel control.
+        const pending = pendingStart.current;
+        if (pending) {
+          try {
+            await pending;
+          } catch {
+            // Its own handler reports the failure; this only waits for the window to close.
+          }
         }
+        // Tracking RESTORED means the compensating unload failed and the load is still running.
+        return !loadTrackingRestored.current;
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to unload model");
+        void refreshStatus();
+        return false;
       }
-      // Tracking RESTORED means the compensating unload failed and the load is still running.
-      return !loadTrackingRestored.current;
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
-      void refreshStatus();
-      return false;
-    } finally {
+    }
+
+    pendingUnload.current = unload().finally(() => {
+      pendingUnload.current = null;
       // Not an unconditional clear: a restore may have set "loading" deliberately.
       setBusy((prev) => (prev === "unloading" ? null : prev));
-    }
-  }, [refreshStatus, dropResidentState]);
+    });
+    return pendingUnload.current;
+  }, [refreshStatus, dropResidentState, setStatusIfNewest]);
+
+  const ejecting = useRef(false);
+  const handleEject = useCallback(() => ejectWithToast(ejecting, handleUnload), [handleUnload]);
 
   // The unload cancels the load; it leaves only cache, so reloading resumes.
   const handleCancelLoad = useCallback(async () => {
@@ -5025,8 +5463,8 @@ export function ImagesPage({
   }, [busy, handleUnload, restoreLoadTracking]);
 
   useEffect(() => {
-    cancelLoadRef.current = () => void handleCancelLoad();
-  }, [handleCancelLoad]);
+    loadToast.setCancel(() => void handleCancelLoad());
+  }, [loadToast, handleCancelLoad]);
 
   const buildKey = status?.loaded
     ? [
@@ -5036,6 +5474,7 @@ export function ImagesPage({
         status.transformer_quant,
         status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
+        status.conditioning?.edit_output_resolution ?? "",
       ].join("|")
     : null;
   const [seededBuild, setSeededBuild] = useState<string | null>(null);
@@ -5050,17 +5489,60 @@ export function ImagesPage({
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
       );
-      setMatchResolution(tier);
+      setMatchResolution(
+        seedMatchResolution(
+          tier,
+          status.conditioning?.edit_output_resolution,
+          sizeLimitsFrom(status.conditioning ?? null).maxSide,
+        ),
+      );
     }
   }
 
+  // Fit before the Reference raise so it starts from the fitted size.
   const limitsKey = `${sizeLimits.multiple}|${sizeLimits.maxSide}|${sizeLimits.maxPixels}`;
   const [fittedLimits, setFittedLimits] = useState(limitsKey);
+  let fittedWidth = width;
+  let fittedHeight = height;
   if (limitsKey !== fittedLimits) {
     setFittedLimits(limitsKey);
     const fitted = fitSize(width, height, sizeLimits);
     if (fitted.width !== width) setWidth(fitted.width);
     if (fitted.height !== height) setHeight(fitted.height);
+    fittedWidth = fitted.width;
+    fittedHeight = fitted.height;
+  }
+
+  // Width / Height are shared with Create: raise once per load on Reference, restore on leaving unless changed.
+  const referenceKey = workflow === "reference" && buildKey ? buildKey : null;
+  if (referenceKey !== null && referenceKey !== referenceRaise?.key) {
+    const raised = raiseToEditResolution(
+      fittedWidth,
+      fittedHeight,
+      status?.conditioning?.edit_output_resolution,
+      sizeLimits,
+    );
+    setReferenceRaise({
+      key: referenceKey,
+      raised: raised ?? undefined,
+      from: raised ? { width: fittedWidth, height: fittedHeight, aspect, portrait } : undefined,
+    });
+    if (raised) {
+      setWidth(raised.width);
+      setHeight(raised.height);
+      const m = matchAspect(raised.width, raised.height);
+      setAspect(m.key);
+      setPortrait(m.portrait);
+    }
+  } else if (referenceKey === null && referenceRaise?.from) {
+    const restore = sizeAfterReference(width, height, referenceRaise);
+    setReferenceRaise(restore ? null : { key: referenceRaise.key });
+    if (restore) {
+      setWidth(restore.width);
+      setHeight(restore.height);
+      setAspect(restore.aspect);
+      setPortrait(restore.portrait);
+    }
   }
 
   const [sourceRead, setSourceRead] = useState<{
@@ -5084,11 +5566,25 @@ export function ImagesPage({
 
   const editSize = useMemo(
     () =>
-      resolveEditSize(editSizing, sourceDims, matchResolution, { width, height }, sizeLimits),
-    [editSizing, sourceDims, matchResolution, width, height, sizeLimits],
+      resolveEditSize(
+        editSizing,
+        sourceDims,
+        matchResolution,
+        { width, height },
+        sizeLimits,
+        status?.family ?? null,
+      ),
+    [editSizing, sourceDims, matchResolution, width, height, sizeLimits, status?.family],
   );
-  const officialPresets = useMemo(() => presetsWithin(sizeLimits), [sizeLimits]);
+  const loadedFamily = status?.family ?? null;
+  const officialPresets = useMemo(
+    () => familyPresetsWithin(loadedFamily, sizeLimits),
+    [loadedFamily, sizeLimits],
+  );
+  const presetsCopy = familyPresetsCopy(loadedFamily);
   const showOfficialPresets = sizeLimits.maxSide > MAX_OUTPUT_DEFAULT && officialPresets.length > 0;
+  // "Picture" where the family's prompts name the inputs <Picture N> (MiniMax-H3-Image), else "Image".
+  const imageWord = inputImageWord(loadedFamily);
   const unifiedEditActive = workflow === "edit" && unifiedEdit;
   const onLocalizedLayer = useCallback((dataUrl: string | null) => setLocalizedLayer(dataUrl), []);
   const onLocalizedColors = useCallback((names: string[]) => setLocalizedColors(names), []);
@@ -5096,15 +5592,15 @@ export function ImagesPage({
   const renderAdditionalImages = (numberOf: (i: number) => number, hint: string) => (
     <>
       {referenceImages.map((img, i) => (
-        <Field key={i} label={`Image ${numberOf(i)}`} hint={hint}>
+        <Field key={i} label={`${imageWord} ${numberOf(i)}`} hint={hint}>
           <div className="space-y-1.5">
             <ImageDropzone
               value={img}
               onChange={(v) =>
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
-              removeLabel={`Remove image ${numberOf(i)}`}
-              cropSubject={`Image ${numberOf(i)}`}
+              removeLabel={`Remove ${imageWord.toLowerCase()} ${numberOf(i)}`}
+              cropSubject={`${imageWord} ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -5114,7 +5610,7 @@ export function ImagesPage({
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
               <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
-              Remove image {numberOf(i)}
+              Remove {imageWord.toLowerCase()} {numberOf(i)}
             </Button>
           </div>
         </Field>
@@ -5134,7 +5630,7 @@ export function ImagesPage({
           disabled={!initImage}
           onClick={() => setReferenceImages((prev) => [...prev, ""])}
         >
-          Add image
+          Add {imageWord.toLowerCase()}
         </Button>
       )}
     </>
@@ -5224,10 +5720,7 @@ export function ImagesPage({
         </div>
       </Field>
       {showOfficialPresets && (
-        <Field
-          label="2K presets"
-          hint="The model's native 2K sizes. They take several times the memory and time of a 1 megapixel image."
-        >
+        <Field label={presetsCopy.label} hint={presetsCopy.hint}>
           <Select
             value=""
             onValueChange={(v) => {
@@ -5240,8 +5733,8 @@ export function ImagesPage({
               setPortrait(m.portrait);
             }}
           >
-            <SelectTrigger aria-label="2K presets">
-              <SelectValue placeholder="Choose a 2K size" />
+            <SelectTrigger aria-label={presetsCopy.label}>
+              <SelectValue placeholder="Choose a size" />
             </SelectTrigger>
             <SelectContent>
               {officialPresets.map((p) => (
@@ -5258,6 +5751,19 @@ export function ImagesPage({
 
   // toQueue: the runs go to the server queue instead of running here.
   const handleGenerate = useCallback(async (toQueue = false) => {
+    // A model switch in flight replaces the resident model; the backend refuses the run meanwhile (409).
+    if (!external && quantRevert.current) {
+      toast.info("Finish switching models first", { description: "Generate turns back on once the new model has loaded." });
+      return;
+    }
+    // Compare, Vary and Queue land here too: none of them can run a selection the build did not bake.
+    if (!external && loraReload) {
+      toast.error(LORA_RELOAD_TITLE, {
+        description: loraReload,
+        action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+      });
+      return;
+    }
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5454,6 +5960,7 @@ export function ImagesPage({
           !controlnetEngaged,
         ),
         ...shiftRequestFields(shiftControl, shiftValue),
+        ...fastCfgRequestFields(fastCfgShown, fastCfgOn, fastCfgEnd),
         ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
         ...condFields,
         ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
@@ -5464,7 +5971,8 @@ export function ImagesPage({
           const active = loras
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0);
-          return active.length ? active : undefined;
+          // [] (not omitted): the server reads an omitted list as the load's adapters, as /v1 does.
+          return active;
         })(),
         // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
         controlnet:
@@ -5492,6 +6000,7 @@ export function ImagesPage({
     }
     followingJob.current = null;
     localRun.current = true;
+    setPickedDuringRun(false);
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5583,7 +6092,7 @@ export function ImagesPage({
         // Deduplicated: a resync may already have fetched the record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
-        if (res.images[0]) setSelectedId(res.images[0].id);
+        if (res.images[0] && !pickedDuringRunRef.current) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
         const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
         // A late reply never replaces the seed of a queued run that finished after it.
@@ -5621,6 +6130,12 @@ export function ImagesPage({
           description: `${msg} To run the grid anyway, turn on "${ALLOW_OVERSIZED_LABEL}" and generate it again.`,
           duration: 20_000,
         });
+      } else if (report && err instanceof LoraReloadRefusalError) {
+        toast.error(LORA_RELOAD_TITLE, {
+          description: msg,
+          duration: 20_000,
+          action: { label: LORA_RELOAD_ACTION, onClick: () => reloadWithLoras(false) },
+        });
       } else if (offerAnyway) {
         toast.error(MEMORY_REFUSAL_TITLE, {
           description: msg,
@@ -5634,7 +6149,7 @@ export function ImagesPage({
           },
         });
       } else if (report)
-        toast.error(msg, { action: generationFailureLogsAction(msg) });
+        modelErrorToast(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -5645,12 +6160,12 @@ export function ImagesPage({
       cancelRequested.current = false;
       // Await on EVERY exit: a run can change status (compile, cancelled native run), so Generate could 409.
       if (isMounted.current) await refreshStatus();
-      setBusy(null);
+      setBusy((prev) => (prev === "generating" ? null : prev));
       setGenDone(null);
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, fastCfgShown, fastCfgOn, fastCfgEnd, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -5731,6 +6246,17 @@ export function ImagesPage({
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
   const canQueue = !external && Boolean(status?.loaded);
+  const generateButton = generateGate({
+    busy,
+    presetsHydrated: imagePresets.hydrated,
+    loaded: Boolean(status?.loaded),
+    canRecallModel: Boolean(rememberedModel),
+    external: Boolean(external),
+    switching: pickInFlight,
+    loraReload,
+    queueWaiting,
+    canQueue,
+  });
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
     () => ({
@@ -5743,6 +6269,7 @@ export function ImagesPage({
       samplers: samplerOptions,
       samplerChoice,
       shift: shiftControl,
+      cfgInterval: cfgIntervalSupported,
       loraCapable,
       loras: loras
         .filter((l) => l.id.trim())
@@ -5759,13 +6286,17 @@ export function ImagesPage({
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, cfgIntervalSupported, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
     if (external) {
       await handleGenerate();
+      return;
+    }
+    if (status?.loaded && loraReload) {
+      reloadWithLoras(true);
       return;
     }
     if (status?.loaded) {
@@ -5829,7 +6360,9 @@ export function ImagesPage({
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
+    loraReload,
     prompt,
+    reloadWithLoras,
     rememberedModel,
     status,
     workflow,
@@ -5868,10 +6401,11 @@ export function ImagesPage({
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
     if (!pending) return;
-    if (!active || pending.load !== loadSeq.current) {
+    if (!active || (pending.load !== "next" && pending.load !== loadSeq.current)) {
       pendingRecalledGeneration.current = null;
       return;
     }
+    if (pending.load === "next") return;
     if (busy !== null || !status?.loaded) return;
     pendingRecalledGeneration.current = null;
     const tab = WORKFLOW_TABS.find(
@@ -5896,7 +6430,7 @@ export function ImagesPage({
 
   useEffect(() => {
     if (external) {
-      setSupported(["create"]);
+      setSupported([...CONNECTION_WORKFLOWS]);
       return;
     }
     if (!status?.loaded) {
@@ -5938,14 +6472,16 @@ export function ImagesPage({
         <AdvancedSelect
           label="Engine"
           hint={
-            status?.engine_forced
-              ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
-              : ENGINE_HINT
+            status?.gguf_diffusers_allowed === false
+              ? ENGINE_HINT_CPU_ONLY
+              : status?.engine_forced
+                ? `${ENGINE_HINT} The server pins UNSLOTH_DIFFUSION_ENGINE=${status.engine_forced}, which wins over this choice.`
+                : ENGINE_HINT
           }
           badge={<ResolvedBadge status={status} controlKey="engine" />}
-          value={engineChoice}
+          value={hostEngineChoice(engineChoice, status) ?? "auto"}
           onValueChange={(v) => setEngineChoice(v as EngineChoice)}
-          options={ENGINE_OPTIONS}
+          options={engineOptionsFor(status)}
         />
       )}
       <AdvancedSelect
@@ -5967,23 +6503,26 @@ export function ImagesPage({
           && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
+          hint="How the model computes. Auto picks per model and GPU: usually INT8 (or FP8 where the card has it), quantising the transformer onto low-precision tensor cores, but it keeps BF16 for models where quantising was measured as no faster or visibly different, so Auto is not always the fastest choice. The loaded build reports what Auto picked. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["auto", "Auto (fastest for GPU)"],
+            ["auto", "Auto (per model and GPU)"],
             ["none", "Off (run the checkpoint as-is)"],
             // Mac and CPU-only hosts cannot run the dense tensor-core path these schemes need.
             ...(hostOffersDensePrecision(hostClass)
-              ? withNvfp4Option(
-                  [
-                    ["fp8", "FP8"],
-                    ["int8", "INT8"],
-                    ["nvfp4", "NVFP4 (Blackwell)"],
-                    ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as [string, string][],
-                  nvfp4Diffusion,
+              ? withPrecisionDenials(
+                  withNvfp4Option(
+                    [
+                      ["fp8", "FP8"],
+                      ["int8", "INT8"],
+                      ["nvfp4", "NVFP4 (Blackwell)"],
+                      ["mxfp8", "MXFP8 (Blackwell)"],
+                    ] as SelectOption[],
+                    nvfp4Diffusion,
+                  ),
+                  precisionDenials,
                 )
               : []),
           ]}
@@ -6013,7 +6552,7 @@ export function ImagesPage({
             ["fp8_dynamic", "FP8 (compute)"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4"],
-          ] as [string, string][],
+          ] as SelectOption[],
           nvfp4Diffusion,
         )}
       />
@@ -6034,7 +6573,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint={ATTENTION_SELECT_HINT}
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -6047,8 +6586,19 @@ export function ImagesPage({
         ]}
       />
       <AdvancedSelect
+        label={INT8_ATTENTION_LABEL}
+        hint={INT8_ATTENTION_HINT}
+        badge={<ResolvedBadge status={status} controlKey="int8_attention" />}
+        value={int8Attention}
+        onValueChange={(v) => setInt8Attention(v as Int8AttentionChoice)}
+        options={INT8_ATTENTION_OPTIONS}
+      />
+      {!external && imageGpuDevices.length > 0 && (
+        <VramBudgetControl image modelLoading={busy === "loading"} />
+      )}
+      <AdvancedSelect
         label="Memory"
-        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
+        hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram also streams the text encoders and tiles the VAE decode (lowest VRAM, slowest)."
         badge={<ResolvedBadge status={status} controlKey="memory_mode" />}
         value={memoryMode}
         onValueChange={(v) => setMemoryMode(v as typeof memoryMode)}
@@ -6062,7 +6612,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          hint={`Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release. ${MULTI_GPU_BATCH_NOTE}`}
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
@@ -6098,6 +6648,22 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      {isOwner && swapSetting && (
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Swap models for chat images
+            <InfoHint>{swapSetting.managed_by_env
+              ? "Configured by UNSLOTH_CHAT_IMAGE_SWAP."
+              : "Let chat load an image generator when you ask for an image, then resume with the same chat model."}</InfoHint>
+          </span>
+          <Switch
+            aria-label="Swap models for chat images"
+            checked={swapSetting.enabled}
+            disabled={savingSwap || swapSetting.managed_by_env}
+            onCheckedChange={toggleChatImageSwap}
+          />
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ALLOW_OVERSIZED_LABEL}
@@ -6241,10 +6807,14 @@ export function ImagesPage({
                 externalModels={externalModels}
                 value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
+                loadedPrecisionOverride={
+                  !external && busy !== "unloading" ? loadedTransformerPrecisionLabel(status) : null
+                }
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
-                onEject={status?.loaded ? handleUnload : undefined}
+                loaded={busy === "unloading" ? false : undefined}
+                onEject={status?.loaded && busy !== "unloading" ? handleEject : undefined}
                 variant="ghost"
                 className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
                 task={IMAGE_GEN_TASKS}
@@ -6272,6 +6842,9 @@ export function ImagesPage({
                 </TooltipTrigger>
                 <TooltipContent>Stop loading this model</TooltipContent>
               </Tooltip>
+            )}
+            {pageMode !== "train" && busy === "loading" && closedLoad && (
+              <LoadInlineStatus p={closedLoad} />
             )}
           </div>
         </div>
@@ -6312,11 +6885,17 @@ export function ImagesPage({
             }
             onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
             onDeploy={handleDeployAdapter}
+            // Video-family adapters bake into the Video loader, which takes the request on arrival.
+            onDeployVideo={(args) => {
+              useVideoDeployStore.getState().requestDeploy(args);
+              void navigateSelf({ to: "/video" });
+            }}
             familyName={trainFamilyName}
             onFamilyNameChange={setTrainFamilyName}
             baseChoice={trainBaseChoice}
             onBaseChoiceChange={setTrainBaseChoice}
             onFamiliesChange={setTrainFamilies}
+            savedPresets={true}
           />
         </div>
       )}
@@ -6601,10 +7180,10 @@ export function ImagesPage({
             {workflow === "reference" && (
               <>
                 <Field
-                  label={unifiedEdit ? "Image 1" : "Reference image"}
+                  label={unifiedEdit ? `${imageWord} 1` : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? `${imageWord} 1` : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -6676,10 +7255,14 @@ export function ImagesPage({
                   </Field>
                 ) : (
                   <Field
-                    label="Image 1 (source)"
-                    hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    label={`${imageWord} 1 (source)`}
+                    hint={
+                      imageWord === "Picture"
+                        ? "The image to edit. Describe the change in the instruction below; add up to 15 more pictures and refer to them as <Picture 1>, <Picture 2> and so on, saying what to keep and what to change."
+                        : "The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
+                    }
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={`${imageWord} 1`} />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -6790,7 +7373,7 @@ export function ImagesPage({
                         <SelectItem value="custom">Custom</SelectItem>
                       </SelectContent>
                     </Select>
-                    {editSizing === "source" && (
+                    {editSizing === "source" && matchSizeChoosable(status?.family) && (
                       <Select
                         value={String(matchResolution)}
                         onValueChange={(v) => setMatchResolution(Number(v))}
@@ -6866,6 +7449,7 @@ export function ImagesPage({
                 enabled={enhanceOn}
                 onEnabledChange={changeEnhancePrompt}
                 modelKey={`${status?.repo_id ?? ""}|${status?.gguf_filename ?? ""}|${loadEpoch}`}
+                family={status?.family ?? null}
                 prompt={prompt}
                 previewRequest={() => {
                   // Edit and Reference condition on their images, so the caption describes them too.
@@ -6876,6 +7460,7 @@ export function ImagesPage({
                   return {
                     prompt: prompt.trim(),
                     variant: upsamplerVariantFor(status?.family),
+                    ...(status?.family ? { family: status.family } : {}),
                     ...(images.length ? { reference_images: images } : {}),
                   };
                 }}
@@ -6991,6 +7576,12 @@ export function ImagesPage({
                         onAdd={(spec, focusRow) => {
                           setFocusLoraRow(focusRow ? loras.length : null);
                           setLoras((prev) => [...prev, spec]);
+                          // A step-distilled adapter runs its own recipe (e.g. 8 steps at CFG 1).
+                          const preset = loraPresetRecipe([spec], sortedLoras);
+                          if (preset) {
+                            setSteps(preset.steps);
+                            setGuidance(preset.guidance);
+                          }
                         }}
                       />
                     )}
@@ -7005,6 +7596,16 @@ export function ImagesPage({
                       Folders
                     </Button>
                   </div>
+                </div>
+                <div className="mt-2">
+                  <AdvancedSelect
+                    label={LORA_FUSE_CONTROL_LABEL}
+                    hint={LORA_FUSE_CONTROL_HINT}
+                    badge={<ResolvedBadge status={status} controlKey="lora_fuse" />}
+                    value={loraFuse}
+                    onValueChange={(v) => setLoraFuse(v as LoraFuseChoice)}
+                    options={LORA_FUSE_OPTIONS}
+                  />
                 </div>
                 <OnDeviceFoldersDialog
                   open={loraFoldersOpen}
@@ -7063,7 +7664,8 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            {!unifiedEditActive && sizeControls}
+            {/* A connection edit sends no size. */}
+            {!unifiedEditActive && !(external && workflow === "edit") && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
             {!external && (
@@ -7071,10 +7673,14 @@ export function ImagesPage({
                 <div className="pt-2">
                   <SliderField
                     label="Steps"
-                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                    value={steps}
+                    hint={
+                      maxSteps !== null
+                        ? `The loaded model is distilled to ${maxSteps} steps, one output head per step: it runs 1 to ${maxSteps}, and the reference workflows use ${maxSteps}.`
+                        : "Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    }
+                    value={maxSteps !== null ? Math.min(steps, maxSteps) : steps}
                     min={1}
-                    max={stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
+                    max={maxSteps ?? stepsSliderMax(pendingModelDefaults?.steps ?? residentSteps, steps)}
                     step={1}
                     onChange={setSteps}
                   />
@@ -7158,6 +7764,7 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <FastCfgField available={fastCfgShown} enabled={fastCfgOn} onChange={changeFastCfg} />
             {hiresVisible(hiresCapability, workflow) ? (
               <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
             ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
@@ -7255,6 +7862,11 @@ export function ImagesPage({
                 {HELD_BY_OTHER_ACCOUNT_NOTICE}
               </p>
             )}
+            {generateButton.notice && (
+              <p role="status" data-testid="images-generate-notice" className="w-full text-center text-ui-11 leading-snug text-muted-foreground">
+                {generateButton.notice}
+              </p>
+            )}
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight. Every workflow funnels through the same
                  handler, so one control stops all of them. */
@@ -7278,10 +7890,10 @@ export function ImagesPage({
                 <Button variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   // Jobs still waiting: a new one lines up behind them instead of jumping the queue.
-                  onClick={queueWaiting && canQueue ? handleQueue : handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
+                  onClick={generateButton.action === "queue" ? handleQueue : handleGenerateWithRecall}
+                  disabled={generateButton.disabled}
                 >
-                  {queueWaiting && canQueue ? "Queue" : "Generate"}
+                  {generateButton.label}
                 </Button>
                 {canVary && (
                   <Tooltip>
@@ -7386,9 +7998,9 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {livePreviewSrc ? (
+            {stagePreviewSrc ? (
               <img
-                src={livePreviewSrc}
+                src={stagePreviewSrc}
                 alt="Live preview of the image being generated"
                 data-testid="images-live-preview"
                 style={{ maxWidth: width, maxHeight: height }}
@@ -7568,25 +8180,33 @@ export function ImagesPage({
               }}
             >
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-wash-30">
+                <button
+                  type="button"
+                  data-testid="images-live-tile"
+                  aria-label="Follow the running generation"
+                  title="Follow the running generation"
+                  onClick={() => setPickedDuringRun(false)}
+                  className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 outline-none ring-2 ring-wash-30 focus-visible:ring-ring"
+                >
                   {livePreviewSrc ? (
                     <img src={livePreviewSrc} alt="" className="size-full object-cover" />
                   ) : (
                     <Spinner className="size-5 text-muted-foreground" />
                   )}
-                </div>
+                </button>
               )}
               {images.map((image) => (
                 <GalleryStripTile
                   key={image.id}
                   image={image}
                   src={thumbById[image.id] ?? srcById[image.id]}
-                  selected={image.id === selected?.id}
+                  selected={!stagePreviewSrc && image.id === selected?.id}
                   menuOpen={tileMenuId === image.id}
                   active={active}
                   favorite={isFavorite(`image:${image.id}`)}
                   dragging={stripReorder.draggingId === image.id}
                   cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  promptBoundary={promptBoundaries.has(image.id)}
                   actions={stripTileActions}
                 />
               ))}

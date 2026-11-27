@@ -12,8 +12,7 @@ import { useLocale, useT } from "@/i18n";
 import { useAuiState } from "@assistant-ui/react";
 import type { FC } from "react";
 
-/** Gated on the preferences first so a reply mounts no assistant-ui selector while both are off
- *  (composer-keystroke-subscription-budget). */
+/** Gated on preferences first, so a reply with both off mounts no assistant-ui selector. */
 export const LiveGenerationLine: FC = () => {
   const details = useChatPreferencesStore((state) => state.showGenerationDetails);
   const realtime = useChatPreferencesStore(

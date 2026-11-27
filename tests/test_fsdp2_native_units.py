@@ -167,9 +167,14 @@ def _worker(rank, world, port, repo, loader, lora, out):
         missing = []
         n_dtensor = 0
         zero_grads = 0
+        # Kept whole on every rank on purpose (#17888: a frozen split table such as Gemma4's
+        # embed_tokens_per_layer under LoRA), not a parameter the root failed to cover.
+        whole = []
         for n, p in model.named_parameters():
             if isinstance(p, DTensor):
                 n_dtensor += 1
+            else:
+                whole.append((n, bool(p.requires_grad)))
             if p.grad is None:
                 if n in ref_grads:
                     missing.append(n)
@@ -193,6 +198,8 @@ def _worker(rank, world, port, repo, loader, lora, out):
             "missing": missing,
             "dtensor_params": n_dtensor,
             "params": n_params,
+            "replicated": getattr(model, "_unsloth_fsdp2_replicated", 0),
+            "whole": whole,
             "n_grads": len(ref_grads),
             "extra_units": len(getattr(model, "_unsloth_fsdp2_extra_units", [])),
             "zero_grads": zero_grads,
@@ -218,8 +225,9 @@ def _worker(rank, world, port, repo, loader, lora, out):
                 with torch.no_grad():
                     tokens = model.generate(input_ids = prompt, max_new_tokens = 4, do_sample = False)
                 result["generate_equal"] = bool(torch.equal(ref_tokens, tokens))
-                result["after_generate_sharded"] = all(
-                    isinstance(p, DTensor) for p in model.parameters()
+                result["after_generate_sharded"] = (
+                    sum(1 for p in model.parameters() if not isinstance(p, DTensor))
+                    == result["replicated"]
                 )
         if rank == 0:
             import json
@@ -250,14 +258,23 @@ def test_native_fsdp2_units_and_grads(arch, repo, loader, lora, tmp_path):
         pytest.skip(f"{repo}: {type(exc).__name__}: {exc}")
     r = _run(repo, loader, lora, tmp_path)
     assert r["units"] >= max(1, r["expected"]), r
-    assert r["dtensor_params"] == r["params"], r  # root covers every leftover parameter
+    # The root covers every leftover parameter; only the replicated ones stay whole, and those are frozen.
+    assert r["dtensor_params"] + r["replicated"] == r["params"], r
+    assert not any(trainable for _, trainable in r["whole"]), r
+    if not lora:
+        assert r["replicated"] == 0, r
     assert not r["missing"], r
     assert abs(r["loss"] - r["ref_loss"]) <= 1e-5 * max(1.0, abs(r["ref_loss"])), r
     assert r["worst_rel_grad"] < 1e-4, r
     if "generate_equal" in r:
         assert r["generate_equal"] and r["after_generate_sharded"], r
     if arch == "Gemma4":
-        assert r["extra_units"] >= 1, r  # embed_tokens_per_layer gets its own unit
+        whole = {name for name, _ in r["whole"]}
+        if lora:
+            # Frozen, so kept whole on every rank instead of all-gathered each step (#17888).
+            assert any("embed_tokens_per_layer" in name for name in whole), r
+        else:
+            assert r["extra_units"] >= 1, r  # trainable embed_tokens_per_layer gets its own unit
     if loader == "AutoModelForImageTextToText":
         # Text-only on every rank: the presence agreement sees no mixed batch, so no dummy runs and
         # the vision tower gets no gradient anywhere (matching collectives). The dummy for this family

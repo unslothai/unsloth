@@ -4,6 +4,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   memo,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type FC,
@@ -168,8 +169,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        // Muted like the tool rows it summarises, so only the answer is at full foreground,
-        // and it brightens on hover like the Thinking trigger above it.
+        // Muted like the tool rows it summarises, so only the answer is at full foreground.
         "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
@@ -259,6 +259,12 @@ type ToolGroupComponent = FC<
   Content: typeof ToolGroupContent;
 };
 
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return (
+    a.length === b.length && a.every((value, index) => value === b[index])
+  );
+}
+
 const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
@@ -298,28 +304,32 @@ const ToolGroupImpl: FC<
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.toolVisibility === "collapsed",
   );
-  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
-  const hasLiveOutput = useMessageMemo(
+  const toolCallIds = useMessageMemo(
     (message) =>
       message.parts
         .slice(startIndex, endIndex + 1)
-        .some(
-          (part) =>
-            part.type === "tool-call" &&
-            // Either scope: a first turn writes under the unresolved one for its whole
-            // life, even after the autosave assigns the id (see useToolOutputFor).
-            (Object.prototype.hasOwnProperty.call(
-              toolLiveOutput,
-              toolOutputKey(paneScope, part.toolCallId),
-            ) ||
-              Object.prototype.hasOwnProperty.call(
-                toolLiveOutput,
-                toolOutputKey(unresolvedScope, part.toolCallId),
-              )),
+        .flatMap((part) =>
+          part.type === "tool-call" ? [part.toolCallId] : [],
         ),
-    [startIndex, endIndex, toolLiveOutput, paneScope, unresolvedScope],
+    [startIndex, endIndex],
+    sameStrings,
+  );
+  // Either scope: a first turn writes under the unresolved scope for its whole life.
+  const liveKeys = useMemo(
+    () =>
+      toolCallIds.flatMap((id) => [
+        toolOutputKey(paneScope, id),
+        toolOutputKey(unresolvedScope, id),
+      ]),
+    [toolCallIds, paneScope, unresolvedScope],
+  );
+  // Select the boolean, not the map: each tool_output replaces the map and would re-render every group.
+  const hasLiveOutput = useChatRuntimeStore((s) =>
+    liveKeys.some((key) =>
+      Object.prototype.hasOwnProperty.call(s.toolLiveOutput, key),
+    ),
   );
   // Keep the group open once forced so allow/deny does not snap it shut between calls. Only latch
   // what could have forced it, or turning collapsed off would snap them all open.

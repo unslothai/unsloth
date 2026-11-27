@@ -173,6 +173,56 @@ test("a streamed URL save reports the basename the dialog wrote", async () => {
   assert.equal(await files.downloadUrlStreaming("/clip.mp4", "clip.mp4"), "renamed-clip.mp4");
 });
 
+test("a native short-lived URL is minted after the save chooser", async () => {
+  const calls: string[] = [];
+  const url = "http://127.0.0.1:8888/api/inference/sandbox/thread/file.csv?download_token=scoped";
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls.push(command);
+    if (command === "begin_native_file_save") {
+      assert.deepEqual(args, { fileName: "file.csv" });
+      return "destination";
+    }
+    assert.equal(command, "finish_native_file_save_from_url");
+    assert.deepEqual(args, { token: "destination", url });
+    return "renamed.csv";
+  });
+  const result = await files.downloadShortLivedUrl("file.csv", async () => {
+    calls.push("mint URL");
+    return url;
+  });
+  assert.deepEqual(calls, [
+    "begin_native_file_save", "mint URL", "finish_native_file_save_from_url",
+  ]);
+  assert.equal(result, "renamed.csv");
+});
+
+test("a cancelled save chooser mints no short-lived URL", async () => {
+  const files = loadNativeFiles(true, async (command) => {
+    assert.equal(command, "begin_native_file_save");
+    return null;
+  });
+  await assert.rejects(
+    files.downloadShortLivedUrl("file.csv", async () => assert.fail("minted a URL")),
+    (error: unknown) => files.isDownloadCancelled(error),
+  );
+});
+
+test("a failed link request releases the native save destination", async () => {
+  const calls: string[] = [];
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls.push(command);
+    if (command === "begin_native_file_save") return "destination";
+    assert.equal(command, "cancel_native_file_save");
+    assert.deepEqual(args, { token: "destination" });
+  });
+  const failure = new Error("File no longer exists.");
+  await assert.rejects(
+    files.downloadShortLivedUrl("file.csv", async () => { throw failure; }),
+    (error: unknown) => error === failure,
+  );
+  assert.deepEqual(calls, ["begin_native_file_save", "cancel_native_file_save"]);
+});
+
 test("a native URL save reports the basename the dialog wrote", async (t) => {
   t.mock.method(globalThis, "fetch", () =>
     Promise.resolve(new Response("wav", { headers: { "content-type": "audio/wav" } })),

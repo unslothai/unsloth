@@ -88,9 +88,8 @@ funcs = [
     if getattr(m, "_gradient_checkpointing_func", None) is not None
 ]
 def offload(f):
-    f = getattr(f, "func", f)
-    cells = dict(zip(f.__code__.co_freevars, (c.cell_contents for c in f.__closure__ or ())))
-    return cells.get("_offload")
+    # non_reentrant_checkpoint() records whether the wrapper offloads (mode "unsloth") on itself.
+    return getattr(getattr(f, "func", f), "_unsloth_offloads", None)
 out = {
     "n_funcs": len(funcs),
     "use_reentrant": sorted({str(getattr(f, "keywords", {}).get("use_reentrant")) for f in funcs}),

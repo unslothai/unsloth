@@ -126,8 +126,7 @@ _ROCM_RUNTIME = (6, 2)
 
 @dataclasses.dataclass(frozen = True)
 class Cell:
-    """One (OS, accelerator) box: the host, the bundle it would be given, and the probe
-    answers ``host_profile`` reads that ``HostInfo`` does not carry."""
+    """One (OS, accelerator) box: host, bundle, and the probe answers host_profile reads."""
 
     cell_id: str
     row: str
@@ -370,9 +369,7 @@ def assert_reinstall_forced(monkeypatch, install_dir: Path) -> None:
 
 @pytest.mark.parametrize(("row", "column"), MATRIX, ids = MATRIX_IDS)
 def test_every_cell_of_the_matrix_is_reachable_or_explicitly_impossible(row, column):
-    """The user population this fast path runs for: every OS crossed with every
-    accelerator. A cell that does not exist is skipped with the reason, so a column
-    quietly losing a platform shows up as a skip rather than as absence."""
+    """Each OS x accelerator cell is reachable or skipped with a reason, never silently absent."""
     reason = _skip_reason(row, column)
     if reason is not None:
         pytest.skip(reason)
@@ -384,9 +381,7 @@ def test_every_cell_of_the_matrix_is_reachable_or_explicitly_impossible(row, col
 
 @pytest.mark.parametrize(("row", "column"), REACHABLE, ids = REACHABLE_IDS)
 def test_an_unchanged_box_keeps_its_install_in_every_cell(tmp_path, probe, row, column):
-    """Nothing happened to the user's machine since the install: no download, no listing,
-    no re-validation. This is the half the fast path exists for, and every rejection test
-    below is only meaningful because this one passes with the same fixtures."""
+    """An unchanged box must keep its install via the fast path; rejection tests rely on this."""
     cell = _cell(row, column)
     install_dir = install_cell(tmp_path, probe, cell)
     assert check(install_dir) is True, cell.cell_id
@@ -395,9 +390,7 @@ def test_an_unchanged_box_keeps_its_install_in_every_cell(tmp_path, probe, row, 
 
 @pytest.mark.parametrize(("row", "column"), REACHABLE, ids = REACHABLE_IDS)
 def test_a_second_update_on_the_same_box_is_still_current(tmp_path, probe, row, column):
-    """Updates are not one-shot: the user runs setup again next week with nothing changed.
-    A profile that failed to compare equal to itself would be a silent permanent
-    regression -- every update back to the full path, forever, with no error to report."""
+    """A profile unequal to itself would silently force every later update down the full path."""
     cell = _cell(row, column)
     install_dir = install_cell(tmp_path, probe, cell)
     assert check(install_dir) is True, cell.cell_id
@@ -411,9 +404,7 @@ def _cpu_cell(row: str) -> Cell:
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_gpu_added_to_a_cpu_only_box_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user drops an NVIDIA card into a CPU-only machine and re-runs setup. The
-    request recorded is "auto" and the release tag has not moved, so only the host
-    profile can notice; without it the box keeps its CPU bundle and stays slow."""
+    """Auto requested, unchanged tag: only the host profile sees an added NVIDIA card."""
     cell = _cpu_cell(row)
     after = make_host(**ROWS[row], **NVIDIA_CUDA12)
     install_dir = moved(tmp_path, probe, cell, after, cuda_lines = ("cuda12",), torch_line = None)
@@ -422,8 +413,7 @@ def test_a_gpu_added_to_a_cpu_only_box_is_not_current(tmp_path, probe, monkeypat
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_gpu_removed_since_the_install_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The card was pulled, or the driver uninstalled. A CUDA bundle on a box with no
-    CUDA does not load at all, so keeping it is worse than a reinstall."""
+    """A removed card or driver leaves a CUDA bundle that does not load, so reinstall."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row])
     install_dir = moved(tmp_path, probe, cell, after, cuda_lines = (), torch_line = None)
@@ -432,9 +422,7 @@ def test_a_gpu_removed_since_the_install_is_not_current(tmp_path, probe, monkeyp
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_cuda_12_to_cuda_13_move_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user upgrades the NVIDIA driver and the CUDA toolkit. The card is the same and
-    the release tag has not moved; what moved is the driver's CUDA version and the CUDA
-    runtimes on disk, which are what orders the CUDA bundles."""
+    """Upgraded driver, same card: its CUDA version and on-disk runtimes order the bundles."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row], **NVIDIA_CUDA13)
     install_dir = moved(
@@ -461,8 +449,7 @@ def test_only_the_cuda_runtimes_on_disk_moving_is_not_current(tmp_path, probe, m
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_swapping_an_nvidia_card_for_an_amd_one_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user replaces the NVIDIA card with a Radeon and installs ROCm. A CUDA bundle
-    on an AMD box is an unusable backend, not a slow one."""
+    """A CUDA bundle left on an AMD box after a Radeon swap is unusable, not merely slow."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row], **AMD_ROCM)
     install_dir = moved(tmp_path, probe, cell, after, cuda_lines = (), rocm_runtime = _ROCM_RUNTIME)
@@ -480,9 +467,7 @@ def test_swapping_an_amd_card_for_an_nvidia_one_is_not_current(tmp_path, probe, 
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_rocm_runtime_version_bump_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user upgrades ROCm 6.2 to 6.4 with the same card. Upstream ROCm assets are
-    chosen by the runtime's major.minor, which no GPU field carries -- so the bundle this
-    run would pick has moved even though every other hardware fact is identical."""
+    """ROCm asset choice follows runtime major.minor, not any GPU field; 6.2 to 6.4 changes it."""
     cell = _cell(row, "amd-rocm")
     install_dir = moved(tmp_path, probe, cell, cell.host, rocm_runtime = (6, 4))
     assert_reinstall_forced(monkeypatch, install_dir)
@@ -490,9 +475,7 @@ def test_a_rocm_runtime_version_bump_is_not_current(tmp_path, probe, monkeypatch
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_rocm_gfx_target_change_is_not_current(tmp_path, probe, monkeypatch, row):
-    """A different AMD card: gfx1100 out, gfx1030 in. A HIP bundle carries kernels for the
-    archs it was built for and nothing else, so the install starts and then cannot run a
-    model."""
+    """HIP bundles have kernels only for build archs; gfx1100 to gfx1030 starts but cannot run."""
     cell = _cell(row, "amd-rocm")
     after = make_host(
         **ROWS[row],
@@ -523,9 +506,7 @@ def test_a_second_amd_card_the_bundle_has_no_kernels_for_is_not_current(
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_an_intel_gpu_that_appeared_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user enables the integrated Intel GPU (a BIOS change, or a new machine restored
-    from the same home directory). An Intel GPU with no NVIDIA and no ROCm is the whole
-    purpose of the has_intel_gpu probe: it routes the install to Vulkan."""
+    """An Intel GPU appearing must be noticed: has_intel_gpu routes the install to Vulkan."""
     cell = _cpu_cell(row)
     after = make_host(**ROWS[row], **INTEL)
     install_dir = moved(tmp_path, probe, cell, after)
@@ -534,8 +515,7 @@ def test_an_intel_gpu_that_appeared_is_not_current(tmp_path, probe, monkeypatch,
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_an_intel_gpu_that_disappeared_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The mirror: the Vulkan bundle chosen for an Intel GPU, on a box that no longer
-    reports one."""
+    """Mirror case: a Vulkan bundle for an Intel GPU is not current once the GPU is gone."""
     cell = _cell(row, "intel")
     after = make_host(**ROWS[row])
     install_dir = moved(tmp_path, probe, cell, after)
@@ -573,9 +553,7 @@ def test_a_physical_nvidia_disappearing_behind_an_intel_gpu_is_not_current(
 def test_a_home_directory_carried_to_another_cpu_architecture_is_not_current(
     tmp_path, probe, monkeypatch, row
 ):
-    """A home directory rsynced from an x86_64 box onto an arm64 one (or opened under
-    Rosetta). Every GPU field is equal and the release tag is the same; only machine
-    differs, and the bundle on disk cannot be executed at all."""
+    """A home carried to another CPU arch: GPU fields and tag match, yet the bundle cannot run."""
     cell = _cpu_cell(row)
     arm = "ARM64" if row == "windows" else "aarch64"
     after = make_host(**{**ROWS[row], "machine": arm})
@@ -585,9 +563,7 @@ def test_a_home_directory_carried_to_another_cpu_architecture_is_not_current(
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_a_new_card_with_a_different_sm_is_not_current(tmp_path, probe, monkeypatch, row):
-    """An RTX 4090 (sm_89) swapped for a Blackwell part (sm_120), same driver. A bundle
-    carries kernels for a fixed supported_sms set, so an install outside it starts and
-    then fails on the first model load."""
+    """sm_89 to sm_120 on the same driver: a bundle has kernels only for its supported_sms set."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row], **{**NVIDIA_CUDA12, "compute_caps": ["12.0"]})
     install_dir = moved(
@@ -598,9 +574,7 @@ def test_a_new_card_with_a_different_sm_is_not_current(tmp_path, probe, monkeypa
 
 @pytest.mark.parametrize("row", GPU_ROWS)
 def test_the_same_cards_reported_in_another_order_is_not_a_hardware_change(tmp_path, probe, row):
-    """The other direction, and the reason compute_caps is sorted and de-duplicated: two
-    identical cards enumerated in either order, with whitespace, are the same box. Calling
-    that a change would send every multi-GPU user down the full path on every update."""
+    """compute_caps is sorted and de-duplicated, so reordered or padded cards are the same box."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row], **{**NVIDIA_CUDA12, "compute_caps": [" 8.9 ", "8.9"]})
     install_dir = moved(
@@ -614,9 +588,7 @@ MACOS_ROWS = ("macos-arm64", "macos-x86_64")
 
 @pytest.mark.parametrize("row", MACOS_ROWS)
 def test_a_macos_upgrade_across_the_min_os_floor_is_not_current(tmp_path, probe, monkeypatch, row):
-    """The user upgrades macOS past the floor the newest bundle needs. The bundle the
-    planner would pick changes with the OS version (walk-back), so the recorded profile
-    has to carry macos_version or a Mac would keep a walked-back release forever."""
+    """The profile must record macos_version, since the planner's walk-back changes the bundle."""
     cell = _cell(row, "metal")
     before = cell.host.macos_version
     assert before is not None and before < ILP._PINNED_MACOS_LATEST_FLOOR
@@ -627,8 +599,7 @@ def test_a_macos_upgrade_across_the_min_os_floor_is_not_current(tmp_path, probe,
 
 @pytest.mark.parametrize("row", MACOS_ROWS)
 def test_a_macos_point_release_is_not_current(tmp_path, probe, monkeypatch, row):
-    """Not only the floor: any macOS version move re-decides the bundle, because the
-    minimum-OS preflight is what accepted this one."""
+    """Any macOS version move re-decides the bundle, not just the floor the preflight checked."""
     cell = _cell(row, "metal")
     major, minor = cell.host.macos_version
     after = make_host(**{**ROWS[row], "macos_version": (major, minor + 1)})
@@ -639,8 +610,7 @@ def test_a_macos_point_release_is_not_current(tmp_path, probe, monkeypatch, row)
 def test_a_mac_home_directory_restored_onto_apple_silicon_is_not_current(
     tmp_path, probe, monkeypatch
 ):
-    """The Intel Mac's home directory restored onto an Apple Silicon Mac, or the same one
-    opened under Rosetta. macos_version and every GPU field are equal; machine is not."""
+    """Intel Mac home restored onto Apple Silicon, or under Rosetta, differs only in machine."""
     cell = _cell("macos-x86_64", "metal")
     after = make_host(**{**ROWS["macos-x86_64"], "machine": "arm64"})
     install_dir = moved(tmp_path, probe, cell, after)
@@ -676,9 +646,7 @@ def _assert_everything_but_the_host_still_matches(install_dir: Path, after: Host
 def test_adding_a_gpu_is_rejected_by_the_host_profile_and_nothing_else(
     tmp_path, probe, monkeypatch, row
 ):
-    """The CPU-to-NVIDIA case again, but proving WHICH guard rejected it. Same release,
-    same fingerprint, intact tree -- and with the profile comparison neutralised the fast
-    path keeps the CPU bundle, which is the bug the guard exists to prevent."""
+    """Host profile alone rejects a CPU-to-NVIDIA change; without it the CPU bundle is kept."""
     cell = _cpu_cell(row)
     after = make_host(**ROWS[row], **NVIDIA_CUDA12)
     install_dir = moved(tmp_path, probe, cell, after, cuda_lines = ("cuda12",), torch_line = None)
@@ -694,9 +662,8 @@ def test_adding_a_gpu_is_rejected_by_the_host_profile_and_nothing_else(
 def test_a_cuda_line_move_is_rejected_by_the_host_profile_and_nothing_else(
     tmp_path, probe, monkeypatch, row
 ):
-    """The cuda12-to-cuda13 case, same proof. The release did not move, the marker is
-    whole and the bundle is intact, so the profile is the only thing that can say the
-    installed CUDA bundle is no longer the one this run would pick."""
+    """Same proof for cuda12 to cuda13: with release, marker and bundle intact, only the host
+    profile can say the installed CUDA bundle is no longer the one picked."""
     cell = _cell(row, "nvidia-cuda12")
     after = make_host(**ROWS[row], **NVIDIA_CUDA13)
     install_dir = moved(
@@ -737,9 +704,7 @@ def test_a_profile_written_to_a_marker_reads_back_equal_to_a_fresh_one(
 
 @pytest.mark.parametrize(("row", "column"), REACHABLE, ids = REACHABLE_IDS)
 def test_every_profile_field_is_present_in_every_cell(tmp_path, probe, row, column):
-    """Absent and null are different answers to the comparison. Every field the routing
-    branches on must be written in every cell, or two different boxes could record the
-    same profile."""
+    """Absent and null compare differently; every routing field must be written in every cell."""
     cell = _cell(row, column)
     probe.set_from(cell)
     profile = host_profile(route_for(cell.host).host)

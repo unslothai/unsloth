@@ -150,8 +150,7 @@ def test_int_mm_no_graph_break_after_offloaded_install(monkeypatch):
 
 
 def test_int_mm_no_graph_break_after_finalize_early_return(monkeypatch):
-    """_finalize on weights that are on no CUDA card (group offload, CPU) returns early; the GEMM home it resolves
-    must be cached before that return."""
+    """_finalize returns early off CUDA (group offload, CPU), so cache the GEMM home first."""
     model = torch.nn.Linear(2, 3)
     assert fused.resident_cuda_device(model) is None
     assert _intmm_graph_breaks(monkeypatch, lambda: fused._finalize(model)) == 0
@@ -190,6 +189,22 @@ def test_install_noop_when_disabled(monkeypatch):
 def test_plain_tensor_is_not_eligible():
     assert fused._plain_int8_weight(torch.zeros(8, 8)) is False
     assert fused._plain_int8_weight(None) is False
+
+
+@pytest.mark.parametrize("mapping, ok", [("SYMMETRIC", True), ("SYMMETRIC_NO_CLIPPING_ERR", False)])
+def test_only_plain_symmetric_activation_quant_is_eligible(mapping, ok):
+    quant_api = pytest.importorskip("torchao.quantization")
+    MappingType = pytest.importorskip("torchao.quantization.quant_primitives").MappingType
+    import dataclasses
+
+    lin = torch.nn.Linear(64, 64, bias = False).to(torch.bfloat16)
+    quant_api.quantize_(lin, quant_api.Int8DynamicActivationInt8WeightConfig(version = 2))
+    w = lin.weight
+    # torchao 0.18 no longer builds SYMMETRIC_NO_CLIPPING_ERR weights; a loaded one still carries it
+    w.act_quant_kwargs = dataclasses.replace(
+        w.act_quant_kwargs, mapping_type = getattr(MappingType, mapping)
+    )
+    assert fused._plain_int8_weight(w) is ok
 
 
 def test_install_noop_on_cpu_module():

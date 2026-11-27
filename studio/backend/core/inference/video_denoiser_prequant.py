@@ -69,6 +69,11 @@ def denoiser_prequant_sources(
 
         if nvfp4_blocked(wanted):
             return None
+        from .video_dmd import dmd_timesteps
+
+        if dmd_timesteps(base_repo) is not None:
+            # A DMD student (any copy or local path) never takes its base model's hosted denoiser.
+            return None
         from .diffusion_prequant import resolve_prequant_source
         from .video_families import video_family_prequant_task_specific
 
@@ -108,8 +113,11 @@ def denoiser_prequant_pipe_kwargs(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16)."""
+    """Component overrides for pipeline assembly, or ``{}`` (not seeded whole: re-plan memory at bf16).
+    ``placement_device`` (default ``device``): where the modules are materialised; a streamed seed stays on the host
+    (``prequant_seed_device``), as the offload hooks move it block by block."""
     try:
         import gc
 
@@ -143,6 +151,7 @@ def denoiser_prequant_pipe_kwargs(
                 base_repo,
                 source,
                 device = device,
+                placement_device = placement_device,
                 dtype = dtype,
                 hf_token = hf_token,
                 scheme = scheme,

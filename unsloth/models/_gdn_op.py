@@ -12,9 +12,8 @@ from torch.autograd.graph import saved_tensors_hooks
 
 
 def _causal_depthwise_conv(x, weight):
-    """F.conv1d(x, weight[:, None], groups = C, padding = K - 1)[..., :T] for x (B, C, T), weight
-    (C, K), as K shifted multiply-adds accumulated in fp32. Inductor's convolution_backward
-    lowering guards on the exact sequence length (a recompile per length); this stays dynamic."""
+    """Causal depthwise conv as K shifted multiply-adds accumulated in fp32 (not conv1d); Inductor
+    conv backward recompiles per exact sequence length, so this stays dynamic"""
     seq_len, padding = x.shape[-1], weight.shape[-1] - 1
     xp = F.pad(x, (padding, 0)).float()
     w = weight.float()
@@ -52,6 +51,10 @@ def _fla_ops(make_inputs):
                     _FLA = fns if _self_check(*inputs) else False
                     # Packed (padding-free) batches: B = 1 plus cu_seqlens, checked the same way.
                     _VARLEN[0] = bool(_FLA) and _self_check_varlen(*inputs)
+        except torch.OutOfMemoryError:
+            # Transient: check again on the next call instead of keeping the slow path.
+            _FLA, _VARLEN[0] = None, False
+            raise
         except Exception:
             _FLA = False
             _VARLEN[0] = False
@@ -78,20 +81,21 @@ def _varlen_kwargs(fn, cu_seqlens):
 
 
 def _chunk_meta(q, k, v, g):
-    # (qn, q_rstd, kn, k_rstd, g_cumsum, A), as fla 0.5 allocates them
+    # (qn, q_rstd, kn, k_rstd, g_cumsum, A), as fla 0.5 allocates them; A is per value head [B, T, HV, 64].
     return (
         (q.shape, q.dtype),
         (q.shape[:-1], torch.float32),
         (k.shape, k.dtype),
         (k.shape[:-1], torch.float32),
         (g.shape, torch.float32),
-        ((*k.shape[:-1], 64), k.dtype),
+        ((*v.shape[:-1], 64), k.dtype),
     )
 
 
+# Inductor/AOTAutograd disk caches key on the op name, not its fake: rename on every fake meta change (_v2: A per value head).
 try:
 
-    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk", mutates_args = ())
+    @torch.library.custom_op("unsloth::qwen3_5_gdn_chunk_v2", mutates_args = ())
     def _gdn_chunk(
         q: torch.Tensor,
         k: torch.Tensor,
@@ -114,7 +118,8 @@ try:
         with torch.cuda.device(q.device):
             qn, q_rstd = l2_fwd(q)
             kn, k_rstd = l2_fwd(k)
-            g_cum, o, A, _, _, _ = fwd(
+            # (g, o, A, final_state, initial_state, g_input), plus intermediate states h on fla main (#1731).
+            res = fwd(
                 q = qn,
                 k = kn,
                 v = v,
@@ -125,6 +130,7 @@ try:
                 output_final_state = False,
                 **_varlen_kwargs(fwd, cu_seqlens),
             )
+            g_cum, o, A = res[0], res[1], res[2]
         # Fake metas are contiguous; keep the real outputs the same.
         return tuple(t.contiguous() for t in (o.to(q.dtype), qn, q_rstd, kn, k_rstd, g_cum, A))
 
@@ -160,7 +166,8 @@ try:
         _, bwd, _, l2_bwd = _FLA
         v, beta, do = v.contiguous(), beta.contiguous(), do.contiguous()
         with torch.cuda.device(qn.device):
-            dq, dk, dv, db, dg, _, _, _ = bwd(
+            # (dq, dk, dv, db, dg, dh0, dA_log, ddt_bias): positional, so a longer return keeps working.
+            res = bwd(
                 q = qn,
                 k = kn,
                 v = v,
@@ -173,6 +180,7 @@ try:
                 dht = None,
                 **_varlen_kwargs(bwd, cu_seqlens),
             )
+            dq, dk, dv, db, dg = res[:5]
             dq = l2_bwd(qn, q_rstd, dq)
             dk = l2_bwd(kn, k_rstd, dk)
         out = (

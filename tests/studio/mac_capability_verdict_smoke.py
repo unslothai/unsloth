@@ -604,8 +604,7 @@ def request_hardware_detection(poller: HealthPoller, getter: TokenGetter) -> boo
     if status != 200 or not isinstance(body, dict) or "version" not in body:
         fail(f"authenticated hardware detection returned {status} without an accepted health reply")
         return False
-    # The response can still be provisional while detection or MLX repair runs.
-    # Leave the ordinary poller and every stability/repair assertion in control.
+    # Replies may stay provisional during detection or MLX repair; stability checks still hold.
     return True
 
 

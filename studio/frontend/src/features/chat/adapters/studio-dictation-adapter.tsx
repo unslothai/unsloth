@@ -9,7 +9,10 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { maxAudioFilesFor } from "@/lib/audio-utils";
+import { micClipRoom, micSendsAudioToModel } from "../utils/mic-target";
 import {
   currentDictationEntryMode,
   insecureDictationGuidance,
@@ -20,6 +23,12 @@ import {
   sttEngineStatusFor,
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
+import { PcmRecorder } from "./pcm-recorder";
+import {
+  discardClipOnRelease,
+  discardClipWhenModelChanges,
+  listenForAudioClip,
+} from "./studio-audio-clip-adapter";
 import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
@@ -33,6 +42,33 @@ export function cancelActiveStudioDictation(): void {
   const session = activeSession;
   activeSession = null;
   session?.cancel();
+}
+
+type AudioClipTarget = {
+  add: (file: File) => Promise<unknown> | unknown;
+  attached: () => readonly { name: string; type: string; size: number }[];
+};
+type RegisteredClipTarget = AudioClipTarget & { onRelease: Set<() => void> };
+// Compare registers none, so it keeps transcribing.
+let audioClipTarget: RegisteredClipTarget | null = null;
+
+export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
+  const entry: RegisteredClipTarget = { ...target, onRelease: new Set() };
+  audioClipTarget = entry;
+  return () => {
+    if (audioClipTarget === entry) audioClipTarget = null;
+    for (const listener of [...entry.onRelease]) listener();
+  };
+}
+
+export function micRecordsForModel(chatId?: string | null): boolean {
+  if (chatId === null || !audioClipTarget) return false;
+  const { micTarget } = useVoiceSettingsStore.getState();
+  const { params, models, modelLoading } = useChatRuntimeStore.getState();
+  const activeModel = modelLoading
+    ? undefined
+    : models.find((model) => model.id === params.checkpoint);
+  return micSendsAudioToModel(micTarget, activeModel?.hasAudioInput === true);
 }
 
 /** Local and custom transcription record through the media recorder. */
@@ -56,9 +92,19 @@ function customSttConfigured(): boolean {
 export class StudioDictationAdapter implements DictationAdapter {
   // undefined follows the active chat; null links no chat (e.g. Compare).
   private readonly chatId: string | null | undefined;
+  private readonly language: string | undefined;
+  private readonly detectLanguage: boolean;
 
-  constructor(options: { chatId?: string | null } = {}) {
+  constructor(
+    options: {
+      chatId?: string | null;
+      language?: string;
+      detectLanguage?: boolean;
+    } = {},
+  ) {
     this.chatId = options.chatId;
+    this.language = options.language;
+    this.detectLanguage = options.detectLanguage === true;
   }
 
   static isSupported(
@@ -89,6 +135,26 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
+    const clipTarget = audioClipTarget;
+    if (clipTarget && micRecordsForModel(this.chatId)) {
+      if (!PcmRecorder.isSupported()) {
+        throw new Error("Voice recording is not supported in this browser.");
+      }
+      const { params, models, modelLoading, pendingAudioBase64 } =
+        useChatRuntimeStore.getState();
+      const activeModel = modelLoading
+        ? undefined
+        : models.find((model) => model.id === params.checkpoint);
+      const room = micClipRoom(
+        clipTarget.attached(),
+        maxAudioFilesFor(activeModel),
+        !!pendingAudioBase64,
+      );
+      const session = listenForAudioClip(clipTarget.add, room);
+      discardClipWhenModelChanges(session, useChatRuntimeStore);
+      discardClipOnRelease(session, clipTarget.onRelease);
+      return session;
+    }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesRecordedAudio(dictationEngine)) {
       if (dictationEngine === "custom" && !customSttConfigured()) {
@@ -99,6 +165,8 @@ export class StudioDictationAdapter implements DictationAdapter {
       if (StudioModelDictationAdapter.isSupported()) {
         return new StudioModelDictationAdapter({
           chatId: this.chatId,
+          language: this.language,
+          detectLanguage: this.detectLanguage,
         }).listen();
       }
       throw new Error(
@@ -110,6 +178,7 @@ export class StudioDictationAdapter implements DictationAdapter {
     if (StudioWebSpeechDictationAdapter.isSupported()) {
       return new StudioWebSpeechDictationAdapter({
         chatId: this.chatId,
+        language: this.language,
       }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");

@@ -18,6 +18,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread, current_account, run_as
+from utils.process_memory_peaks import merge_memory_peaks
 import json as _json
 import math
 import multiprocessing as mp
@@ -261,6 +262,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "training_type": values.get("training_type", "LoRA/QLoRA"),
         "hf_token": values.get("hf_token", ""),
         "load_in_4bit": values.get("load_in_4bit", True),
+        "load_in_4bit_forced_16bit": bool(values.get("load_in_4bit_forced_16bit", False)),
         "max_seq_length": values.get("max_seq_length", 2048),
         "vision_image_size": values.get("vision_image_size"),
         "hf_dataset": values.get("hf_dataset", ""),
@@ -373,6 +375,8 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
     for key in ("output_dir", "allow_external_output_dir"):
         if key in values:
             config[key] = values.get(key)
+    if values.get("parallel"):
+        config["parallel"] = values["parallel"]
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
     # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
@@ -764,6 +768,8 @@ class TrainingProgress:
     peak_memory_gb: Optional[float] = None
     # BlockSwap.stats() from the last logged step, for the live offload panel.
     offload: Optional[dict] = None
+    # The training process's own peaks (utils.process_memory_peaks), bytes; None until reported.
+    memory_peaks: Optional[dict] = None
     output_dir: Optional[str] = None
     # Run summary has no step loss so the progress filter drops it, yet holds the only full elapsed time.
     is_run_summary: bool = False
@@ -1327,6 +1333,7 @@ class TrainingBackend:
         self.current_job_id = self.current_start_request_id = None
         self._status_start_request_id = self._output_dir = None
         self.eval_enabled = False
+        self.parallel_plan = None
 
     def _require_start_request_account(self, start_request_id):
         record = self._start_requests.get(start_request_id)
@@ -2030,6 +2037,7 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.eval_enabled = False
+            self.parallel_plan = config.get("parallel")
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
             self._resume_source_run_id = resume_source_run_id
@@ -2229,6 +2237,7 @@ class TrainingBackend:
                 self.grad_norm_step_history.clear()
                 self._needs_xet_respawn = False
                 self._status_start_request_id = None
+                self.parallel_plan = None
             return "reset"
 
     def _start_stop_watchdog(
@@ -2349,8 +2358,7 @@ class TrainingBackend:
             # A completed run keeps its message; reaping a wedged worker must not relabel it.
         if self._batch_members:
             self._finalize_batch_members(status, error_message, clear_output_dir)
-        # Create the row if a start-time create failed; skipped while the pump is mid-create, whose create-
-        # then-finalize records the run instead.
+        # Creates the row if a start-time create failed; a pump mid-create records it instead.
         self._ensure_db_run_created()
         with self._provenance_lock:
             with self._lock:
@@ -2375,6 +2383,7 @@ class TrainingBackend:
                         final_loss = None
                     duration = self._progress.elapsed_seconds
                     loss_history = list(self.loss_history)
+                    memory_peaks = self._progress.memory_peaks
                     config_json = (
                         _json.dumps(_sanitize_db_config(self._db_config))
                         if self._db_config is not None
@@ -2382,6 +2391,7 @@ class TrainingBackend:
                     )
                 else:
                     config_json = None
+                    memory_peaks = None
             if claim:
                 self._finish_stopped_run(
                     run_id,
@@ -2396,6 +2406,7 @@ class TrainingBackend:
                     clear_output_dir = clear_output_dir,
                     resume_blocked = resume_blocked,
                     config_json = config_json,
+                    memory_peaks = memory_peaks,
                 )
         with self._lock:
             if target_proc is None or self._proc is target_proc:
@@ -2415,6 +2426,7 @@ class TrainingBackend:
         clear_output_dir: bool = False,
         resume_blocked: bool = False,
         config_json: Optional[str] = None,
+        memory_peaks: Optional[dict] = None,
     ) -> None:
         """Retries transient DB errors, since the watchdog is the only finalizer once _proc is dropped."""
         for attempt in range(_DB_FINALIZE_RETRIES):
@@ -2438,6 +2450,7 @@ class TrainingBackend:
                     clear_output_dir = clear_output_dir,
                     resume_blocked = resume_blocked,
                     config_json = config_json,
+                    memory_peaks = memory_peaks,
                 )
                 return
             except Exception:
@@ -2492,9 +2505,8 @@ class TrainingBackend:
         return True
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
-        """Force-kill the training subprocess so state can be reset immediately. With
-        ``target_proc``, terminate only that handle and no-op if a new run has replaced
-        it, so the watchdog can never kill a fresh worker."""
+        """Force-kill the subprocess to reset state; with target_proc only that handle is killed,
+        and a superseded run is a no-op so the watchdog can never kill a fresh worker."""
         with self._lock:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
@@ -2787,6 +2799,13 @@ class TrainingBackend:
         with self._lock:
             return self._run_finished_locked()
 
+    def wait_for_finished_worker(self, timeout: float = _STOP_GRACE_S) -> None:
+        with self._lock:
+            proc = self._proc
+            if proc is None or not self._run_finished_locked():
+                return
+        proc.join(timeout = timeout)
+
     def is_training_active(self) -> bool:
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
@@ -3051,8 +3070,7 @@ class TrainingBackend:
             return
 
     def _has_current_resume_checkpoint(self, output_dir, step) -> bool:
-        # A valid checkpoint at the current step means the stop-and-save landed on disk even if the worker
-        # died before confirming it.
+        # A valid checkpoint at this step means the save landed, even if the worker died.
         if not output_dir or not isinstance(step, int) or step <= 0:
             return False
         from core.training.resume import get_resume_checkpoint_path
@@ -3165,6 +3183,10 @@ class TrainingBackend:
             return
 
         with self._lock:
+            if event.get("memory_peaks") and etype in ("progress", "complete", "error"):
+                self._progress.memory_peaks = merge_memory_peaks(
+                    self._progress.memory_peaks, event["memory_peaks"]
+                )
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
@@ -3367,7 +3389,7 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
-                    "clear_output_dir": self._cancel_requested,
+                    "clear_output_dir": self._cancel_requested or event.get("saved") is False,
                     "expected_job_id": self.current_job_id,
                 }
                 self._terminal_finalize_payload = dict(db_action_kwargs)
@@ -3463,9 +3485,7 @@ class TrainingBackend:
             logger.warning("Failed to persist output_dir", exc_info = True)
 
     def _log_training_progress(self) -> None:
-        """One throttled training-status line to the server log (the per-step stream
-        still goes to the UI via SSE): first step, then at most every 30s, plus the
-        final step; resyncs on a new run. Runs on the pump thread."""
+        """Throttled server-log status line: first step, then at most every 30s, plus the final step."""
         p = self._progress
         step = int(p.step or 0)
         if step <= 0:
@@ -3600,6 +3620,7 @@ class TrainingBackend:
                     final_loss = None
                 duration = self._progress.elapsed_seconds
                 loss_history = list(self.loss_history)
+                memory_peaks = self._progress.memory_peaks
                 config_json = (
                     _json.dumps(_sanitize_db_config(self._db_config))
                     if self._db_config is not None
@@ -3624,6 +3645,7 @@ class TrainingBackend:
                         clear_output_dir = clear_output_dir,
                         resume_blocked = resume_blocked,
                         config_json = config_json,
+                        memory_peaks = memory_peaks,
                     )
                     return
                 except Exception:

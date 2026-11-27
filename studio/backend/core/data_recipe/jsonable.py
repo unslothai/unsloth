@@ -55,6 +55,11 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
         from fastapi import HTTPException
         from core.training.account_jobs import account_path
 
+        from utils.datasets.remote_images import is_network_share, private_sources_allowed
+
+        # Opening a share path makes Windows sign in to its host (NTLM); the row picked it.
+        if is_network_share(path_value) and not private_sources_allowed():
+            return None
         try:
             account_path(path_value)
         except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
@@ -77,8 +82,7 @@ _PANDAS_SENTINELS_READY = False
 
 
 def _is_pandas_missing(value: Any) -> bool:
-    """pandas' own missing sentinels. Identity rather than ``pd.isna``, which answers element-wise
-    for a list or an array; these two are singletons."""
+    """Identity check, not pd.isna (element-wise on arrays); pandas' sentinels are singletons."""
     global _PANDAS_NA, _PANDAS_NAT, _PANDAS_SENTINELS_READY
     if not _PANDAS_SENTINELS_READY:
         try:

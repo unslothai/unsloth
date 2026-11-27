@@ -12,8 +12,10 @@ Unsloth (TRANSFORMERS_DEFAULT_VERSION).
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
-  - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
-  - .venv_t5_510/  — transformers 5.10.2 (Gemma 4 Unified / 12B)
+  - .venv_t5_550/  — transformers 5.5.4 (Gemma 4)
+  - .venv_t5_510/  — transformers 5.15.1 (Gemma 4 Unified / 12B); the highest
+    pre-installed tier. The directory and tier keep their 5.10 names so existing
+    installs and saved routing stay valid.
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
 ``adapter_config.json`` and check *that* against the model list.
@@ -65,34 +67,19 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.happy_eyeballs import inline_activation_source
+from utils.transformers_backports import inline_install_source
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from utils.utils import hf_env_offline
 
 # Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
 # cannot pin a transformers version into sys.modules before the sidecar is activated.
 from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
-
-
-_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _env_offline() -> bool:
-    """An open force_hf_offline window counts too, since a spawn briefly restores the user's env values."""
-    try:
-        from utils.utils import force_hf_offline_active
-        if force_hf_offline_active():
-            return True
-    except Exception:
-        pass
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
 
 
 def _hf_raw_url(model_name: str, filename: str) -> str:
@@ -136,7 +123,7 @@ _hf_json_ahead: dict[tuple[str, str | None], Future] = {}
 
 def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
     """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
-    if not _is_canonical_repo_id(model_name) or _env_offline():
+    if not _is_canonical_repo_id(model_name) or hf_env_offline():
         return
     from utils.paths import is_local_path
 
@@ -311,7 +298,7 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
-# Lowercase substrings for models that require transformers 5.10.x (checked first).
+# Lowercase substrings for models that require transformers >= 5.10 (the 510 tier, checked first).
 TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4-12b",  # Gemma 4 Unified 12B
     "gemma4-12b",
@@ -333,7 +320,7 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "higgs-audio-v3-tts",
 )
 
-# Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
+# Architecture classes / model_type values requiring transformers >= 5.10 (the 510 tier, via config.json).
 _TRANSFORMERS_510_ARCHITECTURES: set[str] = {
     "Gemma4UnifiedForConditionalGeneration",
     "Gemma4AssistantForCausalLM",
@@ -351,7 +338,7 @@ _TRANSFORMERS_457_ARCHITECTURES: frozenset[str] = frozenset(
     {"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"}
 )
 
-# Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
+# Architecture classes / model_type values requiring the transformers 5.5 sidecar (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "DiffusionGemmaForBlockDiffusion",
     # Remote-code text-diffusion LMs: their tokenizers are 5.x-only, and 5.3.0 lacks helpers their code imports
@@ -419,11 +406,12 @@ _config_needs_457_cache: dict[tuple[str, str | None], bool] = {}
 # Keyed by local config.json signature so overwritten checkpoints re-probe, not Hub sha; no huggingface_hub import before sidecar venv activates.
 _probe_tier_cache: dict[str, str] = {}
 
-TRANSFORMERS_510_VERSION = "5.10.2"
-TRANSFORMERS_550_VERSION = "5.5.0"
+# Tier keys and directory names are historical: "510" is the highest pre-installed tier, now 5.15.1.
+TRANSFORMERS_510_VERSION = "5.15.1"
+TRANSFORMERS_550_VERSION = "5.5.4"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_457_VERSION = "4.57.6"
-TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
+TRANSFORMERS_DEFAULT_VERSION = "5.5.4" if sys.version_info >= (3, 10) else "4.57.6"
 # Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION, TRANSFORMERS_550_VERSION or TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
@@ -567,6 +555,63 @@ def latest_tier_active_for(model_name: str, hf_token: str | None = None) -> bool
         return get_transformers_activation_tier(model_name, hf_token) == "latest"
     except Exception:
         return False
+
+
+# Latest-sidecar architectures whose bnb 4-bit load Unsloth core validates, so they keep QLoRA.
+LATEST_TIER_4BIT_MODEL_TYPES = frozenset(
+    {"inkling2", "inkling2_text", "inkling2_loop", "inkling2_loop_text"}
+)
+
+
+def latest_tier_keeps_4bit(model_type) -> bool:
+    return isinstance(model_type, str) and model_type in LATEST_TIER_4BIT_MODEL_TYPES
+
+
+def latest_tier_upgrade_keeps_4bit(
+    model_type,
+    model_name: str,
+    hf_token: str | None = None,
+) -> bool:
+    """Whether the load after installing the offered release stays 4-bit: a validated type or a bnb checkpoint. Never raises."""
+    return latest_tier_keeps_4bit(model_type) or not _sidecar_forces_16bit(model_name, hf_token)
+
+
+def latest_tier_load_policy(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
+    """(latest sidecar active, it forces 16-bit), resolving a remote adapter once; never raises."""
+    with remote_lora_base_scope():
+        if not latest_tier_active_for(model_name, hf_token):
+            return False, False
+        return True, _sidecar_forces_16bit(model_name, hf_token)
+
+
+def latest_tier_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    """latest_tier_active_for, minus architectures validated in 4-bit; never raises."""
+    return latest_tier_load_policy(model_name, hf_token)[1]
+
+
+def _sidecar_forces_16bit(model_name: str, hf_token: str | None = None) -> bool:
+    try:
+        if _is_lora_adapter_dir(Path(model_name)):
+            resolved = _resolve_base_model(model_name)
+        else:
+            resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
+        cfg = _load_config_json(resolved, hf_token)
+        # Activation also tiers by a local adapter's own config.json, so read it when the base is unreadable.
+        if (
+            not isinstance(cfg, dict)
+            and model_name != resolved
+            and _safe_is_file(Path(model_name) / "config.json")
+        ):
+            cfg = _load_config_json(model_name, hf_token)
+        if not isinstance(cfg, dict):
+            return True
+        # A bnb-quantized checkpoint loads 4-bit from its own config whatever the flag says.
+        quant = cfg.get("quantization_config")
+        if isinstance(quant, dict) and quant.get("quant_method") == "bitsandbytes":
+            return False
+        return not any(latest_tier_keeps_4bit(t) for t in _model_types_from_config(cfg))
+    except Exception:
+        return True
 
 
 def _has_adapter_weights(path: Path) -> bool:
@@ -717,6 +762,16 @@ def _is_canonical_repo_id(model_name: str) -> bool:
     )
 
 
+def _hub_adapter_base(base, model_name: str) -> str | None:
+    """A Hub adapter's base, without a Windows network share: touching one signs in to its host (NTLM)."""
+    from utils.datasets.remote_images import is_network_share
+
+    if isinstance(base, str) and is_network_share(base):
+        logger.warning("Ignoring a network share base in adapter_config.json of '%s'", model_name)
+        return None
+    return base or None
+
+
 def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     """Stdlib-only hub cache read (no huggingface_hub import), so a cached LoRA resolves offline."""
     if not _is_canonical_repo_id(model_name):
@@ -749,7 +804,7 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
                 base = json.loads(cfg_path.read_text(encoding = "utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
-                return base or None
+                return _hub_adapter_base(base, model_name)
     except Exception as exc:
         logger.debug("HF cache adapter_config.json lookup failed for '%s': %s", model_name, exc)
     return None
@@ -783,7 +838,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
             return None  # an existing relative path is a local checkpoint, not a Hub repo
     except Exception:
         pass
-    if _env_offline():
+    if hf_env_offline():
         return _adapter_base_from_hf_cache(model_name)
 
     import urllib.error
@@ -801,7 +856,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return base
     try:
         cfg = _hf_json(url, hf_token)
-        base = cfg.get("base_model_name_or_path")
+        base = _hub_adapter_base(cfg.get("base_model_name_or_path"), model_name)
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
         if answers is not None:
@@ -850,7 +905,7 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # Offline: skip the 10s fetch (fail open). Don't cache this assumed negative.
-    if _env_offline():
+    if hf_env_offline():
         return False
 
     # --- Fall back to fetching from HuggingFace ---
@@ -971,7 +1026,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Hub cache reads skip authorization, so a caller denied the ambient credential gets none.
     cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
-    if _env_offline():
+    if hf_env_offline():
         # Offline: tier from hub cache; cache hits but never misses (so online reads still fetch); an unverified explicit token is denied here.
         if cache_denied:
             return None
@@ -1131,8 +1186,7 @@ def _check_config_needs_457(model_name: str, hf_token: str | None = None) -> boo
 
 
 def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
-    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
-    ``hf_token``; cached by (model, token) only for a definitive read)."""
+    """Gemma 4 Unified / 12B check of config.json; caches definitive reads per (model, token)."""
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_510_cache:
         return _config_needs_510_cache[cache_key]
@@ -1196,7 +1250,7 @@ def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
     v = _release_tuple(_remote_code_saving_version(cfg))
     if v is None or v[0] < 5:
         return None
-    # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
+    # Patch releases keep remote-code APIs: 5.5.9 still fits the 5.5.4 default.
     return (v[0], v[1], 0)
 
 
@@ -1243,8 +1297,7 @@ def _route_remote_code(
 
 
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
-    """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
-    above populate it, and a miss just skips the version-field probe."""
+    """Cached config.json only, no fetch; a miss just skips the version-field probe."""
     return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
@@ -1253,8 +1306,7 @@ _config_mapping_cache: dict[str, frozenset[str]] = {}
 
 
 def _latest_tier_disabled() -> bool:
-    """Kill switch shared with utils.transformers_latest: lets operators roll
-    back a provisioned latest sidecar without deleting files."""
+    """Kill switch shared with transformers_latest; roll back without deleting sidecar files."""
     return os.environ.get("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "").strip().lower() in (
         "1",
         "true",
@@ -1453,9 +1505,8 @@ def _config_model_types(tier: str) -> frozenset[str]:
 
 
 def _model_types_from_config(cfg: dict) -> list[str]:
-    """All model_types in the config: the primary (top-level, else first nested)
-    first, then every other nested sub-config. Wrappers instantiate sub-configs
-    through CONFIG_MAPPING, so nested types matter for routing too."""
+    """All model_types in the config, primary first; nested types matter for routing too, since
+    wrappers build sub-configs via CONFIG_MAPPING."""
     seen: list[str] = []
 
     def add(value):
@@ -1525,11 +1576,15 @@ _TRUSTSTORE_VENDOR = """
     + "\n"
     + inline_gate_source()
     + inline_activation_source()
+    + inline_install_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
 try:
+    # Unsloth is never imported here, and the sidecars below 5.5.0 need its LightGlue back-port
+    # for trust_remote_code=False to hold; failing to install it fails the parse.
+    _install_transformers_backports()
     from transformers import AutoConfig
     AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     sys.exit(0)
@@ -1588,7 +1643,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
     # The probe reads the implicit HF_TOKEN env, so grant or scrub here, not via argv.
     apply_token_to_child_env(env, hf_token)
-    if _env_offline():
+    if hf_env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
     try:
@@ -1628,6 +1683,109 @@ def _probe_cache_key(model_name: str) -> str:
     return f"{config_path}\0{st.st_size}:{st.st_mtime_ns}"
 
 
+# Spawned workers start with the dict above empty, so local-dir verdicts also persist on disk.
+_PROBE_DISK_CACHE_NAME = "transformers_tier_probe.json"
+_PROBE_DISK_CACHE_MAX = 256
+
+
+def _local_config_sha(model_name: str) -> str | None:
+    """sha256 of a local dir's config.json, or None for a Hub id / unreadable file."""
+    try:
+        path = Path(model_name)
+        if not path.is_dir():
+            return None
+        return hashlib.sha256((path / "config.json").read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def _tier_transformers_version(target_dir: str) -> str | None:
+    """Installed transformers version in a sidecar dir (dist-info), or the ambient one for
+    ``""`` (importlib.metadata, without importing transformers)."""
+    try:
+        if not target_dir:
+            import importlib.metadata as md
+            return md.version("transformers")
+        for entry in sorted(Path(target_dir).glob("transformers-*.dist-info")):
+            meta = entry / "METADATA"
+            if meta.is_file():
+                for line in meta.read_text(encoding = "utf-8", errors = "replace").splitlines():
+                    if line.startswith("Version:"):
+                        return line.split(":", 1)[1].strip()
+                    if not line.strip():
+                        break
+    except Exception:
+        return None
+    return None
+
+
+def _probe_disk_cache_path() -> Path | None:
+    try:
+        from utils.paths.storage_roots import cache_root
+        return cache_root() / _PROBE_DISK_CACHE_NAME
+    except Exception:
+        return None
+
+
+def _probe_disk_read() -> dict:
+    path = _probe_disk_cache_path()
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _probe_disk_lookup(disk_key: str, venvs: dict) -> str | None:
+    entry = _probe_disk_read().get(disk_key)
+    if not isinstance(entry, dict):
+        return None
+    tier, walked = entry.get("tier"), entry.get("walked")
+    if not isinstance(tier, str) or not isinstance(walked, list) or not walked:
+        return None
+    for item in walked:
+        if not (isinstance(item, list) and len(item) == 2 and item[0] in venvs):
+            return None
+        if _tier_transformers_version(venvs[item[0]][0]) != item[1]:
+            return None
+    return tier
+
+
+def _probe_disk_store(disk_key: str, tier: str, walked: list) -> None:
+    path = _probe_disk_cache_path()
+    if path is None:
+        return
+    tmp = None
+    try:
+        data = _probe_disk_read()
+        data.pop(disk_key, None)
+        data[disk_key] = {"tier": tier, "walked": walked}
+        while len(data) > _PROBE_DISK_CACHE_MAX:
+            data.pop(next(iter(data)))
+        path.parent.mkdir(parents = True, exist_ok = True)
+        fd, tmp = tempfile.mkstemp(prefix = ".tier_probe_", suffix = ".tmp", dir = str(path.parent))
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+        tmp = None
+    except Exception as exc:
+        logger.debug("Could not persist tier probe verdict: %s", exc)
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+def _cached_tier_available(venvs: dict, tier: str) -> bool:
+    """A disk hit must pass the tier's ensure_fn, as a live probe does."""
+    try:
+        return bool(venvs[tier][1]())
+    except Exception:
+        return False
+
+
 def _probe_tier(
     model_name: str,
     hf_token: str | None,
@@ -1643,25 +1801,56 @@ def _probe_tier(
     # Key by probe mode: a 'default' result must not be reused for floor='530' callers.
     if include_default or floor != "530":
         key = f"{key}\0floor={floor}:def={int(include_default)}"
-    if key in _probe_tier_cache:
-        cached = _probe_tier_cache[key]
-        # Do not reuse a cached latest if disabled, damaged or unpinned (a deleted pin drops the repair marker); else workers spawn into a failing tier. Re-probe.
-        if cached != "latest" or not (
+
+    def _latest_unusable() -> bool:
+        return (
             _latest_tier_disabled()
             or _latest_repair_requested()
             or latest_venv_pinned_version() is None
-        ):
+        )
+
+    if key in _probe_tier_cache:
+        cached = _probe_tier_cache[key]
+        # Do not reuse a cached latest if disabled, damaged or unpinned (a deleted pin drops the repair marker); else workers spawn into a failing tier. Re-probe.
+        if cached != "latest" or not _latest_unusable():
             return cached
+
+    venvs = _probe_tier_venvs()
+    sidecar_order = _probe_tier_order()
+    order = (("default",) + sidecar_order) if include_default else sidecar_order
+
+    config_sha = _local_config_sha(model_name)
+    disk_key = None
+    if config_sha is not None:
+        disk_key = f"{config_sha}:floor={floor}:def={int(include_default)}:order={','.join(order)}"
+        disk_tier = _probe_disk_lookup(disk_key, venvs)
+        if (
+            disk_tier is not None
+            and (disk_tier != "latest" or not _latest_unusable())
+            and _cached_tier_available(venvs, disk_tier)
+        ):
+            _probe_tier_cache[key] = disk_tier
+            logger.info(
+                "Transformers tier %s selected for %s (cached AutoConfig probe; %s)",
+                disk_tier,
+                model_name,
+                reason,
+            )
+            return disk_tier
+    walked: list = []
 
     def _cache(tier: str, *, skipped: bool) -> str:
         # Don't pin a result that depended on a skipped lower tier; re-probe next call.
         if not skipped:
             _probe_tier_cache[key] = tier
+            if (
+                disk_key is not None
+                and all(v is not None for _, v in walked)
+                and _local_config_sha(model_name) == config_sha
+            ):
+                _probe_disk_store(disk_key, tier, walked)
         return tier
 
-    venvs = _probe_tier_venvs()
-    sidecar_order = _probe_tier_order()
-    order = (("default",) + sidecar_order) if include_default else sidecar_order
     probed_count = 0
     skipped_any = False
     for tier in order:
@@ -1674,6 +1863,8 @@ def _probe_tier(
             skipped_any = True
             continue
         probed_count += 1
+        if disk_key is not None:
+            walked.append([tier, _tier_transformers_version(target_dir)])
         ok = _probe_autoconfig(target_dir, model_name, hf_token)
         if ok is True:
             logger.info(
@@ -1709,8 +1900,7 @@ def _norm_separators(s: str) -> str:
 
 
 def _looks_like_hf_id(value: str) -> bool:
-    """True if *value* looks like a Hub id (``org/name``), not a local path. An
-    existing path is treated as a path, mirroring transformers' own resolution."""
+    """True if value looks like a Hub id (org/name); an existing path wins, as in transformers."""
     if not value or not value.strip():
         return False
     if os.path.isabs(value) or value.startswith((".", "~")) or "\\" in value:
@@ -2057,8 +2247,7 @@ _VENV_T4_457_PACKAGES = (
     "huggingface_hub==0.36.2",
 )
 
-# Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar and
-# retries the same impossible install.
+# Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar.
 _OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 
 
@@ -2289,9 +2478,64 @@ def _venv_t5_is_valid() -> bool:
     return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
+# spec -> PyPI sha256 digests the pre-install scan verified; set only inside install_with_hashes().
+_install_hashes: dict[str, tuple[str, ...]] = {}
+# The hash-pinned spec whose download did not match its digest, inside install_with_hashes().
+_hash_mismatch: str | None = None
+# uv: "Hash mismatch for `pkg==x`"; pip: "THESE PACKAGES DO NOT MATCH THE HASHES ...".
+_HASH_MISMATCH_RE = re.compile(r"hash mismatch|do not match the hashes", re.IGNORECASE)
+
+
+@contextlib.contextmanager
+def install_with_hashes(hashes: dict):
+    """Installs of a spec in *hashes* inside this block verify its digests."""
+    global _install_hashes, _hash_mismatch
+    previous, _install_hashes = _install_hashes, dict(hashes or {})
+    _hash_mismatch = None
+    try:
+        yield
+    finally:
+        _install_hashes = previous
+
+
+def install_hash_mismatch() -> str | None:
+    """The spec refused for a digest mismatch by the last install_with_hashes() block, or None."""
+    return _hash_mismatch
+
+
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
-    pkg = _install_source(pkg)
+    digests = _install_hashes.get(pkg)
+    source = _install_source(pkg)
+    if not digests or source != pkg:
+        return _install_args_to_dir([source], [source], source, target_dir)
+    # A hash-pinned requirement file: uv and pip both refuse a download whose sha256 differs.
+    req_dir = tempfile.mkdtemp(prefix = "unsloth_req_")
+    try:
+        req_file = os.path.join(req_dir, "requirements.txt")
+        with open(req_file, "w", encoding = "utf-8") as handle:
+            handle.write(pkg + "".join(f" --hash=sha256:{d}" for d in digests) + "\n")
+        # uv's --require-hashes also rejects any unpinned UV_CONSTRAINT entry; --verify-hashes
+        # checks the listed digests without that. pip enables hash checking from the file alone.
+        return _install_args_to_dir(
+            ["--verify-hashes", "-r", req_file],
+            ["--require-hashes", "-r", req_file],
+            pkg,
+            target_dir,
+            hashed = True,
+        )
+    finally:
+        shutil.rmtree(req_dir, ignore_errors = True)
+
+
+def _install_args_to_dir(
+    uv_args: list[str],
+    pip_args: list[str],
+    pkg: str,
+    target_dir: str,
+    hashed: bool = False,
+) -> bool:
+    global _hash_mismatch
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -2305,7 +2549,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 target_dir,
                 "--no-deps",
                 "--upgrade",
-                pkg,
+                *uv_args,
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -2319,6 +2563,11 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         )
         if result.returncode == 0:
             return True
+        if hashed and _HASH_MISMATCH_RE.search(result.stdout or ""):
+            # The download is not the inspected artifact: refuse, never retry it another way.
+            _hash_mismatch = pkg
+            logger.error("uv refused %s: hash mismatch\n%s", pkg, result.stdout)
+            return False
         logger.warning("uv install of %s failed", pkg)
     if _runtime_repair_is_offline() and not _pip_is_configured_offline():
         # pip has no offline mode except a local wheelhouse (PIP_NO_INDEX + PIP_FIND_LINKS).
@@ -2337,7 +2586,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             target_dir,
             "--no-deps",
             "--upgrade",
-            pkg,
+            *pip_args,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
@@ -2348,6 +2597,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
+        if hashed and _HASH_MISMATCH_RE.search(result.stdout or ""):
+            _hash_mismatch = pkg
         logger.error("install failed:\n%s", result.stdout)
         return False
     return True
@@ -2396,8 +2647,7 @@ def _optional_package_entries(venv_dir: str, pkg_spec: str) -> list[str]:
 
 
 def _optional_package_partly_there(venv_dir: str, pkg_spec: str) -> bool:
-    """A payload without the dist-info that would make it count: an interrupted top-up
-    (or a failed install) left it, and it sits ahead of site-packages."""
+    """Payload without dist-info, left by an interrupted top-up, sits ahead of site-packages."""
     return _optional_package_absent(venv_dir, pkg_spec) and bool(
         _optional_package_entries(venv_dir, pkg_spec)
     )
@@ -2509,7 +2759,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     """Installs to a scratch dir and renames in, dist-info last, so no RECORD precedes its files."""
     usable = True
     # Offline installs can only miss and the miss is remembered, unless pip has a local wheelhouse.
-    offline = _env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
+    offline = hf_env_offline() or (
+        _runtime_repair_is_offline() and not _pip_is_configured_offline()
+    )
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
@@ -2698,7 +2950,7 @@ def _optional_top_up_lock(venv_dir: str):
         yield held
 
 
-_UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
+_UV_OFFLINE_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
 
 
 _PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
@@ -2986,7 +3238,6 @@ def _ensure_venv_t5_530_exists() -> bool:
 
 
 def _ensure_venv_t5_550_exists() -> bool:
-    """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
     return _ensure_venv_dir(
         _VENV_T5_550_DIR,
         _VENV_T5_550_PACKAGES,
@@ -2995,7 +3246,6 @@ def _ensure_venv_t5_550_exists() -> bool:
 
 
 def _ensure_venv_t5_510_exists() -> bool:
-    """Ensure .venv_t5_510/ exists with transformers 5.10.x."""
     return _ensure_venv_dir(
         _VENV_T5_510_DIR,
         _VENV_T5_510_PACKAGES,
@@ -3224,9 +3474,8 @@ def _read_swap_lock(path: Path) -> dict | None:
 
 
 def try_begin_sidecar_swap(kind: str = "install") -> bool:
-    """Reserve the sidecar swap window; False when one is already reserved
-    (in this process or, via the lock file, in any worker subprocess).
-    *kind* is "install" (consented route) or "repair" (lazy venv repair)."""
+    """Reserve the sidecar swap window; False if one is held here or, via the lock file, by any
+    worker subprocess. kind is install (consented) or repair (lazy venv repair)."""
     global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
@@ -3411,7 +3660,7 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
             "cannot repair it.",
@@ -3457,7 +3706,7 @@ def ensure_latest_transformers_venv(
     if not _is_valid_version_string(version):
         logger.error("Refusing to install invalid transformers version %r", version)
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "Cannot install transformers %s: HF/transformers offline mode is set.", version
         )
@@ -3484,8 +3733,7 @@ _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
 # `git describe` of that commit. GitHub keeps an archive's contents stable, not its bytes.
 _LLMC_MAIN_ARCHIVE_DIGEST = "63ccb4f99833e3b24602f18a1e386e6c1127c1a84f7fc4e8ff56336c929138f8"
 _LLMC_MAIN_DESCRIBE = "0.12.0-40"
-# Installed --no-deps (torch untouched) beside llmcompressor's source tree; the full runtime set
-# llm-compressor main needs, pinned.
+# --no-deps keeps torch untouched; pins are the full runtime llm-compressor main needs.
 _VENV_LLMCOMPRESSOR_SPECS = (
     f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
     f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
@@ -3544,7 +3792,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             "compressed export of newer-transformers models will fail fast."
         )
         return False
-    if _env_offline():
+    if hf_env_offline():
         logger.warning(
             "llm-compressor-main shadow missing and HF/offline mode is set; cannot provision it."
         )
@@ -3609,8 +3857,7 @@ def _download_llmcompressor_source(parent: Path) -> Path:
 
 
 def _archive_content_digest(archive: Path) -> str:
-    """sha256 over each file's path and contents, independent of compression, member order and
-    the root directory name."""
+    """sha256 of each file's path and contents; compression, order and root dir are ignored."""
     entries = []
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar:

@@ -4,7 +4,7 @@
 import json
 import warnings as python_warnings
 
-from .cells import cell_text
+from .cells import cell_text, content_text, only_text_parts
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -62,9 +62,8 @@ _CUSTOM_PROMPT_TEMPLATE_ERROR = (
 
 
 def _map_with_pickle_fallback(dataset, function, map_kwargs):
-    """dataset.map, retried in one process when the worker processes cannot receive the function: a
-    remote-code tokenizer class is pickled by value and can drag in unpicklable module state (an HTTP
-    client's SSLContext), which fails the whole multi-process map."""
+    """Retries dataset.map in one process when workers cannot pickle the function: a remote-code
+    tokenizer pickled by value can drag in unpicklable state, e.g. an SSLContext."""
     try:
         return dataset.map(function, **map_kwargs)
     except Exception as exc:
@@ -213,9 +212,8 @@ def _row_tools(tools):
 
 
 def _sharegpt_tool_turns(conversation, content = "", probe = False,):
-    """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
-    markers ``probe`` put in place of each call's arguments and each result; the conversation
-    itself when it has neither role."""
+    """Maps ShareGPT function_call/observation turns to OpenAI tool turns; with probe, arguments and
+    results become markers. Returns the conversation as is without either role."""
     if not any(
         isinstance(message, dict) and message.get("role") in ("observation", "function_call")
         for message in conversation
@@ -320,7 +318,16 @@ def _one_call_per_message(turns):
     return split if len(split) != len(turns) else turns
 
 
+def _flatten_text_parts(message):
+    content = message.get("content") if isinstance(message, dict) else None
+    if only_text_parts(content):
+        return {**message, "content": content_text(content)}
+    return message
+
+
 def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True,):
+    if not (hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer")):
+        conversation = [_flatten_text_parts(message) for message in conversation]
     candidates = []
     # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):
@@ -364,7 +371,7 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
 
 
 def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
-    # Unsloth's qwen3 reads content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
+    # For templates reading content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     def is_null_call(message):

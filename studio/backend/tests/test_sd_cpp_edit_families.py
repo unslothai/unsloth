@@ -127,8 +127,7 @@ def test_kontext_maps_to_the_flux1_assets():
 def test_the_new_companions_stay_fetch_only_and_bases_stay_loadable():
     companions = sd_cpp_companion_only_repo_ids()
     assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in companions
-    # The Qwen edit VAE and the FLUX.1 VAE / encoders live in real bases; mapping the edit families
-    # onto them must not hide those bases.
+    # Qwen edit VAE and FLUX.1 VAE/encoders live in real bases, which must not be hidden.
     assert "qwen/qwen-image" not in companions
     assert "black-forest-labs/flux.1-schnell" not in companions
 

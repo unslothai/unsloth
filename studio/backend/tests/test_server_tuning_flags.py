@@ -408,7 +408,7 @@ def test_override_store_drops_a_draft_dtype_without_a_separate_drafter():
     assert "spec_draft_cache_type" not in entry
 
 
-def test_override_kwargs_are_gguf_only():
+def test_override_kwargs_forward_only_what_the_load_reads():
     override = {
         "load_mode": "dio",
         "spec_draft_cache_type": "q8_0",
@@ -418,4 +418,5 @@ def test_override_kwargs_are_gguf_only():
     kwargs = model_override_load_kwargs(override, is_gguf = True)
     for key, value in override.items():
         assert kwargs[key] == value
-    assert not set(override) & set(model_override_load_kwargs(override, is_gguf = False))
+    # Of these, an MLX load reads only the prompt cache size.
+    assert model_override_load_kwargs(override, is_gguf = False) == {"cache_ram": 2048}

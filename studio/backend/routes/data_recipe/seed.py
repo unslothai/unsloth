@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
@@ -18,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process, to_thread
+from anyio import CancelScope, CapacityLimiter, Lock as _AnyioLock, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -119,9 +121,7 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 
 def _list_hf_repo_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
-    """Every file in the repo: the reader globs over all of them, not just the
-    ones a builder can load, so a pattern is judged against the whole listing.
-    """
+    """Lists every repo file, not just loadable ones, so globs are judged against the whole listing."""
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -254,29 +254,78 @@ def _pick_config(configs: list[dict[str, Any]], subset: str | None) -> dict[str,
     )
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern[str]:
+class _GlobMatcher:
+    """A compiled glob, matched by a position-set walk: linear per token, where the
+    equivalent backtracking regex goes exponential on a card glob like `**a**a**a...`."""
+
+    __slots__ = ("pattern", "_tokens")
+
+    def __init__(self, pattern: str, tokens: list[tuple[str, Any]]):
+        self.pattern = pattern
+        self._tokens = tokens
+
+    def match(self, text: str) -> bool:
+        n = len(text)
+        reach = {0}
+        for kind, arg in self._tokens:
+            nxt: set[int] = set()
+            if kind == "one":
+                nxt = {p + 1 for p in reach if p < n and arg.match(text, p)}
+            elif kind == "star":
+                # [^/]*: every position up to the next folder boundary.
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    stop = text.find("/", p)
+                    nxt.update(range(p, (n if stop < 0 else stop) + 1))
+            elif kind == "any":
+                # .* stops at a newline, as the regex did.
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    stop = text.find("\n", p)
+                    nxt.update(range(p, (n if stop < 0 else stop) + 1))
+            else:  # "dirs": (?:[^/]+/)*, whole non-empty folders or none
+                for p in sorted(reach):
+                    if p in nxt:
+                        continue
+                    nxt.add(p)
+                    q = p
+                    while True:
+                        slash = text.find("/", q)
+                        if slash <= q:
+                            break
+                        q = slash + 1
+                        nxt.add(q)
+            if not nxt:
+                return False
+            reach = nxt
+        return n in reach
+
+
+def _glob_to_regex(pattern: str) -> _GlobMatcher:
     """* stops at a folder boundary, ** crosses it; prefix matching would claim train-notes.json."""
-    parts: list[str] = []
+    tokens: list[tuple[str, Any]] = []
     i = 0
     while i < len(pattern):
         char = pattern[i]
         if char == "*" and pattern[i + 1 : i + 2] == "*":
             if pattern[i + 2 : i + 3] == "/":
                 # Whole folders, or none: `data/**/train.*` is not `data/nottrain.x`.
-                parts.append("(?:[^/]+/)*")
+                tokens.append(("dirs", None))
                 i += 3
             else:
-                parts.append(".*")
+                tokens.append(("any", None))
                 i += 2
             continue
         if char == "*":
-            parts.append("[^/]*")
+            tokens.append(("star", None))
         elif char == "?":
-            parts.append("[^/]")
+            tokens.append(("one", re.compile("[^/]")))
         elif char == "[":
             end = _class_end(pattern, i)
             if end < 0:
-                parts.append(r"\[")
+                tokens.append(("one", re.compile(r"\[")))
             else:
                 body = pattern[i + 1 : end].replace("\\", "\\\\")
                 # Only `!` negates a glob class; a leading `^` is a character.
@@ -284,12 +333,12 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
                     body = f"^{body[1:]}"
                 elif body[:1] == "^":
                     body = f"\\^{body[1:]}"
-                parts.append(f"[{body}]")
+                tokens.append(("one", re.compile(f"[{body}]")))
                 i = end
         else:
-            parts.append(re.escape(char))
+            tokens.append(("one", re.compile(re.escape(char))))
         i += 1
-    return re.compile("".join(parts) + r"\Z")
+    return _GlobMatcher(pattern, tokens)
 
 
 def _class_end(pattern: str, start: int) -> int:
@@ -490,8 +539,7 @@ def _candidate_patterns(stem: str, suffix: str, split_lower: str) -> list[str]:
         at = stem_lower.find(label)
         if at >= 0:
             candidates.append(f"*{stem[at : at + len(label)]}*{suffix}")
-    # Last and narrowest: the whole name, which keeps train-main off
-    # train-socratic.
+    # Last and narrowest: the whole name, which keeps train-main off train-socratic.
     candidates.append(f"{stem}*{suffix}")
     return list(dict.fromkeys(candidates))
 
@@ -1150,7 +1198,8 @@ def inspect_seed_dataset(
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
     """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
-        raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
+        from core.rag import parsers
+        raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
@@ -1205,6 +1254,26 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
     return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
 
 
+# One upload per block between its budget check and its raw write: the scan, read and write await threads.
+_BLOCK_UPLOAD_LOCKS: dict[str, _AnyioLock] = {}
+
+
+async def _write_to_completion(write_fn, *args) -> None:
+    """A threaded write that, if cancelled, still waits for the thread so cleanup cannot race it."""
+    write = asyncio.ensure_future(to_thread.run_sync(write_fn, *args))
+    try:
+        await asyncio.shield(write)
+    except BaseException:
+        # Neither a repeated task cancel nor an AnyIO cancel scope may run cleanup before the thread ends.
+        with CancelScope(shield = True):
+            while not write.done():
+                try:
+                    await asyncio.wait([write])
+                except asyncio.CancelledError:
+                    continue
+        raise
+
+
 def _get_block_total_size(block_dir: Path) -> int:
     """Sum raw upload sizes for the whole block from server-owned files."""
     if not block_dir.exists():
@@ -1218,7 +1287,11 @@ def _get_block_total_size(block_dir: Path) -> int:
         # remove_unstructured_file keys on the name up to the first dot.
         if is_appledouble_metadata(f):
             continue
-        total += f.stat().st_size
+        # Runs in a worker thread now, so a delete on the loop can remove a file mid-scan.
+        try:
+            total += f.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
 
 
@@ -1279,22 +1352,16 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     return grant.canonical_path.name, content
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile | None = FastAPIFile(None),
-    block_id: str = Form(...),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
     # Reads 0 for a block with no dir yet, without creating it, so an upload about to be refused leaves no directory behind.
-    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - await to_thread.run_sync(
+        _get_block_total_size, block_dir
+    )
 
     # Tauri drops arrive as a signed path; isinstance since an unfilled Form param is truthy.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        original_filename, content = _read_native_drop(lease, budget)
+        original_filename, content = await to_thread.run_sync(_read_native_drop, lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
         # Before the read: a rejected 500 MB upload must not be pulled into memory first.
@@ -1322,12 +1389,43 @@ async def upload_unstructured_file(
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
-    raw_path.write_bytes(content)
+    try:
+        await _write_to_completion(raw_path.write_bytes, content)
+    except BaseException:
+        raw_path.unlink(missing_ok = True)
+        raise
+    return original_filename, content, raw_path, file_id
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    lock = _BLOCK_UPLOAD_LOCKS.setdefault(block_id, _AnyioLock())
+    try:
+        async with lock:
+            original_filename, content, raw_path, file_id = await _store_unstructured_raw(
+                file, block_dir, native_path_lease
+            )
+    finally:
+        if not lock.locked() and not lock.statistics().tasks_waiting:
+            _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
+    ext = Path(original_filename).suffix.lower()
+    size_bytes = len(content)
+    # On disk already: extraction reads raw_path, and an upload waiting for an extraction slot
+    # must not keep the whole document in memory meanwhile.
+    del content
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
         extracted_text = await _extract_text_from_file_async(raw_path, ext)
-        if not extracted_text or not extracted_text.strip():
+        # isspace() == (not strip()) on a non-empty str, without copying a 500 MB text on the event loop.
+        if not extracted_text or extracted_text.isspace():
             raw_path.unlink(missing_ok = True)
             return UnstructuredFileUploadResponse(
                 file_id = file_id,
@@ -1336,7 +1434,9 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        extracted_path.write_text(extracted_text, encoding = "utf-8")
+        await _write_to_completion(
+            functools.partial(extracted_path.write_text, extracted_text, encoding = "utf-8")
+        )
     except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
@@ -1534,6 +1634,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             )
 
     file_bytes = _decode_base64_payload(payload.content_base64)
+    if ext in (".csv", ".json", ".jsonl"):
+        # Notepad / PowerShell BOM: pandas rejects it in JSON, DuckDB reads a .json array as one "json" column.
+        file_bytes = file_bytes.removeprefix(b"\xef\xbb\xbf")
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
     if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:

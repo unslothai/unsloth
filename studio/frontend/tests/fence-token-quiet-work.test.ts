@@ -153,21 +153,34 @@ test("streaming, window, off and recent completions retain immediate origin", ()
   }
 });
 
+test("an off-thread fence asks the worker at once; only the answer waits for quiet", () => {
+  const h = harness();
+  h.options.offThread = true;
+  h.options.long = true;
+  assert.equal(h.render(), null);
+  assert.equal(h.jobs.size, 0, "posting the request is not queued behind the reader");
+  assert.equal(h.workers.length, 1);
+  assert.deepEqual(h.calls, [""], "nothing is tokenized here; only the grammar is asked for");
+  h.workers[0].callback({ source: "old source", language: "javascript" });
+  assert.equal(h.jobs.size, 1, "the answer is applied in a queued turn");
+  assert.equal(h.flushOne()?.source, "old source");
+  h.unmount();
+});
+
 test("worker results wait for a queued commit and stale source or language callbacks are discarded", () => {
   const h = harness();
   h.options.offThread = true;
   h.options.long = true;
   h.render();
-  h.flushOne();
   const first = h.workers[0];
   first.callback({ source: "old source", language: "javascript" });
   assert.equal(h.render(), null);
   assert.equal(h.jobs.size, 1);
   h.render({ language: "python" });
   assert.equal(first.cancelled, true);
+  assert.equal(h.jobs.size, 0, "the stale publication is cancelled and the new request is already out");
   first.callback({ source: "old source", language: "javascript" });
-  assert.equal(h.jobs.size, 1);
-  h.flushOne();
+  assert.equal(h.jobs.size, 0);
   h.workers[1].callback({ source: "old source", language: "python" });
   assert.equal(h.flushOne()?.language, "python");
   h.unmount();
@@ -204,7 +217,6 @@ test("disable and unmount cancel queued starts and delayed publications", () => 
   assert.equal(h.jobs.size, 0);
   h.options.offThread = true;
   h.render({ enabled: true });
-  h.flushOne();
   const worker = h.workers[0];
   worker.callback({ source: "old source", language: "javascript" });
   assert.equal(h.jobs.size, 1);
@@ -221,7 +233,6 @@ test("failed short worker requests queue fallback but long requests never tokeni
     h.options.offThread = true;
     h.options.long = long;
     h.render();
-    h.flushOne();
     const before = h.calls.length;
     h.workers[0].callback(null);
     assert.equal(h.calls.length, before);
@@ -238,7 +249,6 @@ test("print fallback honors quiet work normally and completes synchronously when
     h.options.offThread = true;
     h.options.long = true;
     h.render();
-    h.flushOne();
     h.options.force = force;
     const callback = h.printing.values().next().value;
     assert.ok(callback);
@@ -256,13 +266,14 @@ test("print fallback honors quiet work normally and completes synchronously when
   }
 });
 
-test("forcing pending startup makes its print fallback available before the snapshot", () => {
+test("an off-thread fence has its print fallback before any queued turn runs", () => {
   const h = harness();
   h.options.offThread = true;
   h.options.long = true;
   h.render();
+  assert.equal(h.jobs.size, 0);
+  assert.equal(h.printing.size, 1);
   h.options.force = true;
-  h.flushOne();
   for (const fallback of h.printing) fallback();
   assert.equal(h.render()?.source, "old source");
   assert.equal(h.jobs.size, 0);

@@ -81,8 +81,7 @@ def _lifetime_kwargs() -> dict:
 
 
 def _adopt_pid(pid: int) -> None:
-    """Record cloudflared so a force quit does not strand it (macOS has no
-    PDEATHSIG). Best-effort, like _lifetime_kwargs above."""
+    """Record cloudflared so a force quit cannot strand it (macOS has no PDEATHSIG); best-effort."""
     try:
         from utils.process_lifetime import adopt_pid
         adopt_pid(pid)
@@ -557,9 +556,8 @@ class CloudflareTunnel:
                 callback(self)
 
     def wait_for_ready(self, timeout: float = _READY_TIMEOUT) -> Optional[str]:
-        """Block until the tunnel is actually serving -- the URL has been minted *and* at least one edge connection
-        has registered -- or until timeout. Returns the URL only when ready, so callers never advertise a URL
-        that would return Cloudflare error 1033 (HTTP 530)."""
+        """Waits for the URL and an edge connection; returns it only when ready, to avoid Cloudflare
+        1033."""
         self._ready_event.wait(timeout)
         return self.url if self.ready else None
 

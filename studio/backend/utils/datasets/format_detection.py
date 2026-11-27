@@ -223,7 +223,10 @@ def detect_dataset_format(dataset):
 
 def detect_custom_format_heuristic(dataset):
     """Detection with priority scoring. For ambiguous keywords like 'task': detect the assistant first (unambiguous), then the user by high-priority keywords, then check the REMAINING columns for system keywords (including 'task'), and only fall back to 'task' as the user column when nothing matched system."""
-    sample = next(iter(dataset))
+    try:
+        sample = next(iter(dataset))
+    except StopIteration:
+        return None
     all_columns = list(sample.keys())
 
     mapping = {}
@@ -595,7 +598,20 @@ def detect_custom_format_heuristic(dataset):
 
 
 def detect_multimodal_dataset(dataset):
-    sample = next(iter(dataset))
+    try:
+        sample = next(iter(dataset))
+    except StopIteration:
+        return {
+            "is_image": False,
+            "is_video": False,
+            "multimodal_columns": [],
+            "modality_types": [],
+            "is_audio": False,
+            "audio_columns": [],
+            "detected_audio_column": None,
+            "detected_text_column": None,
+            "detected_speaker_column": None,
+        }
     column_names = list(sample.keys())
 
     image_keywords = [
@@ -614,8 +630,6 @@ def detect_multimodal_dataset(dataset):
         "pic",
         "picture",
         "visual",
-        "file_name",
-        "filename",
     ]
 
     audio_keywords = ["audio", "speech", "wav", "waveform", "sound"]
@@ -638,7 +652,11 @@ def detect_multimodal_dataset(dataset):
         if col_name in already_detected:
             continue
         value = sample[col_name]
-        if _is_image_value(value) or _holds_images(value):
+        if (
+            _is_image_value(value)
+            or _holds_images(value)
+            or (_is_file_name_column(col_name) and _names_local_image(value))
+        ):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
@@ -675,10 +693,15 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        text_keywords = ["text", "sentence", "transcript", "transcription", "label"]
-        for col_name in column_names:
-            if col_name.lower() in text_keywords:
-                detected_text_col = col_name
+        # A real transcript beats TTS line names (SparkTTS "prompt", LJSpeech "normalized_text").
+        transcript_names = ("text", "sentence", "transcript", "transcription", "label")
+        fallback_names = ("prompt", "normalized_text")
+        for candidates in (transcript_names, fallback_names):
+            for col_name in column_names:
+                if col_name.lower() in candidates:
+                    detected_text_col = col_name
+                    break
+            if detected_text_col:
                 break
 
     is_audio = len(audio_columns) > 0
@@ -703,6 +726,40 @@ def detect_multimodal_dataset(dataset):
         "detected_text_column": detected_text_col,
         "detected_speaker_column": detected_speaker_col,
     }
+
+
+# A file-name column names documents as often as images: only its value decides.
+def _is_file_name_column(col_name) -> bool:
+    return _keyword_in_column("file_name", col_name) or _keyword_in_column("filename", col_name)
+
+
+def _names_local_image(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    import os
+    import stat
+
+    from utils.security.dataset_media import require_readable_media
+
+    from .remote_images import is_network_share
+
+    path = os.path.expanduser(value.strip())
+    # Opening a share signs Windows in to its host (NTLM).
+    if is_network_share(path):
+        return False
+    try:
+        require_readable_media(path)
+        # Nonblocking, then regular files only: opening a FIFO would hang the request.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return False
+            head = os.read(fd, 12)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return False
+    return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
 
 
 def _is_decoded_image_value(value) -> bool:
@@ -856,19 +913,49 @@ def video_sample(
             return not video_parts(value)
         return value is None or (isinstance(value, str) and not value.strip())
 
-    if not any(_missing(k, v) for k, v in sample.items()):
+    missing = [k for k, v in sample.items() if _missing(k, v)]
+    if not missing:
         return sample
-    filled = dict(sample)
-    try:
-        for row in itertools.islice(iter(dataset), 1, rows):
+
+    def _fill(source):
+        filled = dict(sample)
+        for row in itertools.islice(iter(source), 1, rows):
             for key, value in row.items():
                 if _missing(key, filled.get(key)) and not _missing(key, value):
                     filled[key] = value
             if not any(_missing(k, v) for k, v in filled.items()):
                 break
+        return filled
+
+    def _is_media(value):
+        if isinstance(value, (list, tuple)):
+            return bool(value) and _is_media(value[0])
+        if isinstance(value, dict):
+            return any(k in value for k in ("bytes", "array", "path")) or any(
+                map(_is_media, value.values())
+            )
+        return value is not None and not isinstance(value, (str, int, float, bool))
+
+    # Whole rows decode every media cell; a schema mismatch or custom transform could change what a subset sees.
+    missing_keys = set(missing)
+    if len(missing) < len(sample) and any(
+        _is_media(v) for k, v in sample.items() if k not in missing_keys
+    ):
+        try:
+            columns = dataset.column_names
+            fmt = getattr(dataset, "format", None)
+            if (
+                isinstance(columns, list)
+                and set(columns) == set(sample)
+                and not (isinstance(fmt, dict) and fmt.get("type") == "custom")
+            ):
+                return _fill(dataset.select_columns(missing))
+        except Exception:  # noqa: BLE001 -- no column subset: read whole rows
+            pass
+    try:
+        return _fill(dataset)
     except Exception:  # noqa: BLE001 -- unreadable rows: detect from the first one
         return sample
-    return filled
 
 
 def video_parts(messages) -> list:

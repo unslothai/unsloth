@@ -101,8 +101,7 @@ def test_hostinfo_exposes_the_flag():
     ],
 )
 def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, expect_intel):
-    """Both vendors come from one sysfs pass; an AMD dGPU next to an Intel iGPU must not
-    be lost to an early break."""
+    """One sysfs pass reads both vendors; no early break may lose an AMD dGPU beside Intel."""
     _patch_drm(monkeypatch, tmp_path, vendor_ids)
     _patch_no_nvidia_no_rocm(monkeypatch)
     monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
@@ -196,8 +195,7 @@ def test_vulkan_eligibility_gate(host_kwargs, expect_vulkan_eligible):
 
 
 def test_rocm_host_keeps_the_rocm_branch():
-    """detect_host() only probes DRM vendor ids when ROCm is absent, so a working-ROCm
-    host keeps the flag False and stays on the ROCm branches."""
+    """DRM vendor probing runs only without ROCm, so a working-ROCm host keeps the flag False."""
     assert _host(has_rocm = True, rocm_gfx_target = "gfx1100").has_amd_gpu_without_rocm is False
 
 

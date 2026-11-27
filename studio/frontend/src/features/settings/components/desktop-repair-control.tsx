@@ -12,8 +12,10 @@ import {
 } from "@/components/ui/dialog";
 import { usePlatformStore } from "@/config/env";
 import { useTauriRepairController } from "@/hooks/tauri-repair-context";
+import { useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
+import { repairRecommendationText } from "./repair-recommendation";
 import { SettingsRow } from "./settings-row";
 
 /**
@@ -29,13 +31,26 @@ export function DesktopRepairControl(): ReactElement | null {
     (s) => s.chatOnlyReason === "no_torch" && s.isChatOnly() && !s.capabilitiesUnknown(),
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const canRepair = repair !== null && !repair.isExternalServer;
+  const system = useSystemInfo({ enabled: canRepair });
   if (!repair || repair.isExternalServer) return null;
+  const recommended = repairRecommendationText(system.repair_recommendation, t);
 
   return (
     <>
       <SettingsRow
         label={t("settings.general.repairInstall.label")}
         description={t("settings.general.repairInstall.description")}
+        below={
+          recommended ? (
+            <p
+              className="text-xs text-amber-600 dark:text-amber-400"
+              data-testid="repair-recommended"
+            >
+              {recommended}
+            </p>
+          ) : undefined
+        }
       >
         <Button
           variant="outline"

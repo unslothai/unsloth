@@ -11,6 +11,7 @@ import os
 import threading
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 FLUX2_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_flux2"
@@ -47,6 +48,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernel() -> Optional[Callable]:
     """None when Triton is unavailable."""
     try:

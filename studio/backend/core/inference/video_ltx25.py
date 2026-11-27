@@ -6,6 +6,7 @@ encoder runs in a worker on the .venv_t5_510 transformers 5.10 sidecar"""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import queue as _queue
 import threading
@@ -90,9 +91,7 @@ LTX25_TE_HOSTED_BASE = "Lightricks/LTX-2.5-Diffusers"
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
 
-# The split single-file release. A DiT picked from it assembles from the companion files beside it (no Diffusers pack):
-# connectors from the DiT file plus the encoder file's text projections, the conv VAE, the audio VAE + vocoder and the
-# spatial upscaler. The encoder file embeds its own config and tokenizer.
+# A split single-file DiT is assembled from its companion files, with no Diffusers pack needed.
 LTX25_SINGLE_FILE_REPO = "Lightricks/LTX-2.5"
 LTX25_SINGLE_TEXT_ENCODER = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
 LTX25_SINGLE_VIDEO_VAE = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
@@ -364,9 +363,11 @@ def load_ltx25_transformer(
     if is_gguf:
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
         install_exact_dequant()
+        install_gguf_mmap()
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -596,9 +597,11 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
 
         from .diffusion_gguf_exact import install_exact_dequant
         from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
 
         install_lowbit_iq()
         install_exact_dequant()
+        install_gguf_mmap()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
@@ -748,9 +751,8 @@ def ltx25_te_prequant_sources(
         from .diffusion_te_prequant import TePrequantSource
         from .model_ids import hf_cache_repo_id
 
-        # Exact identity (an HF cache snapshot counts as its repo): the worker strict-loads the hosted state dict into
-        # whatever architecture the pack builds, so a same-shaped custom pack that merely shares the folder name
-        # would silently lose its own encoder weights.
+        # Exact identity only (an HF cache snapshot counts as its repo): a same-shaped pack sharing
+        # the folder name would silently lose its own encoder weights
         identity = hf_cache_repo_id(str(base)) or str(base)
         if canonical_base(identity).lower() != canonical_base(LTX25_TE_HOSTED_BASE).lower():
             return {}
@@ -804,6 +806,22 @@ def ltx25_resolve_te_request(
     return LTX25_TE_QUANT_DEFAULT
 
 
+def ltx25_te_host_gb(
+    text_encoder_quant: Optional[str], base: Optional[str], *, bf16_gb: float, scale: float
+) -> float:
+    """Host GB the encoder worker reads Gemma 4 into, loading at ``scale`` x bf16 (2.0 = float32) on the host.
+
+    Hosted int8 widens only its dense tensors; bf16 and load-time int8 (reads dense first) widen fully."""
+    try:
+        ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 0.0
+    if ltx25_te_prequant_sources(text_encoder_quant, base):
+        dense_part = max(0.0, 2.0 * LTX25_TE_INT8_GB - LTX25_TE_BF16_GB)
+        return LTX25_TE_INT8_GB + dense_part * max(0.0, scale - 1.0)
+    return float(bf16_gb) * scale
+
+
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
     try:
         scheme = ltx25_te_quant_scheme(text_encoder_quant)
@@ -851,6 +869,45 @@ def ensure_text_encoder_sidecar() -> str:
     if not ok:
         raise RuntimeError(sidecar_missing_message(_VENV_T5_510_DIR))
     return _VENV_T5_510_DIR
+
+
+# ``0``: the old path (full-width transport, connectors rerun in stage two).
+COMPACT_CONDITIONING_ENV = "UNSLOTH_LTX25_COMPACT_CONDITIONING"
+
+# Engagement counters, read by tests.
+CONDITIONING_STATS: dict[str, int] = {
+    "compact_encodes": 0,
+    "full_encodes": 0,
+    "host_bytes": 0,
+    "upload_bytes": 0,
+    "connector_runs": 0,
+    "connector_reuses": 0,
+    "released_rows_bytes": 0,
+}
+
+
+def compact_conditioning_enabled() -> bool:
+    return (os.environ.get(COMPACT_CONDITIONING_ENV) or "").strip() != "0"
+
+
+def _tensor_bytes(t: Any) -> int:
+    try:
+        return int(t.numel()) * int(t.element_size())
+    except Exception:  # noqa: BLE001 -- not a tensor
+        return 0
+
+
+def expand_valid_rows(rows: Any, mask: Any, *, device: Any, dtype: Any) -> Any:
+    """Inverse of ``compact_valid_rows`` on ``device``, padded rows zero. The connectors zero padded rows before
+    mixing tokens, so their outputs equal the full-width ones."""
+    import torch
+
+    mask = mask.to(device = device)
+    batch, seq_len = mask.shape[0], mask.shape[-1]
+    rows = rows.to(device = device, dtype = dtype)
+    full = torch.zeros((batch, seq_len, rows.shape[-1]), device = rows.device, dtype = rows.dtype)
+    full.masked_scatter_(mask.view(batch, seq_len, 1).bool(), rows)
+    return full
 
 
 def _release_cached_device_memory(device: Optional[str]) -> None:
@@ -1189,6 +1246,7 @@ class Ltx25TextEncoderClient:
         self._cmd: Any = None
         self._resp: Any = None
         self._ready = False
+        self._ready_error: Optional[BaseException] = None
         self._seq = 0
         # Request the worker is still computing (a cancel abandons it).
         self._inflight: Optional[int] = None
@@ -1234,6 +1292,7 @@ class Ltx25TextEncoderClient:
             spawn_on_lifetime_thread(proc.start)
         self._proc = proc
         self._ready = False
+        self._ready_error = None
         try:
             from utils.process_lifetime import adopt_pid
             adopt_pid(proc.pid)
@@ -1306,7 +1365,14 @@ class Ltx25TextEncoderClient:
     def wait_ready(self, cancel: Optional[threading.Event] = None) -> dict:
         if self._ready:
             return self.info
-        msg = self._get(cancel, "loading the Gemma 4 encoder")
+        if getattr(self, "_ready_error", None) is not None:
+            # The worker sends its load error once: a second caller (a placement preview read it first) gets the same one.
+            raise self._ready_error
+        try:
+            msg = self._get(cancel, "loading the Gemma 4 encoder")
+        except TextEncoderWorkerError as exc:
+            self._ready_error = exc
+            raise
         if msg.get("type") != "ready":
             raise TextEncoderWorkerError(
                 f"Unexpected reply from the text encoder worker: {msg.get('type')}"
@@ -1319,6 +1385,7 @@ class Ltx25TextEncoderClient:
     def close(self) -> None:
         proc, self._proc = self._proc, None
         self._ready = False
+        self._ready_error = None
         self._inflight = None
         self._cache.clear()
         if proc is None:
@@ -1344,8 +1411,15 @@ class Ltx25TextEncoderClient:
         self.close()
         return True
 
-    def cached(self, prompts: list[str], max_sequence_length: int) -> bool:
-        key = (tuple(prompts), int(max_sequence_length))
+    def cached(
+        self,
+        prompts: list[str],
+        max_sequence_length: int,
+        *,
+        compact: Optional[bool] = None,
+    ) -> bool:
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
+        key = (tuple(prompts), int(max_sequence_length), compact)
         with self._lock:
             return any(cached_key == key for cached_key, _ in self._cache)
 
@@ -1356,10 +1430,12 @@ class Ltx25TextEncoderClient:
         cancel: Optional[threading.Event] = None,
         *,
         copy: bool = True,
+        compact: Optional[bool] = None,
     ) -> tuple[Any, Any]:
         """``copy=False`` returns the cached host tensors themselves, for a caller that only reads them: a 385 MB host
-        clone per call is ~40 ms on a B200 host."""
-        key = (tuple(prompts), int(max_sequence_length))
+        clone per call is ~40 ms on a B200 host. Compact (the default) embeds are ``[valid rows, D]``."""
+        compact = compact_conditioning_enabled() if compact is None else bool(compact)
+        key = (tuple(prompts), int(max_sequence_length), compact)
         with self._lock:
             for i, (cached_key, value) in enumerate(self._cache):
                 if cached_key == key:
@@ -1386,6 +1462,7 @@ class Ltx25TextEncoderClient:
                     # The server pins its own host weights during the first render; the encoder's pin waits for that
                     # so it never takes the host RAM those pins need.
                     "pin_host": self.renders > 1,
+                    "compact": compact,
                 }
             )
             self._inflight = seq
@@ -1403,6 +1480,14 @@ class Ltx25TextEncoderClient:
             self.last_encode = {
                 k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
             }
+            # An older worker replies full width: ``_one`` reads the shape, not the request.
+            CONDITIONING_STATS[
+                "compact_encodes" if getattr(embeds, "ndim", 3) == 2 else "full_encodes"
+            ] += 1
+            CONDITIONING_STATS["host_bytes"] += _tensor_bytes(embeds) + _tensor_bytes(mask)
+            self.last_encode["host_mib"] = round(
+                (_tensor_bytes(embeds) + _tensor_bytes(mask)) / 2**20, 2
+            )
             logger.info(
                 "video.ltx25_te: encoded on %s %s", self.last_encode.get("device"), self.last_encode
             )
@@ -1434,10 +1519,14 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
+        transport: dict[str, bool] = {}
+
         def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
             # Cache miss: lend resident DiT blocks to the worker for the encode.
             is_cached = getattr(client, "cached", None)
-            if not callable(is_cached) or all(is_cached(t, max_sequence_length) for t in texts):
+            if not callable(is_cached) or all(
+                is_cached(t, max_sequence_length, **transport) for t in texts
+            ):
                 return None
             return lend_resident_dit_for_encode(pipe, client)
 
@@ -1445,7 +1534,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             """Cached (read-only) tensors per prompt list, all encoded under one lease."""
             restore = _lend(*texts)
             try:
-                return [client.encode(t, max_sequence_length, copy = False) for t in texts]
+                return [
+                    client.encode(t, max_sequence_length, copy = False, **transport) for t in texts
+                ]
             except BaseException:
                 # A cancelled encode may still use the lent memory: stop it before pinning back.
                 stop = getattr(client, "stop_if_busy", None)
@@ -1458,14 +1549,19 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         def _one(texts: list[str], host: Optional[tuple] = None) -> tuple[Any, Any]:
             cached, mask = host if host is not None else _hosts(texts)[0]
-            batch = cached.shape[0]
-            embeds = cached.to(device = device, dtype = dtype)
+            CONDITIONING_STATS["upload_bytes"] += _tensor_bytes(cached) + _tensor_bytes(mask)
+            batch = mask.shape[0]
+            if cached.ndim == 2:
+                # A fresh tensor, never an alias of the cache.
+                embeds = expand_valid_rows(cached, mask, device = device, dtype = dtype)
+            else:
+                embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
             seq_len = embeds.shape[1]
             # A ``.to`` that moved or cast already copied, so one video skips ``repeat``; a no-op ``.to`` aliases the cache.
             if (
                 num_videos_per_prompt != 1
-                or embeds.data_ptr() == cached.data_ptr()
+                or (cached.ndim != 2 and embeds.data_ptr() == cached.data_ptr())
                 or not embeds.is_contiguous()
             ):
                 embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
@@ -1476,6 +1572,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+        if num_videos_per_prompt != 1 and batch_size > 1 and compact_conditioning_enabled():
+            # diffusers repeats embeds per prompt but the mask per batch, so padded rows can count as valid there.
+            transport["compact"] = False
         if (
             prompt_embeds is None
             and do_classifier_free_guidance
@@ -1544,6 +1643,7 @@ def start_text_encoder(
     budget_mib: Optional[int] = None,
     te_quant: Optional[str] = None,
     base_repo: Optional[str] = None,
+    bind_device: bool = False,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
     load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
@@ -1585,8 +1685,23 @@ def start_text_encoder(
     share = user_budget_reserve_share()
     if share > 0:
         client.config["vram_reserve_share"] = share
+    if bind_device:
+        # by UUID: a spawned child may enumerate cards in another order
+        client.config.update(bind_device = True, device_uuid = _cuda_device_uuid(device))
     client.start()
     return client
+
+
+def _cuda_device_uuid(device: str) -> Optional[str]:
+    try:
+        import torch
+
+        index = torch.device(device).index
+        if torch.device(device).type != "cuda" or index is None:
+            return None
+        return str(torch.cuda.get_device_properties(index).uuid)
+    except Exception:  # noqa: BLE001 -- the worker then binds the ordinal as given
+        return None
 
 
 def attach_to_pipeline(
@@ -1792,16 +1907,188 @@ def render(
         raise
     finally:
         if image is not None or failed:
-            # The condition pipeline shares pipe's modules but not its offload-hook list, so on every exit (dev,
-            # single stage, two stage, cancel) pipe's own hooks are reset here, or its last onloaded module stays on
-            # the card. A text render that stops between its stages (cancel, error) may hold the DiT stage 1
-            # onloaded (diffusion_multistage.hold_denoiser_between_calls): reset it too.
+            # Reset pipe's offload hooks on every exit: the condition pipeline shares its modules,
+            # not hooks.
             free = getattr(pipe, "maybe_free_model_hooks", None)
             if callable(free):
                 try:
                     free()
                 except Exception:  # noqa: BLE001 -- best-effort offload reset
                     pass
+
+
+# ``0``: keep both device copies of the prompt hidden states (encode output and ``encode_once``'s memo, 368 MiB each
+# at 1024 tokens) alive through both stages and the decode.
+RELEASE_PROMPT_ROWS_ENV = "UNSLOTH_LTX25_RELEASE_PROMPT_ROWS"
+
+
+def release_prompt_rows_enabled() -> bool:
+    return (os.environ.get(RELEASE_PROMPT_ROWS_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+_RELEASE_SUPPORTED: list = []
+
+
+def prompt_rows_release_supported() -> bool:
+    """Whether this torch can tell a tensor is alone on its storage (the binding ``_release_rows`` needs), probed once;
+    without it nothing is released."""
+    if not _RELEASE_SUPPORTED:
+        try:
+            import torch
+
+            probe = torch.zeros(4)
+            alone = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            alias = probe.detach()
+            shared = torch._C._storage_Use_Count(probe.untyped_storage()._cdata)
+            del alias
+            _RELEASE_SUPPORTED.append(alone == 2 and shared == 3)
+        except Exception:  # noqa: BLE001 -- absent (torch 2.4 / 2.6) or changed: no release
+            _RELEASE_SUPPORTED.append(False)
+    return bool(_RELEASE_SUPPORTED[0])
+
+
+# Set on the connectors when a release freed less than both prompt copies: the measured denoise price stops applying.
+RELEASE_SHORT_ATTR = "_unsloth_prompt_rows_release_short"
+
+
+def _release_rows(t: Any, like: Any) -> int:
+    """Free ``t``'s storage (its metadata stays: dtype, shape) when it is a whole prompt tensor shaped like ``like``
+    and the only tensor on its storage (no view, ``detach()`` alias or other tensor shares it); the bytes freed,
+    else 0."""
+    try:
+        if (
+            t.device.type == "meta"
+            or t.shape != like.shape
+            or t.dtype != like.dtype
+            or t._base is not None
+            or t.storage_offset() != 0
+        ):
+            return 0
+        if not prompt_rows_release_supported():
+            return 0
+        storage = t.untyped_storage()
+        nbytes = int(storage.nbytes())
+        if nbytes == 0 or nbytes != int(t.numel()) * int(t.element_size()):
+            return 0
+        import torch
+
+        # ``t`` plus the one Python storage object held here; any other tensor on it raises the count
+        if torch._C._storage_Use_Count(storage._cdata) != 2:
+            return 0
+        storage.resize_(0)
+        return nbytes
+    except Exception:  # noqa: BLE001 -- memory lever only: a tensor that cannot be released stays
+        return 0
+
+
+@contextlib.contextmanager
+def reuse_connector_outputs(runner: Any):
+    """Inside ``encode_once``: connectors called on exactly the tensors an ``encode_prompt`` of this span returned
+    (identity, via weak references) reuse the first such call's outputs; any other input (CFG concatenation) runs."""
+    connectors = getattr(runner, "connectors", None)
+    encode = getattr(runner, "encode_prompt", None)
+    if (
+        not compact_conditioning_enabled()
+        or connectors is None
+        or not callable(encode)
+        or not callable(getattr(connectors, "forward", None))
+    ):
+        yield
+        return
+    import weakref
+
+    import torch
+
+    from .diffusion_multistage import ENCODE_ONCE_MEMO_ATTR
+
+    returned: list[tuple[str, Any, Any]] = []
+    results: dict[tuple[str, str], tuple] = {}
+    released: set[str] = set()
+    had_encode = "encode_prompt" in getattr(runner, "__dict__", {})
+    wrapped: dict[str, Any] = {}
+
+    def arm() -> None:
+        # Again before each call: an offload reset between the calls installs a new hooked ``forward``.
+        if connectors.__dict__.get("forward") is forward:
+            return
+        wrapped["own"] = "forward" in connectors.__dict__
+        wrapped["prior"] = connectors.__dict__.get("forward")
+        wrapped["inner"] = connectors.forward
+        connectors.forward = forward
+
+    def encode_prompt(*args: Any, **kwargs: Any) -> Any:
+        out = encode(*args, **kwargs)
+        if (
+            not args
+            and not any(isinstance(v, torch.Tensor) for v in kwargs.values())
+            and isinstance(out, tuple)
+            and len(out) >= 2
+            and isinstance(out[0], torch.Tensor)
+            and isinstance(out[1], torch.Tensor)
+        ):
+            key = repr(sorted((k, repr(v)) for k, v in kwargs.items()))
+            returned.append((key, weakref.ref(out[0]), weakref.ref(out[1])))
+        arm()
+        return out
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        source = None
+        if len(args) >= 2:
+            source = next((k for k, e, m in returned if e() is args[0] and m() is args[1]), None)
+        key = (source, repr((args[2:], sorted(kwargs.items())))) if source is not None else None
+        if key is not None and key in results:
+            CONDITIONING_STATS["connector_reuses"] += 1
+            return results[key]
+        if source is not None and source in released:
+            raise RuntimeError(
+                "LTX-2.5: the prompt hidden states were released after their connector run, and a later call "
+                f"asked for the connectors with other arguments; set {RELEASE_PROMPT_ROWS_ENV}=0."
+            )
+        out = wrapped["inner"](*args, **kwargs)
+        CONDITIONING_STATS["connector_runs"] += 1
+        if key is not None and isinstance(out, tuple):
+            # A copy: stage one's denoise owns its tensors.
+            results[key] = tuple(t.clone() if isinstance(t, torch.Tensor) else t for t in out)
+            if release_prompt_rows_enabled():
+                # Past the connectors the pipelines read only the hidden states' dtype; stage two's encode returns
+                # the memo copy, whose connector outputs are now cached, so neither copy's rows are read again.
+                memo = getattr(runner, "__dict__", {}).get(ENCODE_ONCE_MEMO_ATTR) or {}
+                kept = memo.get(source)
+                rows = [args[0]]
+                if isinstance(kept, tuple) and kept and isinstance(kept[0], torch.Tensor):
+                    rows.append(kept[0])
+                expected = sum(_tensor_bytes(t) for t in {id(t): t for t in rows}.values())
+                freed = sum(_release_rows(t, args[0]) for t in rows)
+                if freed:
+                    released.add(source)
+                    CONDITIONING_STATS["released_rows_bytes"] += freed
+                if freed < expected:
+                    # kept rows (shared storage, no binding): later requests on this load pay the base overhead
+                    connectors.__dict__[RELEASE_SHORT_ATTR] = True
+        return out
+
+    runner.encode_prompt = encode_prompt
+    arm()
+    try:
+        yield
+    finally:
+        results.clear()
+        returned.clear()
+        if connectors.__dict__.get("forward") is forward:
+            if wrapped.get("own"):
+                connectors.forward = wrapped["prior"]
+            else:
+                del connectors.forward
+        if runner.__dict__.get("encode_prompt") is encode_prompt:
+            if had_encode:
+                runner.encode_prompt = encode
+            else:
+                del runner.encode_prompt
 
 
 def _render(
@@ -1929,7 +2216,7 @@ def _render(
         )
     from .diffusion_multistage import encode_once, hold_denoiser_between_calls
 
-    with encode_once(runner):
+    with encode_once(runner), reuse_connector_outputs(runner):
         half_w, half_h = width // 2, height // 2
         stage1 = dict(
             base,
@@ -1964,7 +2251,10 @@ def _render(
             if moved:
                 upsampler.to(video_latents.device)
             try:
-                upsampled = upsampler(video_latents.to(param.dtype))
+                # ``dtype`` reads a per-layer cast's compute dtype (fp16-card low-RAM route), else the weights'
+                upsampled = upsampler(
+                    video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
+                )
             finally:
                 if moved:
                     upsampler.to(home)

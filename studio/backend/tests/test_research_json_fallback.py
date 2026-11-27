@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
@@ -143,6 +143,32 @@ def test_local_json_research_recovers_through_the_real_route(
     assert first == second
     assert second["tool_choice"] == "none"
     assert second["enabled_tools"] == []
+    assert research_call.revoked == [1]
+
+
+def test_the_npu_refusal_permits_the_prompt_only_retry(research_call):
+    """FastFlowLM's own refusal wording must still read as a missing grammar engine."""
+    payload = ChatCompletionRequest(
+        model = "lemonade:qwen3-0.6b-FLM",
+        messages = [ChatMessage(role = "user", content = "Return only JSON.")],
+        response_format = {"type": "json_object"},
+    )
+    with pytest.raises(HTTPException) as caught:
+        inference_route._refuse_npu_chat_request(
+            payload, supports_vision = False, supports_tools = False
+        )
+    refusal = caught.value.detail
+    sent = []
+
+    def serve(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(400, json = refusal) if len(sent) == 1 else _completion()
+
+    research_call.install(httpx.MockTransport(serve))
+    assert json.loads(research_call.complete()[0]) == {"ok": True}
+    assert len(sent) == 2
+    assert sent[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in sent[1]
     assert research_call.revoked == [1]
 
 

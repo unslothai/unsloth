@@ -312,8 +312,7 @@ def test_unreachable_hub_still_loads_the_plain_artifact_already_cached(monkeypat
         detect_family("Qwen/Qwen-Image-2.1", override = "qwen-image-2.1"), "int8"
     )
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    # only the first name is asked (the ComfyUI-format twin of the rotated build); the unreachable Hub then
-    # answers from the cache
+    # Only the first name, the ComfyUI twin, is asked; the unreachable Hub answers from cache.
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
     plain.unlink()
     with pytest.raises(LocalEntryNotFoundError):
@@ -442,7 +441,8 @@ def test_zimage_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     assert tq.int8_convrot_enabled("z-image") and tq.int8_convrot_enabled(" Z-Image ")
     # every other family keeps the opt-in it had
-    for family in (None, "qwen-image", "flux.1", "minimax-h3"):
+    # flux.1 only names a hosted rotated file (group 0), on by default like these
+    for family in (None, "qwen-image", "minimax-h3"):
         assert not tq.int8_convrot_enabled(family)
     for off in ("0", "off", "false", "no", " OFF "):
         monkeypatch.setenv(tq.INT8_CONVROT_ENV, off)
@@ -742,7 +742,8 @@ def test_flux_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch, 
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     for other in ("flux.2-dev", "flux.1", "flux.1-kontext"):
         assert tq.convrot_spec_for_scheme(tq.TQ_INT8, other) == (0, ())
-        assert not tq.int8_convrot_enabled(other)
+        # flux.1 is on only to pick its hosted rotated file; it never rotates at load
+        assert tq.int8_convrot_enabled(other) is (other == "flux.1")
 
 
 @pytest.mark.parametrize(

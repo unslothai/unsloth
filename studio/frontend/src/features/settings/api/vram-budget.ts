@@ -47,6 +47,10 @@ export function stageVramBudgetSave(fraction: number | null) {
   stagedVramBudgetSequence += 1;
 }
 
+export function hasStagedVramBudgetSave() {
+  return stagedVramBudgetFraction !== null;
+}
+
 /** Drop a re-staged retry before a load, or teardown would flush it and race the load. */
 export function dropVramBudgetRetry() {
   if (stagedVramBudgetSequence === retryVramBudgetSequence) {

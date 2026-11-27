@@ -25,6 +25,7 @@ from .format_conversion import (
     convert_sharegpt_with_images_to_vlm_format,
     convert_video_to_vlm_format,
     own_message_videos,
+    require_own_message_images,
     normalize_chatml_roles,
 )
 from .chat_templates import (
@@ -442,13 +443,36 @@ def _format_dataset(
 
     multimodal_info = detect_multimodal_dataset(dataset)
 
-    if format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset):
+    if hasattr(dataset, "__len__") and len(dataset) == 0:
+        return {
+            "dataset": dataset,
+            "detected_format": "unknown",
+            "final_format": "unknown",
+            "chat_column": None,
+            "is_standardized": False,
+            "requires_manual_mapping": True,
+            "is_image": multimodal_info["is_image"],
+            "multimodal_info": multimodal_info,
+            "warnings": ["Dataset has no rows."],
+        }
+
+    auto_raw = (
+        format_type == "auto" and not custom_format_mapping and is_plain_text_dataset(dataset)
+    )
+    if auto_raw:
         # Matches the preview's "raw" verdict; auto would otherwise fail as "unknown".
         format_type = "raw"
 
     if format_type == "raw":
+        # Explicit "raw" already gets EOS from the trainer / MLXTrainingConfig.append_eos.
         raw_result = prepare_raw_text_dataset(
-            dataset, split_name = split_name, text_column = raw_text_column
+            dataset,
+            split_name = split_name,
+            # A processor without Unsloth's patch (MLX VLM) keeps eos_token on its inner tokenizer.
+            eos_token = getattr(tokenizer, "eos_token", None)
+            or getattr(getattr(tokenizer, "tokenizer", None), "eos_token", None),
+            append_eos = auto_raw,
+            text_column = raw_text_column,
         )
         return {
             "dataset": raw_result.dataset,
@@ -705,12 +729,19 @@ def _format_dataset(
                         chat_column = detected["chat_column"],
                     )
 
+                conversion_stats = {}
                 converted = convert_chatml_to_alpaca(
                     dataset,
                     batch_size,
                     num_proc,
                     chat_column = detected["chat_column"],
+                    stats = conversion_stats,
                 )
+                if conversion_stats.get("dropped"):
+                    warnings.append(
+                        f"Dropped {conversion_stats['dropped']:,} of "
+                        f"{conversion_stats['conversations']:,} conversations with no assistant response"
+                    )
                 return {
                     "dataset": converted,
                     "detected_format": detected["format"],
@@ -720,7 +751,7 @@ def _format_dataset(
                     "requires_manual_mapping": False,
                     "is_image": multimodal_info["is_image"],
                     "multimodal_info": multimodal_info,
-                    "warnings": [],
+                    "warnings": warnings,
                 }
             except Exception as e:
                 warnings.append(f"Failed to convert chat dataset to Alpaca: {e}")
@@ -862,6 +893,42 @@ def _format_dataset(
 _FORMAT_DATASET_SIGNATURE = inspect.signature(_format_dataset)
 
 
+def _tokenizer_adds_bos(tokenizer) -> bool:
+    """True when tokenizing plain text prepends <bos> (Gemma 1-3), False when it does not (Gemma 4)."""
+    inner = getattr(tokenizer, "tokenizer", None) or tokenizer
+    bos_token_id = getattr(inner, "bos_token_id", None)
+    if bos_token_id is None:
+        return False
+    try:
+        input_ids = inner("a")["input_ids"]
+    except Exception:
+        return False
+    return len(input_ids) > 0 and input_ids[0] == bos_token_id
+
+
+def _split_vlm_instruction(
+    dataset,
+    instruction,
+    text_column,
+    image_column,
+    dataset_name,
+    fallback_instruction = None,
+):
+    """The fixed instruction this split trains on, reported so a separate eval split gets the same one; None keeps per-row questions."""
+    if instruction is not None:
+        return instruction
+    info = generate_smart_vlm_instruction(
+        dataset,
+        text_column = text_column,
+        image_column = image_column,
+        dataset_name = dataset_name,
+        fallback_instruction = fallback_instruction,
+    )
+    if info["instruction"] is not None:
+        logger.info(f"📝 Using {info['instruction_type']} instruction: '{info['instruction']}'")
+    return info["instruction"]
+
+
 def format_and_template_dataset(
     dataset,
     model_name,
@@ -897,8 +964,9 @@ def format_and_template_dataset(
     split_name = None,
     raw_text_column = None,
     dataset_revision = None,
+    vlm_fallback_instruction = None,
 ):
-    """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
+    """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. vlm_instruction overrides every row's prompt; vlm_fallback_instruction is used only when the split has no per-row question column (a separate eval split passes the training prompt there). Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
     from .tokenizer_fingerprint import install_tokenizer_fingerprint
 
     install_tokenizer_fingerprint()
@@ -921,6 +989,11 @@ def format_and_template_dataset(
     if is_vlm:
         warnings = []
         errors = []
+        if dataset_revision is None:
+            from hub.utils.dataset_cache import processed_dataset_commit
+
+            # A processed-cache run has no revision pin; its rows' build dir names their commit.
+            dataset_revision = processed_dataset_commit(dataset, dataset_name)
 
         multimodal_info = detect_multimodal_dataset(dataset)
 
@@ -1006,13 +1079,22 @@ def format_and_template_dataset(
 
             if user_vlm_image_column and user_vlm_text_column:
                 try:
+                    instruction = _split_vlm_instruction(
+                        dataset,
+                        vlm_instruction,
+                        user_vlm_text_column,
+                        user_vlm_image_column,
+                        dataset_name,
+                        fallback_instruction = vlm_fallback_instruction,
+                    )
                     dataset = convert_to_vlm_format(
                         dataset,
-                        instruction = vlm_instruction,
+                        instruction = instruction,
                         text_column = user_vlm_text_column,
                         image_column = user_vlm_image_column,
                         dataset_name = dataset_name,
                         progress_callback = progress_callback,
+                        dataset_revision = dataset_revision,
                     )
                     warnings.append(
                         f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'"
@@ -1026,6 +1108,7 @@ def format_and_template_dataset(
                         "is_vlm": True,
                         "is_image": True,
                         "multimodal_info": multimodal_info,
+                        "vlm_instruction": instruction,
                         "success": True,
                         "requires_manual_mapping": False,
                         "warnings": warnings,
@@ -1056,6 +1139,7 @@ def format_and_template_dataset(
                 }
 
         vlm_structure = detect_vlm_dataset_structure(dataset)
+        instruction = None
 
         if vlm_structure["format"] == "vlm_messages_llava":
             try:
@@ -1088,6 +1172,7 @@ def format_and_template_dataset(
                     messages_column = vlm_structure["messages_column"],
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
                 warnings.append("Converted from ShareGPT+image format to standard VLM format")
             except Exception as e:
@@ -1204,13 +1289,22 @@ def format_and_template_dataset(
                 }
 
             try:
+                instruction = _split_vlm_instruction(
+                    dataset,
+                    vlm_instruction,
+                    vlm_text_column,
+                    vlm_image_column,
+                    dataset_name,
+                    fallback_instruction = vlm_fallback_instruction,
+                )
                 dataset = convert_to_vlm_format(
                     dataset,
-                    instruction = vlm_instruction,
+                    instruction = instruction,
                     text_column = vlm_text_column,
                     image_column = vlm_image_column,
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
 
                 if vlm_instruction:
@@ -1254,6 +1348,21 @@ def format_and_template_dataset(
                 }
             warnings.append("Dataset already in standard VLM messages format")
 
+        try:
+            require_own_message_images(dataset)
+        except Exception as e:
+            errors.append(f"Failed to read the images of VLM messages rows: {e}")
+            return {
+                "dataset": dataset,
+                "detected_format": vlm_structure["format"],
+                "final_format": "vlm_conversion_failed",
+                "is_vlm": True,
+                "success": False,
+                "requires_manual_mapping": True,
+                "warnings": warnings,
+                "errors": errors,
+            }
+
         return {
             "dataset": dataset,
             "detected_format": vlm_structure["format"],
@@ -1263,6 +1372,8 @@ def format_and_template_dataset(
             "is_image": multimodal_info["is_image"],
             "multimodal_info": multimodal_info,
             "vlm_structure": vlm_structure,
+            # The fixed user prompt of every row (None for per-row questions), for the eval split to reuse.
+            "vlm_instruction": instruction,
             "success": True,
             "requires_manual_mapping": False,
             "warnings": warnings,
@@ -1310,12 +1421,17 @@ def format_and_template_dataset(
             progress_callback(
                 status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
-        # Gemma emits a leading <bos>, stripped for text-only chatml/sharegpt.
+        # Gemma's template <bos> is stripped for text-only chat only if the tokenizer adds it back.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
         )
         is_gemma = "gemma" in model_name.lower()
-        if is_gemma and not dataset_info["is_image"] and not is_alpaca:
+        if (
+            is_gemma
+            and not dataset_info["is_image"]
+            and not is_alpaca
+            and _tokenizer_adds_bos(tokenizer)
+        ):
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
             dataset_info = dataset_info,

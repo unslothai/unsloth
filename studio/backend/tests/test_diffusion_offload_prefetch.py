@@ -488,9 +488,7 @@ def test_diffusers_stream_path_synchronizes_per_group(monkeypatch):
 
 
 def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeypatch):
-    """Host far ahead of the GPU: every later copy is queued before the block that frees its memory has run. The copy
-    stream's wait on the offload event keeps those copies out of blocks still being read (outputs bit-identical) and
-    the allocator never grows past the window."""
+    """The copy stream waits on the offload event, so queued copies never overwrite blocks still read."""
     _cuda()
     monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "1")
     torch.manual_seed(0)
