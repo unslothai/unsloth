@@ -11,7 +11,7 @@ import {
   REASONING_EFFORT_SCALE,
   type ReasoningEffortLevel,
   resolveModelCatalogEntry,
-  resolveModelCatalogEntryByName,
+  resolveLocalServerCatalogEntry,
   sortReasoningEfforts,
 } from "./model-catalog";
 
@@ -1291,7 +1291,7 @@ function catalogCapabilities(
   const wire = CATALOG_REASONING_WIRE[providerType];
   if (!wire) return null;
   const entry = byName
-    ? resolveModelCatalogEntryByName(modelId)
+    ? resolveLocalServerCatalogEntry(modelId)
     : resolveModelCatalogEntry(providerType, modelId);
   return entry ? projectCatalogEntry(entry, wire) : null;
 }
