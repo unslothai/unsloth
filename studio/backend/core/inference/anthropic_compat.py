@@ -411,8 +411,7 @@ def anthropic_messages_to_openai(
                         }
                     )
 
-            # Some local templates render result bodies without IDs. A complete
-            # parallel batch must follow the order of the assistant's calls.
+            # Anthropic pairs results by id, ID-less local templates by position: restore call order.
             if len(tool_results) > 1 and result and result[-1].get("role") == "assistant":
                 calls = result[-1].get("tool_calls") or []
                 by_id = {item["tool_call_id"]: item for item in tool_results}
