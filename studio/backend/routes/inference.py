@@ -41459,6 +41459,54 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     return items
 
 
+_OPENAI_EMBEDDING_MODELS = frozenset(
+    {
+        "text-embedding-ada-002",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    }
+)
+
+
+def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
+    # Mixed or multimodal inputs pass through: a resident llama-server reads them natively.
+    if all(type(token) is int for token in value):
+        rows = [value]
+    elif all(
+        isinstance(row, list) and row and all(type(token) is int for token in row) for row in value
+    ):
+        rows = value
+    else:
+        return body
+
+    try:
+        from core.inference.openai_embedding_tokenizer import decode_tokens
+    except (OSError, ValueError) as exc:
+        logger.warning("OpenAI embedding tokenizer unavailable: %s", exc)
+        raise HTTPException(
+            status_code = 503, detail = "OpenAI embedding tokenizer unavailable; send text input."
+        ) from None
+
+    try:
+        return {**body, "input": [decode_tokens(row) for row in rows]}
+    except KeyError:
+        raise HTTPException(status_code = 400, detail = "Invalid OpenAI embedding token IDs.") from None
+
+
+async def _with_decoded_openai_embedding_inputs(body: dict) -> dict:
+    model = _raw_body_model(body)
+    value = body.get("input")
+    if (
+        isinstance(model, str)
+        and model in _OPENAI_EMBEDDING_MODELS
+        and isinstance(value, list)
+        and value
+        and (type(value[0]) is int or isinstance(value[0], list))
+    ):
+        return await asyncio.to_thread(_decode_openai_embedding_tokens, body, value)
+    return body
+
+
 def _embeddings_truncate(body: dict) -> bool:
     """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
     truncate = body.get("truncate", True)
@@ -41681,6 +41729,7 @@ async def _studio_embeddings(
     # The auto-switch hook admitted this before the route knew it lands here, so untrack the admitted tally; the preview busy guard reads that tally
     untrack_admitted_inference(_scope)
 
+    body = await _with_decoded_openai_embedding_inputs(body)
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format")
     if encoding_format is None:
@@ -42014,7 +42063,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         return await _studio_embeddings(request, body, current_subject)
 
     # No claim here: middleware claims on 2xx, and llama-server can still non-2xx a valid body, stranding a preview model; it ignores dimensions.
-    body = dict(body)
+    body = dict(await _with_decoded_openai_embedding_inputs(body))
     if account_access.managed_account():
         # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
         _embeddings_items(body, tokens_ok = True)
