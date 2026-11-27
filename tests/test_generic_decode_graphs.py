@@ -242,8 +242,7 @@ def test_batches_over_the_knob_decode_eagerly(host, llama, monkeypatch):
     "UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ" in os.environ, reason = "cap overridden by the environment"
 )
 def test_rl_rollout_batches_take_the_graph_by_default(host, llama):
-    """GRPO without vLLM decodes num_generations x per-device batch rows (8 to 64) in one generate():
-    the default cap takes such a batch through the graph path, tokens equal to eager."""
+    """RL rollout batches (8-64 rows) take the graph path by default, tokens equal to eager."""
     assert GG.MAX_BSZ == 64
     for bsz in (32, 64):
         ids, mask = _ids(llama, bsz, pad = 2)
@@ -275,12 +274,11 @@ def _rollout(model, ids, mask, graphs, eos, sample):
 
 @pytest.mark.parametrize("sample", [False, True])
 def test_rollout_batch_with_per_row_eos_and_processors_matches_eager(host, llama, sample):
-    """A 32-row rollout where rows stop at different steps (per-row EOS), seeded sampling and a logits
-    processor (repetition penalty) outside the graph: tokens equal to eager, every step replayed."""
+    """32 rows, per-row EOS at different steps, sampling and a logits processor: tokens equal to eager."""
     ids, mask = _ids(llama, 32, pad = 2)
     _fresh(llama)
     probe = _rollout(llama, ids, mask, False, None, sample)[:, ids.shape[1] :]
-    # The token row 0 emits at step 3: an EOS that ends some rows early and leaves others running.
+    # Row 0's step-3 token as EOS: some rows stop early, others keep running.
     eos = int(probe[0, 3])
     stops = (probe == eos).float().argmax(1)
     assert (probe == eos).any(1).sum() < 32

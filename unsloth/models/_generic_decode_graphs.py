@@ -55,8 +55,7 @@ _COUNTERS = ("cumulative_length", "cumulative_length_int")
 _MAX_ARG_BYTES = 16 * 1024 * 1024
 _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 _MAX_KEYS = 4096
-# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1, 2.7-4.7x at 16). 64 covers RL rollouts
-# (num_generations x per-device batch, 8-64 rows), still launch-bound without vLLM on small models.
+# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1); 64 covers RL rollouts (8-64 rows).
 MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "64"))
 # Graph pool and static buffers need free memory; below that the call decodes eagerly.
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
