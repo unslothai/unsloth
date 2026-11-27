@@ -316,9 +316,12 @@ def test_reset_on_cpu_is_a_no_op(monkeypatch):
     common.reset_training_peak_memory("mps")
 
 
-def test_tree_rss_includes_live_children():
-    pytest.importorskip("psutil")
-    own = pmp.process_memory_peaks()["host_peak_rss_bytes"]
+def test_tree_rss_includes_live_children(monkeypatch):
+    psutil = pytest.importorskip("psutil")
+    # Compare the sampled tree against this process's current RSS: the worker's lifetime ru_maxrss
+    # can already exceed current RSS plus the child, which would hide the child entirely.
+    monkeypatch.setattr(pmp, "_tree_rss_peak", [None])
+    own_now = int(psutil.Process().memory_info().rss)
     size = 300 * (1 << 20)
     child = subprocess.Popen(
         [
@@ -330,16 +333,19 @@ def test_tree_rss_includes_live_children():
     )
     try:
         assert child.stdout.readline().strip() == b"ok"
-        tree = pmp.process_memory_peaks(include_children = True)["host_peak_rss_bytes"]
+        tree = pmp._tree_rss()
+        reported = pmp.process_memory_peaks(include_children = True)["host_peak_rss_bytes"]
     finally:
         child.kill()
         child.wait()
-    assert tree >= own + size * 0.9
+    assert tree >= own_now + size * 0.9
+    assert reported >= tree  # the reported peak covers the sampled tree
     # Running max: the child is gone, the recorded tree peak is not.
     time.sleep(0.1)
-    assert pmp.process_memory_peaks(include_children = True)["host_peak_rss_bytes"] == tree
+    assert pmp._tree_rss() >= tree
+    assert pmp.process_memory_peaks(include_children = True)["host_peak_rss_bytes"] >= tree
     # Without children the value is exactly the LLM worker's own-process peak.
-    assert pmp.process_memory_peaks()["host_peak_rss_bytes"] >= own
+    assert pmp.process_memory_peaks()["host_peak_rss_bytes"] == pmp.host_peaks()[0]
 
 
 def test_tree_rss_without_psutil_keeps_own_peak(monkeypatch):
