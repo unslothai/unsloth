@@ -30,7 +30,12 @@ PY
 }
 
 _seed() {
-    _uv=$(command -v uv || echo "$HOME/.local/bin/uv")
+    # install.sh keeps its uv under the Studio home when UNSLOTH_STUDIO_HOME is set, so look there first.
+    _uv=""
+    for _c in "$UNSLOTH_STUDIO_HOME/uv/uv" "$(command -v uv || true)" "$HOME/.local/bin/uv"; do
+        if [ -n "$_c" ] && [ -x "$_c" ]; then _uv="$_c"; break; fi
+    done
+    [ -n "$_uv" ] || { echo "no uv found under $UNSLOTH_STUDIO_HOME/uv, PATH or ~/.local/bin" >&2; exit 1; }
     "$_uv" pip install --python "$VPY" "torch==$1" "torchvision==$2" "torchaudio==$3" \
         --default-index https://download.pytorch.org/whl/cpu
     _probe
