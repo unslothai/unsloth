@@ -736,7 +736,6 @@ def _link_server_source_folder(
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code = 400, detail = "Server source folder is unavailable") from exc
     if payload.name is None:
-        # The picker's label, so same-named folders stay apart once linked.
         payload = payload.model_copy(
             update = {"name": server_folders.display_name(payload.server_folder_id)}
         )

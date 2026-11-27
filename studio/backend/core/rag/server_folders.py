@@ -77,7 +77,6 @@ def _labels(paths: list[str]) -> list[str]:
             if labels.count(labels[i]) > 1 and tails.count(tail) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
-            # Equal only across drives/shares: suffix a drive letter, else an opaque tag.
             return [
                 label
                 if labels.count(label) == 1
