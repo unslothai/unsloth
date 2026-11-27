@@ -37,12 +37,6 @@ export const QWEN3_LANGUAGE_NAMES = [
   "Italian",
 ] as const;
 
-export const CLONE_TEXT_EXAMPLES = [
-  "Thanks for calling. How can I help you today?",
-  "The quick brown fox jumps over the lazy dog near the river bank.",
-  "Welcome back. Here is a short summary of what changed this week.",
-] as const;
-
 const SPEAKER_LINE = /^\s*Speaker\s*\d+\s*:/im;
 
 export function formatVibeVoiceScript(text: string): string {

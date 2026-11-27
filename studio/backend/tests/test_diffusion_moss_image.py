@@ -165,6 +165,27 @@ def test_rope_tables_are_cached_and_rebuilt_on_moves(transformers_pair):
     assert ours.rope.tables(4, 6, 9, "cpu", torch.bfloat16) is not a
 
 
+def test_rope_tables_recorded_by_a_cuda_graph_never_enter_the_cache(moss, monkeypatch):
+    """Tables built under capture stay out of the FIFO cache and match the cached ones."""
+    import torch
+
+    real = moss._capturing
+    assert not real(torch.device("cpu"))
+    rope = moss._RoPE(16, 10000.0)
+    cached = rope.tables(4, 6, 9, "cpu", torch.bfloat16)
+    monkeypatch.setattr(moss, "_capturing", lambda device: True)
+    recorded = rope.tables(4, 6, 9, "cpu", torch.bfloat16)
+    fresh = rope.tables(4, 6, 11, "cpu", torch.bfloat16)
+    assert recorded is not cached
+    assert list(rope._tables) == [(4, 6, 9, "cpu", None, torch.bfloat16)]
+    held = {id(t) for entry in rope._tables.values() for pair in entry for t in pair}
+    assert not held & {id(t) for entry in (recorded, fresh) for pair in entry for t in pair}
+    for got, want in zip((*recorded[0], *recorded[1]), (*cached[0], *cached[1])):
+        assert torch.equal(got, want)
+    monkeypatch.setattr(moss, "_capturing", real)
+    assert torch.equal(rope.tables(4, 6, 11, "cpu", torch.bfloat16)[0][0], fresh[0][0])
+
+
 def test_refined_text_and_mask_are_exclusive(transformers_pair):
     import torch
 
@@ -421,7 +442,12 @@ def test_skip_layers_reach_the_transformer_as_a_tuple(pipelines, monkeypatch):
 def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):
     from core.inference import diffusion_families as df
 
-    for repo in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"):
+    for repo in (
+        "OpenMOSS-Team/MOSS-Image-SFT",
+        "OpenMOSS-Team/MOSS-Image-Base",
+        "lodestones/Kromoss",
+        "molbal/Kromoss-GGUF",
+    ):
         fam = df.detect_family(repo)
         assert fam is not None and fam.name == "moss-image", repo
     local = tmp_path / "f972bd4b4b9e"
@@ -429,6 +455,31 @@ def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):
     (local / "model_index.json").write_text(json.dumps({"_class_name": "MOSSImagePipeline"}))
     fam = df.detect_family_for_pick(str(local))
     assert fam is not None and fam.name == "moss-image"
+
+
+@pytest.mark.parametrize(
+    "repo, filename",
+    [
+        ("molbal/Kromoss-GGUF", "kromoss-Q4_K_M.gguf"),
+        ("MolBal/KrOmOsS-GGUF", "KrOmOsS-Q4_K_M.gguf"),
+        ("lodestones/Kromoss", None),
+    ],
+)
+def test_a_kromoss_pick_resolves_the_moss_family(repo, filename, tmp_path):
+    from core.inference import diffusion_families as df
+
+    moss = df.detect_family("OpenMOSS-Team/MOSS-Image-SFT")
+    loose = tmp_path / "kromoss-Q4_K_M.gguf"
+    loose.write_bytes(b"")
+    for pick_repo, pick_file in ((repo, filename), (str(loose), None)):
+        fam = df.detect_family_for_pick(pick_repo, pick_file)
+        assert fam is moss, (pick_repo, pick_file)
+        assert df.detect_family_for_pick(pick_repo, pick_file, override = "moss-image") is fam
+    for bad_repo, bad_file in (
+        ("acme/notkromoss", "notkromoss-Q4_K_M.gguf"),
+        ("acme/kromoss-edit", "kromoss-edit-Q4_K_M.gguf"),
+    ):
+        assert df.detect_family_for_pick(bad_repo, bad_file) is None, bad_repo
 
 
 def test_family_row_defaults_and_trust():

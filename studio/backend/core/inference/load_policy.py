@@ -15,10 +15,21 @@ class LoadPolicy(str, Enum):
     NEVER = "never"
 
 
-def policy_for_credential(*, internal: bool, key_name: object) -> LoadPolicy:
+def policy_for_credential(
+    *,
+    internal: bool,
+    key_name: object,
+    access: object = None,
+) -> LoadPolicy:
     """The chat's own tools key acts inside a chat, so it must never unload the model answering it."""
-    from auth.storage import STUDIO_CHAT_TOOLS_API_KEY_NAME, STUDIO_CHAT_TOOLS_KEY_NAME
+    from auth.storage import (
+        API_KEY_ACCESS_INFERENCE,
+        STUDIO_CHAT_TOOLS_API_KEY_NAME,
+        STUDIO_CHAT_TOOLS_KEY_NAME,
+    )
 
+    if access == API_KEY_ACCESS_INFERENCE:
+        return LoadPolicy.NEVER
     if internal and key_name in (STUDIO_CHAT_TOOLS_KEY_NAME, STUDIO_CHAT_TOOLS_API_KEY_NAME):
         return LoadPolicy.BESIDE_ONLY
     return LoadPolicy.ANY

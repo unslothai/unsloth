@@ -118,21 +118,21 @@
       "severity": "warn",
       "reason": "pre-existing warning",
       "digests": {
-        "5713a6ca35ae670f": 2,
+        "5713a6ca35ae670f": 1
+      }
+    },
+    {
+      "file": ".github/workflows/studio-windows-installer-smoke.yml",
+      "rule": "AV015",
+      "severity": "warn",
+      "reason": "pre-existing warning (moved from studio-windows-inference-smoke.yml with small-checks)",
+      "digests": {
+        "5713a6ca35ae670f": 1,
         "cd9e19e6cca8085a": 1
       }
     },
     {
       "file": ".github/workflows/studio-windows-ui-smoke.yml",
-      "rule": "AV006",
-      "severity": "error",
-      "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
-      "digests": {
-        "f4108753aa3288a5": 1
-      }
-    },
-    {
-      "file": ".github/workflows/studio-windows-update-smoke.yml",
       "rule": "AV006",
       "severity": "error",
       "reason": "Hosted runner excludes its own throwaway workspace to keep smoke timings stable; never on a user machine.",
@@ -401,6 +401,7 @@
         "892917d9aa24aa4f": 1,
         "92a140c809bc8e2d": 1,
         "9bb1c84927f77d68": 1,
+        "9d300bb02e7eb910": 1,
         "c6037d9fa3542707": 1,
         "d00223a6653c004c": 1,
         "e26ec359dad3b91b": 1,

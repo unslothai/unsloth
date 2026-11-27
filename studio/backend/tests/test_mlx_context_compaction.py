@@ -10,6 +10,7 @@ import pytest
 import core.inference.tools as tools_mod
 from core.inference import llama_cpp
 from core.inference.context_window import retrieval_budget
+from core.inference.mcp_images import count_image_parts
 from core.inference.orchestrator import InferenceOrchestrator
 
 INSTRUCTION = "Standing instruction for the rest of this task: always answer in a markdown table."
@@ -123,6 +124,73 @@ def test_a_prompt_the_fit_must_not_touch_is_returned_unchanged(case):
     assert result["messages"] == messages
     assert result["system_prompt"] == "you are helpful"
     assert result["events"] == [] and "boundary_applied" not in result
+
+
+PICTURE = "cGl4ZWxz"
+
+
+def _pictured(text):
+    return {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}
+
+
+def _count_pictures(
+    messages,
+    *_args,
+    images = (),
+    **_kwargs,
+):
+    assert len(images) == count_image_parts(messages, "image")
+    return _count(messages)[0] + 300 * len(images), "mlx-test"
+
+
+@pytest.mark.parametrize("owner, dropped", [(2, [0]), (-1, [])], ids = ["old_turn", "newest_turn"])
+def test_a_picture_is_priced_into_the_fit_and_leaves_with_its_turn(archive_calls, owner, dropped):
+    backend, messages = _backend(), _thread()
+    backend.count_chat_tokens = _count_pictures
+    messages[owner] = _pictured(messages[owner]["content"])
+
+    result = _fit(backend, messages, thread_id = "thread-1", images = [PICTURE])
+
+    [truncation] = result["events"]
+    kept = count_image_parts(result["messages"], "image")
+    assert truncation["fits"] and truncation["dropped_messages"] > 0
+    assert result["dropped_images"] == dropped and kept == 1 - len(dropped)
+    assert truncation["prompt_tokens_after"] == _count(result["messages"])[0] + 300 * kept
+
+
+def test_a_picture_without_its_marker_leaves_the_prompt_unfitted():
+    messages = _thread()
+
+    result = _fit(_backend(), messages, images = [PICTURE])
+
+    assert result["messages"] == messages and result["events"] == []
+
+
+def test_the_tool_loop_stops_sending_a_picture_once_its_turn_is_dropped(monkeypatch, archive_calls):
+    backend, sent = _backend(), []
+    backend.models["mlx-test"]["is_vision"] = True
+    backend.count_chat_tokens = _count_pictures
+
+    def _generate(**call):
+        sent.append((count_image_parts(call["messages"], "image"), call["images"]))
+        yield CALL % len(sent) if len(sent) < 3 else "done"
+
+    monkeypatch.setattr(backend, "generate_chat_response", _generate)
+    monkeypatch.setattr(tools_mod, "execute_tool", lambda *_a, **_k: "r" * 2400)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [_pictured("o" * 400), ANSWERED, QUESTION],
+            tools = [WEB],
+            images = [PICTURE],
+            caller_image_indexes = (0,),
+            max_tokens = 200,
+            context_overflow = "truncate_oldest",
+            thread_id = "thread-1",
+        )
+    )
+
+    assert any(event.get("dropped_messages") for event in events)
+    assert sent[0] == (1, [PICTURE]) and sent[-1] == (0, None)
 
 
 def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered_tool(

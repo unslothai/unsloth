@@ -2768,6 +2768,7 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "PYTHONUNBUFFERED",
             "MPLBACKEND",
             "PYTHONPATH",
             "_UNSLOTH_SANDBOX_BLOCK_METADATA",

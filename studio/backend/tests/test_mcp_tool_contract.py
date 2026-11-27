@@ -104,6 +104,7 @@ REFUSED = [
     ],
     ("get_job", {"kind": "recipe", "id": "job-1", "rows": 0}, None),
     ("get_job", {"kind": "recipe", "id": "job-1", "rows": 501}, None),
+    *[("run_recipe", {"recipe": {}, "mode": "full", "rows": rows}, None) for rows in (0, 200_001)],
     ("datasets", {"action": "check_format"}, "check_format needs name"),
     ("datasets", {"action": "download"}, None),
     ("datasets", {"action": "status"}, None),

@@ -280,6 +280,28 @@ function lookupCandidates(providerType: string, modelId: string): string[] {
   return candidates;
 }
 
+const OLDER_MODEL_AGE_MS = 365 * 24 * 3600 * 1000;
+
+/** Released over a year ago. Unknown dates (bundled snapshot, self-hosted servers) are never older. */
+export function isOlderModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (!providerType || !modelId) return false;
+  const normalizedProvider = providerType.trim().toLowerCase();
+  hydrateModelsDev();
+  const served = modelsDev?.providers[catalogNamespace(normalizedProvider)];
+  if (!served) return false;
+  for (const candidate of lookupCandidates(normalizedProvider, modelId)) {
+    const released = served[candidate]?.released;
+    if (!released) continue;
+    const at = Date.parse(released);
+    return Number.isFinite(at) && now - at > OLDER_MODEL_AGE_MS;
+  }
+  return false;
+}
+
 function findByBaseName(
   models: Readonly<Record<string, unknown>>,
   baseName: string,
@@ -383,6 +405,24 @@ export function resolveModelCatalogEntryByName(
   const name = bareModelName(modelId);
   const entry = nameIndex?.get(name) ?? familyIndex?.get(modelFamily(name));
   return entry ? fromSnapshotEntry(entry) : null;
+}
+
+/** llama-server names a `-hf` model after its repo (unsloth/Qwen3-8B-GGUF) and a `-m` one after its
+ * path (Windows too), maybe a shard; dated checkpoints (-1017) fall back to their family. Ollama keeps the plain lookup. */
+export function resolveLocalServerCatalogEntry(
+  modelId: string | null | undefined,
+): ModelCatalogEntry | null {
+  if (!modelId) return null;
+  const repo = modelId
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/-gguf(?=$|:)/i, "")
+    .replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, "");
+  const entry = resolveModelCatalogEntryByName(repo);
+  if (entry) return entry;
+  const bare = bareModelName(repo);
+  const undated = bare.replace(/-\d{4}$/, "");
+  return undated !== bare ? resolveModelCatalogEntryByName(undated) : null;
 }
 
 export function modelCatalogSupportsVision(

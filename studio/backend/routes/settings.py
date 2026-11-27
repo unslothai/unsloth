@@ -55,6 +55,7 @@ from hub.utils.hf_tokens import (
 from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
+from core.inference.diffusion_conditioning import MAX_REQUEST_SIDE
 from core.rag.config import (
     default_gguf_repo,
     effective_gguf_repo_for_embedding_model,
@@ -71,6 +72,11 @@ from utils.device_sync_settings import (
     save_background_adjustments,
     save_background_image,
     update_client_preferences,
+)
+from utils.onboarding_settings import (
+    account_has_history,
+    get_onboarding,
+    update_onboarding,
 )
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
@@ -113,6 +119,7 @@ from utils.helper_precache_settings import (
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
+    DownloadSpeedLimitUnavailableError,
     get_download_speed_limit_mbps,
     set_download_speed_limit_mbps,
 )
@@ -212,6 +219,11 @@ from utils.current_date_prompt_settings import (
     get_current_date_prompt_enabled,
     set_current_date_prompt_enabled,
 )
+from utils.trusted_tool_folders_settings import (
+    MAX_TRUSTED_TOOL_FOLDERS,
+    get_trusted_tool_folders,
+    set_trusted_tool_folders,
+)
 from utils.lan_access_settings import (
     lan_access_status,
     normalize_lan_access_addresses,
@@ -244,6 +256,13 @@ from utils.llama_cpp_path_settings import (
     MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH,
     custom_llama_cpp_path_status,
     set_custom_llama_cpp_path,
+)
+from utils.offline_docs_settings import (
+    MAX_PATH_LENGTH as MAX_OFFLINE_DOCS_PATH_LENGTH,
+    OfflineDocsBusyError,
+    offline_docs_status,
+    refresh_offline_docs,
+    set_offline_docs_settings,
 )
 from utils.media_generation_preset_settings import (
     delete_media_generation_preset,
@@ -283,8 +302,8 @@ class ImageGenerationPresetParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = ""
-    width: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
-    height: int = Field(default = 1024, ge = 256, le = 2752, multiple_of = 16)
+    width: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
+    height: int = Field(default = 1024, ge = 256, le = MAX_REQUEST_SIDE, multiple_of = 16)
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
@@ -939,6 +958,10 @@ class HubSettingsResponse(BaseModel):
     datasets_server_follows_endpoint: bool
     source: Literal["huggingface", "modelscope"]
     active_source: Literal["huggingface", "modelscope"]
+    # GET only: the Hub's web origin for links this client opens, None where only the relay reaches it.
+    page_base: Optional[str] = None
+    # The relay path (as /api/health's hub_proxy) page_base belongs to, so a stale request can tell.
+    page_base_relay: Optional[str] = None
 
 
 class HubSourceNoticeResponse(BaseModel):
@@ -1095,6 +1118,22 @@ class LlamaCppPathResponse(BaseModel):
     reload_required: bool = False
 
 
+class OfflineDocsPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = MAX_OFFLINE_DOCS_PATH_LENGTH)
+    auto_update: Optional[bool] = None
+
+
+class OfflineDocsResponse(BaseModel):
+    path: Optional[str] = None
+    auto_update: bool
+    file: Optional[str] = None
+    updated_at: Optional[str] = None
+    release: Optional[str] = None
+    current_release: str
+    error: Optional[str] = None
+    refreshing: bool = False
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
     enabled: Optional[bool] = None
@@ -1197,11 +1236,20 @@ class ModelOverridePayload(BaseModel):
     # Reasoning pair came after the four, so a build mirroring the four may predate it; own flag.
     mirrors_reasoning_budget: bool = False
     mirrors_spec_draft_model: bool = False
+    # A standalone Engram table by precision (LoadRequest.engram_precision); carried like the
+    # tuning group for a client that does not mirror it.
+    engram_precision: Optional[str] = Field(default = None, max_length = 32, pattern = r"^[A-Za-z0-9_]*$")
+    mirrors_engram_precision: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    npu_power_mode: Optional[
+        Literal["default", "powersaver", "balanced", "performance", "turbo"]
+    ] = None
+    npu_prefill_chunk_len: Optional[StrictInt] = Field(default = None, ge = 1, le = 1048576)
+    npu_img_pre_resize: Optional[StrictInt] = Field(default = None, ge = 0, le = 4)
     # Auto (null or "auto") is stored as absence; omitted keeps the stored value.
     mlx_ple_offload: Optional[Union[Literal["auto", "off"], float]] = None
     mlx_expert_offload: Optional[Union[Literal["auto", "off"], float]] = None
@@ -1586,6 +1634,52 @@ async def purge_caches_endpoint(
             log = logger,
         ) from exc
     return CachePurgeResponse(**result)
+
+
+@_owner_settings_router.get("/offline-docs", response_model = OfflineDocsResponse)
+def get_offline_docs(current_subject: str = Depends(get_current_subject)) -> OfflineDocsResponse:
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.put("/offline-docs", response_model = OfflineDocsResponse)
+def update_offline_docs(
+    payload: OfflineDocsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)  # only the UI may pick a folder Unsloth writes into
+    changes = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset = True).items()
+        if k == "path" or v is not None
+    }
+    try:
+        set_offline_docs_settings(**changes)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return OfflineDocsResponse(**offline_docs_status())
+
+
+@_owner_settings_router.post("/offline-docs/refresh", response_model = OfflineDocsResponse)
+def refresh_offline_docs_now(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> OfflineDocsResponse:
+    require_ui_session(via_api_key)
+    try:
+        return OfflineDocsResponse(**refresh_offline_docs())
+    except OfflineDocsBusyError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            offline_docs_status().get("error") or "Could not download the Unsloth docs.",
+            event = "settings.refresh_offline_docs_failed",
+            log = logger,
+        ) from exc
 
 
 @_owner_settings_router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)
@@ -2101,7 +2195,10 @@ def update_download_transport(
 def get_download_speed_limit(
     current_subject: str = Depends(get_current_subject),
 ) -> DownloadSpeedLimitResponse:
-    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    try:
+        return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+    except DownloadSpeedLimitUnavailableError as exc:
+        raise HTTPException(status_code = 503, detail = str(exc)) from None
 
 
 @_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
@@ -2132,8 +2229,25 @@ def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
 
 # Owner only: the endpoint can name a private address that other accounts' clients must not learn.
 @_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
-def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
-    return _hub_settings_response(get_hub_settings())
+def get_hub(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> HubSettingsResponse:
+    from hub import endpoint_proxy
+    from utils.client_ip import client_ip
+    from utils.hf_endpoint import (
+        DEFAULTS_BY_HEALTH_KEY,
+        browser_hf_endpoint,
+        endpoint_is_reachable_by,
+    )
+
+    response = _hub_settings_response(get_hub_settings())
+    endpoint = browser_hf_endpoint()
+    if active_source() == "huggingface" and endpoint_is_reachable_by(endpoint, client_ip(request)):
+        response.page_base = endpoint
+        response.page_base_relay = endpoint_proxy.relay_path(
+            endpoint_proxy.HUB_PREFIX, endpoint, DEFAULTS_BY_HEALTH_KEY["hf_endpoint"]
+        )
+    return response
 
 
 @_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
@@ -2549,6 +2663,34 @@ def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> Co
     return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
+class ChatImageSwapSetting(BaseModel):
+    enabled: StrictBool
+
+
+class ChatImageSwapSettingResponse(ChatImageSwapSetting):
+    managed_by_env: bool
+
+
+@_owner_settings_router.get("/chat-image-swap", response_model = ChatImageSwapSettingResponse)
+def get_chat_image_swap_setting():
+    import os
+    from core.inference.chat_media_swap import SWAP_ENV, swap_enabled
+    return ChatImageSwapSettingResponse(
+        enabled = swap_enabled(), managed_by_env = SWAP_ENV in os.environ
+    )
+
+
+@_owner_settings_router.put("/chat-image-swap", response_model = ChatImageSwapSettingResponse)
+def update_chat_image_swap_setting(payload: ChatImageSwapSetting):
+    from core.inference.chat_media_swap import SWAP_SETTING_KEY
+    from storage.studio_db import upsert_app_settings
+    from utils.openai_auto_switch_settings import _invalidate
+
+    upsert_app_settings({SWAP_SETTING_KEY: payload.enabled})
+    _invalidate(SWAP_SETTING_KEY)
+    return get_chat_image_swap_setting()
+
+
 @_owner_settings_router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def get_openai_auto_switch(
     current_subject: str = Depends(get_current_subject),
@@ -2620,22 +2762,26 @@ def update_openai_auto_switch(
 class ModelAliasEntry(BaseModel):
     name: str
     model: str
+    load_settings: Optional[dict[str, Any]] = None
 
 
 class ModelAliasesPayload(BaseModel):
     aliases: list[ModelAliasEntry] = Field(default_factory = list)
+    revision: Optional[str] = None
 
 
 class ModelAliasesResponse(BaseModel):
     aliases: list[ModelAliasEntry]
+    revision: str
 
 
 @_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
 def get_model_aliases_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> ModelAliasesResponse:
-    from utils.model_aliases import get_model_aliases
-    return ModelAliasesResponse(aliases = get_model_aliases())
+    from utils.model_aliases import get_model_aliases, model_aliases_revision
+    aliases = get_model_aliases()
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
@@ -2644,7 +2790,7 @@ async def update_model_aliases_setting(
 ) -> ModelAliasesResponse:
     from core.systemone import catalog as decision_catalog
     from routes.inference import _openai_catalog_objects
-    from utils.model_aliases import set_model_aliases
+    from utils.model_aliases import AliasConflict, model_aliases_revision, set_model_aliases
 
     # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
     objects = await _openai_catalog_objects()
@@ -2652,8 +2798,13 @@ async def update_model_aliases_setting(
     model_ids += list(decision_catalog.CHECKPOINTS)
     try:
         aliases = await asyncio.to_thread(
-            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+            set_model_aliases,
+            [entry.model_dump(exclude_unset = True) for entry in payload.aliases],
+            model_ids,
+            payload.revision,
         )
+    except AliasConflict as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -2662,7 +2813,7 @@ async def update_model_aliases_setting(
             event = "settings.update_model_aliases_failed",
             log = logger,
         ) from exc
-    return ModelAliasesResponse(aliases = aliases)
+    return ModelAliasesResponse(aliases = aliases, revision = model_aliases_revision(aliases))
 
 
 @_account_settings_router.get(
@@ -2871,6 +3022,7 @@ def update_openai_auto_switch_override(
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
                 "mirrors_spec_draft_model",
+                "mirrors_engram_precision",
             },
             exclude_none = True,
         )
@@ -2885,7 +3037,14 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_fast_verify
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
-                and not {"mlx_ple_offload", "mlx_expert_offload"} & payload.model_fields_set
+                and not {
+                    "mlx_ple_offload",
+                    "mlx_expert_offload",
+                    "npu_power_mode",
+                    "npu_prefill_chunk_len",
+                    "npu_img_pre_resize",
+                }
+                & payload.model_fields_set
                 and not {
                     key: value
                     for key, value in saved_fields.items()
@@ -2954,15 +3113,17 @@ def update_openai_auto_switch_override(
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
         _drafter_fields = ("spec_draft_model",)
+        _engram_fields = ("engram_precision",)
         _kept_tuning = {
             name: getattr(payload, name)
-            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields + _engram_fields
         }
         # Each group is carried only for a client that does not mirror it.
         _carried_fields = (
             (() if payload.mirrors_server_tuning else _tuning_fields)
             + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
             + (() if payload.mirrors_spec_draft_model else _drafter_fields)
+            + (() if payload.mirrors_engram_precision else _engram_fields)
         )
         _alias_row: dict = {}
         if not is_removal:
@@ -3092,7 +3253,13 @@ def update_openai_auto_switch_override(
                     field: getattr(payload, field)
                     if field in fields_set or is_removal
                     else (_alias_row or get_model_override(target_id)).get(field)
-                    for field in ("mlx_ple_offload", "mlx_expert_offload")
+                    for field in (
+                        "mlx_ple_offload",
+                        "mlx_expert_offload",
+                        "npu_power_mode",
+                        "npu_prefill_chunk_len",
+                        "npu_img_pre_resize",
+                    )
                 },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
@@ -3118,6 +3285,7 @@ def update_openai_auto_switch_override(
                 spec_draft_cache_type = _kept_tuning["spec_draft_cache_type"],
                 ctx_checkpoints = _kept_tuning["ctx_checkpoints"],
                 cache_ram = _kept_tuning["cache_ram"],
+                engram_precision = _kept_tuning["engram_precision"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
                 mlx_int8_prefill = payload.mlx_int8_prefill,
@@ -3201,7 +3369,7 @@ class EmbeddingModelPayload(BaseModel):
     # The repo /resolve named, stored so the loader opens what was downloaded.
     gguf_repo: Optional[str] = Field(default = None, max_length = MAX_EMBEDDING_MODEL_LENGTH)
     # And the backend it needs, so a model with no GGUF is not sent to llama-server.
-    backend: Optional[Literal["llama", "sentence-transformers"]] = None
+    backend: Optional[Literal["llama", "sentence-transformers", "connection"]] = None
     # Token for gated/private repos during verification (not stored).
     hf_token: Optional[str] = Field(default = None, max_length = 512)
     # Skip HF verification (offline installs, local paths HF can't see).
@@ -3420,7 +3588,7 @@ def get_embedding_model(
 
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
-    backend: Literal["llama", "sentence-transformers"]
+    backend: Literal["llama", "sentence-transformers", "connection"]
     # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
@@ -3827,6 +3995,11 @@ def _resolve_embedding_model_plan(
             return False
         return not cached_read_refused(token, repo_id = repo, is_cached = lambda: True)
 
+    from core.rag import config as rag_config
+
+    if rag_config.is_connection_model(resolved):
+        return _connection_embedding_plan(resolved)
+
     # Cache lookups are authorized per matched repo; a pre-gate would probe the Hub on every
     # resolve.
 
@@ -3972,6 +4145,31 @@ def _resolve_embedding_model_plan(
     )
 
 
+def _connection_embedding_plan(model: str) -> EmbeddingModelResolveResponse:
+    """Nothing to download; only whether the named connection exists, without a network call."""
+    from core.rag.embed_connection import ConnectionEmbedderError, resolve_connection_model
+
+    try:
+        resolve_connection_model(model)
+        error = None
+    except ConnectionEmbedderError as exc:
+        error = str(exc)
+    return EmbeddingModelResolveResponse(embedding_model = model, backend = "connection", error = error)
+
+
+def _probe_connection_embedder(model: str) -> None:
+    """One live embed, so a chat-only endpoint or a wrong model id is caught at save time (409)."""
+    from core.rag.embed_connection import ConnectionEmbeddingBackend
+
+    probe = ConnectionEmbeddingBackend(attempts = 1)
+    try:
+        probe.warm(model_name = model)
+    except Exception as exc:  # noqa: BLE001 - any failure is the forceable verification error
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    finally:
+        probe.close()
+
+
 @_owner_settings_router.get(
     "/embedding-model/resolve", response_model = EmbeddingModelResolveResponse
 )
@@ -4044,6 +4242,19 @@ def update_embedding_model(
             status_code = 400,
             detail = "The embedding download repository was not validated for this model.",
         )
+    if plan.backend == "connection":
+        if not payload.force:
+            if plan.error:
+                raise HTTPException(status_code = 409, detail = plan.error)
+            _probe_connection_embedder(model)
+        set_rag_embedding_model(model, backend = "connection")
+        logger.info(
+            "settings.embedding_model_updated subject=%s model=%s forced=%s",
+            current_subject,
+            model,
+            payload.force,
+        )
+        return _embedding_model_response()
     destination_is_llama = plan.backend == "llama"
     # Scan the repo the loader opens (slashless aliases resolve under sentence-transformers/).
     verify_target = model
@@ -4317,6 +4528,16 @@ class CurrentDatePromptResponse(BaseModel):
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
 
 
+class TrustedToolFoldersPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    folders: list[StrictStr] = Field(max_length = MAX_TRUSTED_TOOL_FOLDERS)
+
+
+class TrustedToolFoldersResponse(BaseModel):
+    folders: list[str]
+
+
 class ChatMemoryPayload(BaseModel):
     enabled: Optional[StrictBool] = None
     text: Optional[StrictStr] = None
@@ -4445,6 +4666,7 @@ class LanAccessAddressesPayload(BaseModel):
 class LanAccessAddress(BaseModel):
     address: str
     public: bool = False
+    host_only: bool = False
 
 
 class LanAccessResponse(BaseModel):
@@ -4666,6 +4888,49 @@ def update_current_date_prompt(
         "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
     )
     return CurrentDatePromptResponse(enabled = enabled)
+
+
+@_owner_settings_router.get("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def get_trusted_tool_folders_setting(
+    current_subject: str = Depends(get_current_subject),
+    # Host paths: the settings page reads them, an API-key integration has no need to.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    try:
+        folders = get_trusted_tool_folders()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the trusted folders.",
+            event = "settings.trusted_tool_folders_read_failed",
+            log = logger,
+        ) from exc
+    return TrustedToolFoldersResponse(folders = folders)
+
+
+@_owner_settings_router.put("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
+def update_trusted_tool_folders_setting(
+    payload: TrustedToolFoldersPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Widens what tool calls run without asking: set at the console, never by an API key.
+    _ui_session: None = Depends(_require_ui_session),
+) -> TrustedToolFoldersResponse:
+    """Folders whose files the owner's Python and Terminal calls may read and run without a prompt."""
+    try:
+        folders = set_trusted_tool_folders(payload.folders)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid trusted folders."),
+            event = "settings.update_trusted_tool_folders_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.trusted_tool_folders_updated subject=%s count=%s", current_subject, len(folders)
+    )
+    return TrustedToolFoldersResponse(folders = folders)
 
 
 def _chat_memory_response() -> ChatMemoryResponse:
@@ -4952,13 +5217,13 @@ class PersonalizationImportedFont(BaseModel):
         return value
 
 
-# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts ship hidden.
+# Boolean is each optional user-menu item's default visibility; Settings-tab shortcuts except Appearance ship hidden.
 SIDEBAR_MENU_ITEM_DEFAULTS = {
     "api": True,
     "darkMode": True,
     "guidedTour": True,
     "profile": False,
-    "appearance": False,
+    "appearance": True,
     "resources": False,
     "chat": False,
     "connections": False,
@@ -4978,6 +5243,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "export": False,
     "api": False,
     "tasks": False,
+    "translate": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -5021,6 +5287,7 @@ SidebarNavItemId = Literal[
     "export",
     "api",
     "tasks",
+    "translate",
 ]
 
 
@@ -5306,11 +5573,34 @@ class PlusMenuPrefsPayload(BaseModel):
     pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
 
 
+_GlassMaterial = Literal["transparent", "frosted", "blurred", "liquid", "liquid-3d", "macos"]
+_GlassStrength = Annotated[int, Field(ge = 0, le = 100)]
+
+
+class GlassStrengthPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: Optional[_GlassStrength] = None
+    dark: Optional[_GlassStrength] = None
+
+
+class MaterialPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    material: Optional[Literal["solid", _GlassMaterial]] = None
+    style: Optional[_GlassMaterial] = None
+    menus: Optional[bool] = None
+    strength: Optional[GlassStrengthPayload] = None
+    lens: Optional[Literal["off", "magnify", "shrink"]] = None
+    scope: Optional[Literal["newChat", "chats", "all"]] = None
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
     chat: Optional[ChatPrefsPayload] = None
     plusMenu: Optional[PlusMenuPrefsPayload] = None
+    material: Optional[MaterialPrefsPayload] = None
     timeFormat: Optional[Literal["system", "12h", "24h"]] = None
     spellcheck: Optional[bool] = None
 
@@ -5341,6 +5631,47 @@ def update_client_preferences_settings(
 ) -> ClientPreferencesResponse:
     changes = payload.model_dump(exclude_none = True)
     return _client_preferences_response(update_client_preferences(changes))
+
+
+_OnboardingPageId = Annotated[str, Field(pattern = r"^[a-z0-9-]{1,40}$")]
+
+
+class OnboardingPayload(BaseModel):
+    pages: list[_OnboardingPageId] = Field(default_factory = list, max_length = 32)
+    completed: bool = False
+
+
+class OnboardingResponse(BaseModel):
+    saved: bool = False
+    pages: list[str] = Field(default_factory = list)
+    completedAt: Optional[int] = None
+    hasHistory: bool = False
+
+
+def _onboarding_response(stored: dict, *, history: bool = False) -> OnboardingResponse:
+    pages = stored.get("pages")
+    completed_at = stored.get("completedAt")
+    return OnboardingResponse(
+        saved = bool(stored),
+        pages = [p for p in pages if isinstance(p, str)] if isinstance(pages, list) else [],
+        completedAt = completed_at if isinstance(completed_at, int) else None,
+        hasHistory = history,
+    )
+
+
+@_account_settings_router.get("/onboarding", response_model = OnboardingResponse)
+def get_onboarding_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> OnboardingResponse:
+    stored = get_onboarding()
+    return _onboarding_response(stored, history = not stored and account_has_history())
+
+
+@_account_settings_router.put("/onboarding", response_model = OnboardingResponse)
+def update_onboarding_settings(
+    payload: OnboardingPayload, current_subject: str = Depends(get_current_subject)
+) -> OnboardingResponse:
+    return _onboarding_response(update_onboarding(payload.pages, payload.completed))
 
 
 class ChatBackgroundImageMeta(BaseModel):
@@ -5477,7 +5808,7 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
-    # Walk prefers the first root; file logging may be off before logs/ exists, so reveal the home.
+    # File logging may be off before logs/ exists, so reveal the home.
     roots = debug_log_sources.candidate_roots()
     log_root = None
     if roots:
@@ -5661,6 +5992,8 @@ class SandboxMemoryStatus(BaseModel):
     limit_gb: Optional[int] = None
     saved_gb: int
     default_gb: int
+    # True: no saved value, so the limit follows half of this machine's RAM.
+    auto: bool = True
     min_gb: int
     max_gb: int
     locked_by_environment: bool
@@ -5672,7 +6005,7 @@ class SandboxStatusResponse(BaseModel):
     terminal: SandboxToolStatus
     terminal_shell: Optional[str] = None
     windows: Optional[SandboxWindowsStatus] = None
-    # None off Linux, where the rlimit never applied.
+    # None only if the status could not be built.
     memory: Optional[SandboxMemoryStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
@@ -5689,6 +6022,7 @@ class SandboxSettingsPayload(BaseModel):
         ge = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
     )
+    memory_limit_auto: Optional[Literal[True]] = None
 
 
 class SandboxSetupPayload(BaseModel):
@@ -5771,7 +6105,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     from utils import mxc_isolation_settings as saved
 
     try:
-        mxc_runtime.installation_identity()
+        mxc_runtime.verified_installation_identity()
         installed = True
     except Exception:
         installed = False
@@ -5882,16 +6216,11 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
-    import sys
-
-    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
-    # already maps more than the cap, so tool runs there were never capped.
-    if sys.platform != "linux":
-        return None
     return SandboxMemoryStatus(
         limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
         saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),
-        default_gb = sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+        default_gb = sandbox_memory_limit.default_memory_limit_gb(),
+        auto = sandbox_memory_limit.is_auto(),
         min_gb = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
         max_gb = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
         locked_by_environment = sandbox_memory_limit.locked_by_environment(),
@@ -5944,6 +6273,9 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
     from core.inference import mxc_policy, mxc_read_grants
     from utils import mxc_isolation_settings as saved
 
+    if payload.memory_limit_auto:
+        sandbox_memory_limit.use_auto_memory_limit()
+        return None
     if payload.memory_limit_gb is not None:
         sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
         # The route refuses it beside the Windows switches, so the MXC state below is untouched.
@@ -5993,7 +6325,7 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the memory limit. Applies to the next
     launch."""
     import sys
 
@@ -6003,17 +6335,17 @@ async def update_sandbox_settings(
     windows_fields = (
         payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
     )
-    if payload.memory_limit_gb is not None:
-        if sys.platform != "linux":
-            raise HTTPException(
-                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
-            )
-        if sandbox_memory_limit.locked_by_environment():
-            raise HTTPException(
-                status_code = 409,
-                detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
-            )
-    if sys.platform != "win32" and (windows_fields or payload.memory_limit_gb is None):
+    memory_fields = payload.memory_limit_gb is not None or payload.memory_limit_auto is not None
+    if payload.memory_limit_gb is not None and payload.memory_limit_auto:
+        raise HTTPException(status_code = 422, detail = "Send a memory limit or auto, not both.")
+    if memory_fields and windows_fields:
+        raise HTTPException(status_code = 422, detail = "Save the memory limit on its own.")
+    if memory_fields and sandbox_memory_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    if sys.platform != "win32" and not memory_fields:
         raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
     locks = (
         (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
@@ -6037,11 +6369,12 @@ async def update_sandbox_settings(
             log = logger,
         ) from exc
     logger.info(
-        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s",
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s memory_auto=%s",
         current_subject,
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
         payload.memory_limit_gb,
+        payload.memory_limit_auto,
     )
     status = await asyncio.to_thread(_for_request, status, request)
     return status.model_copy(update = {"grants_restored": restored})
@@ -6076,7 +6409,7 @@ async def start_sandbox_prepare(
     if sys.platform != "win32":
         raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
     try:
-        await asyncio.to_thread(mxc_runtime.installation_identity)
+        await asyncio.to_thread(mxc_runtime.verified_installation_identity)
     except Exception as exc:
         raise HTTPException(
             status_code = 409,
@@ -6131,7 +6464,7 @@ async def start_sandbox_setup(
     """
     import sys
 
-    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from core.inference import mxc_policy, mxc_runtime, sandbox_setup_job, sandbox_setup_plan
     from utils import mxc_isolation_settings as saved
     from utils.client_ip import is_direct_local_request
 
@@ -6161,6 +6494,7 @@ async def start_sandbox_setup(
     consent = (
         payload.operation == sandbox_setup_plan.WINDOWS_SETUP
         and payload.consent_dacl_fallback
+        and mxc_runtime.selected_pin().has_host_prep
         and not mxc_policy.dacl_fallback_enabled()
     )
     if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
@@ -6188,6 +6522,69 @@ async def start_sandbox_setup(
         job.id,
     )
     return _sandbox_setup_response(job)
+
+
+class LearnedMemoryPatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    enabled: Optional[StrictBool] = None
+    thread_enabled: Optional[StrictBool] = None
+    key: Optional[str] = None
+    value: Optional[str] = None
+    revision: Optional[StrictInt] = None
+    clear: StrictBool = False
+
+
+@_account_settings_router.get("/learned-memory")
+def get_learned_memory(
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core import chat_memory
+    from storage import studio_db
+    return {
+        **chat_memory.read(project_id),
+        "enabled": chat_memory.enabled(),
+        "thread_enabled": not studio_db.get_app_setting("memory_disabled:" + thread_id, False)
+        if thread_id
+        else True,
+    }
+
+
+@_account_settings_router.put("/learned-memory")
+def put_learned_memory(
+    payload: LearnedMemoryPatch,
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+):
+    from core import chat_memory
+    from storage import studio_db
+
+    try:
+        if payload.key is not None or payload.clear:
+            if payload.revision is None:
+                raise ValueError("Read memory before editing it.")
+            if payload.clear:
+                chat_memory.clear(project_id, payload.revision)
+            else:
+                if "value" not in payload.model_fields_set:
+                    raise ValueError("Provide a fact, or null to forget it.")
+                chat_memory.update(project_id, payload.key, payload.value, payload.revision)
+        if payload.enabled is not None:
+            studio_db.upsert_app_settings(
+                {"learned_memory_enabled": payload.enabled}, read_back = False
+            )
+        if payload.thread_enabled is not None:
+            if not thread_id or not studio_db.get_chat_thread(thread_id):
+                raise ValueError("A saved chat is required.")
+            studio_db.upsert_app_settings(
+                {"memory_disabled:" + thread_id: not payload.thread_enabled}, read_back = False
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return get_learned_memory(project_id, thread_id, current_subject)
 
 
 router.include_router(_account_settings_router)

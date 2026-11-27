@@ -59,6 +59,9 @@ export function loadedConfigSignature(
     config.mlxFastVerify ? "1" : "0",
     config.mlxPleOffload ?? "",
     config.mlxExpertOffload ?? "",
+    config.npuPowerMode ?? "",
+    config.npuPrefillChunkLen ?? "",
+    config.npuImgPreResize ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
@@ -73,6 +76,7 @@ export function loadedConfigSignature(
     config.cacheRam ?? "",
     config.tensorParallel ? "1" : "0",
     config.disableVision ? "1" : "0",
+    config.engramPrecision?.toUpperCase() ?? "",
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,

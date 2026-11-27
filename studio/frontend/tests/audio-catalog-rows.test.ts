@@ -43,7 +43,7 @@ function row(over: Partial<Row>): Row {
 test("More rows skip the seed, UNOFFERED and unsupported rows, and keep Community rows in status order", () => {
   const rows = [
     row({ folder: "Kokoro-82M-GGUF" }),
-    row({ folder: "Sidon-GGUF" }),
+    row({ folder: "Smart-Turn-v3-GGUF" }),
     row({
       folder: "Broken-GGUF",
       workflows: [],
@@ -70,7 +70,7 @@ test("More rows skip the seed, UNOFFERED and unsupported rows, and keep Communit
   // Judged against the installed runtime's specs, a supported UNOFFERED folder is listed.
   assert.deepEqual(
     catalogMoreRows(rows, true).map((r) => r.display_name),
-    ["Alpha", "Sidon-GGUF", "Drama 3", "Beta", "Zeta"],
+    ["Alpha", "Smart-Turn-v3-GGUF", "Drama 3", "Beta", "Zeta"],
   );
 });
 

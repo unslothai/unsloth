@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// How many pending sentences the TTS player sends in one synth request. Each
-// request costs a few seconds of fixed overhead on top of the audio itself, so
-// one short sentence per request leaves a gap after every clip. The first chunk
-// stays one sentence for a fast start; later ones merge sentences up to a
-// character budget, never splitting a sentence.
+// First chunk is one sentence for a fast start; later chunks merge sentences up to a character
+// budget, never splitting one; each synth request has fixed overhead
 
 export const TTS_CHUNK_TARGET_CHARS = 220;
 export const TTS_CHUNK_MAX_CHARS = 320;
@@ -39,8 +36,7 @@ export function planTtsChunk(input: TtsChunkPlanInput): number {
     take++;
   }
   if (take < pending.length || chars >= TTS_CHUNK_TARGET_CHARS || final) return take;
-  // The list ran dry under budget while the LLM is still writing: wait for
-  // more, but an idle player must not sit on a sentence it could be speaking.
+  // While the LLM still writes, wait for more, but an idle player must not sit on a sentence.
   if (!playing && waitedMs >= TTS_CHUNK_WAIT_MS) return take;
   return 0;
 }

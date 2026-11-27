@@ -720,8 +720,7 @@ def test_a_placeholder_can_still_be_subclassed():
 
 
 def test_the_import_only_symbols_still_come_from_the_stub(fake_modules):
-    """`ConversionOps` is subclassed by peft at module top and never asked
-    about instances, so it stays a real usable class."""
+    """peft subclasses ConversionOps and never asks about instances, so it stays a real class."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
 
@@ -749,15 +748,13 @@ def test_every_runtime_symbol_is_one_we_backfill():
 
 
 def test_a_class_body_import_is_seen():
-    """`ast.walk` descends into everything, so an import inside a module-level
-    class body -- which executes at import time -- is covered."""
+    """ast.walk descends everywhere, so an import in a module-level class body is covered."""
     src = "class Converter:\n    from transformers.core_model_loading import Concatenate\n"
     assert _transformers_imports(src) == {"transformers.core_model_loading": {"Concatenate"}}
 
 
 def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
-    """A converter package whose `__init__.py` only re-exports must not hide
-    the child module's transformers imports, which are the ones that fail."""
+    """Re-exporting __init__ must not hide children, whose transformers imports are what fail."""
     import importlib
     import sys
     import types
@@ -932,8 +929,7 @@ def test_a_moe_named_model_that_is_not_fused_still_loads():
 
 
 def test_a_not_fused_class_name_alias_loads_in_its_own_case():
-    """Upstream keys the Qwen3-Omni MoE thinker aliases by class name, mapped to the dense
-    Qwen2.5-Omni thinker. Matching the carve-out only in lowercase refused them on the "moe" hint."""
+    """Class-name aliases (Qwen3-Omni MoE thinkers) must load; lowercase matching refused them."""
     stand_in = F._UnavailableConversionPatternMap()
     for alias in ("Qwen3OmniMoeThinkerModel", "Qwen3OmniMoeThinkerForConditionalGeneration"):
         assert alias in F._PEFT_MOE_NAMED_NOT_FUSED, alias
@@ -958,8 +954,7 @@ def test_a_fused_class_name_alias_is_refused_in_its_own_case():
 
 
 def test_an_unknown_moe_name_is_still_refused():
-    """The hint stays for a fused type added after the snapshot: silently
-    returning the default there mis-converts the adapter."""
+    """Unknown MoE-named types must still raise; a silent default mis-converts the adapter."""
     stand_in = F._UnavailableConversionPatternMap()
     with pytest.raises(RuntimeError):
         stand_in.get("some_future_moe_model")
@@ -1006,8 +1001,7 @@ def _fetch_conversion_mapping_source():
 
 
 def test_the_fused_snapshot_matches_upstream():
-    """A fused MoE alias added upstream but missing from the snapshot falls through the stand-in
-    silently if its name lacks MoE; the dependency-free job runs this canary."""
+    """A fused alias missing from the snapshot falls through silently unless its name has MoE."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")
@@ -1075,8 +1069,7 @@ def test_an_unrelated_absolute_import_is_not_queued():
 
 
 def test_an_import_in_a_module_level_match_case_is_collected():
-    """A module-level match case runs at import time, so an import inside one can raise the startup
-    error this guard catches; ast.Match keeps its statements under cases."""
+    """A match case at module level runs at import; ast.Match keeps its statements under cases."""
     src = (
         "import sys\n"
         "match sys.version_info[0]:\n"
@@ -1123,8 +1116,7 @@ def test_a_moe_named_type_outside_the_map_is_not_refused(model_type):
 
 
 def test_the_unconverted_list_is_still_outside_the_upstream_map():
-    """A name in the unconverted list that gains a conversion pattern upstream becomes fused, and
-    answering None for it silently mis-converts; this canary catches that."""
+    """Unconverted names must stay unmapped upstream, else None silently mis-converts them."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")
@@ -1146,8 +1138,7 @@ def test_the_moe_aware_map_wins_over_the_inert_donor():
 
 
 def test_the_general_pass_does_not_overwrite_an_installed_stand_in():
-    """Even in the right order it must stay additive: a second pass that
-    re-donated would undo the first."""
+    """The general pass must stay additive: a second pass re-donating would undo the first."""
     donor = F._PEFT_STUB_BUILDERS["transformers.conversion_mapping"]()
     assert isinstance(getattr(donor, "_MODEL_TO_CONVERSION_PATTERN", None), dict)
     src = inspect.getsource(F._backfill_missing_peft_symbols)

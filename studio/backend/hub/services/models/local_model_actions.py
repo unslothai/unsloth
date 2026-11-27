@@ -121,7 +121,7 @@ def _ollama_ref(row: LocalModelInfo) -> str:
     for candidate in (row.load_id, row.id, row.path):
         if candidate and ollama.is_ollama_manifest_ref(candidate):
             return candidate
-    ref = ollama.ollama_manifest_ref_for_path(row.path)
+    ref = ollama.ollama_manifest_ref_for_path(row.path) or ollama.ollama_mlx_ref_for_path(row.id)
     if not ref:
         raise HTTPException(status_code = 404, detail = "Model not found on device")
     return ref
@@ -194,6 +194,9 @@ async def delete_local_model_response(path: str, row_id: str | None = None) -> d
     if ollama_ref:
         spellings.append(ollama_ref)
         spellings.extend(str(d) for d in ollama.ollama_model_ref_link_dirs(ollama_ref))
+        if ollama.is_ollama_mlx_ref(ollama_ref):
+            # A loaded MLX tag is recorded by its checkpoint path.
+            spellings.append(row.id)
     spellings = tuple(dict.fromkeys(spellings))
     try:
         blocks = await asyncio.to_thread(_load_state_blocks_delete, spellings)

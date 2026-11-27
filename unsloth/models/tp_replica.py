@@ -9,12 +9,12 @@ from __future__ import annotations
 import datetime
 import gc
 import os
-import pickle
 import types
 
 import torch
 import torch.nn as nn
 
+from . import _store_codec
 from . import tp_native as tpn
 
 __all__ = [
@@ -62,11 +62,9 @@ def replica_active(model):
 
 
 def _device(root):
-    for param in root.parameters():
-        if tpn._is_dtensor(param):
-            return param.to_local().device
-        return param.device
-    return torch.device("cpu")
+    # Not a host-served input embedding (tp_native._serve_embedding_from_host): it is often the first
+    # parameter, and its CPU device would send NCCL collectives CPU tensors.
+    return tpn._compute_device(root, torch.device("cpu"))
 
 
 def _gib(n):
@@ -163,7 +161,8 @@ def _merge_workspace(items):
     """Peak GPU bytes to merge one CPU-staged 4-bit projection (save.py _merge_lora)."""
     peak = 0
     for p, _ in items:
-        if not tpn._is_dtensor(p):
+        # Expert stacks are gathered (in _workspace), never merged as a Linear4bit projection.
+        if not tpn._is_dtensor(p) and p._unsloth_tp_layout[0] != tpn.EXPERT_STACK:
             numel = p.data.numel() * p.data.element_size() * 2 * p._unsloth_tp_layout[3]
             peak = max(peak, _bytes(p) + numel * (2 + 4 + 4))
     return max(_workspace(items), peak)
@@ -214,6 +213,8 @@ def _full_params4bit(weight, base, group, device, keep):
     import bitsandbytes as bnb
 
     style, parts, rank, tp = weight._unsloth_tp_layout
+    if style == tpn.EXPERT_STACK:
+        return _full_expert_params4bit(weight, base, group, device, keep, tp)
     state = weight.quant_state
     blocksize = state.blocksize
     out_local, in_local = state.shape
@@ -269,6 +270,33 @@ def _full_params4bit(weight, base, group, device, keep):
     if device.type == "cpu" and weight.device.type != "cpu":
         # CPU-staged export replica: save.py _merge_lora dequantizes it on its original GPU.
         full._unsloth_tp_stage_device = weight.device
+    return full
+
+
+def _full_expert_params4bit(weight, base, group, device, keep, tp):
+    """The whole 4-bit expert stack: every rank's experts (packed bytes and float32 absmax) in expert order."""
+    import bitsandbytes as bnb
+
+    state = weight.quant_state
+    codes = _gather_cat(weight.data.reshape(-1), 0, group, tp)
+    absmax = _gather_cat(state.absmax.float().reshape(-1), 0, group, tp)
+    if not keep:
+        return None
+    shape = torch.Size((state.shape[0] * tp,) + tuple(state.shape[1:]))
+    full = torch.Tensor._make_subclass(type(weight), codes.to(device).unsqueeze(-1), False)
+    for attr, value in weight.__dict__.items():
+        if attr != "_unsloth_tp_layout":
+            full.__dict__[attr] = value
+    full.quant_state = bnb.functional.QuantState(
+        absmax = absmax.to(device),
+        shape = shape,
+        code = state.code.to(device),
+        blocksize = state.blocksize,
+        quant_type = state.quant_type,
+        dtype = state.dtype,
+    )
+    full.module = base
+    full._original_shape = shape
     return full
 
 
@@ -402,10 +430,14 @@ def _switch_to_one_gpu(root, replica):
     for region in plan.regions if plan is not None else ():
         module = region.module
         replica.set(module, "_unsloth_tp_gathered", True)  # the region hooks pass through
-        saved = module.__dict__.get("_unsloth_tp_saved_attrs")
-        if saved is not None:
-            for key, value in saved.items():
-                replica.set(module, key, value)
+        owners = [module] + [o for o, *_ in getattr(region, "child_params", ())]
+        owners += [o for o, _ in getattr(region, "local_attrs", ())]
+        for owner in {id(o): o for o in owners}.values():
+            # The region module's head counts, and its sharded children's sizes (Gated DeltaNet conv1d channels).
+            saved = owner.__dict__.get("_unsloth_tp_saved_attrs")
+            if saved is not None:
+                for key, value in saved.items():
+                    replica.set(owner, key, value)
         for key in ("_unsloth_tp_heads", "_unsloth_tp_kv_heads"):
             if key in module.__dict__:
                 replica.set(module, key, tpn._MISSING)
@@ -417,6 +449,9 @@ def _switch_to_one_gpu(root, replica):
                 replica.set(p, "_unsloth_tp_local", tpn._MISSING)
     for block in plan.moe_blocks if plan is not None else ():
         replica.set(block, "_unsloth_tp_gathered", True)  # replicated MoE: no tp average
+        shard = block.__dict__.get("_unsloth_tp_expert_shard")
+        for module, key, value in shard.full_attrs if shard is not None else ():
+            replica.set(module, key, value)  # sharded experts: the whole expert count is back
     for level in tpn._tp_chain(root):
         forward = level.__dict__.get("forward")
         original = getattr(forward, "__wrapped__", None)
@@ -543,11 +578,7 @@ def _publish(key, payload):
     if store is None:
         _dist().barrier()
         return
-    try:
-        data = pickle.dumps(payload)
-    except Exception:
-        data = pickle.dumps((payload[0], None) + tuple(payload[2:]))
-    store.set(key, data)
+    store.set(key, _store_codec.encode(tuple(payload)))
 
 
 def _wait(key):
@@ -556,7 +587,13 @@ def _wait(key):
         _dist().barrier()
         return ("ok", None)
     store.wait([key], _timeout())
-    return pickle.loads(store.get(key))
+    try:
+        payload = _store_codec.decode(store.get(key))
+    except ValueError:
+        payload = None
+    if not isinstance(payload, tuple) or len(payload) < 2 or payload[0] not in ("ok", "error"):
+        return ("error", "rank 0 left an unreadable result in the store")
+    return payload
 
 
 def _keep_tree(root):
@@ -718,11 +755,10 @@ def tp_world_save(what, write, directory):
     import tempfile
 
     absolute = os.path.abspath(target)
-    parent = os.path.dirname(absolute)
     os.makedirs(absolute, exist_ok = True)
-    private = tempfile.mkdtemp(
-        prefix = f".{os.path.basename(absolute)}.unsloth_tp_rank{_rank()}_", dir = parent
-    )
+    # Staged inside the destination: same filesystem for os.replace (a mounted output dir would raise
+    # EXDEV from a sibling), and no write access to the parent needed.
+    private = tempfile.mkdtemp(prefix = f".unsloth_tp_rank{_rank()}_", dir = absolute)
     try:
         result = write(private)
         for root, _, files in os.walk(private):

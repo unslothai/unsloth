@@ -4,11 +4,13 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Both /download-plan routes share a response model.
-import type { DiffusionDownloadPlan } from "@/features/images/api";
+import type { DiffusionDownloadPlan, LoraSpecInput } from "@/features/images/api";
+import type { CosmosGuardrailStatus } from "./cosmos-guardrail";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
 import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
+import type { RestyleStatusLike } from "./restyle-setup";
 
 // `requested` null = left to the backend; `source` is "auto" or "explicit"; `reason` is the tooltip.
 export interface VideoResolvedControl {
@@ -21,6 +23,10 @@ export interface VideoResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // int8_attention only (absent on older backends, sd.cpp, MLX): "on" when the kernel engaged.
+  engaged?: boolean;
+  impl?: string | null;
+  modules?: number;
 }
 
 export interface VideoGenerationDefaults {
@@ -49,14 +55,25 @@ export interface VideoGenerationDefaults {
   canvas_max_pixels?: number | null;
   // Image-to-video families without that rule take the preset nearest the first frame's aspect.
   canvas_from_presets?: boolean;
+  // True when a keyframe keeps the chosen canvas (MiniMax-H3, as the reference workflow does); "Match source" is
+  // then only an explicit choice, sent as a size. Absent on older backends.
+  keyframe_keeps_canvas?: boolean;
+  // The page's Default preset size when it is one of resolution_presets; absent means the first preset.
+  default_resolution?: [number, number] | null;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
   supports_audio_flow_shift?: boolean;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface VideoStatus {
   loaded: boolean;
+  /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
+  /** The GPU index precision_options was judged on (probe verdicts are per card); null when unknown. */
+  precision_options_card?: number | null;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;
@@ -104,8 +121,16 @@ export interface VideoStatus {
   prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
-  // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
+  // The names are memory_mode, speed_mode, attention_backend, int8_attention and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
+  // Adapters merged into the denoiser at load (VideoLoadRequest.loras); absent on an older backend.
+  baked_loras?: string[];
+  baked_lora_specs?: LoraSpecInput[];
+  lora_refusal?: string | null;
+  // "baked" when the load merged its LoRA set into the denoiser; absent on an older backend.
+  lora_fuse?: string | null;
+  // Multi-card placement and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
 }
 
 export interface VideoGenerateProgress {
@@ -120,6 +145,8 @@ export interface VideoGenerateProgress {
   preview_seq?: number;
   video?: GalleryVideo | null;
   error?: string | null;
+  // The job this progress belongs to; absent on older backends.
+  video_id?: string | null;
 }
 
 export interface VideoLoadProgress {
@@ -162,7 +189,9 @@ export interface VideoLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
+  int8_attention?: "auto" | "on" | "off";
   transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Omit for the hardware ladder; "none" pins bf16. GGUF / single-file carry their own.
@@ -175,6 +204,8 @@ export interface VideoLoadRequest {
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
   // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
   allow_oversized_load?: boolean;
+  // Catalog ids merged into the bf16 denoiser at load, so a new set or weight needs a reload. Pipeline loads only.
+  loras?: LoraSpecInput[];
 }
 
 export interface VideoReferenceVideo {
@@ -246,6 +277,8 @@ export interface GalleryVideo {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  // Adapters the load baked in; absent on older sidecars.
+  baked_loras?: string[];
   created_at: string;
   // Library state, not recipe; absent on older sidecars.
   pinned?: boolean;
@@ -255,10 +288,29 @@ export interface GalleryVideo {
 }
 
 // The saved record arrives via getVideoGenerateProgress at phase "completed".
+// "queued": a busy engine holds it in the server FIFO; poll getVideoQueue until it starts.
 export interface VideoGenerateResponse {
-  status: "started";
+  status: "started" | "queued";
   // Always null (kept for response-shape compatibility).
   video?: GalleryVideo | null;
+  // Absent on older backends, which answered a busy engine with a 409.
+  video_id?: string;
+  // 1-based, 1 = next to start.
+  queue_position?: number | null;
+  // Seconds until it STARTS; null when unknown.
+  eta_seconds?: number | null;
+}
+
+// The caller's own waiting jobs; one leaves the list (or reads "starting") once it renders.
+export interface VideoQueueJob {
+  video_id: string;
+  status: "queued" | "starting" | "failed" | "cancelled";
+  queue_position: number | null;
+  eta_seconds: number | null;
+  prompt: string | null;
+  created_at: number;
+  source: "page" | "api" | "chat";
+  error: string | null;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -282,8 +334,11 @@ export async function getVideoLoadProgress(
   );
 }
 
-export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
-  return parseJson(await authFetch("/api/inference/video/generate-progress"));
+/** With `videoId`, a clip that already ended answers with its own outcome even after a
+ *  successor took the progress record. */
+export async function getVideoGenerateProgress(videoId?: string): Promise<VideoGenerateProgress> {
+  const query = videoId ? `?video_id=${encodeURIComponent(videoId)}` : "";
+  return parseJson(await authFetch(`/api/inference/video/generate-progress${query}`));
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
@@ -328,10 +383,27 @@ export async function generateVideo(
   );
 }
 
-/** Best-effort: stops at the next step boundary; the caller maps the sentinel to a 409. */
-export async function cancelVideoGeneration(): Promise<{ cancelled: boolean }> {
+export async function getVideoQueue(signal?: AbortSignal): Promise<VideoQueueJob[]> {
+  const body = await parseJson<{ jobs: VideoQueueJob[] }>(
+    await authFetch("/api/inference/video/queue", { signal }),
+  );
+  return body.jobs ?? [];
+}
+
+/** Best-effort: stops at the next step boundary; the caller maps the sentinel to a 409.
+ *  With `videoId`, drops that queued job instead. */
+export async function cancelVideoGeneration(videoId?: string): Promise<{ cancelled: boolean }> {
   return parseJson(
-    await authFetch("/api/inference/video/generate/cancel", { method: "POST" }),
+    await authFetch(
+      "/api/inference/video/generate/cancel",
+      videoId
+        ? {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ video_id: videoId }),
+          }
+        : { method: "POST" },
+    ),
   );
 }
 
@@ -460,10 +532,7 @@ export interface VideoRestyleProgress {
   seed?: number | null;
 }
 
-export interface VideoRestyleStatus {
-  available: boolean;
-  reason: string | null;
-}
+export type VideoRestyleStatus = RestyleStatusLike;
 
 export interface VideoRestylePreview {
   frames: number;
@@ -475,8 +544,33 @@ export interface VideoRestylePreview {
   edges_jpeg: string;
 }
 
+export async function fetchCosmosGuardrailStatus(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail"));
+}
+
+export async function startCosmosGuardrailInstall(): Promise<CosmosGuardrailStatus> {
+  return parseJson(await authFetch("/api/inference/video/cosmos-guardrail/install", { method: "POST" }));
+}
+
 export async function fetchVideoRestyleStatus(): Promise<VideoRestyleStatus> {
   return parseJson(await authFetch("/api/inference/video/restyle/status"));
+}
+
+/** Install whatever Restyle is missing (server, weights); progress arrives through the status. */
+export async function startVideoRestyleSetup(hfToken?: string): Promise<VideoRestyleStatus> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hfToken ? { hf_token: hfToken } : {}),
+    }),
+  );
+}
+
+export async function cancelVideoRestyleSetup(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/setup/cancel", { method: "POST" }),
+  );
 }
 
 function restyleForm(video?: File | null, frames?: File[]): FormData {

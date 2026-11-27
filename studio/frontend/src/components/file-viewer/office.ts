@@ -517,12 +517,26 @@ const digitLayout = memo((format) => {
   };
 });
 
+/** Excel rounds the 15-digit decimal it shows, halves up; toFixed rounds the binary value, so 1.005 gave "1.00". */
+function decimalFixed(number: number, places: number): string {
+  const shifted = number * 10 ** places;
+  // Only a fraction within reach of a written half (15 digits, ~1e-14 relative) rounds differently; integers keep every digit.
+  const nearHalf = Math.abs(shifted - Math.floor(shifted) - 0.5) <= 1e-9 + shifted * 1e-13;
+  if (Number.isInteger(number) || !nearHalf) return number.toFixed(places);
+  const [mantissa, exponent] = number.toExponential(14).split("e");
+  const scaled = Math.round(Number(`${mantissa}e${Number(exponent) + places}`));
+  // 1e21 and up print as exponents, which the caller already hands to generalText.
+  if (!(scaled < 1e21)) return number.toFixed(places);
+  return Number(`${scaled}e-${places}`).toFixed(places);
+}
+
 function placeDigits(number: number, format: string): string {
   const { dot, whole, part, first, places, grouped, zeros, before, after } = digitLayout(format);
   const shown = number ? 14 - Math.floor(Math.log10(Math.abs(number))) : 100;
-  const [intDigits = "", fracDigits = ""] = number
-    .toFixed(Math.max(0, Math.min(places.length, shown, 100)))
-    .split(".");
+  const [intDigits = "", fracDigits = ""] = decimalFixed(
+    number,
+    Math.max(0, Math.min(places.length, shown, 100)),
+  ).split(".");
   if (/e/i.test(intDigits)) return generalText(number);
   const significant = intDigits === "0" ? "" : intDigits;
   let integer: string;
@@ -658,16 +672,13 @@ function formatScientific(value: number, format: string): string {
   const dot = tokens.indexOf(".");
   const places = Math.min(dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length, 100);
   const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
-  const [normalized = "0", exponentText = "0"] = value.toExponential(places).split("e");
-  let mantissa = normalized;
-  let exponent = Number(exponentText);
-  if (step > 1 && value !== 0) {
-    exponent = Math.floor(Math.log10(value) / step) * step;
-    mantissa = (value / 10 ** exponent).toFixed(places);
-    if (Number(mantissa) >= 10 ** step) {
-      exponent += step;
-      mantissa = (value / 10 ** exponent).toFixed(places);
-    }
+  const [digits = "0", exponentText = "0"] = value.toExponential(14).split("e");
+  const at10 = Number(exponentText);
+  let exponent = Math.floor(at10 / step) * step;
+  let mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
+  if (Number(mantissa) >= 10 ** step) {
+    exponent += step;
+    mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
   }
   const expSign = exponent < 0 ? "-" : format[at + 1] === "+" ? "+" : "";
   return `${placeDigits(Number(mantissa), mantissaFormat)}E${expSign}${placeDigits(Math.abs(exponent), exponentFormat)}`;
@@ -1521,7 +1532,7 @@ function degrees(xfrm: Element | undefined): number {
 
 export function readPptx(
   bytes: Uint8Array,
-  { images = true, maxSlides = MAX_SLIDES, notes = false } = {},
+  { images = true, maxSlides = MAX_SLIDES, notes = false, keepHidden = false } = {},
 ): Deck {
   const read = archive(bytes);
   const main = mainPart(read, "ppt/presentation.xml");
@@ -1553,13 +1564,13 @@ export function readPptx(
     }
     const part = read([path, relsPath(path)], MAX_XML_PART_BYTES);
     const slideXml = part[path];
-    if (!slideXml || HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384)))) continue;
+    if (!slideXml || (!keepHidden && HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384))))) continue;
     if (slides.length === maxSlides) {
       truncated = true;
       break;
     }
     const doc = xml(part, path);
-    if (!doc || ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? "")) continue;
+    if (!doc || (!keepHidden && ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? ""))) continue;
     const slideRelList = relationshipList(part, path);
     const partDoc = (partPath: string) => {
       if ((read.size(partPath) ?? 0) > MAX_XML_PART_BYTES) {

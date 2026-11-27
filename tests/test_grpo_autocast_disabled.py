@@ -51,8 +51,7 @@ class _pretend_cuda:
 
 
 def test_bfloat16_autocast_raises_without_hardware_support():
-    """Guards everything below: if torch ever downgraded this to a warning, the bug would be a
-    silent precision change instead of a crash and these tests would assert the wrong thing."""
+    """If torch downgraded this error to a warning, the bug would be a silent precision change."""
     with _pretend_cuda(has_bf16 = False):
         with pytest.raises(RuntimeError, match = "does not support bfloat16"):
             with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
@@ -84,8 +83,7 @@ def _autocast_helper_source() -> str:
 
 
 def _namespace(env):
-    """What the generated trainer module offers the header; with self carrying no args this is the
-    fallback path, and a trainer with args is covered in test_grpo_autocast_per_trainer.py."""
+    """Fallback when self has no args; the args case is in test_grpo_autocast_per_trainer.py."""
     from contextlib import nullcontext
 
     namespace = {
@@ -118,8 +116,7 @@ def test_the_injected_snippet_is_valid_python():
     ],
 )
 def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, expect_enabled):
-    """Run the real header and check both that it survives and that it did not
-    quietly stop autocasting for everyone else."""
+    """Runs the real header: it must survive and not quietly stop autocasting for others."""
     env = {"UNSLOTH_FORCE_FLOAT32": "0"}
     if precision is not None:
         env["ACCELERATE_MIXED_PRECISION"] = precision
@@ -134,8 +131,7 @@ def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, exp
 
 
 def test_the_generated_trainer_imports_the_device_type_it_autocasts_with():
-    """getsource inlines these bodies but not this file's imports, so the name has
-    to come from the template rl.py splices in, or the generated cache raises."""
+    """The name must come from rl.py's template, since getsource skips this file's imports."""
     preamble = "from unsloth_zoo.device_type import DEVICE_TYPE, DEVICE_TYPE_TORCH"
     assert preamble in RL_PY.read_text(encoding = "utf-8"), "rl.py's trainer template must import it"
 
@@ -170,11 +166,33 @@ def test_the_flag_is_recorded_beside_the_dtype():
         assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
 
 
+# Packing leak probe (#18335) runs unlatched without autocast; bf16 fallback raises on T4/V100.
+_UNLATCHED_PROBES = ("_unsloth_grpo_packing_leaks",)
+_ENABLED_READ = r"getattr\(self, \"_autocast_enabled\"[^)]*\)"
+
+
+def _top_level_source(name):
+    node = next(n for n in ast.parse(SRC).body if isinstance(n, ast.FunctionDef) and n.name == name)
+    return ast.get_source_segment(SRC, node)
+
+
 def test_reading_it_tolerates_an_older_trainer():
-    """The dtype is cached under `hasattr`, so an instance built before this
-    change can reach a call site with only half the state."""
-    for call in re.findall(r"getattr\(self, \"_autocast_enabled\"[^)]*\)", SRC):
+    """Cached under hasattr: an older trainer can reach a call site with half the state."""
+    src = SRC
+    for name in _UNLATCHED_PROBES:
+        src = src.replace(_top_level_source(name), "")
+    calls = re.findall(_ENABLED_READ, src)
+    assert calls, "expected the scoring call sites to read the latched flag"
+    for call in calls:
         assert call.endswith("True)"), call
+
+
+@pytest.mark.parametrize("name", _UNLATCHED_PROBES)
+def test_an_unlatched_probe_runs_without_autocast(name):
+    calls = re.findall(_ENABLED_READ, _top_level_source(name))
+    assert calls, f"{name} no longer reads the latched flag"
+    for call in calls:
+        assert call.endswith("False)"), call
 
 
 def test_force_float32_still_autocasts_in_float16():
@@ -197,6 +215,9 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
             "UNSLOTH_FORCE_FLOAT32": "1",
         }
     )
+    # The decision reads the trained model's stamp, which a forced float32 load sets.
+    namespace["self"].model = type("Model", (), {})()
+    namespace["self"].model._unsloth_forced_float32 = True
     with _pretend_cuda(has_bf16 = False):
         exec(
             _prepare_inputs_snippet()
@@ -207,9 +228,7 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
 
 
 def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
-    """With autocast off the forward runs in the model's own dtype. That is
-    float32 for an explicit float32 load but bfloat16 for pure bfloat16 full
-    finetuning, so the flag alone would double the estimate for the latter."""
+    """Autocast off: float32 or bfloat16 forward; flag alone would double bfloat16 estimate."""
     line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
     block = SRC[SRC.index(line) : SRC.index(line) + 400]
     assert "_autocast_enabled" in block, block
@@ -218,8 +237,7 @@ def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
 
 
 def test_chunk_sizing_by_execution():
-    """Both cases, evaluated rather than read: pure bfloat16 full finetuning
-    keeps 16, an explicit float32 load gets 32."""
+    """Evaluated, not read: pure bfloat16 full finetuning keeps 16; explicit float32 gets 32."""
     for head_dtype, expected in ((torch.bfloat16, 16), (torch.float32, 32)):
         scope = {
             "torch": torch,

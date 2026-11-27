@@ -33,8 +33,7 @@ SURFACES = [
     "type",
 ]
 
-# Known Firefox long-chat costs on main, pinned so the gate holds today's level (engine:mode:surface:
-# metric, as in the WebKit leg). None today.
+# Known Firefox long-chat costs, pinned at today's level (engine:mode:surface:metric). None.
 KNOWN_DEFAULT: dict = {}
 
 FIREFOX = wk.Leg(

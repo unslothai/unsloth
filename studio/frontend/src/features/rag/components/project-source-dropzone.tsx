@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The hub index would put the Hub pages in the startup bundle.
+import { formatBytes } from "@/features/hub/lib/format";
 import {
   consumeNativePathToken,
   nativeFileName,
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { MAX_FOLDER_FILES, filesFromDrop } from "@/lib/dropped-folders";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { FileEmpty02Icon, PlusSignIcon, Cancel01Icon } from "@hugeicons/core-free-icons";
@@ -22,6 +25,7 @@ import { watchIngestion } from "../api/save-markdown-source";
 import {
   RAG_SOURCE_UPLOAD_ACCEPT,
   SUPPORTED_SOURCES_HINT,
+  isSupportedSourceName,
   partitionSupported,
 } from "./source-drop-policy";
 import {
@@ -36,22 +40,6 @@ import {
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export type { StagedSource };
-
-function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const shown =
-    value >= 10 || unit === 0
-      ? String(Math.round(value))
-      : value.toFixed(1).replace(/\.0$/, "");
-  return `${shown} ${units[unit]}`;
-}
 
 const projectsWithPendingSources = new Set<string>();
 
@@ -333,7 +321,29 @@ export function ProjectSourceDropzone({
           e.preventDefault();
           if (disabled) return;
           endDrag();
-          addFiles(Array.from(e.dataTransfer.files ?? []));
+          const claimed = generation.current;
+          addPending(1);
+          void filesFromDrop(e.dataTransfer, isSupportedSourceName)
+            .then(
+              ({ files, truncated, hadFolder }) => {
+                if (!mounted.current || claimed !== generation.current) return;
+                if (hadFolder && files.length === 0) {
+                  toast.info("No supported files in that folder", {
+                    description: SUPPORTED_SOURCES_HINT,
+                  });
+                  return;
+                }
+                if (truncated > 0) {
+                  toast.info(`Added the first ${MAX_FOLDER_FILES} files`, {
+                    description:
+                      "The rest were left out. Drop a smaller folder for them.",
+                  });
+                }
+                addFiles(files);
+              },
+              () => toast.error("Couldn't read the dropped folder"),
+            )
+            .finally(() => addPending(-1));
         }}
         className={cn(
           "rounded-2xl border border-border transition-colors dark:border-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]",
@@ -392,7 +402,7 @@ export function ProjectSourceDropzone({
                     {entry.name}
                   </span>
                   <span className="shrink-0 text-ui-11 text-muted-foreground">
-                    {formatSize(entry.size)}
+                    {entry.size > 0 ? formatBytes(entry.size) : ""}
                   </span>
                   <button
                     type="button"

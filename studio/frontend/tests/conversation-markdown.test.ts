@@ -890,3 +890,12 @@ test("closes a select the message left open", () => {
     "<select>\n<option>one\n\n</select>",
   );
 });
+test("PDF shows the answer and tool name while omitting structured thinking and tool payloads", () => {
+  const blocks = contentBlocksToMarkdownBlocks([
+    { type: "reasoning", text: "private thought" },
+    { type: "tool-call", toolName: "run_javascript", args: { code: "secret" }, result: "internal" },
+    { type: "text", text: "The result is 4." },
+  ]);
+  assert.equal(renderConversationBlocks(blocks, "pdf"), "(Calling tool `run_javascript`)\n\nThe result is 4.");
+  assert.match(renderConversationBlocks(blocks), /private thought/);
+});

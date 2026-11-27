@@ -157,9 +157,98 @@ async function probe(
   }
 }
 
+// Asking a rate-limited Hub again only extends the limit: until its window ends, a 429 answers
+// every request to that origin's bucket (API, /resolve/ downloads, pages) without a network call.
+const RATE_LIMIT_DEFAULT_MS = 60_000;
+const RATE_LIMIT_MAX_MS = 10 * 60_000;
+const rateLimitedUntil = new Map<string, number>();
+
+function credentialMark(token: string | null): string {
+  if (!token) return "anonymous";
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < token.length; i++) {
+    hash = Math.imul(hash ^ token.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+/** Per upstream service (a relay counts as its upstream), bucket and credential: a new token is a new limit. */
+function rateLimitBucket(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  url: string,
+): string | null {
+  try {
+    const here = globalThis.location?.href ?? "http://localhost/";
+    const parsed = new URL(url, here);
+    let scope = parsed.origin;
+    let path = parsed.pathname;
+    for (const configured of [getHfEndpoint(), getHfDatasetsServerBase()]) {
+      if (!configured) continue;
+      const base = new URL(configured, here);
+      const prefix = base.pathname.replace(/\/+$/, "");
+      if (base.origin === parsed.origin && prefix && (path === prefix || path.startsWith(`${prefix}/`))) {
+        scope = `${base.origin}${prefix}`;
+        path = path.slice(prefix.length) || "/";
+        break;
+      }
+    }
+    const kind = path.includes("/resolve/") ? "resolve" : path.startsWith("/api/") ? "api" : "pages";
+    return `${scope}|${kind}|${credentialMark(sentHfToken(input, init, url))}`;
+  } catch {
+    return null;
+  }
+}
+
+function rateLimitWindowMs(response: Response): number {
+  const retryAfter = response.headers.get("Retry-After")?.trim();
+  let ms = Number.NaN;
+  if (retryAfter) {
+    ms = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+  } else {
+    // HF's RateLimit header: "api";r=0;t=<seconds until reset>
+    const reset = response.headers.get("RateLimit")?.match(/;\s*t=(\d+)/);
+    if (reset) ms = Number(reset[1]) * 1000;
+  }
+  if (!Number.isFinite(ms) || ms <= 0) ms = RATE_LIMIT_DEFAULT_MS;
+  return Math.min(Math.max(ms, 1000), RATE_LIMIT_MAX_MS);
+}
+
+/** Test hook: forget every rate-limit window. */
+export function resetHubRateLimits(): void {
+  rateLimitedUntil.clear();
+}
+
 export async function fetchHub(
   input: Parameters<typeof fetch>[0],
   init: RequestInit = {},
+): Promise<Response> {
+  const bucket = rateLimitBucket(input, init, requestUrl(input));
+  const until = bucket === null ? undefined : rateLimitedUntil.get(bucket);
+  if (until !== undefined) {
+    const left = until - Date.now();
+    if (left > 0) {
+      const local = new Response(null, {
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: { "Retry-After": String(Math.ceil(left / 1000)) },
+      });
+      // Errors built from response.url read as the Hub's own 429.
+      Object.defineProperty(local, "url", { value: requestUrl(input) });
+      return local;
+    }
+    rateLimitedUntil.delete(bucket as string);
+  }
+  const response = await fetchHubOnce(input, init);
+  if (response.status === 429 && bucket !== null) {
+    rateLimitedUntil.set(bucket, Date.now() + rateLimitWindowMs(response));
+  }
+  return response;
+}
+
+async function fetchHubOnce(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
 ): Promise<Response> {
   const url = requestUrl(input);
   const hfToken = sentHfToken(input, init, url);

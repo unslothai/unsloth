@@ -41,7 +41,13 @@ def _restore_real_logging_modules() -> dict:
     return removed
 
 
-def _health(monkeypatch, *, reason, established) -> dict:
+def _health(
+    monkeypatch,
+    *,
+    reason,
+    established,
+    device = None,
+) -> dict:
     """The authed /api/health body for a settled chat-only verdict."""
     swapped = _restore_real_logging_modules()
     import auth.authentication as authmod
@@ -50,7 +56,7 @@ def _health(monkeypatch, *, reason, established) -> dict:
     from fastapi.testclient import TestClient
 
     monkeypatch.setattr(hardware_pkg, "is_apple_silicon", lambda: False)
-    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "DEVICE", device or hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "CHAT_ONLY", True)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
@@ -95,6 +101,36 @@ def test_health_reports_cpu_training_only_beside_its_verdicts(
     assert body["chat_only"] is True
     assert body["chat_only_reason"] == reason
     assert body["cpu_training"] is expected
+
+
+@pytest.mark.parametrize(
+    "device, expected", [(hw.DeviceType.MLX, True), (hw.DeviceType.CPU, False)]
+)
+def test_health_reports_mlx_inference_from_the_detected_backend(monkeypatch, device, expected):
+    body = _health(monkeypatch, reason = "no_torch", established = None, device = device)
+    assert body["chat_only_reason"] == "no_torch"
+    assert body["mlx_inference"] is expected
+
+
+@pytest.mark.parametrize(
+    "device, reason",
+    [
+        (hw.DeviceType.MLX, "no_torch"),
+        (hw.DeviceType.CPU, "no_torch"),
+        (hw.DeviceType.CPU, "mlx_unavailable"),
+    ],
+)
+def test_the_start_route_refuses_training_on_a_chat_only_mac(monkeypatch, device, reason):
+    """Whether or not MLX loaded, and while a self-heal still holds mlx_unavailable."""
+    monkeypatch.setattr(hw, "DEVICE", device)
+    monkeypatch.setattr(hw, "CHAT_ONLY", True)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    with pytest.raises(HTTPException) as exc_info:
+        _route()._validate_training_platform(_request())
+    assert exc_info.value.status_code == 400
+    assert "Chat only" in exc_info.value.detail
 
 
 def _route():

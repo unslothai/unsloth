@@ -27,7 +27,7 @@ test("pending transcript mutations use the current view and deletion callback", 
   }
   const { outputText } = ts.transpileModule(
     statements.join("\n") + "\nreturn { mutate, refresh, setArchived };",
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
   );
   for (const { initialView, nextView, removed } of [
     { initialView: false, nextView: true, removed: ["deleted"] },
@@ -44,6 +44,7 @@ test("pending transcript mutations use the current view and deletion callback", 
     const scope = {
       active: true,
       currentId: "deleted",
+      top: () => null,
       latest: null,
       autoSelect: false,
       onSelect: () => {},
@@ -117,7 +118,7 @@ test("a failed view switch does not leave the other view's rows on screen", asyn
   }
   const { outputText } = ts.transpileModule(
     statements.join("\n") + "\nreturn { refresh, setArchived };",
-    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } },
   );
 
   const state: unknown[] = [];
@@ -129,6 +130,7 @@ test("a failed view switch does not leave the other view's rows on screen", asyn
   const scope = {
     active: true,
     currentId: null,
+    top: () => null,
     latest: null,
     autoSelect: false,
     onSelect: () => {},

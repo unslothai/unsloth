@@ -54,6 +54,9 @@ def _load_prefix_grouper():
 pg = _load_prefix_grouper()
 
 
+_HARNESS_PACKAGE = "_unsloth_models_under_test"
+
+
 def _top_level(path, names):
     tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
     body = [
@@ -65,7 +68,19 @@ def _top_level(path, names):
             and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)
         )
     ]
-    namespace = {"re": re, "inspect": inspect, "functools": functools}
+    namespace = {
+        "re": re,
+        "inspect": inspect,
+        "functools": functools,
+        # A stand-in package over unsloth/models, so a function's relative import (`from ._block_compile
+        # import ...`) loads the real sibling file without running unsloth/models/__init__ (GPU init).
+        "__name__": f"{_HARNESS_PACKAGE}.{path.stem}",
+        "__package__": _HARNESS_PACKAGE,
+    }
+    if _HARNESS_PACKAGE not in sys.modules:
+        package = types.ModuleType(_HARNESS_PACKAGE)
+        package.__path__ = [str(path.parent)]
+        sys.modules[_HARNESS_PACKAGE] = package
     exec(compile(ast.Module(body = body, type_ignores = []), str(path), "exec"), namespace)
     return namespace
 

@@ -10,7 +10,7 @@ from core.inference import mxc_policy
 
 def _config() -> dict:
     return {
-        "version": "0.8.0-alpha",
+        "version": mxc_policy.MXC_SCHEMA_VERSION,
         "containerId": "unsloth-会話",
         "containment": "processcontainer",
         "filesystem": {

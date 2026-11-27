@@ -366,7 +366,9 @@ def read_default_chat_template(
     try:
         # Precedence is per-snapshot: a sidecar must not override a newer revision.
         for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            cached_template = _chat_template_from_dir(snapshot, gguf_variant)
+            # Tool sandboxes can write the Hub cache: read nothing a link leads to outside the cache root.
+            cache_root = snapshot.parent.parent.parent
+            cached_template = _chat_template_from_dir(snapshot, gguf_variant, [cache_root])
             if cached_template:
                 break
     except Exception as exc:
@@ -444,13 +446,17 @@ def read_default_chat_template(
                     if not _this_file_was_already_here(rel)
                     else nullcontext()
                 )
+                cache_dir = active_hf_hub_cache()
                 with recording:
                     path = hf_hub_download(
                         resolved,
                         rel,
                         token = hf_token,
-                        cache_dir = active_hf_hub_cache(),
+                        cache_dir = cache_dir,
                     )
+                # The returned path can be an entry already in the cache, so it gets the same rule as the walk.
+                if not _leaf_inside_allowlist(Path(path), [Path(cache_dir)]):
+                    return None
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None

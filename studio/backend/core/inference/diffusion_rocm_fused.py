@@ -14,6 +14,7 @@ import sys
 import threading
 from typing import Any, Callable, Optional
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_FUSED_ROPE"
 FUSED_ADALN_ENV = "UNSLOTH_DIFFUSION_FUSED_ADALN"
@@ -230,6 +231,7 @@ def uninstall_rope() -> None:
 
 
 @functools.lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _adaln_kernel() -> Optional[Callable]:
     try:
         import triton

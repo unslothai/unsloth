@@ -20,6 +20,7 @@ SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_r
 PATCH_HELPER = "_patch_grpo_accumulated_loss_hidden_states_dispatch"
 DISPATCH_HELPER = "_unsloth_grpo_returns_hidden_states"
 SIGNAL_HELPER = "_unsloth_grpo_hidden_states_signal"
+NATIVE_HELPER = "_unsloth_forward_returns_hidden_states"
 PATTERN_NAME = "_GRPO_HIDDEN_STATES_WIDTH_DISPATCH"
 CANDIDATE_PATTERN_NAME = "_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE"
 MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
@@ -41,6 +42,7 @@ def _load_helpers():
             PATCH_HELPER,
             DISPATCH_HELPER,
             SIGNAL_HELPER,
+            NATIVE_HELPER,
         }:
             body.append(node)
     names = {
@@ -59,6 +61,7 @@ def _load_helpers():
         PATCH_HELPER,
         DISPATCH_HELPER,
         SIGNAL_HELPER,
+        NATIVE_HELPER,
     }
     assert names == expected, (names, expected)
     namespace = {"inspect": inspect, "re": re}

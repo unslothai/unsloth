@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { AlertDialog } from "@/components/ui/alert-dialog";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { formatBytes } from "@/features/hub";
 import { FullAccessConfirmContent } from "@/features/chat/permission-mode-select";
 import { hasChatFullAccess, withChatFullAccess } from "@/features/chat/utils/chat-full-access";
 import {
@@ -14,6 +15,9 @@ import {
   ToolApprovalGoneError,
 } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { alwaysAllowComputerUseApp } from "@/features/computer-use/store";
+import { COMPUTER_USE_TOOL, alwaysAllowableApp } from "@/features/computer-use/summary";
+import { useT } from "@/i18n";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceBackgrounded,
@@ -60,11 +64,17 @@ export function ToolConfirmationControls({
   const autoAllowKey = confirmation?.autoAllowKey ?? "";
   // Sharing the user's image is asked every time: no Always allow, no keyboard chord.
   const disclosure = confirmation?.imageDisclosure;
+  // The server decides when a computer call asks, so only an app can be always allowed.
+  const computer = toolName === COMPUTER_USE_TOOL;
+  const computerAsk = computer ? confirmation?.computerUse : undefined;
+  const alwaysApp = permissionMode === "ask" ? null : alwaysAllowableApp(computerAsk);
   const autoAllowed = useChatRuntimeStore(
     (s) =>
       !disclosure &&
+      !computer &&
       (s.alwaysAllowToolsBySession.get(autoAllowKey)?.has(toolName) ?? false),
   );
+  const t = useT();
 
   const [fullAccessOpen, setFullAccessOpen] = useState(false);
   const [decided, setDecided] = useState(false);
@@ -73,14 +83,17 @@ export function ToolConfirmationControls({
   const [failure, setFailure] = useState<"retry" | "gone" | null>(null);
   const failed = failure !== null;
 
+  // tool_start stores the approval before a reused card redraws: until the card names the approval's
+  // tool it neither asks nor answers, so another tool's "Always allow" cannot approve this call.
   const awaiting =
     confirmation !== undefined &&
+    confirmation.toolName === toolName &&
     result === undefined &&
     status?.type === "running";
   const showControls = awaiting && !decided;
 
   const resolve = useCallback(
-    async (decision: "allow" | "deny", alsoAlways = false, fullAccess = false) => {
+    async (decision: "allow" | "deny", alsoAlways = false, fullAccess = false, alwaysApp = "") => {
       if (!toolCallId || !confirmation) return;
       const epoch = getAuthSessionEpoch();
       const choiceVersion = useChatRuntimeStore.getState().chatPermissionChoiceVersion;
@@ -107,6 +120,8 @@ export function ToolConfirmationControls({
           }
           // Record the session grant only after the backend accepted, or a failed press auto-approves.
           if (alsoAlways && autoAllowKey) allowToolAlways(autoAllowKey, toolName);
+          // The call is allowed for this chat either way; a failed save only means it asks again.
+          if (alwaysApp) void alwaysAllowComputerUseApp(alwaysApp).catch(() => undefined);
           // Hide only once the backend confirms, or the generation stays blocked with no retry.
           setDecided(true);
           clearToolConfirmation(toolCallId);
@@ -170,6 +185,11 @@ export function ToolConfirmationControls({
     textFieldException: COMPOSER_INPUT_SELECTOR,
   });
 
+  const computerReasons = [
+    ...(computerAsk?.risks ?? []),
+    ...(computerAsk?.apps ?? []).map((app) => t("computerUse.approval.newApp", { app })),
+  ];
+
   if (!showControls) return null;
   // Auto-approved tools resolve silently unless the post fails.
   if ((autoAllowed || chatFullAccess) && !failed) return null;
@@ -178,9 +198,16 @@ export function ToolConfirmationControls({
     <div className="flex flex-wrap items-center gap-2 pt-1">
       {disclosure ? (
         <p className="w-full text-xs text-muted-foreground">
-          Send your attached image ({Math.ceil(disclosure.size_bytes / 1024)}{" "}
-          KB) to {disclosure.server} ({disclosure.tool}) at{" "}
-          {disclosure.destination}? The server may keep it.
+          Send your attached image ({formatBytes(disclosure.size_bytes)}) to{" "}
+          {disclosure.server} ({disclosure.tool}) at {disclosure.destination}?
+          The server may keep it.
+        </p>
+      ) : null}
+      {computer && !disclosure ? (
+        <p className="w-full text-xs text-muted-foreground" data-slot="computer-use-ask">
+          {computerReasons.length > 0
+            ? t("computerUse.approval.because", { reasons: computerReasons.join("; ") })
+            : t("computerUse.approval.note")}
         </p>
       ) : null}
       <Button
@@ -190,7 +217,17 @@ export function ToolConfirmationControls({
       >
         {disclosure ? "Share image once" : "Allow"}
       </Button>
-      {disclosure ? null : (
+      {alwaysApp && !disclosure ? (
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={pending !== null || failure === "gone"}
+          onClick={() => void resolve("allow", false, false, alwaysApp)}
+        >
+          {t("computerUse.approval.alwaysAllowApp", { app: alwaysApp })}
+        </Button>
+      ) : null}
+      {disclosure || computer ? null : (
         <Button
           size="xs"
           variant="outline"

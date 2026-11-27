@@ -82,7 +82,8 @@ class UndecidedReason(str):
 def _exhausted(exc: BaseException | None) -> bool:
     seen = 0
     while exc is not None and seen < 8:
-        if isinstance(exc, MemoryError) or (
+        # A missed deadline is load, which tool code can cause: never a verdict about the backend.
+        if isinstance(exc, (MemoryError, subprocess.TimeoutExpired)) or (
             isinstance(exc, OSError) and exc.errno in _RESOURCE_ERRNOS
         ):
             return True
@@ -509,7 +510,10 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         )
         return True, f"the {backend_name} live isolation probe passed{caveat}"
     except subprocess.TimeoutExpired:
-        return False, f"the {backend_name} live probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s"
+        # Undecided, so auto mode never falls back to the host because tool code loaded the machine.
+        return False, UndecidedReason(
+            f"the {backend_name} live probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s"
+        )
     except Exception as exc:  # noqa: BLE001 - see the docstring on probe()
         logger.debug("sandbox probe for %s could not run", backend_name, exc_info = True)
         return False, _classified(

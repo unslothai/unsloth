@@ -18,6 +18,7 @@ import { EMBEDDING_TAGS } from "./hf-model-meta.ts";
 import { routableToMediaPage } from "./local-path.ts";
 
 export interface HubModelRunSelection {
+  checkpointFilename?: string;
   ggufVariant?: string;
   ggufFilename?: string;
   expectedBytes?: number;

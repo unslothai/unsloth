@@ -500,6 +500,29 @@ def test_bash_exec_timeout_keeps_output_already_printed():
     assert baseline.endswith("Execution timed out after 1 seconds.")
 
 
+@pytest.mark.parametrize("disable_sandbox", [False, True])
+def test_bash_exec_timeout_keeps_a_python_scripts_unflushed_output(disable_sandbox, monkeypatch):
+    monkeypatch.delenv("PYTHONUNBUFFERED", raising = False)
+    code = "import time; print('progress'); time.sleep(30)"
+    command = f'"{sys.executable}" -c "{code}"'
+    result = _bash_exec(command, timeout = 5, disable_sandbox = disable_sandbox)
+    assert "progress" in result
+    assert result.endswith("Execution timed out after 5 seconds.")
+
+
+def test_bash_exec_streams_a_python_scripts_unflushed_print_live():
+    code = "import time; print('progress'); time.sleep(3); print('done')"
+    command = f'"{sys.executable}" -c "{code}"'
+    seen: list[tuple[float, str]] = []
+    result = _bash_exec(
+        command, timeout = 60, output_callback = lambda text: seen.append((time.monotonic(), text))
+    )
+    finished = time.monotonic()
+    assert "progress" in result and "done" in result
+    assert seen and "progress" in seen[0][1]
+    assert finished - seen[0][0] > 2
+
+
 def test_python_exec_timeout_still_says_so_when_the_output_printed_a_marker():
     from core.inference.tool_loop_controller import strip_result_for_model
 

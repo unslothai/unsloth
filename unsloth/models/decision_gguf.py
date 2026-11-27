@@ -843,6 +843,10 @@ def push_to_hub_gguf(
             token = token,
         )
         repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+        # _decision_common, not save.py: MLX loads this file by path as unsloth._decision_gguf, without torch.
+        from . import _decision_common as common
+
+        common._refuse_private_push_to_public_repo(repo_id, private, api)
         api.upload_folder(folder_path = str(Path(folder) / _contract().EXPORT_DIR), repo_id = repo_id)
     print(f"Unsloth: Saved the decision model GGUF to https://huggingface.co/{repo_id}")
     return data

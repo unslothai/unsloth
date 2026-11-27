@@ -493,7 +493,6 @@ def test_gpt_oss_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
     for extra, match in (
         ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
         ({"fsdp2": True}, "fsdp2_cp"),
-        ({"router_aux_loss": True}, "router auxiliary loss"),
         ({"compile": "block"}, "no numeric parity"),
         ({"attention": "sdpa"}, "no numeric parity"),
         ({"mode": "qlora"}, "4-bit experts"),
@@ -501,6 +500,19 @@ def test_gpt_oss_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
     ):
         with pytest.raises(NotImplementedError, match = match):
             caps.check(caps.Query(**{**kw, **extra}))
+    # The router aux loss under cp has its own gloo parity for full and lora (850983b8e3); expert LoRA has none.
+    aux = caps.Query(**{**kw, "router_aux_loss": True})
+    status, cell = caps.cell_status(aux)
+    if expert_lora:
+        assert status != "supported", cell
+        with pytest.raises(NotImplementedError, match = "no numeric parity"):
+            caps.check(aux)
+    else:
+        assert status == "supported" and (
+            "test_cp_router_aux_gloo.py::test_family_router_aux_loss_under_cp_matches_one_process"
+            f"[gpt_oss-{mode}-plain" in cell.parity
+        ), cell
+        caps.check(aux)
 
 
 def test_gpt_oss_evidence_ids_are_real_parity_cases():
@@ -519,6 +531,26 @@ def test_gpt_oss_evidence_ids_are_real_parity_cases():
             ) in lora
             named += 1
     assert named == 3
+
+
+def test_gpt_oss_pp_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_pp_moe_aux_off_gloo")
+    named = 0
+    for cell in caps.CELLS:
+        if (
+            cell.parity
+            and "test_pp2_uncarried_moe_with_aux_off_matches_gradient_accumulation[" in cell.parity
+        ):
+            assert " x aux off x pp" in cell.name and "gpt_oss" in cell.name, cell.name
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CELLS), (cell.name, ids)
+            assert all(parity.CELLS[i].get("lora") for i in ids), (cell.name, ids)
+            experts = {bool(parity.CELLS[i].get("experts")) for i in ids}
+            assert experts == {"lora+experts" in cell.name}, (cell.name, ids)
+            named += 1
+    assert named == 3  # lora, lora+experts, qlora
 
 
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
@@ -655,3 +687,195 @@ def test_qwen3_moe_qlora_pp_keeps_its_refusal_with_the_micro_batch_evidence():
     with pytest.raises(NotImplementedError, match = "UNSLOTH_PP_MICROBATCHES=1") as e:
         caps.check(query)
     assert "qwen3_moe x qlora x aux on x pp" in str(e.value)
+
+
+def test_gemma4_moe_lora_under_pp_follows_its_gloo_evidence():
+    kw = dict(trainer = "sft", family = "gemma4", moe = True, mode = "lora", pp = 2, pp_schedule = "1f1b")
+    for extra in (
+        {},
+        {"multimodal": True},
+    ):  # the Trainer path trains a multimodal checkpoint on text
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "gemma4_moe" in cell.parity, (extra, cell)
+        caps.check(query)
+    for extra in ({"expert_lora": True}, {"router_aux_loss": True}):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+@pytest.mark.parametrize("memory", ["none", "gc", "unsloth_offload"])
+@pytest.mark.parametrize("expert_lora", [False, True])
+def test_deepseek_v41_lora_under_pp_follows_its_gloo_evidence(memory, expert_lora):
+    import re
+
+    # Release config keeps a vision_config; attention is windowed and eager.
+    kw = dict(
+        trainer = "sft",
+        family = "deepseek_v41",
+        moe = True,
+        mode = "lora",
+        multimodal = True,
+        windowed = True,
+        attention = "eager",
+        pp = 2,
+        pp_schedule = "gpipe",
+        memory = memory,
+        expert_lora = expert_lora,
+    )
+    status, cell = caps.cell_status(caps.Query(**kw))
+    assert status == "supported", cell
+    caps.check(caps.Query(**kw))
+    parity = pytest.importorskip("tests.test_parallel_deepseek_v41_gloo")
+    ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+    assert set(ids) <= set(parity.CELLS) and any("gc" in i for i in ids), ids
+    assert all(parity.CELLS[i]["mode"] == "pp" for i in ids)
+    for extra in (
+        {"mode": "qlora"},
+        {"mode": "full"},
+        {"attention": "sdpa"},
+        {"memory": "unsloth_gc"},
+        {"router_aux_loss": True},
+        {"cp": 2},
+    ):
+        assert caps.cell_status(caps.Query(**{**kw, **extra}))[0] != "supported", extra
+
+
+def test_native_port_attention_is_not_the_fast_kernels():
+    native = type("DeepseekV41Attention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    native.forward.__module__ = "unsloth.models.deepseek_v41.modeling"
+    fast = type("LlamaAttention", (torch.nn.Module,), {"forward": lambda self, x: x})
+    fast.forward.__module__ = "unsloth.models.llama"
+    assert not caps._kernels(torch.nn.Sequential(native()))
+    assert caps._kernels(torch.nn.Sequential(fast()))
+
+
+# Legacy layouts (pp x tp, pp x dp, dp x tp) with their gloo evidence.
+
+_LEGACY_LAYOUTS = {
+    "pp2_x_tp2": (dict(pp = 2, tp = 2, pp_schedule = "1f1b"), "pp x tp"),
+    "pp2_x_ddp2": (dict(pp = 2, dp = 2, pp_schedule = "1f1b"), "pp x dp (DDP)"),
+    "pp2_x_fsdp2_dp2": (dict(pp = 2, dp = 2, fsdp2 = True, pp_schedule = "1f1b"), "pp x dp (native FSDP2)"),
+    "ddp2_x_tp2": (dict(dp = 2, tp = 2), "dp x tp (DDP)"),
+    "fsdp2_dp2_x_tp2": (dict(dp = 2, tp = 2, fsdp2 = True), "dp (native FSDP2) x tp"),
+}
+
+
+def _legacy(layout, **kw):
+    base = dict(trainer = "trainer", family = "llama", mode = "lora", attention = "eager", torch = (2, 14))
+    base.update(_LEGACY_LAYOUTS[layout][0])
+    base.update(kw)
+    return caps.Query(**base)
+
+
+def _cited(text):
+    import re
+    return re.findall(r"(tests/[\w/]+\.py)::(\w+)(?:\[([^\]]*)\])?", text)
+
+
+@pytest.mark.parametrize("layout", sorted(_LEGACY_LAYOUTS))
+def test_legacy_layout_cell_is_supported_under_strict(layout, clean_env):
+    status, cell = caps.cell_status(_legacy(layout))
+    assert status == "supported", cell
+    assert cell.name.startswith(_LEGACY_LAYOUTS[layout][1]) and not cell.missing(), cell.name
+    assert cell.compile == "eager: no compiled region"
+    assert _cited(cell.parity) and _cited(cell.engagement)
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    caps.check(_legacy(layout))
+
+
+@pytest.mark.parametrize("layout", sorted(_LEGACY_LAYOUTS))
+def test_legacy_layout_cell_cites_real_test_ids(layout):
+    import os
+    import re
+
+    _, cell = caps.cell_status(_legacy(layout))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cited = _cited(" ".join((cell.parity, cell.engagement, cell.note)))
+    assert len(cited) >= 2, cited
+    for path, name, params in cited:
+        source = open(os.path.join(root, path), encoding = "utf-8").read()
+        assert re.search(rf"^def {name}\(", source, re.M), (path, name)
+        for param in filter(None, (params or "").split("|")):
+            assert f'"{param}"' in source, (path, name, param)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"moe": True},
+        {"packing": True},
+        {"compile": "block"},
+        {"cp": 2, "cp_backend": "ulysses"},
+        {"trainer": "sft"},
+        {"family": "qwen3"},
+        {"attention": "sdpa"},
+        {"memory": "gc"},
+        {"mode": "qlora"},
+        {"kernels": True},
+        {"vllm": True},
+        {"block_swap": True},
+    ],
+    ids = lambda kw: "-".join(f"{k}={v}" for k, v in kw.items()),
+)
+@pytest.mark.parametrize("layout", sorted(_LEGACY_LAYOUTS))
+def test_legacy_layout_just_outside_its_cell_is_refused_under_strict(layout, kw, clean_env):
+    assert caps.cell_status(_legacy(layout, **kw))[0] != "supported"
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    with pytest.raises(NotImplementedError):
+        caps.check(_legacy(layout, **kw))
+
+
+@pytest.mark.parametrize(
+    "layout, kw",
+    [
+        ("pp2_x_tp2", {"tp": 4}),
+        ("pp2_x_ddp2", {"pp": 4}),
+        ("pp2_x_fsdp2_dp2", {"pp_schedule": "gpipe"}),
+        ("ddp2_x_tp2", {"dp": 4}),
+        ("fsdp2_dp2_x_tp2", {"pp": 2, "pp_schedule": "1f1b"}),
+    ],
+)
+def test_legacy_layout_sizes_outside_the_measured_ones_are_refused_under_strict(
+    layout, kw, clean_env
+):
+    assert caps.cell_status(_legacy(layout, **kw))[0] != "supported"
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    with pytest.raises(NotImplementedError):
+        caps.check(_legacy(layout, **kw))
+
+
+@pytest.mark.parametrize("layout", sorted(_LEGACY_LAYOUTS))
+def test_legacy_layout_through_query_from_reaches_its_cell(layout, clean_env):
+    import transformers
+    from peft import LoraConfig, get_peft_model
+
+    config = transformers.LlamaConfig(
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        vocab_size = 64,
+    )
+    config._attn_implementation = "eager"
+    torch.manual_seed(0)
+    model = get_peft_model(
+        transformers.LlamaForCausalLM(config), LoraConfig(r = 4, target_modules = "all-linear")
+    )
+    kw = _LEGACY_LAYOUTS[layout][0]
+    layout_ns = types.SimpleNamespace(
+        dp = kw.get("dp", 1),
+        tp = kw.get("tp", 1),
+        pp = kw.get("pp", 1),
+        cp = 1,
+        fsdp2 = kw.get("fsdp2", False),
+        cp_backend = None,
+        schedule = "1f1b",
+    )
+    args = types.SimpleNamespace(gradient_checkpointing = False, optim = "adamw_torch")
+    query = caps.query_from(layout_ns, transformers.Trainer, model, args)
+    status, cell = caps.cell_status(query)
+    assert status == "supported", (cell, query)
+    assert cell.name.startswith(_LEGACY_LAYOUTS[layout][1])
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    caps.check_layout(layout_ns, transformers.Trainer, model, args)

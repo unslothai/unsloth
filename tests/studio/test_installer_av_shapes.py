@@ -22,8 +22,7 @@ BAT_SCRIPTS = ("studio/setup.bat",)
 ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS + BAT_SCRIPTS
 
 
-# Why the installers look the way they do lives here: AMSI scans the whole script, comments
-# included, so shipped scripts must not explain detections. This file does not ship.
+# Shipped scripts must not explain AV detections: AMSI scans whole scripts, comments included.
 AV_SHAPES_RECORD = r"""
 ## Measured detections
 
@@ -175,6 +174,19 @@ sequence in this space.
 install.ps1 and scripts/uninstall.ps1 are scanned in full at compile time, before a line of either
 runs, and nothing reads a header comment from inside the script. Duplicating the README's option list
 into a header adds bytes to a classifier's input and reaches no user.
+
+## The Windows GPU name table is plain literals, not nested optional groups
+
+Cortex XDR Local Analysis (code C040008C, rule powershell.powershell_replace_brackets_2, action block)
+stopped a Desktop backend update on studio/setup.ps1 sha256
+9cacbbe0d36d12ee2ded941237d28fa97c3bcdaa52c8e69614205e017cb4908f, the file shipped in v0.1.918-beta and
+v0.1.919-beta. The v0.1.914..917 file (b15f3e706498...) ran through the same launcher on the same machine.
+Between the two, the only new regex syntax in the whole script is one $nameArchTable row,
+`820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330`: the only `?(?:`, `?)?` and ` ?(` in the file. The other
+edits were literals in shapes the clean file already had. The row is now spelled out as plain alternatives
+(the same language, checked with -match). test_windows_gpu_name_table_has_no_optional_groups keeps optional
+or non-capturing groups out of both Windows tables. The `[05]` classes and the `(?!S)` lookahead
+shipped in the clean file and stay. Unconfirmed against the vendor: the rule body is not public.
 
 ## Shapes we are keeping, on purpose
 
@@ -368,8 +380,7 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 
 # Every native import left in the installers; a new entry needs a reason.
 ALLOWED_PINVOKES = {
-    # Linked-ancestor canonicalisation; no 5.1 equivalent. The mutex name is hashed from this
-    # spelling byte for byte, so a GetFullPath shortcut would break exclusion.
+    # Linked ancestors, no 5.1 equivalent; mutex hashes spelling, so GetFullPath breaks it.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
     # ANSI colour on a real console; skipped when stdout is redirected.
@@ -378,8 +389,7 @@ ALLOWED_PINVOKES = {
     "SetConsoleMode",
     # Per-item icon refresh; ie4uinit -show alone does not recover a stale .lnk.
     "SHChangeNotify",
-    # Names the image behind a pid with LIMITED_INFORMATION only; Process.Path needs VM_READ
-    # and WMI may be broken.
+    # Pid image via LIMITED_INFORMATION only; Process.Path needs VM_READ and WMI may be broken.
     "OpenProcess",
     "QueryFullProcessImageNameW",
     "CloseHandle",
@@ -566,8 +576,7 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
             f"{name} declares native imports but no longer emits them. If they are compiled again "
             f"instead, that is csc.exe on 5.1, which is the shape this whole file exists to keep out."
         )
-    # The private-%TEMP% compile retry is gone; scoped to the resolver since
-    # Initialize-StudioTempEnvironment legitimately redirects TEMP.
+    # Scoped to the resolver, since Initialize-StudioTempEnvironment legitimately redirects TEMP.
     if "function Initialize-StudioFinalPathNativeType" not in text:
         return
     start = text.index("function Initialize-StudioFinalPathNativeType")
@@ -865,8 +874,7 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
-    """The listing still reports an uncleaned compile's leftovers, such as a response file beside
-    the assembly; a bare DLL under TEMP is not evidence, since that rule killed the job."""
+    """Leftovers like a response file are still listed; a bare DLL under TEMP is not evidence."""
     action = (
         '$dir = Join-Path $env:TEMP "leftover"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
@@ -954,8 +962,7 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
 
 
 def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
-    """The path resolver keeps its lexical fallback: a host that cannot reach the exact rung must
-    degrade exactly as a host that could not compile already did."""
+    """A host that cannot reach the exact rung degrades lexically, as a non-compiling host did."""
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
@@ -1027,6 +1034,7 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "## The icon-cache refresh is gated on a first install or a real icon change",
         "## uv comes from a pinned archive, not from a remote install script",
         "## Why the script headers do not repeat the usage text",
+        "## The Windows GPU name table is plain literals, not nested optional groups",
         "## Shapes we are keeping, on purpose",
     ):
         assert section in AV_SHAPES_RECORD, f"the record lost its {section!r} section"
@@ -1038,8 +1046,50 @@ def test_the_record_survives_and_keeps_its_evidence() -> None:
         "#10540",
         "#10805",
         "#9140",
+        "powershell.powershell_replace_brackets_2",
+        "9cacbbe0d36d12ee2ded941237d28fa97c3bcdaa52c8e69614205e017cb4908f",
     ):
         assert evidence in AV_SHAPES_RECORD, f"the record no longer names {evidence}"
+
+
+_NAME_TABLE_ROW = re.compile(r'@\{\s*P\s*=\s*"([^"]+)"\s*;\s*A\s*=\s*"(gfx[0-9a-z]+)"\s*\}')
+# A non-capturing group, or `?` on a group or after a space: the shapes only the blocked row carried.
+_OPTIONAL_GROUP = re.compile(r"\(\?:|\)\?| \?")
+
+
+def _windows_name_table_lines(name: str) -> list:
+    """Code part of every active line in $nameArchTable, whatever its quoting; comment lines dropped."""
+    text = _text(name)
+    start = text.find("$nameArchTable = @(")
+    assert start != -1, f"{name}: $nameArchTable not found (renamed? update this guard)"
+    close = re.compile(r"\n[ \t]*\)[ \t]*\r?\n").search(text, start)
+    assert close, f"{name}: $nameArchTable has no closing `)` line"
+    block = text[start : close.start()].splitlines()[1:]
+    # The table's patterns never contain '#', so everything after one is a comment.
+    lines = [line.split("#", 1)[0].strip() for line in block]
+    lines = [line for line in lines if line]
+    assert (
+        len(_NAME_TABLE_ROW.findall("\n".join(lines))) >= 10
+    ), f"{name}: $nameArchTable rows not parsed"
+    return lines
+
+
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_windows_gpu_name_table_has_no_optional_groups(name: str) -> None:
+    """See AV_SHAPES_RECORD: a single row with nested optional groups got setup.ps1 blocked."""
+    offending = [line for line in _windows_name_table_lines(name) if _OPTIONAL_GROUP.search(line)]
+    assert not offending, (
+        f"{name}: $nameArchTable rows {offending} use (?:...), a `)?` or a ` ?`. Spell the variants "
+        f"out as plain `A|B|C` alternatives (same -match result); see AV_SHAPES_RECORD."
+    )
+
+
+def test_the_optional_group_guard_can_fire() -> None:
+    assert _OPTIONAL_GROUP.search("820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330")
+    assert not _OPTIONAL_GROUP.search("820M|Krackan Point 2|Krackan 2|AI 5 PRO 330|AI 5 330")
+    # Shapes the clean release already shipped stay legal.
+    assert not _OPTIONAL_GROUP.search("RX 7800|RX 7700(?!S)|PRO W7700")
+    assert not _OPTIONAL_GROUP.search("890M|HX 37[05]|AI 9 36[05]")
 
 
 @pytest.mark.parametrize("name", DOCUMENTED_SCRIPTS)
@@ -1190,3 +1240,103 @@ def test_the_bareword_comment_rule_can_fire() -> None:
     assert re.match(r"^\s*[A-Za-z0-9_]+#", "    unction# something")
     assert not re.match(r"^\s*[A-Za-z0-9_]+#", "# An in-box tool")
     assert not re.match(r"^\s*[A-Za-z0-9_]+#", '    $x = "a#b"')
+
+
+def _run_watch_with_failing_watcher(
+    tmp_path,
+    *,
+    fail_first: int,
+    attempts: int,
+    compiled: bool = False,
+    leftover: bool = False,
+) -> str:
+    """Runs real Invoke-WithCompilerWatch; watcher errors on the first fail_first measurements."""
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    evidence = tmp_path / "evidence"
+    script = tmp_path / "probe.ps1"
+    fake_compiler = (
+        "function Get-StudioCompilerEvents { param($Since, $Until) "
+        "if ($script:Compiled) { 'csc.exe /noconfig' } }"
+    )
+    script.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f'$env:TEMP = "{temp_root.as_posix()}"',
+                f'$env:TMP = "{temp_root.as_posix()}"',
+                _FAKE_WINEVENT,
+                f'. "{_WATCHER}"',
+                "$script:StopCalls = 0",
+                "$script:Compiled = $false",
+                "$script:RealStop = ${function:Stop-StudioTempWatch}",
+                "function Stop-StudioTempWatch { param([object[]]$Handle) "
+                "$r = & $script:RealStop -Handle $Handle; $script:StopCalls++; "
+                f"if ($script:StopCalls -le {fail_first}) "
+                "{ $r.FailedRoots = [string[]]@($env:TEMP) }; return $r }",
+                fake_compiler,
+                "$action = { "
+                + ("$script:Compiled = $true; " if compiled else "")
+                + (
+                    '$d = Join-Path $env:TEMP "vpmyd5eq"; '
+                    "New-Item -ItemType Directory -Force -Path $d | Out-Null; "
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.cmdline") -Value "/noconfig"; '
+                    'Set-Content -LiteralPath (Join-Path $d "vpmyd5eq.dll") -Value "MZ"; '
+                    if leftover
+                    else ""
+                )
+                + "Start-Sleep -Milliseconds 50 }",
+                "try {",
+                "    $seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
+                f'-EvidenceRoot "{evidence.as_posix()}" -Attempts {attempts}',
+                '    Write-Output ("RESULT:measured compilers=$($seen.Compilers.Count) "'
+                '+ "libraries=$($seen.TempLibraries.Count)")',
+                '} catch { Write-Output "RESULT:void $($_.Exception.Message)" }',
+                'Write-Output "MEASUREMENTS:$script:StopCalls"',
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    result = _run_pwsh(script, timeout = 300)
+    assert result.returncode == 0, result.stderr + result.stdout
+    return result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_error_voids_a_single_measurement(tmp_path) -> None:
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 1)
+    assert "RESULT:void" in stdout and "raised an error" in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_error_is_measured_again_and_only_a_healthy_run_counts(tmp_path) -> None:
+    """Temp-write bursts overflow the watcher: that void run is not scored; measure again."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2)
+    assert "RESULT:measured compilers=0 libraries=0" in stdout, stdout
+    assert "MEASUREMENTS:2" in stdout, stdout
+    assert (tmp_path / "evidence" / "probe-attempt2-watch-failures.txt").exists()
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_watcher_that_fails_every_attempt_is_still_void(tmp_path) -> None:
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 2, attempts = 2)
+    assert "RESULT:void" in stdout, stdout
+    assert "MEASUREMENTS:2" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
+    """4688 is authoritative about what ran, so a compile it saw is reported rather than measured away."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, compiled = True)
+    assert "RESULT:measured compilers=1 " in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_artefact_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
+    """An artefact hit during a watcher failure is still reported; a retry would bury it."""
+    stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, leftover = True)
+    assert "RESULT:measured compilers=0 libraries=" in stdout, stdout
+    assert "libraries=0" not in stdout, stdout
+    assert "MEASUREMENTS:1" in stdout, stdout

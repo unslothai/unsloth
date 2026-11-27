@@ -541,6 +541,56 @@ def test_an_edited_image_object_misses_after_in_place_change():
     assert pipe.calls == 2
 
 
+class _VisionPipe:
+    def __init__(self):
+        self.calls = 0
+        self._execution_device = torch.device("cpu")
+        self.text_encoder = torch.nn.Linear(2, 2)
+
+    def encode_prompt(
+        self,
+        prompt,
+        vision_images = None,
+    ):
+        self.calls += 1
+        return torch.full((2,), float(self.calls)), torch.zeros(2, dtype = torch.long)
+
+
+def test_float_reference_picture_is_cached_by_content():
+    np = pytest.importorskip("numpy")
+    pipe = _VisionPipe()
+    assert prompt_cache.install(pipe)
+    picture = np.linspace(0.0, 1.0, 4 * 6 * 3, dtype = np.float32).reshape(4, 6, 3)
+    pipe.encode_prompt("a cat", [picture])
+    pipe.encode_prompt("a cat", [picture.copy()])
+    assert pipe.calls == 1
+    changed = picture.copy()
+    changed[0, 0, 0] = np.nextafter(changed[0, 0, 0], np.float32(1.0))
+    pipe.encode_prompt("a cat", [changed])
+    pipe.encode_prompt("a cat", [picture.astype(np.float64)])
+    assert pipe.calls == 3
+    stats = pipe._unsloth_prompt_cache.describe()
+    assert stats["bypassed"] == 0 and stats["hits"] == 1
+
+
+def test_h3_wide_source_vision_copy_hits_the_prompt_cache():
+    np = pytest.importorskip("numpy")
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference import diffusion_minimax_h3_image as h3
+
+    pixels = np.random.default_rng(0).integers(0, 255, (1024, 4096, 3), dtype = np.uint8)
+    _, vision = h3.MiniMaxH3ImagePipeline.prepare_references(
+        Image.fromarray(pixels), source_resize = True
+    )
+    assert isinstance(vision[0], np.ndarray) and vision[0].dtype == np.float32
+    pipe = _VisionPipe()
+    assert prompt_cache.install(pipe)
+    pipe.encode_prompt("a cat", vision)
+    pipe.encode_prompt("a cat", vision)
+    assert pipe.calls == 1
+    assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 0
+
+
 def test_bypassed_encoder_error_is_not_chained_onto_the_key_error():
     class Boom(_EncodePipe):
         def encode_prompt(

@@ -612,6 +612,51 @@ def test_quant_plan_shrinks_monotonically_with_the_budget(monkeypatch):
     assert seen == {(8, 0), (8, 8), (8, 4), (4, 0), (4, 8), (4, 4)}
 
 
+def test_dense_bit_ladder_per_config(monkeypatch):
+    _clear_quant_env(monkeypatch)
+    assert ZIMAGE.mlx_min_dense_bits == (("z-image", 8),)
+    # The undistilled base never drops its dense tensors to 4 bits.
+    assert mb.dense_bit_options(ZIMAGE, "z-image-turbo") == (0, 8, 4)
+    assert mb.dense_bit_options(None, "z-image") == (0, 8, 4)
+    assert mb.dense_bit_options(ZIMAGE, "z-image") == (0, 8)
+    base = mb.dense_bit_options(ZIMAGE, "z-image")
+    seen = set()
+    for tenth in range(220, 40, -1):
+        plan = mb.plan_quantization(
+            budget_bytes = int(tenth / 10 * GIB),
+            transformer_bytes = ZIMAGE_Q4_0,
+            text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+            vae_bytes = ZIMAGE_VAE,
+            dense_options = base,
+        )
+        seen.add((plan.te_bits, plan.dense_bits))
+    assert seen == {(8, 0), (8, 8), (4, 0), (4, 8)}
+    assert mb.dense_bits(8 * GIB) == 4 and mb.dense_bits(8 * GIB, options = base) == 8
+    assert mb.dense_bits(64 * GIB, options = base) == 0
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", "4")
+    assert mb.dense_bits(8 * GIB, options = base) == 4
+    plan = mb.plan_quantization(
+        budget_bytes = int(5.33 * GIB),
+        transformer_bytes = ZIMAGE_Q4_0,
+        text_encoder_bf16_bytes = ZIMAGE_TE_BF16,
+        dense_options = base,
+    )
+    assert plan.dense_bits == 4
+
+
+@pytest.mark.parametrize(
+    "base_repo, dense",
+    [("Tongyi-MAI/Z-Image-Turbo", 4), ("Tongyi-MAI/Z-Image", 8)],
+)
+def test_load_keeps_base_dense_tensors_above_4_bits(env, monkeypatch, base_repo, dense):
+    backend, runtime, calls = env
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_DENSE_BITS", raising = False)
+    monkeypatch.setattr(mb, "_total_ram_bytes", lambda: 8 * GIB)
+    assert _load(backend, base_repo = base_repo)["phase"] == "ready"
+    assert calls["dense_bits"] == dense
+    assert backend.status()["mlx"]["dense_bits"] == dense
+
+
 def test_quant_plan_env_pins_one_axis(monkeypatch):
     _clear_quant_env(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_TE_BITS", "16")
@@ -711,6 +756,23 @@ def test_decode_headroom_follows_the_decode_path(monkeypatch):
     assert mb.decode_headroom_bytes(_Tiles()) == mb.UNTILED_DECODE_HEADROOM_BYTES
 
 
+def test_decode_headroom_with_strip_decode_forced_off_reserves_the_whole_image_block_decode(
+    monkeypatch,
+):
+    class _Strips:
+        def vae_tiled(self):
+            return False
+
+        def decodes_in_strips(self):
+            return True
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING", "0")
+    expected = max(mb.ACTIVATION_HEADROOM_BYTES, mb.full_decode_bytes(1024, 1024))
+    assert mb.decode_headroom_bytes(_Strips()) == expected
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_VAE_TILING")
+    assert mb.decode_headroom_bytes(_Strips()) == mb.ACTIVATION_HEADROOM_BYTES
+
+
 def test_unquantizable_text_encoder_tensors_stay_full_size(monkeypatch, tmp_path):
     """Norms, biases and odd-width weights are not quantized by the runtime, so the plan keeps them at bf16."""
     _clear_quant_env(monkeypatch)
@@ -784,6 +846,57 @@ def test_policy_helpers(monkeypatch):
     assert mb.compute_precision_name("Apple M3 Pro") == "bfloat16"
     monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
     assert mb.compute_precision_name("Apple M1") == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "chip, model_config, expected",
+    [
+        # Turbo keeps M1 / M2 float16 (mflux's float16 headroom holds it); the undistilled base overflows it.
+        ("Apple M1 (Virtual)", "z-image-turbo", "float16"),
+        ("Apple M2 Max", "z-image-turbo", "float16"),
+        ("Apple M1 (Virtual)", "z-image", "bfloat16"),
+        ("Apple M2 Max", "z-image", "bfloat16"),
+        ("Apple M3 Pro", "z-image", "bfloat16"),
+        ("Apple M4", "z-image-turbo", "bfloat16"),
+    ],
+)
+def test_precision_honours_fp16_incompatible(monkeypatch, chip, model_config, expected):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    assert ZIMAGE.fp16_incompatible and ZIMAGE.mlx_fp16_configs == ("z-image-turbo",)
+    assert mb.compute_precision_name(chip, ZIMAGE, model_config) == expected
+
+
+def test_precision_fp16_flag_scope(monkeypatch):
+    import dataclasses
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    assert mb.compute_precision_name("Apple M1") == "float16"
+    plain = dataclasses.replace(ZIMAGE, fp16_incompatible = False, mlx_fp16_configs = ())
+    assert mb.compute_precision_name("Apple M1", plain, "z-image") == "float16"
+    # Flagged with nothing measured clean: every config computes in bfloat16.
+    strict = dataclasses.replace(ZIMAGE, mlx_fp16_configs = ())
+    assert mb.compute_precision_name("Apple M2", strict, "z-image-turbo") == "bfloat16"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "fp16")
+    assert mb.compute_precision_name("Apple M1", ZIMAGE, "z-image") == "float16"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_MLX_PRECISION", "bf16")
+    assert mb.compute_precision_name("Apple M1", ZIMAGE, "z-image-turbo") == "bfloat16"
+
+
+@pytest.mark.parametrize(
+    "base_repo, config, precision",
+    [
+        ("Tongyi-MAI/Z-Image-Turbo", "z-image-turbo", "float16"),
+        ("Tongyi-MAI/Z-Image", "z-image", "bfloat16"),
+    ],
+)
+def test_load_picks_precision_per_config_on_m1(env, monkeypatch, base_repo, config, precision):
+    backend, runtime, _calls = env
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_MLX_PRECISION", raising = False)
+    monkeypatch.setattr(mb, "_chip_name", lambda: "Apple M1 (Virtual)")
+    assert _load(backend, base_repo = base_repo)["phase"] == "ready"
+    assert runtime.builds[-1]["model_config"] == config
+    assert runtime.builds[-1]["precision"] == precision
+    assert backend.status()["mlx"]["precision"] == precision
 
 
 _GIB = 1024**3
@@ -2003,6 +2116,72 @@ def test_the_renderer_sees_the_shared_pool_beside_a_chat_model(monkeypatch):
     assert gr.metal_media_priced()
     monkeypatch.setattr(gr, "media_held_mib", lambda: {})
     assert runtime.free_working_set_bytes() == 88 * _GIB
+
+
+def _fake_block_decoder(monkeypatch):
+    import sys
+    import types
+
+    class _VAEBlockDecoder:
+        LEGACY = "legacy"
+        LOW_MEMORY = "low_memory"
+        FULL_PRECISION = "full_precision"
+
+    module = types.ModuleType("mflux.models.common.vae.block_decoder")
+    module.VAEBlockDecoder = _VAEBlockDecoder
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.block_decoder", module)
+    tiling = types.ModuleType("mflux.models.common.vae.tiling_config")
+    tiling.TilingConfig = None
+    monkeypatch.setitem(sys.modules, "mflux.models.common.vae.tiling_config", tiling)
+
+
+@pytest.mark.parametrize(
+    "side, free_gib, env, priced, mode",
+    [
+        (1024, 40.0, None, False, "full_precision"),
+        (1024, 2.0, None, False, "low_memory"),
+        (512, 2.0, None, False, "low_memory"),
+        (512, 4.0, None, False, "full_precision"),
+        (1024, 40.0, None, True, "low_memory"),
+        (512, 40.0, "1", False, "low_memory"),
+        (2048, 0.5, "0", False, "full_precision"),
+    ],
+)
+def test_mflux_024_picks_strips_or_the_whole_image_decode_instead_of_tiles(
+    monkeypatch, side, free_gib, env, priced, mode
+):
+    """mflux 0.24 ignores TilingConfig for Z-Image; Studio sets the VAE's decode_mode instead."""
+    import types
+
+    import core.inference.gpu_residency as gr
+
+    _fake_block_decoder(monkeypatch)
+    if env is None:
+        monkeypatch.delenv(mb.VAE_TILING_ENV, raising = False)
+    else:
+        monkeypatch.setenv(mb.VAE_TILING_ENV, env)
+    monkeypatch.setattr(gr, "metal_media_priced", lambda: priced)
+    runtime = mb.MfluxRuntime()
+    monkeypatch.setattr(runtime, "free_working_set_bytes", lambda: int(free_gib * _GIB))
+    model = types.SimpleNamespace(
+        tiling_config = "stale", vae = types.SimpleNamespace(decode_mode = "low_memory")
+    )
+    runtime._plan_vae_tiling(model, side, side)
+    assert model.vae.decode_mode == mode
+    assert model.tiling_config is None
+    assert runtime.vae_tiled() is (mode == "low_memory")
+
+
+# (side, full_precision GiB, low_memory GiB) above the weights, the largest of three runs: mflux 0.24 Z-Image VAE,
+# bf16, Apple M1 (Virtual) via Metal, macos-15.
+_MFLUX_024_DECODE_GIB = ((512, 2.07, 0.47), (768, 4.61, 0.79), (1024, 6.30, 1.34))
+
+
+def test_strip_and_whole_image_decode_estimates_match_the_metal_measurements():
+    for side, full_gib, strip_gib in _MFLUX_024_DECODE_GIB:
+        assert full_gib <= mb.full_decode_bytes(side, side) / _GIB < full_gib + 1.0
+        assert abs(mb.strip_decode_bytes(side, side) / _GIB - strip_gib) < 0.05
+    assert mb.strip_decode_bytes(1024, 1024) <= mb.ACTIVATION_HEADROOM_BYTES
 
 
 @pytest.mark.parametrize("priced, free_gib, expected", [(True, 40.0, True), (False, 40.0, False)])

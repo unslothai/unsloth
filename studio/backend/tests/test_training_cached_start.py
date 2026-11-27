@@ -276,6 +276,25 @@ def test_hf_dataset_preflight_rejects_invalid_repo_id():
     assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"
 
 
+@pytest.mark.parametrize("builder", ["pandas", "json"])
+def test_hf_dataset_preflight_rejects_datasets_builder_names(builder):
+    """load_dataset takes its own builders ahead of the Hub and reads the worker's cwd with them."""
+    route = _load_route_module("training_route_hf_dataset_preflight_builder_name")
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub metadata call")
+
+    with (
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        route._preflight_hf_dataset_request(_request(hf_dataset = builder, dataset_known_cached = True))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["code"] == "hf_dataset_verification_failed"
+
+
 def test_hf_dataset_preflight_skips_local_sources(tmp_path):
     route = _load_route_module("training_route_local_dataset_skips_hf_preflight")
     dataset_path = tmp_path / "dataset.jsonl"
@@ -3139,9 +3158,12 @@ def test_worker_4bit_tier_check_uses_model_load_target():
     snapshot = "/cache/models--org--model/snapshots/deadbeef"
     checked: list[tuple[str, str | None]] = []
 
-    with patch(
-        "utils.transformers_version.latest_tier_active_for",
-        side_effect = lambda target, token: checked.append((target, token)) or True,
+    with (
+        patch(
+            "utils.transformers_version.latest_tier_active_for",
+            side_effect = lambda target, token: checked.append((target, token)) or True,
+        ),
+        patch("utils.transformers_version._load_config_json", return_value = None),
     ):
         enabled = worker._effective_training_load_in_4bit(
             {"load_in_4bit": True},
@@ -3156,9 +3178,9 @@ def test_worker_4bit_tier_check_uses_model_load_target():
 def test_worker_strict_resume_rejects_4bit_tier_change():
     from core.training import worker
     from core.training.provenance import ExactResumeResourcesUnavailable
-    with patch(
-        "utils.transformers_version.latest_tier_active_for",
-        return_value = True,
+    with (
+        patch("utils.transformers_version.latest_tier_active_for", return_value = True),
+        patch("utils.transformers_version._load_config_json", return_value = None),
     ):
         with pytest.raises(ExactResumeResourcesUnavailable, match = "original 4-bit"):
             worker._effective_training_load_in_4bit(

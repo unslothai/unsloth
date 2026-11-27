@@ -128,6 +128,14 @@ export function ApiKeyRow({
         >
           {apiKey.name}
         </span>
+        {apiKey.access === "inference" && (
+          <span
+            className="shrink-0 rounded-full border px-1.5 text-ui-11 text-muted-foreground"
+            title={t("settings.apiKeys.accessInferenceHint")}
+          >
+            {t("settings.apiKeys.accessInferenceBadge")}
+          </span>
+        )}
       </div>
       <code className="font-mono text-ui-11 text-muted-foreground max-sm:hidden">
         {prefix}…

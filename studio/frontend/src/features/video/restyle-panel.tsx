@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,17 +10,21 @@ import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { notifyGalleryChanged } from "@/lib/gallery-flags";
+import { getHfToken, hfApiToken } from "@/features/hub";
 import {
   cancelVideoRestyle,
+  cancelVideoRestyleSetup,
   fetchVideoRestyleClip,
   fetchVideoRestyleProgress,
   fetchVideoRestyleStatus,
   previewVideoRestyle,
   startVideoRestyle,
+  startVideoRestyleSetup,
   type VideoRestylePreview,
   type VideoRestyleProgress,
   type VideoRestyleStatus,
 } from "./api";
+import { restyleSetupView } from "./restyle-setup";
 
 const POLL_MS = 1000;
 const MAX_FRAMES = 121;
@@ -63,13 +67,20 @@ function useObjectUrl(blob: Blob | null): string | null {
   return url;
 }
 
-export function VideoRestylePanel({ active }: { active: boolean }) {
+export interface RestyleRecipe {
+  prompt: string;
+  seed: string;
+}
+
+export function VideoRestylePanel({ active, restore }: { active: boolean; restore: RestyleRecipe | null }) {
   const [video, setVideo] = useState<File | null>(null);
   const [frames, setFrames] = useState<File[]>([]);
   const [prompt, setPrompt] = useState("");
   const [seed, setSeed] = useState("");
   const [progress, setProgress] = useState<VideoRestyleProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Kept apart from job errors so a restore can drop it with its source.
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [status, setStatus] = useState<VideoRestyleStatus | null>(null);
   const [preview, setPreview] = useState<VideoRestylePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -96,6 +107,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const running = progress?.active === true || progress?.pending === true;
   if (!running && cancelling) setCancelling(false);
   const unavailable = status !== null && !status.available;
+  const setupView = restyleSetupView(status);
+  const settingUp = setupView?.kind === "running";
+  const [setupError, setSetupError] = useState<string | null>(null);
+  // An error from an earlier start or cancel is stale once a setup runs or Restyle is ready.
+  if (setupError && (settingUp || status?.available)) setSetupError(null);
+  const [setupStarting, setSetupStarting] = useState(false);
 
   const refresh = useCallback(async () => {
     // Taken before the progress request: a clip chosen while it is in flight voids its result.
@@ -147,12 +164,49 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       .catch(() => setStatus(null));
   }, [active]);
 
+  // Setup runs on the server; the status carries its progress until it ends.
+  useEffect(() => {
+    if (!active || !settingUp) return;
+    const timer = window.setInterval(() => {
+      fetchVideoRestyleStatus()
+        .then(setStatus)
+        .catch(() => undefined);
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [active, settingUp]);
+
+  const startSetup = async () => {
+    if (setupStarting) return;
+    setSetupStarting(true);
+    setSetupError(null);
+    try {
+      setStatus(await startVideoRestyleSetup(hfApiToken(getHfToken())));
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+      // A setup already running (another tab) answers 409: pick up its progress instead of a dead button.
+      fetchVideoRestyleStatus().then(setStatus).catch(() => undefined);
+    } finally {
+      setSetupStarting(false);
+    }
+  };
+
+  const cancelSetup = async () => {
+    try {
+      await cancelVideoRestyleSetup();
+      setStatus(await fetchVideoRestyleStatus());
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err));
+      fetchVideoRestyleStatus().then(setStatus).catch(() => undefined);
+    }
+  };
+
   const choose = async (next: { video: File | null; frames: File[] }) => {
     if (running || submitting) return;
     setVideo(next.video);
     setFrames(next.frames);
     setPreview(null);
     setError(null);
+    setPreviewError(null);
     setOutcomeStale(true);
     clipsFor.current += 1;
     loadedFor.current = lastJob.current;
@@ -168,11 +222,28 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       const result = await previewVideoRestyle(next);
       if (ticket === previewFor.current) setPreview(result);
     } catch (err) {
-      if (ticket === previewFor.current) setError(err instanceof Error ? err.message : String(err));
+      if (ticket === previewFor.current) setPreviewError(err instanceof Error ? err.message : String(err));
     } finally {
       if (ticket === previewFor.current) setPreviewing(false);
     }
   };
+
+  // The recipe does not save its source, so a clip staged for another run is dropped. Unlike choose(), this
+  // keeps the shown outcome, and a running job already holds its upload.
+  const applyRestore = useEffectEvent((recipe: RestyleRecipe) => {
+    setPrompt(recipe.prompt);
+    setSeed(recipe.seed);
+    setVideo(null);
+    setFrames([]);
+    setPreview(null);
+    previewFor.current += 1;
+    setPreviewing(false);
+    setPreviewError(null);
+  });
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- each restore applies once, on mount or when replaced.
+    if (restore) applyRestore(restore);
+  }, [restore]);
 
   useEffect(() => {
     if (!active) {
@@ -192,6 +263,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setSubmitting(true);
     setOutcomeStale(false);
     setError(null);
+    setPreviewError(null);
     clipsFor.current += 1;
     setInputClip(null);
     setControlClip(null);
@@ -248,12 +320,57 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           </p>
         </div>
 
-        {unavailable && (
+        {(setupView?.kind === "refused" || setupView?.kind === "blocked") && (
           <Alert data-testid="restyle-unavailable">
-            <AlertTitle>Restyle is not set up here</AlertTitle>
-            <AlertDescription>
-              {status?.reason} It needs an NVIDIA GPU with about 40 GB of memory and has only been
-              tested on Linux.
+            <AlertTitle>
+              {setupView.kind === "refused" ? "Restyle cannot run here" : "Restyle is not set up here"}
+            </AlertTitle>
+            <AlertDescription>{setupView.message}</AlertDescription>
+          </Alert>
+        )}
+
+        {setupView?.kind === "offer" && (
+          <Alert data-testid="restyle-setup-offer">
+            <AlertTitle>Restyle is not set up yet</AlertTitle>
+            <AlertDescription className="grid gap-2">
+              <span>{setupView.message}</span>
+              {(setupError ?? setupView.error) && (
+                <span className="text-destructive" data-testid="restyle-setup-error">
+                  {setupError ?? setupView.error}
+                </span>
+              )}
+              <span>
+                <Button
+                  size="sm"
+                  onClick={() => void startSetup()}
+                  disabled={setupStarting}
+                  data-testid="restyle-setup-start"
+                >
+                  {setupStarting ? <Spinner className="size-3.5" /> : null}
+                  Set up Restyle
+                </Button>
+              </span>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {setupView?.kind === "running" && (
+          <Alert data-testid="restyle-setup-progress">
+            <AlertTitle>Setting up Restyle</AlertTitle>
+            <AlertDescription className="grid gap-2">
+              <span data-testid="restyle-setup-phase">{setupView.label}</span>
+              {setupView.percent != null ? <Progress value={setupView.percent} /> : <Spinner className="size-4" />}
+              <span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void cancelSetup()}
+                  disabled={setupView.cancelling}
+                  data-testid="restyle-setup-cancel"
+                >
+                  {setupView.cancelling ? "Stopping after the current step" : "Cancel"}
+                </Button>
+              </span>
             </AlertDescription>
           </Alert>
         )}
@@ -407,6 +524,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           <p className="text-xs text-muted-foreground">Cancelled.</p>
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
+        {previewError && <p className="text-xs text-destructive">{previewError}</p>}
       </div>
 
       {/* justify-center-safe: three stacked players can be taller than the pane; plain centering would

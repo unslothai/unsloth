@@ -60,6 +60,7 @@ def env(monkeypatch):
         frees = [IMG],
         errors = [],
         retry_flags = [],
+        load_options = [],
     )
     monkeypatch.setattr(gpu_residency, "current_policy", lambda: state.policy)
     monkeypatch.setattr(model_slots, "drop", lambda slot: state.drops.append(slot))
@@ -91,6 +92,7 @@ def env(monkeypatch):
     async def load(request, *args, **kwargs):
         state.requests.append(request)
         state.retry_flags.append(inf._primary_can_retry_fit.get())
+        state.load_options.append(dict(kwargs.get("impl_kwargs") or {}))
         if state.errors and not request.force_alongside:
             raise state.errors.pop(0)
         return LoadResponse(
@@ -259,6 +261,23 @@ def test_non_gguf_oom_under_fit_keeps_the_original_error(env, monkeypatch):
     _nothing_unloaded(env)
 
 
+def test_swap_restore_oom_retries_as_a_normal_fit_load(env, monkeypatch):
+    _image_resident(monkeypatch)
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: False)
+    env.errors = [_oom()]
+    response = asyncio.run(
+        inf.load_model_gated(
+            LoadRequest(model_path = "org/text", gpu_ids = [0, 1]),
+            None,
+            "s",
+            impl_kwargs = {"restoring_chat_swap": True},
+            swap_gates_held = True,
+        )
+    )
+    assert response.status == "loaded"
+    assert env.load_options == [{"restoring_chat_swap": True}, {"restoring_chat_swap": False}]
+
+
 def test_non_gguf_oom_under_always_without_media_keeps_the_original_error(env, monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     env.policy, env.errors = "always", [_oom()]
@@ -304,14 +323,21 @@ def test_mlx_chat_need_prices_one_row_the_prompt_cache_and_a_batch_row_per_extra
     )
     estimate = inf._MlxLoadEstimate(breakdown, None, (), True)
     monkeypatch.setattr(inf, "_mlx_load_estimate", lambda *a: (None, estimate))
+    from core.inference.mlx_memory import _PROMPT_CACHE_MIB
+
+    cache_mib = lambda: 1024 if _PROMPT_CACHE_MIB.get() is None else _PROMPT_CACHE_MIB.get()
     monkeypatch.setattr(
-        mlx_inference, "mlx_memory_budget", lambda **k: (10 - k["retains_history"]) << 30
+        mlx_inference,
+        "mlx_memory_budget",
+        lambda **k: (10 << 30) - k["retains_history"] * (cache_mib() << 20),
     )
     mlx = SimpleNamespace(is_gguf = False)
     assert inf._mlx_chat_need(None, mlx, "m") is None  # not on Metal
     monkeypatch.setattr(inf, "_unified_metal_host", lambda: True)
     need, growth = inf._mlx_chat_need(None, mlx, "m", 4)
     assert (need, growth) == (4096 + 3 * 768, {"mib": 3072, "row_mib": 768, "slots": 4})
+    # The prompt cache the load chose is reserved, not the default share.
+    assert inf._mlx_chat_need(SimpleNamespace(cache_ram = 0), mlx, "m", 4)[0] == 3072 + 3 * 768
     # A drafter that spent the prompt cache's share leaves the cache only the room the load caps it to.
     for room, reserved in ((256 << 20, 256), (4 * gib, 1024)):
         stretched = estimate._replace(cache_room = room)
@@ -358,6 +384,19 @@ def test_chat_fit_kwargs(monkeypatch):
     priced = inf._chat_fit_kwargs(native, _placement(None), mlx_need_mib = 700, mlx_credit_mib = 50)
     assert priced.get("need_mib") == {0: 700} and "evict_first" not in priced
     assert priced["need_mib"].credit_mib == 50
+
+
+def test_swap_restore_tries_the_existing_fit_before_evicting(monkeypatch):
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: False)
+    monkeypatch.setattr(inf, "_visible_ordinals", list)
+    transformers = SimpleNamespace(is_gguf = False)
+    placement = inf._LoadPlacement([0, 1], None, False, None)
+
+    normal = inf._chat_fit_kwargs(transformers, placement, "fit")
+    restore = inf._chat_fit_kwargs(transformers, placement, "fit", restoring_chat_swap = True)
+
+    assert normal == {"policy": "fit", "gpu_ids": [0, 1], "evict_first": True}
+    assert restore == {"policy": "fit", "gpu_ids": [0, 1]}
 
 
 @pytest.mark.parametrize(

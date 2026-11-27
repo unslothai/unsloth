@@ -135,6 +135,8 @@ _QUIET_SUCCESS_PATHS = {
     "/api/models/loras",
     # Suppression is GET-only, so the PUT that actually writes a profile change still logs.
     "/api/settings/personalization",
+    # Cross-device chat sync reads one revision number every 4s; a changed thread is then fetched and logged.
+    "/api/chat/revision",
 }
 # After its first 2xx, chat list 401s are real failures, not the bootstrap race.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"

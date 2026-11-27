@@ -6,8 +6,7 @@ import test from "node:test";
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
-// #17004: a background image makes .hub-canvas transparent, so the model page showed the
-// catalog through it.
+// 17004: a background image makes .hub-canvas transparent, so the covered catalog showed through.
 test("an open model page hides the catalog it covers", async () => {
   const css = await readSrcAsync("index.css");
   assert.match(css, /\[data-wallpaper-ready\][^{]*\.hub-page \.hub-canvas[^{]*\{ background: transparent; \}/);

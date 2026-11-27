@@ -75,11 +75,9 @@ function App() {
 			await fetch("/inline-fixture/requests", { method: "DELETE" });
 		}
 		async function loaded(width = 32) {
-			// Firefox on windows-latest has timed out the first non-Latin filename at 5 s while the other browsers
-			// and filenames passed. A slow load may borrow up to 10 s from a 15 s grace shared by the whole run, so
-			// one browser adds at most 15 s to a step that takes about 90 s for all five against its 5 minutes. (A run
-			// where every load fails already outlasts the harness's 180 s report wait at 5 s a load.) On a timeout,
-			// say whether the image was missing, slow or wrong.
+			// Firefox on windows-latest timed out a non-Latin filename at 5 s; a slow load borrows up to 10
+			// s from a 15 s grace shared by the run, so one browser adds at most 15 s; a timeout must say
+			// missing, slow or wrong.
 			const start = performance.now();
 			await until(
 				() => image()?.complete && image()?.naturalWidth === width,

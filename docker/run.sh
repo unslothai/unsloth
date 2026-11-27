@@ -34,7 +34,8 @@
 #   UNSLOTH_GPUS=all                        "all" | "0" | "0,1" | "none"
 #   UNSLOTH_ALLOW_CPU=                      set to 1 to allow GPU-less runs
 #   UNSLOTH_PORTS=                          extra -p publish flags
-#   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
+#   HF_HOME=$XDG_CACHE_HOME/huggingface     host HF cache dir to mount (XDG default ~/.cache)
+#   HF_HUB_CACHE=$HF_HOME/hub               host HF hub cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
 #   UNSLOTH_LMSTUDIO_DIR=<detected>         host LM Studio models dir, "none" to skip
@@ -163,7 +164,37 @@ case "$GPUS" in
     *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
 fi
-HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
+# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
+host_path() {
+    local path="$1"
+    case "$path" in
+        # Escaped ~ matches the literal character (a quoted one trips SC2088).
+        \~ | \~/*) path="$HOME${path:1}" ;;
+        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
+    esac
+    printf '%s' "$path"
+}
+
+# Collapsed // and no trailing /, so a hub spelled differently from $HF_CACHE/hub is not mounted twice
+hf_path() {
+    local path
+    path="$(host_path "$1")"
+    path="${path:-$1}"
+    path="$(printf '%s' "$path" | tr -s /)"
+    [[ "$path" == */ && "$path" != / ]] && path="${path%/}"
+    printf '%s' "$path"
+}
+HF_CACHE="$(hf_path "${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}")"
+HF_HUB="$(hf_path "${HF_HUB_CACHE:-${HUGGINGFACE_HUB_CACHE:-$HF_CACHE/hub}}")"
+HF_HUB_MOUNT=()
+if [ "$HF_HUB" != "$HF_CACHE/hub" ]; then
+    HF_HUB_MOUNT=(-v "$HF_HUB":/workspace/.cache/huggingface/hub)
+    # The default hub is left for the container to create, group root writable; one made here is opened likewise.
+    if [ ! -d "$HF_HUB" ]; then
+        mkdir -p "$HF_HUB"
+        HF_HUB_MOUNT+=(-e UNSLOTH_HF_HUB_CREATED=1)
+    fi
+fi
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
 # The image relinks its code into the volume at every start. `-`, not `:-`: an explicitly
@@ -192,17 +223,6 @@ first_dir() {
             return 0
         fi
     done
-}
-
-# Like Studio's _host_path: expand ~, and map a Windows path to its WSL mount.
-host_path() {
-    local path="$1"
-    case "$path" in
-        # Escaped ~ matches the literal character (a quoted one trips SC2088).
-        \~ | \~/*) path="$HOME${path:1}" ;;
-        [A-Za-z]:\\* | [A-Za-z]:/*) path="$(wslpath -u "$path" 2>/dev/null)" || path="" ;;
-    esac
-    printf '%s' "$path"
 }
 
 lmstudio_dir() {
@@ -357,6 +377,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 # Studio exposure modes need explicit allowlisting or they remain inert in the documented helper
 [[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
 [[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+[[ -n "${UNSLOTH_STUDIO_SSL_CERTFILE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SSL_CERTFILE)
+[[ -n "${UNSLOTH_STUDIO_SSL_KEYFILE:-}" ]]  && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SSL_KEYFILE)
 
 STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
 if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
@@ -372,10 +394,13 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# CI and piped invocations otherwise hit "the input device is not a TTY"
+# -t needs a terminal; -i forwards piped stdin, never a terminal one (`run.sh > log &` would
+# stop on SIGTTIN) or a closed one (docker could reuse fd 0)
 TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
+elif [ ! -t 0 ] && { : 9<&0; } 2>/dev/null; then
+    TTY_FLAG=(-i)
 fi
 
 # a mounted script starts in its directory so relative saves survive --rm
@@ -523,6 +548,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     --ulimit stack=67108864 \
     ${WORKSPACE_MOUNT[@]+"${WORKSPACE_MOUNT[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
+    ${HF_HUB_MOUNT[@]+"${HF_HUB_MOUNT[@]}"} \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     ${WORKDIR_FLAG[@]+"${WORKDIR_FLAG[@]}"} \

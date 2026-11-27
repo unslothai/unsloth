@@ -136,8 +136,7 @@ def _run(
 
 
 class _NoMove:
-    """save_to_gguf relocates initial files with shutil.move, but the sources here are
-    virtual Windows paths that do not exist on POSIX. Neutralise the move."""
+    """Stubs shutil.move: save_to_gguf's sources are virtual Windows paths absent on POSIX."""
 
     def move(self, src, dst):
         return dst
@@ -165,7 +164,6 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
     for call in harness.quantize_calls:
         assert ntpath.dirname(call["output"]) == expected_dir, call["output"]
         assert not call["output"].startswith("D:"), call["output"]
-    # The intermediate is written on the destination volume, not the process CWD.
     assert ntpath.dirname(ntpath.dirname(harness.initial_names[0])) == expected_dir
 
 

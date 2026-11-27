@@ -226,6 +226,7 @@ def test_prompt_completion_rows():
     rows = [
         {"prompt": "hi there", "completion": " hello"},
         {"prompt": "hi", "completion": " " + LONG},
+        {"prompt": "", "completion": " "},
         {
             "prompt": [{"role": "user", "content": "hi"}],
             "completion": [{"role": "assistant", "content": "hello"}],
@@ -234,9 +235,11 @@ def test_prompt_completion_rows():
     report = check_dataset(rows, tok, max_seq_length = 8)
 
     assert report["malformed"] == 0
+    assert report["empty"] == 1
     assert report["over_max_seq_length"] == 1
     assert report["response_marker_found"] == 1
-    assert report["lengths"] == [3, 31] + _lengths([_chat("hi", "hello")], tok)
+    # SFT appends EOS to a string completion: "hi there hello<|im_end|>" is 4 tokens.
+    assert report["lengths"] == [4, 32, 1] + _lengths([_chat("hi", "hello")], tok)
 
 
 def test_unusable_prompt_completion_and_alpaca_rows_stay_malformed(capsys):
@@ -321,6 +324,27 @@ def test_media_rows_are_counted_but_not_measured(capsys):
 def test_text_column_wins_over_conversations():
     rows = [{"conversations": _chat("hi", "hello")["messages"], "text": LONG}]
     assert _lengths(rows, _tokenizer()) == _lengths([{"text": LONG}], _tokenizer())
+
+
+def test_text_column_wins_over_messages():
+    rows = [{"messages": _chat("hi", "hello")["messages"], "text": LONG}]
+    report = check_dataset(rows, _tokenizer(), max_seq_length = 8)
+    assert report["lengths"] == _lengths([{"text": LONG}], _tokenizer())
+    assert report["over_max_seq_length"] == 1
+
+
+def test_prompt_completion_wins_over_text_and_messages():
+    rows = [
+        {"prompt": "hi", "completion": " hello", "text": LONG},
+        {"prompt": "hi", "completion": " hello", **_chat("hi", LONG)},
+    ]
+    assert _lengths(rows, _tokenizer()) == [3, 3]
+
+
+def test_processor_prompt_completion_gets_inner_eos():
+    tok = _tokenizer()
+    rows = [{"prompt": "hi", "completion": " hello"}]
+    assert _lengths(rows, _ImagesFirstProcessor(tok)) == _lengths(rows, tok) == [3]
 
 
 def test_assistant_tool_call_turn_without_content():

@@ -1725,7 +1725,11 @@ def test_no_find_starts_while_a_render_is_on_its_way(monkeypatch):
     )
     seen = []
 
-    async def _run(request, pinned_load = None):
+    async def _run(
+        request,
+        pinned_load = None,
+        **_kwargs,
+    ):
         # The render released SAM 3 and has not taken the slot yet: a Find is refused, and frees the slot it took.
         with pytest.raises(seg.SegmenterBusyError, match = "generating"):
             seg.segment_image(_png_b64(), "sofa")
@@ -1756,7 +1760,7 @@ def test_a_render_releases_the_segmenter_first(monkeypatch):
     source = inspect.getsource(inference_routes._generate_diffusion_image_run)
     release = source.index("_release_mask_segmenter_for_render")
     assert (
-        source.index("_enhance_generate_prompts(backend, request)")
+        source.index("_enhance_generate_prompts(backend, request")
         < release
         < source.index("for attempt in range(2)")
     )

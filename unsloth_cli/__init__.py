@@ -99,6 +99,7 @@ _COMMAND_ORDER = (
     "export",
     "eval",
     "list-checkpoints",
+    "list-npu-models",
     "doctor",
     "run",
     "install-kernels",
@@ -130,6 +131,7 @@ if _load_every_command:
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
     from unsloth_cli.commands.export import export, list_checkpoints
+    from unsloth_cli.commands.npu import list_npu_models
     from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.doctor import doctor
     from unsloth_cli.commands.mcp import mcp_app
@@ -270,6 +272,7 @@ _LAZY_COMMANDS = (
     "export",
     "eval",
     "list-checkpoints",
+    "list-npu-models",
     "doctor",
     "run",
     "start",
@@ -298,6 +301,10 @@ def _register_command(app, name):
     elif name == "list-checkpoints":
         from unsloth_cli.commands.export import list_checkpoints
         app.command("list-checkpoints")(list_checkpoints)
+    elif name == "list-npu-models":
+        from unsloth_cli._npu import npu_detected
+        from unsloth_cli.commands.npu import list_npu_models
+        app.command("list-npu-models", hidden = not npu_detected())(list_npu_models)
     elif name == "doctor":
         from unsloth_cli.commands.doctor import doctor
         app.command("doctor")(doctor)
@@ -403,6 +410,7 @@ _LAZY_ATTRIBUTES = {
     "start_app": ("unsloth_cli.commands.start", "start_app"),
     "export": ("unsloth_cli.commands.export", "export"),
     "list_checkpoints": ("unsloth_cli.commands.export", "list_checkpoints"),
+    "list_npu_models": ("unsloth_cli.commands.npu", "list_npu_models"),
     "eval_command": ("unsloth_cli.commands.eval", "evaluate"),
     "doctor": ("unsloth_cli.commands.doctor", "doctor"),
     "mcp_app": ("unsloth_cli.commands.mcp", "mcp_app"),

@@ -43,6 +43,8 @@ export type PageStorageWrite = {
   from?: unknown;
   url?: string | null;
   seq?: number | null;
+  /** A cookie write's SameSite, which the frame's stored form leaves out. */
+  sameSite?: string | null;
 };
 
 const writeListeners = new Set<(write: PageStorageWrite) => void>();
@@ -62,10 +64,11 @@ export function writePageStorage(
   from?: unknown,
   url?: string | null,
   seq?: number | null,
+  sameSite?: string | null,
 ): void {
   save(origin, tabId, area, key, value);
   const kept = key === null ? null : (stores.get(storeKey(origin, tabId, area))?.items.get(key) ?? null);
-  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, requested: value, from, url, seq });
+  for (const listener of writeListeners) listener({ origin, tabId, area, key, value: kept, requested: value, from, url, seq, sameSite });
 }
 
 function evict(): void {

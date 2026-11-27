@@ -49,6 +49,8 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
+    TRANSFORMERS_510_VERSION,
+    TRANSFORMERS_550_VERSION,
     _resolve_base_model,
     _is_lora_adapter_dir,
     _has_adapter_weights,
@@ -362,7 +364,7 @@ class TestCheckTokenizerConfigNeedsV5:
         # The unauthenticated miss must not block a later authed fetch (separate cache key).
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         seen_auth = []
 
         class _Resp:
@@ -394,7 +396,7 @@ class TestCheckTokenizerConfigNeedsV5:
     def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
         seen = {}
 
@@ -1656,7 +1658,7 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.5.0" in text, f"version not logged: {text!r}"
+        assert TRANSFORMERS_550_VERSION in text, f"version not logged: {text!r}"
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
@@ -1715,7 +1717,7 @@ class TestActivateLoggingClarity:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
-        assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
+        assert TRANSFORMERS_510_VERSION in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
         # The resolved base drives the tier; the 'gemma-4' dir name must not upgrade it.
@@ -2777,18 +2779,18 @@ class TestOfflineCacheNotPoisoned:
     def test_offline_tokenizer_assumption_not_cached(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         assert _check_tokenizer_config_needs_v5("org/uncached") is False
         assert ("org/uncached", None) not in _tokenizer_class_cache
 
     def test_offline_then_online_refetches(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         assert _check_tokenizer_config_needs_v5("org/needs5") is False
         assert ("org/needs5", None) not in _tokenizer_class_cache
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
 
         class _Resp:
             def read(self):
@@ -2806,7 +2808,7 @@ class TestOfflineCacheNotPoisoned:
     def test_offline_config_miss_not_cached(self, monkeypatch):
         import utils.transformers_version as tv
 
-        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: True)
         monkeypatch.setattr(tv, "_config_json_from_hf_cache", lambda name: None)
         assert _load_config_json("org/uncached-config", None) is None
         assert ("org/uncached-config", None) not in _config_json_cache
@@ -3023,17 +3025,28 @@ class TestLatestTierForces16Bit:
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")
-        assert "latest_tier_active_for" in src, (
+        assert "latest_tier_forces_16bit" in src, (
             "core/inference/worker.py must force load_in_4bit=False when "
-            "latest_tier_active_for(model) is true: transformers' grouped-MoE "
+            "latest_tier_forces_16bit(model) is true: transformers' grouped-MoE "
             "kernels crash on bnb-quantized expert weights for brand-new "
             "architectures."
         )
 
     def test_route_guard_present(self):
-        src = self._read("routes/inference.py")
-        assert "latest_tier_active_for" in src, (
-            "routes/inference.py must size the VRAM guard with the same 16-bit "
+        import ast
+
+        tree = ast.parse(self._read("routes/inference.py"))
+        load = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_load_model_impl"
+        )
+        # A reference in the body, not an import or a name elsewhere in the file.
+        assert any(
+            isinstance(node, ast.Name) and node.id == "latest_tier_forces_16bit"
+            for node in ast.walk(load)
+        ), (
+            "_load_model_impl must size the VRAM guard with the same 16-bit "
             "flip the worker applies for latest-sidecar models."
         )
 
@@ -3041,7 +3054,7 @@ class TestLatestTierForces16Bit:
         # Without the same flip, /validate sizes 4-bit and /load then 409s.
         src = self._read("routes/inference.py")
         body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
-        assert "latest_tier_active_for" in body, (
+        assert "latest_tier_forces_16bit" in body, (
             "validate_model must apply the latest-sidecar 16-bit flip before "
             "_guard_chat_load_against_training so /validate and /load agree."
         )
@@ -3168,7 +3181,7 @@ class TestSidecarSwapReservation:
             },
         )
         monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: False)
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         return tv
 
     def test_repair_holds_reservation_during_swap(self, monkeypatch, tmp_path):
@@ -3597,7 +3610,7 @@ class TestDamagedLatestSidecarRepairHandoff:
                 continue  # already pointed at `live`, which is the sidecar under test
             monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
-        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
         monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
         monkeypatch.setattr(tv, "_config_mapping_cache", {})
         monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
@@ -3765,7 +3778,7 @@ class TestDamagedLatestSidecarRepairHandoff:
         import multiprocessing
 
         bailouts = {
-            "offline": lambda tv: monkeypatch.setattr(tv, "_env_offline", lambda: True),
+            "offline": lambda tv: monkeypatch.setattr(tv, "hf_env_offline", lambda: True),
             "child": lambda tv: monkeypatch.setattr(
                 multiprocessing, "parent_process", lambda: object()
             ),

@@ -103,6 +103,8 @@ def _params_text(meta: dict[str, Any]) -> str:
     # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
     if meta.get("shift") is not None:
         fields += f", Shift: {meta['shift']}"
+    if meta.get("cfg_interval_end") is not None:
+        fields += f", Fast CFG: {meta['cfg_interval_end']}"
     # ADetailer's own keys (adetailer/args.py), so a paste into Studio or a webui with ADetailer restores the pass.
     if meta.get("detailer"):
         from core.inference.diffusion_detailer import infotext_fields
@@ -127,7 +129,11 @@ def png_compress_level() -> int:
     return level if 0 <= level <= 9 else _DEFAULT_PNG_COMPRESS_LEVEL
 
 
-def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
+def _png_bytes(
+    image: Any,
+    meta: dict[str, Any],
+    threads: Optional[int] = None,
+) -> bytes:
     import io
 
     from PIL.PngImagePlugin import PngInfo
@@ -135,7 +141,9 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info = PngInfo()
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
-    data = png_encode.encode(image, pnginfo = info, compress_level = png_compress_level())
+    data = png_encode.encode(
+        image, pnginfo = info, compress_level = png_compress_level(), threads = threads
+    )
     if data is not None:
         return data
     buf = io.BytesIO()
@@ -209,11 +217,13 @@ def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str,
         return
     from concurrent.futures import ThreadPoolExecutor
 
+    # The CPUs split across the batch's encodes, so a large image's strip deflate does not oversubscribe.
+    threads = max(1, cpus // workers)
     with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "gallery-png") as pool:
         pending = {}
         for image, meta in items:
             recipe = _recipe(meta)
-            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
+            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe, threads))
         futures = [entry[2] for entry in pending.values()]
         _ahead.pending = pending
         # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
@@ -408,6 +418,34 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+_GLOB_FOLDS_CASE = os.name == "nt"
+# Windows DirEntry.stat() has st_ino / st_dev 0; the recipe cache key needs a real os.stat.
+_ENTRY_STAT_IS_FULL = os.name != "nt"
+
+
+def _listed_pngs(directory: Path) -> list[tuple[str, os.DirEntry]]:
+    """(stem, entry) per ``directory.glob("*.png")`` entry, in glob's order; OSError if unlistable."""
+    found: list[tuple[str, os.DirEntry]] = []
+    with os.scandir(directory) as entries:
+        try:
+            for entry in entries:
+                name = entry.name
+                if not (name.lower() if _GLOB_FOLDS_CASE else name).endswith(".png"):
+                    continue
+                # Path.stem: a dot-led name (".png", "..png" on 3.14) can be all stem.
+                found.append((Path(name).stem if name.startswith(".") else name[:-4], entry))
+        except OSError:
+            return []
+    return found
+
+
+def _entry_stat(entry: os.DirEntry) -> Optional[os.stat_result]:
+    try:
+        return entry.stat()
+    except OSError:
+        return None
+
+
 def list_images(
     limit: Optional[int] = None,
     offset: int = 0,
@@ -418,39 +456,40 @@ def list_images(
     """Pinned first, then mtime; archived selects a shelf, never widens; valid filter runs before paging."""
     try:
         directory = gallery_dir()
-        paths = list(directory.glob("*.png"))
+        listed = _listed_pngs(directory)
     except OSError:
         return []
     flags = gallery_flags.read(directory)
     # Shelf split and pin sort use file stems before any recipe read, keeping the early break intact.
-    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    # The sort's stat keys the recipe read, so it must precede it.
-    stats: dict[Path, os.stat_result] = {}
-
-    def mtime(path: Path) -> float:
-        try:
-            stats[path] = info = path.stat()
-        except OSError:
-            return 0.0
-        return info.st_mtime
-
-    paths.sort(
-        key = lambda p: (
-            gallery_flags.pin_rank(flags, p.stem),
-            gallery_flags.order_rank(flags, p.stem, mtime(p)),
+    pngs = [
+        (stem, entry, _entry_stat(entry))
+        for stem, entry in listed
+        if gallery_flags.is_archived(flags, stem) == archived
+    ]
+    pngs.sort(
+        key = lambda png: (
+            gallery_flags.pin_rank(flags, png[0]),
+            gallery_flags.order_rank(flags, png[0], 0.0 if png[2] is None else png[2].st_mtime),
         ),
         reverse = True,
     )
     # Page over readable records, not raw files, or has_more is wrong. Deep scroll is O(offset).
     want = None if limit is None else offset + limit
     records = []
-    for path in paths:
-        info = stats.get(path)
-        meta = _listed_meta(path, info)
+    for stem, entry, info in pngs:
+        path = directory / entry.name
+        key = info
+        if info is not None and not _ENTRY_STAT_IS_FULL:
+            # Stat must precede the read, so a write in between misses.
+            try:
+                key = os.stat(path)
+            except OSError:
+                key = None
+        meta = _listed_meta(path, key)
         if meta is None:
             continue
         record = _record(
-            path.stem,
+            stem,
             meta,
             flags,
             directory = directory,
@@ -496,14 +535,14 @@ def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
             return None
         # Full shelf in listing order, so neighbours past the client's loaded window are known.
         try:
-            paths = [
-                p
-                for p in gallery_dir().glob("*.png")
-                if not gallery_flags.is_archived(flags, p.stem)
-            ]
+            listed = _listed_pngs(gallery_dir())
         except OSError:
-            paths = []
-        keyed = [(p.stem, _mtime(p)) for p in paths]
+            listed = []
+        keyed = []
+        for stem, entry in listed:
+            if not gallery_flags.is_archived(flags, stem):
+                info = _entry_stat(entry)
+                keyed.append((stem, 0.0 if info is None else info.st_mtime))
         keyed.sort(
             key = lambda pair: (
                 gallery_flags.pin_rank(flags, pair[0]),

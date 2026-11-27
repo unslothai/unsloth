@@ -1533,11 +1533,11 @@
 }
 
 html:not(.dark) .hub-page [data-hub-scroll="true"] {
-  scrollbar-color: oklch(0.5 0 0 / 0.22) transparent;
+  scrollbar-color: rgb(99 99 99 / 0.22) transparent;
 }
 
 html.dark .hub-page [data-hub-scroll="true"] {
-  scrollbar-color: oklch(0.55 0 0 / 0.16) transparent;
+  scrollbar-color: rgb(113 113 113 / 0.16) transparent;
 }
 
 html:not(.dark) .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {

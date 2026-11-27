@@ -759,7 +759,7 @@ def test_layer_min_gpus_bound_before_gpu_selection_try():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert src.count("_layer_min_gpus = 1") == 1, "exactly one init, before the try"
     init = src.find("_layer_min_gpus = 1")
-    try_body = src.find("gguf_size = self._get_gguf_size_bytes")
+    try_body = src.find("gguf_size = self._gguf_read_bytes")
     fit_except = src.find("GPU selection failed")
     use_after = src.find("self._layer_preserves_tensor_intent = _layer_min_gpus > 1")
     assert (

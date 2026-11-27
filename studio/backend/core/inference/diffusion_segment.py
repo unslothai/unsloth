@@ -326,7 +326,14 @@ def _cached_snapshot(
     revision: Optional[str] = None,
 ) -> Optional[str]:
     """The snapshot directory holding every file of ``model_id`` (a variant's bf16 files, or a pre-quantized spec's
-    configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None."""
+    configs and file) at one revision (the pin first, then the recorded one, then any cached commit), else None.
+    Without *hub_cache* and *revision*, every cache find_in_hub_caches covers."""
+    if hub_cache is None and revision is None:
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
+            SEGMENTER_SPECS[model_id].repo,
+            lambda root: _cached_snapshot(model_id, hub_cache = root),
+        )
     try:
         from huggingface_hub import hf_hub_download
 
@@ -814,8 +821,8 @@ def _cuda_free_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     SAM's emptied weights in that cache on purpose, so driver free alone would send the next detection to the CPU on a
     warm card (ComfyUI's get_free_memory likewise adds reserved minus active bytes)."""
     try:
-        import torch
-        free, total = torch.cuda.mem_get_info(ordinal)
+        from utils.hardware import trusted_mem_get_info
+        free, total = trusted_mem_get_info(ordinal)
     except Exception:  # noqa: BLE001
         return None, None
     try:

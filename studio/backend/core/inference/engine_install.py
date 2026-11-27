@@ -154,8 +154,7 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # Status is read by idle Chat. The wheel's build family is enough to choose
-    # an engine profile; discovering it must not initialize the ML runtime.
+    # Idle Chat reads this: the wheel's build family is enough; do not init the ML runtime.
     if hardware.DETECTION_COMPLETE.is_set():
         is_rocm = hardware.IS_ROCM
     else:
@@ -247,11 +246,19 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+_pins_seen: dict[Path, tuple[tuple | None, dict[str, tuple[str, str]]]] = {}
+
+
 def _pins(engine: str) -> dict[str, tuple[str, str]]:
     """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    path = requirements(engine)
+    identity = _file_identity(path)
+    seen = _pins_seen.get(path)
+    if identity is not None and seen is not None and seen[0] == identity:
+        return dict(seen[1])
     entries: dict[str, tuple[str, str]] = {}
     name = None
-    for line in requirements(engine).read_text(encoding = "utf-8").splitlines(keepends = True):
+    for line in path.read_text(encoding = "utf-8").splitlines(keepends = True):
         match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
         if match:
             name = _normalize(match.group(1))
@@ -260,7 +267,8 @@ def _pins(engine: str) -> dict[str, tuple[str, str]]:
             entries[name] = (entries[name][0], entries[name][1] + line)
         else:
             name = None
-    return entries
+    _pins_seen[path] = (identity, entries)
+    return dict(entries)
 
 
 def _studio_site() -> list[str]:
@@ -271,6 +279,10 @@ def _studio_site() -> list[str]:
 _studio_seen: tuple[tuple, dict[str, str]] | None = None
 
 
+def _studio_site_key(sites: list[str]) -> tuple:
+    return tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+
+
 def _studio_packages() -> dict[str, str]:
     """Distributions in Studio's own site-packages, excluding sidecars on sys.path. Status polls
     read this several times; the scan is redone only when an install changes a site directory."""
@@ -278,7 +290,7 @@ def _studio_packages() -> dict[str, str]:
     import importlib.metadata as metadata
 
     sites = _studio_site()
-    key = tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+    key = _studio_site_key(sites)
     if _studio_seen is None or _studio_seen[0] != key:
         _studio_seen = (
             key,
@@ -339,16 +351,61 @@ def _compat(engine: str) -> dict[str, list[str]]:
     return _compat_file(engine).get("requires", {})
 
 
+def _file_identity(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+# Status polls price every engine that is not current; reused until the key or an engine job moves.
+_priced_plans: dict[str, tuple[tuple, dict | None, frozenset[str]]] = {}
+
+
+def _forget_priced_plans() -> None:
+    with _lock:
+        _priced_plans.clear()
+
+
+def _priced_plan(engine: str) -> tuple[dict | None, frozenset[str]]:
+    """The lock's wheel sizes and the names Studio provides, as download_bytes prices them."""
+    lock = requirements(engine)
+    sites = _studio_site()
+    key = (
+        str(lock),
+        _file_identity(lock),
+        _file_identity(lock.with_suffix(".compat.json")),
+        _studio_site_key(sites),
+        tuple(sorted(_studio_packages().items())),
+        repr(profile(engine)),
+        sys.implementation.name,
+        tuple(sys.version_info[:2]),
+    )
+    with _lock:
+        seen = _priced_plans.get(engine)
+    if seen is not None and seen[0] == key:
+        return seen[1], seen[2]
+    sizes = _compat_file(engine).get("sizes")
+    provided = frozenset(install_plan(engine)["provided"]) if sizes else frozenset()
+    with _lock:
+        _priced_plans[engine] = (key, sizes, provided)
+    return sizes, provided
+
+
 def download_bytes(engine: str) -> int | None:
     """Wheel bytes an install of the selected release downloads: the lock minus what Studio provides."""
     from . import wsl_host
 
-    sizes = _compat_file(engine).get("sizes")
+    wsl = wsl_host.active()
+    if wsl:
+        sizes = _compat_file(engine).get("sizes")
+        provided: frozenset[str] | dict = {}
+    else:
+        sizes, provided = _priced_plan(engine)
     if not sizes:
         return None
-    wsl = wsl_host.active()
     # A WSL engine is always a complete environment, plus the distro and uv on first setup.
-    provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
@@ -1119,10 +1176,16 @@ def _safe_download_bytes(engine: str) -> int | None:
 
 
 def _update(engine: str, **values) -> None:
+    if "state" in values:
+        _forget_priced_plans()
     with _lock:
         job = _jobs.setdefault(engine, {})
         if "phase" in values and values["phase"] != job.get("phase"):
             values.setdefault("activity", "")
+        if values.get("state") == "running" and job.get("state") != "running":
+            values.setdefault("finished_at", None)
+        elif values.get("state") in ("success", "error", "cancelled", "waiting"):
+            values.setdefault("finished_at", time.time())
         job.update(values)
         root = engine_root()
         root.mkdir(parents = True, exist_ok = True)
@@ -1438,6 +1501,8 @@ def _smoke_source(engine: str) -> str:
         wanted["module"],
         "torch",
         *(name for name in ("bitsandbytes", "torchao") if name in pins),
+        # vLLM 0.28+ serves BitsAndBytes only through this plugin, loaded from its entry point.
+        *(["vllm_bnb_plugin"] if "vllm-bnb-plugin" in pins else []),
     ]
     runtime = (
         "assert torch.version.hip"
@@ -1450,6 +1515,15 @@ def _smoke_source(engine: str) -> str:
         + runtime
         + "\n"
     )
+
+
+def _uv_executable() -> str | None:
+    """PATH, then uv's install folders: service and web UI launches skip the shell profile."""
+    try:
+        from utils.mlx_repair import _uv_executable as find_uv
+        return find_uv()
+    except Exception:  # noqa: BLE001
+        return shutil.which("uv")
 
 
 def _install(
@@ -1469,7 +1543,7 @@ def _install(
             if wsl_host.active():
                 _install_wsl(engine, cancel)
                 return
-            uv = shutil.which("uv")
+            uv = _uv_executable()
             if uv is None:
                 raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
@@ -1874,6 +1948,7 @@ def remove(engine: str) -> dict:
             _jobs.pop(engine, None)
         (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
         (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+    _forget_priced_plans()
     _record_manifest(engine)
     return status(engine)
 
@@ -1902,6 +1977,7 @@ def remove_wsl_environment() -> list[dict]:
 
 
 def rollback(engine: str) -> dict:
+    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         info = installed(engine)
         previous = info.get("previous") if info else None

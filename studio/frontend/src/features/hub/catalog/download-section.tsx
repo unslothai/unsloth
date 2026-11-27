@@ -32,6 +32,7 @@ export function DownloadSection({
   cachePath,
   knownBytes,
   onRun,
+  onRunCheckpoint,
   runPending = false,
   onChange,
   showMemoryBar = true,
@@ -62,6 +63,7 @@ export function DownloadSection({
   cachePath?: string | null;
   knownBytes?: number | null;
   onRun?: (selection: HubModelRunSelection) => void;
+  onRunCheckpoint?: (filename: string) => void;
   runPending?: boolean;
   onChange?: () => void;
   /** False for diffusion/audio/video GGUFs, which do not load through llama.cpp. */
@@ -110,6 +112,7 @@ export function DownloadSection({
       cachePath={cachePath}
       knownBytes={knownBytes}
       onRun={onRun ? () => onRun({}) : undefined}
+      onRunCheckpoint={onRunCheckpoint}
       runPending={runPending}
       onChange={onChange}
     />

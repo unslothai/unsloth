@@ -111,7 +111,7 @@ def test_each_transport_turn_is_refitted_before_the_provider_call():
         client = RecordingClient()
         fitted_inputs: list[list[dict]] = []
 
-        async def fitter(messages):
+        async def fitter(messages, tools = None):
             fitted_inputs.append(messages)
             return messages[-2:], 17, 'data: {"choices":[],"context_truncated":{}}'
 

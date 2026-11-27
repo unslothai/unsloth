@@ -11,7 +11,10 @@ from core.inference import external_provider as ep
 
 
 @pytest.mark.parametrize("stream", [True, False])
-def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
+@pytest.mark.parametrize(
+    "base_url", ["https://opencode.ai/inference/go/v1", "https://opencode.ai/zen/go/v1"]
+)
+def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream, base_url):
     requests = []
 
     def handler(request):
@@ -27,9 +30,7 @@ def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
     async def run():
         async with httpx.AsyncClient(transport = httpx.MockTransport(handler)) as http:
             monkeypatch.setattr(ep, "_client", lambda: http)
-            client = ep.ExternalProviderClient(
-                "custom", "https://opencode.ai/inference/go/v1", "key"
-            )
+            client = ep.ExternalProviderClient("custom", base_url, "key")
             for thread_id in ("conversation-1", "conversation-1", "conversation-2"):
                 async for _ in client.stream_chat_completion(
                     messages = [{"role": "user", "content": "hi"}],
@@ -46,7 +47,10 @@ def test_opencode_go_chat_sends_conversation_session(monkeypatch, stream):
     assert sessions[2] and sessions[2] != sessions[0]
 
 
-@pytest.mark.parametrize("base_url", ["https://example.org/v1", "https://opencode.ai/inference/v1"])
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://example.org/v1", "https://opencode.ai/inference/v1", "https://opencode.ai/zen/v1"],
+)
 def test_other_providers_do_not_receive_opencode_session(monkeypatch, base_url):
     requests = []
 

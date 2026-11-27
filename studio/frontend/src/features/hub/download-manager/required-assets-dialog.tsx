@@ -13,6 +13,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 import {
   additionalAssetDownloads,
   assetLabel,
@@ -97,7 +98,7 @@ function DownloadChoice({
             role="status"
             className="absolute inset-0 flex items-center justify-center gap-3 text-muted-foreground"
           >
-            <span className="size-4 animate-spin rounded-full border-2 border-current border-r-transparent" />
+            <Spinner />
             Checking required files…
           </div>
         )}

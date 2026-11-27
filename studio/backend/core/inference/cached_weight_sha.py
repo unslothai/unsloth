@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verify a cached ``.pt`` / ``.bin`` is byte-identical to the Hub's copy (LFS sha256) so a load can reuse it.
-
-Digests are memoised per (real path, size, mtime) in memory and on disk. Any unanswerable case (offline, no LFS
-record, error) is "not verified", so the caller keeps safetensors first. Never raises."""
+"""Checks a cached .pt or .bin against the Hub LFS sha256; unanswerable cases (offline, no LFS
+record, error) stay unverified so safetensors load first; never raises."""
 
 from __future__ import annotations
 
@@ -191,8 +189,7 @@ def cached_copy_matches_hub(
         )
         if not sha:
             return False
-        # Always the bytes, never the cache blob's name: newer huggingface_hub caches name blobs by a Xet / etag
-        # hash that is not the file's sha256.
+        # Hash the bytes, not the blob name: Xet/etag blob names are not the file's sha256.
         return file_sha256(path) == sha
     except Exception:  # noqa: BLE001 - unverified
         return False

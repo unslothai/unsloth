@@ -11,6 +11,7 @@ import {
   isTrainingStatusRequestCurrent,
   trainingStatusRequestKey,
 } from "../lib/training-status-request";
+import { isTrainingStatusPolledElsewhere } from "../lib/training-status-poll-owner";
 import {
   isTrainingStartPending,
   useTrainingRuntimeStore,
@@ -43,7 +44,11 @@ export function useTrainingCompletionWatch(): void {
       }
     });
 
-    const id = window.setInterval(tick, WATCH_INTERVAL_MS);
+    const id = window.setInterval(() => {
+      // On the Train page the lifecycle poll already fetches this status every 3 s.
+      if (isTrainingStatusPolledElsewhere()) return;
+      void tick();
+    }, WATCH_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(id);
