@@ -178,3 +178,28 @@ def test_inkling2_adapter_folds_the_scale_itself(tmp_path, monkeypatch):
         load_file(f"{converter_input}/adapter_model.safetensors"),
         load_file(f"{out}/adapter_model.safetensors"),
     )
+
+
+@pytest.mark.parametrize("init", ["pissa", "olora"])
+def test_reloaded_residual_adapter_exports_on_the_original_base(tmp_path, monkeypatch, init):
+    # The loader's reload wrapper records the initial factors, so a reloaded adapter exports like a fresh one.
+    from peft import PeftConfig, PeftModel
+    from unsloth.models._utils import snapshot_residual_lora_load
+
+    model, original = _trained_model(tmp_path, init_lora_weights = init)
+    trained = copy.deepcopy(model).merge_and_unload().state_dict()
+    adapter = str(tmp_path / "adapter")
+    model.save_pretrained(adapter)
+    with snapshot_residual_lora_load(PeftConfig.from_pretrained(adapter)):
+        reloaded = PeftModel.from_pretrained(
+            LlamaForCausalLM.from_pretrained(str(tmp_path / "base")), adapter
+        )
+    _, converter_input = _export(reloaded, tmp_path, monkeypatch)
+    config = _config(converter_input)
+    weights = load_file(f"{converter_input}/adapter_model.safetensors")
+    for target in TARGETS:
+        key = f"model.layers.0.self_attn.{target}"
+        A = weights[f"base_model.model.{key}.lora_A.weight"]
+        B = weights[f"base_model.model.{key}.lora_B.weight"]
+        applied = original[f"{key}.weight"] + config["lora_alpha"] / A.shape[0] * (B @ A)
+        torch.testing.assert_close(applied, trained[f"{key}.weight"], atol = 1e-5, rtol = 1e-4)
