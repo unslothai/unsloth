@@ -78,7 +78,8 @@ if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
     }
 }
 
-# Set UTF-8 before first write; 5.1 uses OEM page; keep file ASCII (BOM-less reads as ANSI).
+# 5.1 writes redirected output in the OEM code page but the desktop app decodes UTF-8.
+# Must precede the first write. Keep this file ASCII-only: 5.1 parses BOM-less files as ANSI.
 $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
 try {
     [Console]::OutputEncoding = $_UnslothUtf8NoBom
@@ -101,8 +102,9 @@ $env:PYTHONIOENCODING = 'utf-8'
 $script:StudioStdoutRedirected = $false
 try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
-# 5.1's Write-Host uses the OEM code page even when redirected, so write to the console handle when
-# redirected and Write-Host otherwise; only install.ps1 mutes (set here for Set-StrictMode).
+# 5.1's Write-Host uses the OEM code page even when redirected, so use one sink:
+# the console handle when redirected, Write-Host (colorized) when interactive.
+# Only install.ps1 mutes; set here for Set-StrictMode callers.
 $script:StudioMuteLines = $false
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
@@ -503,7 +505,8 @@ function Test-PathUnderCondaPrefix {
     return $false
 }
 
-# Persistent prepend shadows conda; parity: tests/python/test_installer_conda_path_guard.py
+# A persistent prepend outlives the conda activation and would shadow conda's entries.
+# Mirrors install.ps1; parity in tests/python/test_installer_conda_path_guard.py.
 function Resolve-UserPathPosition {
     param(
         [ValidateSet('Append','Prepend')]
@@ -2415,7 +2418,8 @@ function Invoke-HnswBackfill {
     $global:LASTEXITCODE = 0
 }
 
-# Bounded probe: a wedged torch import or Intel driver init would hang; stderr kept in .Error.
+# Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
+# Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     # TimedOut separates "never answered" from "answered with a failure".
@@ -2450,6 +2454,7 @@ function Invoke-BoundedPythonProbe {
     }
 }
 
+# True only when an XPU torch build can drive an Intel GPU.
 function Test-TorchXpuAvailable {
     param([string]$PythonExe)
     if (-not $PythonExe) { return $false }
@@ -2580,7 +2585,8 @@ function Test-VenvTorchIsXpu {
     } catch { return $false }
 }
 
-# Read off disk: a faulted HIP runtime fails import and wipes good venvs; labels +rocm or gfx.
+# Read off disk, never imported: a faulted HIP runtime makes import fail, which wiped good venvs.
+# Labels are "+rocm"; "gfx" is accepted too in case a per-arch label appears.
 function Test-VenvTorchIsRocm {
     param([string]$VenvPath)
     if (-not $VenvPath) { return $false }
@@ -3178,7 +3184,8 @@ function Write-LlamaFailureLog {
         Write-StudioLine "   | $line" -ForegroundColor DarkGray
     }
 }
-# Stdout is the only sink if redirected; CLI merges streams, so Write-Host doubled each step.
+# Plain step/substep text on the OS stdout handle. When redirected this is the ONLY sink:
+# the CLI runs us with *>&1, so also calling Write-Host printed every step twice.
 function Write-StudioStdoutMirror {
     param([Parameter(Mandatory = $true)][string]$Line)
     try {
@@ -3344,7 +3351,8 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine "  $Rule" -ForegroundColor DarkGray
 }
 
-# Clear WebView2 cache only so the old frontend is not served; runs after home override check.
+# Clear WebView2 caches (cache only) so the old frontend is not served after an update.
+# Called only after the home override is validated.
 function Clear-WebViewCaches {
     if (-not $env:LOCALAPPDATA) { return }
     $wvDefault = Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\EBWebView\Default"
@@ -3519,9 +3527,10 @@ function Test-MasterRootNoteIsHonoured {
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # A note must describe its own tree: readers require the Studio dir to lie inside the root it
-    # names, so a copied tree cannot aim a removal at the original install; a split layout (runtimes
-    # under the master root, Studio outside) must say so, not leave a note no reader honours.
+    # A note must describe the tree it is written into: every reader requires the Studio
+    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot aim
+    # a removal at the original install. A split layout, with the runtimes under the master root
+    # and Studio outside it, is that shape: say so, rather than leave a note no reader honours.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
@@ -3680,7 +3689,8 @@ function Invoke-NvidiaSmiBounded {
 }
 
 # ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
-# Candidate dirs holding nvidia-smi, System32 first; legacy NVSMI may hold an older binary.
+# nvidia-smi dirs in preference order, filtered to ones holding the binary (SysNative/ProgramW6432 for
+# 32-bit processes, DriverStore). System32 before legacy NVSMI, which may hold an older binary.
 function Get-NvidiaSmiCandidatePaths {
     $dirs = @()
     # Current driver locations first, in BOTH process bitnesses, before any legacy one.
@@ -3736,7 +3746,8 @@ function Get-NvidiaSmiCandidatePaths {
 }
 # ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
 
-# Require a GPU row (driverless exits 0); exit 124 = wedged, so the banner skips a re-query.
+# A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
+# 124 means the bounded runner killed the probe; recorded so the banner skips a second query.
 $script:NvidiaSmiWedged = $false
 # Reset per run: streamed execution shares the caller's script scope.
 $script:NvidiaPresenceOnly = $false
@@ -3768,7 +3779,8 @@ if (-not $HasNvidiaSmi) {
     # Prefer a candidate that lists a GPU AND prints a parseable CUDA banner; else the first that lists.
     # Get-Date, not Stopwatch (CLM). Candidates are enumerated before the clock starts.
     $smiCandidates = @(Get-NvidiaSmiCandidatePaths)
-    # Soft deadline needs a usable answer; only the hard one may end empty (CPU-only PyTorch).
+    # Soft deadline applies only once a usable answer exists; only the hard one may end with nothing,
+    # since finding nothing means CPU-only PyTorch.
     $probeDeadline = (Get-Date).AddSeconds(30)
     $probeHardDeadline = (Get-Date).AddSeconds(60)
     $firstListing = $null
@@ -4048,7 +4060,8 @@ if (-not $HasNvidiaSmi) {
 }
 # Widens TORCH selection only; llama.cpp needs a real driver stack.
 $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
-# Banner name honours the visible-device mask; an empty or -1 mask hides all, so skip naming.
+# Name the GPU for the banner, honouring the visible-device mask. A mask of "" or -1 hides
+# every device, so naming is skipped.
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
@@ -4242,7 +4255,8 @@ function Test-VisibleDevicesPinned {
     return $false
 }
 
-# Mirrors _pick_visible_index(); first set mask wins; invalid values fall back to GPU 0.
+# The single mask -> index resolver; mirrors _pick_visible_index(). First set mask wins;
+# unparseable or out-of-range falls back to GPU 0.
 function Resolve-VisibleGpuIndex {
     param([int]$Count)
     foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
@@ -4267,6 +4281,7 @@ function Resolve-ShadowingGfxPick {
     param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
     if (-not $Picked) { return $Picked }
     function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and ($archFamilyMap.ContainsKey($Arch) -or $multiArchGfx -contains $Arch)) }
+    # A selected device is honoured verbatim.
     if (Test-VisibleDevicesPinned) { return $Picked }
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
@@ -4484,7 +4499,8 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
     )
     $script:ROCmUnsupportedGfxArch = $null
     # ── Arch resolution: env-var override → name inference ──────────────────
-    # Runs without confirmed runtime: llama.cpp needs only the arch; PyTorch gated on $HasROCm.
+    # Runs even without a confirmed runtime: the Adrenalin driver alone runs the per-gfx llama.cpp
+    # prebuilt, which only needs the arch. PyTorch ROCm wheels stay gated on $HasROCm.
     if (-not $script:ROCmGfxArch) {
         if ($env:UNSLOTH_ROCM_GFX_ARCH) {
             $script:ROCmGfxArch = ($env:UNSLOTH_ROCM_GFX_ARCH.Trim().ToLower() -split ':')[0]  # drop HIP feature suffixes (gfx1010:xnack-)
@@ -6290,7 +6306,8 @@ function Split-WoaTomlKey {
     return ,$parts
 }
 
-# uv [[index]] reader; $null on any doubt. Braces are char codes: parity tests count braces.
+# uv inline [[index]] reader; $null on ANY doubt. Braces are built from code points because
+# the parity tests extract functions by counting braces.
 function Read-WoaUvInlineIndexArray {
     param([string]$Value)
     $lb = [char]0x7B; $rb = [char]0x7D
@@ -7105,7 +7122,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $shouldRebuild = $false
     }
 
-    # Direct update keeps a cu* venv if nvidia-smi is silent; -and order is StrictMode-legal.
+    # A direct update never wipes a cu* venv just because nvidia-smi did not answer. The -and order
+    # keeps reads legal under StrictMode.
     if ($shouldRebuild -and -not $InstallerManagedSetup -and
         $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
         -not $_pinnedIdx -and -not $HasNvidiaSmi -and $expectedTorchTag -eq "cpu") {
@@ -7116,7 +7134,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
-    # Wiping breaks the CLI it runs from; must stay last, it matches all stale direct updates.
+    # A direct `studio update` runs from the venv's python.exe, so wiping breaks the CLI.
+    # Must stay LAST of the direct-update escapes: it matches every stale direct update.
     if ($shouldRebuild -and -not $InstallerManagedSetup) {
         $_hostPy = Get-SetupHostInterpreterInVenv -VenvDir $VenvDir
         if ($_hostPy) {
@@ -7169,7 +7188,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
             Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"
         }
-        # Rename first: Remove-Item can stop half-way; pid and timestamp avoid name clashes.
+        # Rename, then delete: a rename is all-or-nothing, Remove-Item can stop half-way.
+        # pid plus timestamp plus suffix avoids name collisions.
         $_staleStamp = Get-Date -Format 'yyyyMMddHHmmss'
         $_staleLeaf = "$_venvLeaf.stale-$_staleStamp-$PID"
         $_staleTry = 0
@@ -7526,8 +7546,9 @@ function Find-InstalledUv {
     return $null
 }
 
-# Floor matches install.ps1's UvMinVersion, so reuse accepts what the Windows installer accepts;
-# below 0.13.4 uv's bundled roots still trust the compromised emSign CAs (GHSA-hq85-5cpj-mr62).
+# The floor a found uv has to clear: install.ps1's UvMinVersion, so reuse accepts exactly what
+# the Windows installer accepts. Below 0.13.4 uv's bundled roots still trust the compromised
+# emSign CAs (GHSA-hq85-5cpj-mr62).
 $SetupUvMinVersion = "0.13.4"
 
 function Test-SetupUvVersionAtLeast {
@@ -7556,9 +7577,10 @@ function Get-InstalledUvVerdict {
     return $verdict
 }
 
-# A uv on PATH below the floor is passed over, kept only if the download fails offline; a hang,
-# failure or no version counts as old; staged runs never download and keep the old uv behind the
-# Windows trust store.
+# Try to use uv (much faster than pip), fall back to pip if unavailable
+# A uv on PATH below the floor is passed over like an installed one, and kept only when the
+# download fails (offline). One that hangs, fails or answers no version counts as old. A staged run
+# never downloads: it keeps the old uv, as before, behind the Windows trust store.
 function Get-SetupPathUvTooOld {
     $pathUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $pathUv) { return $null }
@@ -7582,7 +7604,8 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     # Appended: a python.exe beside uv must not step in front of the staged interpreter.
     $env:PATH = "$env:PATH;$installedUvDir"
     if ($pathUvOld) {
-        # Re-entering restores the pre-venv PATH, so the uv dir goes right behind Scripts.
+        # Re-entering the venv restores the pre-venv PATH first, so it goes before the current uv
+        # is put in front of the old one, right behind the venv's Scripts.
         Enter-StudioVenv
         $env:PATH = (Join-Path $VenvDir "Scripts") + ";$installedUvDir;$env:PATH"
     }
@@ -7623,7 +7646,8 @@ if ((Get-Command uv -ErrorAction SilentlyContinue) -and -not $pathUvOld) {
     } catch { }
     # No download (offline): the old uv on PATH still beats pip, as it did before the floor moved.
     if ($pathUvOld -and -not $UseUv -and (Get-Command uv -ErrorAction SilentlyContinue)) { $UseUv = $true }
-    # Below-floor uv trusts compromised emSign CA; Windows store rules, incl. failed downloads.
+    # Still on a uv below the floor: its bundled roots trust the compromised emSign CA, so the
+    # Windows store decides instead. A download that failed while online lands here too.
     if ($UseUv -and -not $script:UvPinnedInstalled) {
         $activeUv = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($activeUv) {
@@ -7761,7 +7785,8 @@ function Test-UvOfflineRequested {
 }
 
 function Invoke-FastPathEscapes {
-    # Function assignments are local, so the flag is copied in and published on the way out.
+    # Every reason an up-to-date package is still not a working install. Function assignments are
+    # local, so the flag is copied in and published on the way out.
     $SkipPythonDeps = $script:SkipPythonDeps
 
     # UNSLOTH_STUDIO_FULL_DEPS must work here: install_python_stack.py never runs once the compare skips.
@@ -8211,7 +8236,8 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
     $SkipPythonDeps = $false
 }
 
-# Clears the apostrophe torch cache path older setups wrote to USER env; also on fast paths.
+# Remove the unparseable (apostrophe) torch cache path older setups wrote to the USER environment.
+# Outside the dependency block, which the fast paths skip.
 function Test-UnparseableManagedTorchCache {
     param([string]$Value, [string]$Managed)
     if (-not $Value) { return $false }
@@ -8822,8 +8848,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     $_cudaKeptActive = $false
     $_cudaKeptRelease = $env:UNSLOTH_KEPT_TORCH
     $_cudaKeptFromResident = $false
-    # No handoff (studio update, startup repair, re-run): keep the resident release like install.sh,
-    # forced or not; unpinned, a missing torchvision drags torch up; UPGRADE=1 wants newer.
+    # No installer handoff (`studio update`, the startup repair, a re-run of setup): keep the resident
+    # release like install.sh, forced or not. Unpinned, a missing torchvision alone resolves the
+    # newest one and drags torch up with it. UPGRADE=1 asks for newer.
     if (-not $WinArm64Venv -and -not $_cudaKeptRelease -and $env:UNSLOTH_TORCH_UPGRADE -ne "1") {
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
         # Only a release this index publishes, so a CUDA family change never pins an unservable one.
@@ -8963,7 +8990,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
-# No unsloth.exe rename (CLI runs via python.exe); metadata repair is in launcher transaction.
+# No unsloth.exe rename needed: install.ps1 runs the CLI through python.exe and the base is not
+# reinstalled. Duplicate metadata repair is wrapped in the CLI launcher transaction.
 
 # ── Publish the torch flavor this run settled on ──
 # so install_python_stack.py can enforce it; PyPI's Windows torch wheel is +cpu.
@@ -9005,7 +9033,8 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     } elseif ($_rocmPair.Stale) {
         substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
         $_rocmImportedBefore = $_rocmPair.Healthy
-        # Manifest set aside so a failed swap is never certified; if unmovable, skip the swap.
+        # Set the manifest aside so an interrupted replacement is never certified complete. As in the XPU swap, a
+        # manifest that cannot be moved stays valid, so nothing is installed then.
         $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
         $_rocmHeld = "$_rocmManifest.triton-pending"
         $_rocmHasHeld = $false
@@ -9027,9 +9056,11 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
         if ($_rocmBlocked) {
             substep "[WARN] could not set the install manifest aside; $_rocmTritonFrom left in place -- flex attention decode may run unfused." "Yellow"
         } else {
-            # Inherited uv/pip inputs can silently replace the pin; require-hashes fails it.
+            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success, and
+            # require-hashes, which the unhashed pin can only fail.
             $_rocmSavedEnv = Enter-TritonInstallEnv
-            # Broken 3.8 or versionless records look satisfied; only a forced reinstall helps.
+            # A broken 3.8, or a record with no version, already satisfies the pin as far as the installer can
+            # tell, so only a forced reinstall restores its files.
             $_rocmArgs = @($_rocmPair.Spec)
             if ($_rocmPair.Triton -match '^3\.8(\.|$)' -or ($_rocmPair.Dists -gt 0 -and -not $_rocmPair.Triton)) {
                 $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs
@@ -9341,8 +9372,9 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
-# Runs outside the deps fast-path gate so legacy single .venv_t5 upgrades always migrate to the
-# tiered layout; T5 sidecars resolve under $StudioHome so custom installs are self-contained.
+# Runs outside the deps fast-path gate so that upgrades from the legacy
+# single .venv_t5 are always migrated to the tiered layout.
+# T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
 $VenvT5_530Dir = Join-Path $RuntimeRoot ".venv_t5_530"
 $VenvT5_550Dir = Join-Path $RuntimeRoot ".venv_t5_550"
 $VenvT5_510Dir = Join-Path $RuntimeRoot ".venv_t5_510"
@@ -10033,7 +10065,9 @@ if ($LocalLlamaCppLinked) {
 # ==========================================================================
 #  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
 # ==========================================================================
-# After llama: whisper reuses its ggml runtime; never fatal, falls back to Transformers STT.
+# Mirrors the llama.cpp prebuilt install above; current whisper releases are
+# slim bundles that reuse the llama install's ggml runtime, so this runs after
+# llama. Failure is never fatal: local dictation falls back to Transformers STT.
 $WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
 $WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
 # A user-configured whisper binary/dir or an explicit skip disables the managed install entirely.
@@ -10212,6 +10246,7 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
             try {
                 Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
             } catch { }
+            # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {
                     $OpenSslRoot = $root

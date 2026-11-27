@@ -127,7 +127,8 @@ if ($shell) {
     }
 }
 
-# -Depth: default 2 emits type names. Array-wrap: ConvertTo-Json unwraps; 5.1 lacks -AsArray.
+# -Depth because the default of 2 silently emits type names.
+# Always an array: ConvertTo-Json unwraps single elements and 5.1 lacks -AsArray.
 $shortcutJson = $shortcuts | ConvertTo-Json -Depth 6
 if ($shortcuts.Count -le 1) { $shortcutJson = "[$($shortcutJson)]" }
 Set-Content -LiteralPath (Join-Path $OutDir 'shortcuts.json') -Value $shortcutJson -Encoding utf8
@@ -139,7 +140,8 @@ foreach ($s in $shortcuts) {
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Compare only installer-written templates; listing a never-written file voids every run.
+# Content is compared only for installer-generated templates, listed per possible layout.
+# Windows-only contracts: listing a file the Windows installer never writes voids every run.
 $contentFiles = [ordered]@{
     'launch-studio.ps1' = @('launch-studio.ps1', 'share\launch-studio.ps1')
     'unsloth.cmd'       = @('unsloth.cmd', 'bin\unsloth.cmd')
@@ -290,7 +292,8 @@ if ($CompareAgainst) {
     }
 }
 
-# Install ID must match the launcher's copy or Studio won't launch; it differs base vs head.
+# The persisted install ID must match the one baked into the launcher, or Studio will not launch.
+# They are expected to differ between base and head.
 $installId = $null
 foreach ($rootLabel in $searchRoots.Keys) {
     $root = $searchRoots[$rootLabel]

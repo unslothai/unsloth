@@ -11,7 +11,8 @@
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
-    # Reset at entry: piped runs define this in the caller's session, so old flags carry over.
+    # Reset at entry: a piped run defines this function in the caller's session, so a rerun
+    # would otherwise inherit the previous run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
     # Separate from RemoveFailed: nothing failed, the default root was refused.
@@ -156,7 +157,8 @@ Environment:
         return $p
     }
 
-    # Partial removal can delete sentinels; restore the marker so a retry recognises the root.
+    # A partial removal can take the sentinels and then fail; restore the marker so a retry
+    # recognises the root.
     function _RestoreOwnerMarker {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -167,7 +169,8 @@ Environment:
         try { [System.IO.File]::WriteAllText($marker, "") } catch { }
     }
 
-    # Checks studio.db at the resolved target; deletes only the link, not the reparse target.
+    # Checks studio.db at the resolved target but deletes only the link: never chase a reparse
+    # point out of the tree to delete its target.
     function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
@@ -222,7 +225,8 @@ Environment:
             if (-not (Test-Path -LiteralPath $temp -PathType Container)) { continue }
             $isPrimary = (-not [string]::IsNullOrWhiteSpace($PrimaryPath)) -and
                 [string]::Equals($temp.TrimEnd('\','/'), $PrimaryPath.TrimEnd('\','/'), [System.StringComparison]::OrdinalIgnoreCase)
-            # Never follow links: primary's two dirs must be ordinary, others every ancestor.
+            # Never descend through a link. For the primary profile only the two dirs we created must be
+            # ordinary; for other spellings every ancestor must be.
             $ancestors = @()
             if ($isPrimary) {
                 $ancestors = @($temp, [System.IO.Path]::GetDirectoryName($temp))
@@ -252,6 +256,7 @@ Environment:
             $entries = @()
             try { $entries = @(Get-ChildItem -LiteralPath $temp -Force -ErrorAction Stop) } catch { continue }
             foreach ($entry in $entries) {
+                # Shape, not prefix.
                 if ($entry.Name -notmatch '^ust-[0-9]+-[0-9a-f]{8}$') { continue }
                 if (-not ($entry.PSIsContainer)) { continue }
                 # A live owner keeps its directory, as in install.ps1's own sweep.
@@ -371,7 +376,8 @@ Environment:
         _RemoveTreeKeeping -Path $DataDir -Keep $keep
     }
 
-    # Only install.ps1's trampoline shim counts (unsloth.cmd is generic); reads stay bounded.
+    # Only the shim install.ps1 wrote counts: its trampoline expression is the marker, since
+    # unsloth.cmd is a plausible name for other tools. Bounded read: the real shim is tiny.
     function _IsUnslothCmdShim {
         param([string]$Path)
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
@@ -553,7 +559,8 @@ Environment:
         $noteStudio = $null
         $raw = $env:UNSLOTH_HOME
         if ([string]::IsNullOrWhiteSpace($raw)) {
-            # setup.ps1's note for this run's root only, no fallthrough; mirrors uninstall.sh.
+            # Fall back to the note setup.ps1 leaves in the Studio tree; only this run's Studio root, no
+            # falling through. Mirrors _master_root in uninstall.sh.
             $noteRoots = @()
             foreach ($override in @($env:UNSLOTH_STUDIO_HOME, $env:STUDIO_HOME)) {
                 if (-not [string]::IsNullOrWhiteSpace($override)) {
@@ -575,7 +582,8 @@ Environment:
                 $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
                 if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
                 try {
-                    # Refuse multi-line notes; -Encoding UTF8 as 5.1 reads BOM-less as ANSI.
+                    # Refuse a two-line note, as storage_roots and the CLI do.
+                    # -Encoding UTF8: 5.1 reads BOM-less files as ANSI.
                     $noteLines = @(Get-Content -LiteralPath $notePath -TotalCount 2 -Encoding UTF8 -ErrorAction Stop)
                 } catch { continue }
                 if ($noteLines.Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($noteLines[1])) { continue }
@@ -597,7 +605,8 @@ Environment:
         try { $norm = [System.IO.Path]::GetFullPath($(if ($norm) { $norm } else { $expanded })).TrimEnd('\','/') }
         catch { return $null }
         if (-not $norm) { return $null }
-        # A note must describe its tree; explicit UNSLOTH_HOME skips it. Mirrors uninstall.sh.
+        # A note must describe the tree it was found in (containment); explicit UNSLOTH_HOME skips this.
+        # Mirrors uninstall.sh and storage_roots._recorded_master_root().
         if ($noteStudio) {
             $here = $null
             try {
@@ -675,7 +684,8 @@ Environment:
         }
     }
 
-    # True iff the PID's image is under $KnownRoots, so unrelated stale-port processes survive.
+    # True iff the PID's image is under $KnownRoots, so an unrelated process on a stale
+    # Unsloth port is never killed.
     function _PidUnderKnownRoot {
         param([int]$Pid_, [string[]]$KnownRoots)
         if (-not $KnownRoots -or $KnownRoots.Count -eq 0) { return $false }
@@ -782,7 +792,8 @@ Environment:
         return $out
     }
 
-    # Broader than _StopStudioProcesses: llama-server, the shim, orphans with venv DLLs loaded.
+    # Unlike _StopStudioProcesses, also catches llama-server, the shim and orphaned workers
+    # holding a venv DLL (via loaded modules).
     function _StopProcessesLockingRoots {
         param([string[]]$Roots)
         $clean = @($Roots | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\','/') })
@@ -847,7 +858,8 @@ Environment:
     $knownRoots = @()
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
-    # Stop, delete, edit: use this list, never $knownRoots; studio.conf can name others' dirs.
+    # Everything that stops, deletes or edits for a root uses this list, never $knownRoots:
+    # a stale studio.conf can name a directory another application now owns.
     $ownedRoots = @()
     if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
         -not (_IsUnsafeRoot $defaultStudioHome)) {
@@ -892,7 +904,8 @@ Environment:
             $wvProcs = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)
             $parentOf = @{}
             foreach ($p in $wvProcs) { $parentOf[[int]$p.ProcessId] = [int]$p.ParentProcessId }
-            # Helpers belong to the browser, not the app; depth cap stops PID-reuse loops.
+            # WebView2 helpers are children of the browser process, not the app.
+            # Depth-capped so a PID-reuse cycle cannot spin.
             $isOurs = {
                 param($StartPid)
                 $cur = $StartPid
@@ -960,7 +973,8 @@ Environment:
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
-        # Flat layout: master root is kept, not removed with Studio root. Mirrors uninstall.sh.
+        # Flat layout: keep the user-chosen master root rather than take it with the Studio root.
+        # Mirrors uninstall.sh.
         $flatMaster = $masterRootToStop
         if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
             _Substep "keeping $r`: UNSLOTH_HOME and the Unsloth Studio root name the same directory," "Yellow"
@@ -970,7 +984,8 @@ Environment:
             continue
         }
         _RemoveRootRecordingDb $r
-        # Older builds put sd.cpp beside the root; clones share its name, so check the marker.
+        # Older builds put sd.cpp beside the root; require our marker, since an upstream clone has
+        # the same name.
         $customSdCpp = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
