@@ -13,12 +13,12 @@ export { SKILL_MENTION_PATTERN } from "./skill-tools";
 export type SkillRecord = {
   name: string;
   description: string;
-  source: "agents" | "claude" | "bundled";
+  source: "project" | "agents" | "claude" | "bundled";
   enabled: boolean;
   valid: boolean;
   shadowed: boolean;
   linked?: boolean;
-  shadowed_by?: "agents" | "claude" | "bundled" | null;
+  shadowed_by?: "project" | "agents" | "claude" | "bundled" | null;
   error?: string | null;
   license?: string | null;
   compatibility?: string | null;
@@ -59,6 +59,8 @@ let requestGeneration = 0;
 let sessionEpoch = 0;
 let lastFetchedAt = 0;
 let pending: Promise<readonly SkillRecord[]> | null = null;
+let pendingProjectId: string | null = null;
+let loadedProjectId: string | null = null;
 const listeners = new Set<() => void>();
 const channel =
   typeof BroadcastChannel === "undefined"
@@ -91,11 +93,16 @@ export function getSkillsSnapshot(): SkillsSnapshot {
   return snapshot;
 }
 
-export function listSkills(force = false): Promise<readonly SkillRecord[]> {
-  if (pending && !force) return pending;
+export function listSkills(
+  force = false,
+  projectId: string | null = null,
+): Promise<readonly SkillRecord[]> {
+  if (pending && !force && pendingProjectId === projectId) return pending;
+  pendingProjectId = projectId;
   const generation = ++requestGeneration;
   publish({ ...snapshot, loading: true, error: null });
-  const request = authFetch("/api/skills")
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const request = authFetch(`/api/skills${query}`)
     .then((response) => parseResponse<SkillRecord[]>(response))
     .then((skills) => {
       if (!Array.isArray(skills)) {
@@ -106,6 +113,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
     .then((skills) => {
       if (generation === requestGeneration) {
         lastFetchedAt = Date.now();
+        loadedProjectId = projectId;
         publish({ skills, loading: false, initialized: true, error: null });
       }
       return skills;
@@ -227,8 +235,14 @@ export async function createSkill(draft: SkillDraft): Promise<SkillRecord> {
   return created;
 }
 
-export async function getSkillManifest(name: string): Promise<SkillManifest> {
-  const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`);
+export async function getSkillManifest(
+  name: string,
+  projectId: string | null = null,
+): Promise<SkillManifest> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const response = await authFetch(
+    `/api/skills/${encodeURIComponent(name)}${query}`,
+  );
   return parseResponse<SkillManifest>(response);
 }
 
@@ -280,7 +294,10 @@ export async function exportSkill(name: string): Promise<Blob> {
 const SETTLE_TIMEOUT_MS = 3000;
 
 // Finish any in-flight fetch and re-read when the text names an unknown skill (pasted @mentions never refreshed).
-export async function settleSkillsForText(text: string): Promise<void> {
+export async function settleSkillsForText(
+  text: string,
+  projectId: string | null = null,
+): Promise<void> {
   const deadline = new Promise<void>((resolve) =>
     setTimeout(resolve, SETTLE_TIMEOUT_MS),
   );
@@ -291,7 +308,7 @@ export async function settleSkillsForText(text: string): Promise<void> {
       .filter((skill) => skill.valid && !skill.shadowed && skill.enabled)
       .map((skill) => skill.name),
   );
-  let stale = !snapshot.initialized;
+  let stale = !snapshot.initialized || loadedProjectId !== projectId;
   for (const match of text.matchAll(SKILL_MENTION_PATTERN)) {
     const name = match[2] ?? "";
     if (!known.has(name)) {
@@ -300,7 +317,10 @@ export async function settleSkillsForText(text: string): Promise<void> {
     }
   }
   if (stale) {
-    await Promise.race([listSkills(true).catch(() => undefined), deadline]);
+    await Promise.race([
+      listSkills(true, projectId).catch(() => undefined),
+      deadline,
+    ]);
   }
 }
 
@@ -329,6 +349,8 @@ if (typeof window !== "undefined") {
     sessionEpoch += 1;
     requestGeneration += 1;
     pending = null;
+    pendingProjectId = null;
+    loadedProjectId = null;
     lastFetchedAt = 0;
     publish(EMPTY_SNAPSHOT);
   });
