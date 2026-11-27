@@ -228,6 +228,86 @@ def test_loads_whose_keys_never_tokenize_make_no_copy():
     assert tok not in diffusion._KEY_TOKENIZERS
 
 
+class _CopyCounted(_FastWords):
+    copies = 0
+
+    def __deepcopy__(self, memo):
+        type(self).copies += 1
+        return _FastWords()
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        types.SimpleNamespace(name = "flux.1", textual_inversion = None),
+        types.SimpleNamespace(name = "sdxl", textual_inversion = "sdxl"),
+    ],
+)
+def test_a_resident_load_never_copies_tokenizers_it_cannot_batch_with(family):
+    from core.inference import diffusion
+
+    tok = _CopyCounted()
+    _CopyCounted.copies = 0
+    pipe = types.SimpleNamespace(
+        tokenizer = tok, tokenizer_2 = tok, text_encoder = object(), text_encoder_2 = object()
+    )
+    backend = types.SimpleNamespace()
+    _plan(backend, family, pipe, offload_policy = "none")
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert _CopyCounted.copies == 0
+    assert tok not in diffusion._KEY_TOKENIZERS
+    assert backend.request_batching()["mode"] == "serial"
+    assert backend.coalesce_plan("a red fox", False) is None
+
+
+def test_a_group_load_primes_only_while_its_denoiser_streams(monkeypatch):
+    from core.inference import diffusion
+    from core.inference.diffusion_memory import DENOISER_PARTIAL, DENOISER_RESIDENT
+
+    family = types.SimpleNamespace(name = "flux.1", textual_inversion = None)
+    tok = _CopyCounted()
+    _CopyCounted.copies = 0
+    placement = [DENOISER_RESIDENT]
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: placement[0])
+    backend = types.SimpleNamespace()
+    _plan(backend, family, types.SimpleNamespace(tokenizer_2 = tok), offload_policy = "group")
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert _CopyCounted.copies == 0
+    assert backend.request_batching()["mode"] == "serial"
+    placement[0] = DENOISER_PARTIAL
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert _CopyCounted.copies == 1
+    assert backend.request_batching()["mode"] == "any"
+
+
+@pytest.mark.parametrize("offload_policy", ["sequential", "model"])
+def test_a_streamed_load_still_primes_and_keys_as_before(offload_policy):
+    from core.inference import diffusion
+
+    family = types.SimpleNamespace(name = "flux.1", textual_inversion = None)
+    primed, direct = _FastWords(), _FastWords()
+    diffusion.prime_coalesce_tokenizers(family, types.SimpleNamespace(tokenizer_2 = direct))
+    backend = types.SimpleNamespace()
+    _plan(backend, family, types.SimpleNamespace(tokenizer_2 = primed), offload_policy = offload_policy)
+    diffusion.prime_coalesce_tokenizers_for(backend._state)
+    assert primed in diffusion._KEY_TOKENIZERS
+    prompts = ["a red fox", "a blue car", " ".join(["fox"] * 300)]
+    assert [backend.coalesce_plan(p, False) for p in prompts] == [
+        (diffusion.coalesce_prompt_key(family, types.SimpleNamespace(tokenizer_2 = direct), p), False)
+        for p in prompts
+    ]
+
+
+def test_generate_primes_through_the_residency_gate():
+    import inspect
+
+    from core.inference.diffusion import DiffusionBackend
+
+    source = inspect.getsource(DiffusionBackend)
+    assert "prime_coalesce_tokenizers_for(state)" in source
+    assert "prime_coalesce_tokenizers(state." not in source
+
+
 def _serves_at_once(app, backend, prompts):
     """Posts while another render holds the slot; each must finish without waiting to coalesce."""
     opened: list[int] = []
