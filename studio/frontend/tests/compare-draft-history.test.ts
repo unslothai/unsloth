@@ -196,49 +196,95 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
   }
 
   if (name === "GeneralCompareContent") {
-    test("restores both models from the initial history without another read", () => {
+    const restoreState = (
+      initialThreads: Record<string, string>[],
+      pair: { first?: string; second?: string },
+    ) => {
       const declarations = [
         "initialPair",
+        "[model1ThreadId, setModel1ThreadId]",
+        "[model2ThreadId, setModel2ThreadId]",
+        "[threadsSettled, setThreadsSettled]",
+        "[pairSaved, setPairSaved]",
         "restore",
         "[model1Selection, setModel1]",
         "[model2Selection, setModel2]",
+        "[model1, model2]",
       ].map((name) =>
         find(
           component,
           (n) => ts.isVariableDeclaration(n) && n.name.getText(source) === name,
         ).getText(source),
       );
-      const state = evaluate(
+      return evaluate(
         `const ${declarations.join(", ")};
         (${effect.arguments[0].getText(source)})();
-        return {model1Selection, model2Selection};`,
+        return {model1ThreadId, model2ThreadId, threadsSettled, pairSaved, model1, model2};`,
         {
-          initialThreads: [
-            {
-              id: "left",
-              modelId: "unsloth/left-GGUF",
-              modelGgufVariant: "Q4_K_M",
-            },
-            { id: "right", modelId: "unsloth/right" },
+          initialThreads,
+          resolveComparePaneThreadIds: () => pair,
+          useState: (initial: unknown) => [
+            typeof initial === "function" ? initial() : initial,
           ],
-          resolveComparePaneThreadIds: () => ({ first: "left", second: "right" }),
-          useState: (initialize: () => unknown) => [initialize()],
+          useMemo: (compute: () => unknown) => compute(),
+          loraModels: [{ id: "me/right-lora", exportType: "lora" }],
+          modelIdsMatch: (a: string, b: string) => a === b,
+          globalCheckpoint: "unsloth/loaded",
+          globalGgufVariant: "Q8_0",
+          globalIsDiffusion: true,
           busy: false,
           wasBusyRef: { current: false },
           listStoredChatThreads: () => assert.fail("initial history was already read"),
         },
       );
-      assert.deepEqual(state, {
-        model1Selection: {
-          id: "unsloth/left-GGUF",
-          isLora: false,
-          ggufVariant: "Q4_K_M",
+    };
+
+    test("restores each pane's own thread and model from the initial history", () => {
+      assert.deepEqual(
+        restoreState(
+          [
+            {
+              id: "left",
+              modelId: "unsloth/left-GGUF",
+              modelGgufVariant: "Q4_K_M",
+            },
+            { id: "right", modelId: "me/right-lora", modelGgufVariant: "Q6_K" },
+          ],
+          { first: "left", second: "right" },
+        ),
+        {
+          model1ThreadId: "left",
+          model2ThreadId: "right",
+          threadsSettled: true,
+          pairSaved: true,
+          model1: { id: "unsloth/left-GGUF", isLora: false, ggufVariant: "Q4_K_M" },
+          model2: { id: "me/right-lora", isLora: true, ggufVariant: "Q6_K" },
         },
-        model2Selection: {
-          id: "unsloth/right",
+      );
+    });
+
+    test("a saved pane with no recorded model asks for one", () => {
+      const state = restoreState([{ id: "left" }, { id: "right" }], {
+        first: "left",
+        second: "right",
+      });
+      assert.equal(state.model1.id, "");
+      assert.equal(state.model2.id, "");
+    });
+
+    test("a fresh comparison starts from the loaded model and an empty pane", () => {
+      assert.deepEqual(restoreState([], {}), {
+        model1ThreadId: undefined,
+        model2ThreadId: undefined,
+        threadsSettled: true,
+        pairSaved: false,
+        model1: {
+          id: "unsloth/loaded",
           isLora: false,
-          ggufVariant: undefined,
+          ggufVariant: "Q8_0",
+          isDiffusion: true,
         },
+        model2: { id: "", isLora: false },
       });
     });
   }
