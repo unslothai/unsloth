@@ -111,7 +111,12 @@ def test_a_dropped_reduce_fails_the_comparison(reports):
 
 @pytest.mark.parametrize(
     "arm, aborts",
-    [("rank1_unfit", (0, 0)), ("rank1_forward_abort", (1, 1)), ("rank1_backward_oom", (1, 1))],
+    [
+        ("rank1_unfit", (0, 0)),
+        ("rank1_instance_wrapper", (0, 0)),
+        ("rank1_forward_abort", (1, 1)),
+        ("rank1_backward_oom", (1, 1)),
+    ],
 )
 def test_a_rank_without_a_window_keeps_every_rank_standard(reports, arm, aborts):
     for rank, r in reports.items():

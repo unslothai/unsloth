@@ -620,6 +620,10 @@ def _collective_device(group):
 
 
 _DDP_REDUCES = [0]
+_OTHER_RANK = (
+    "Unsloth: offload_layers runs micro-batches one after another this step: another rank cannot run a "
+    "layer-major window."
+)
 
 
 def _reduce_like_ddp(ddp):
@@ -772,12 +776,7 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         group, device = ddp.process_group, _collective_device(ddp.process_group)
         if not _all_ranks_agree(layers is not None, group, device):
             if layers is not None:
-                _say_once(
-                    trainer,
-                    "rank",
-                    "Unsloth: offload_layers runs micro-batches one after another this step: another rank "
-                    "cannot run a layer-major window.",
-                )
+                _say_once(trainer, "rank", _OTHER_RANK)
             return None
         # DDP broadcasts these before a step's first forward; the window's forwards bypass DDP, so do it here.
         buffers = _ddp_buffers(ddp, layers)
@@ -868,14 +867,17 @@ def patch_layer_major_gradient_accumulation(Trainer):
         except (TypeError, ValueError):
             return out
         # Only for trainers whose training_step reaches the wrapper below, which consumes it each step.
-        if (
-            isinstance(samples, list)
-            and len(samples) > 1
-            and _mode() != "off"
-            and _trainer_ok(self)
-            and _instance_overrides(self) is None
-        ):
-            self._unsloth_layer_major_batch = (samples, items)
+        if isinstance(samples, list) and len(samples) > 1 and _mode() != "off":
+            ok = _trainer_ok(self) and _instance_overrides(self) is None
+            if _world_size() > 1:
+                # Every rank stashes or none does: a rank-local wrapper (a rank 0 observer) must not leave the
+                # other ranks waiting in the step's window agreement.
+                agreed = _all_ranks_agree(ok, None, _collective_device(None))
+                if ok and not agreed:
+                    _say_once(self, "rank", _OTHER_RANK)
+                ok = agreed
+            if ok:
+                self._unsloth_layer_major_batch = (samples, items)
         elif (
             isinstance(samples, list)
             and len(samples) > 1

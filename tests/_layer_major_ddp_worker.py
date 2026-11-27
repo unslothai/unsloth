@@ -7,6 +7,7 @@ the gradients the optimizer saw at every step and the final LoRA weights, compar
 fp32 tolerance with one process running each step's global batch."""
 
 import contextlib
+import functools
 import importlib.util
 import io
 import json
@@ -189,6 +190,7 @@ def train(
     sft = False,
     record = None,
     hook_wrapper = False,
+    rank1_wrapper = False,
 ):
     os.environ["UNSLOTH_OFFLOAD_LAYER_MAJOR"] = mode
     model = build_model()
@@ -224,6 +226,9 @@ def train(
     trainer.add_callback(grads)
     if hook_wrapper:
         trainer.add_callback(HookWrapper(trainer))
+    if rank1_wrapper and dist.get_rank() == 1:
+        # A rank-local instance wrapper (an observer on one rank only): that rank refuses windows, so no rank runs one.
+        trainer.compute_loss = functools.partial(type(trainer).compute_loss, trainer)
     undo = inject(mod, engine, model) if inject is not None else None
     engine.layer_major_stats(reset = True)
     reduces = getattr(mod, "_DDP_REDUCES", [0])[0]
@@ -381,6 +386,7 @@ def main(out_dir, zoo_dir):
 
     buf_r = run("buffer_written", "1", inject = buffer_written)
     hook_r = run("ddp_wrapper_hook", "1", hook_wrapper = True)
+    wrap_r = run("rank1_instance_wrapper", "1", rank1_wrapper = True)
     unfit_r = run("rank1_unfit", "1", inject = rank1(unfit))
     fwd_r = run("rank1_forward_abort", "1", inject = rank1(forward_abort))
     bwd_r = run("rank1_backward_oom", "1", inject = rank1(backward_oom))
@@ -391,6 +397,7 @@ def main(out_dir, zoo_dir):
         ("dropped_reduce", dropped),
         ("buffer_written", buf_r),
         ("ddp_wrapper_hook", hook_r),
+        ("rank1_instance_wrapper", wrap_r),
         ("rank1_unfit", unfit_r),
         ("rank1_forward_abort", fwd_r),
         ("rank1_backward_oom", bwd_r),
