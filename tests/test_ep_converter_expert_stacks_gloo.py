@@ -310,6 +310,8 @@ def _spawn(
     world = 2,
     **kwargs,
 ):
+    if not torch.distributed.is_available() or not torch.distributed.is_gloo_available():
+        pytest.skip("requires a PyTorch build with Gloo")
     pytest.importorskip("transformers.core_model_loading")
     pytest.importorskip("peft")
     try:
