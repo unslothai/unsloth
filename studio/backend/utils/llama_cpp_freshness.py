@@ -14,6 +14,7 @@ from typing import Optional
 import structlog
 
 from utils.prebuilt import freshness_flow as _flow
+from utils.prebuilt import single_flight
 
 logger = structlog.get_logger(__name__)
 
@@ -56,12 +57,14 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer). The same release object carries the asset sizes latest_release_assets would fetch, so they are kept too: the backend picker opened after a forced update check then needs no second GitHub read."""
+    gen = single_flight.generation(_assets_memo)
     newest = _flow._newest_published_release_in_pass(
         repo, timeout, log_message = "freshness fetch failed"
     )
     if newest is None:
         return None
-    _assets_memo[repo] = (time.time(), _flow.release_asset_sizes(newest))
+    if single_flight.generation(_assets_memo) == gen:
+        _assets_memo[repo] = (time.time(), _flow.release_asset_sizes(newest))
     return newest["tag_name"]
 
 

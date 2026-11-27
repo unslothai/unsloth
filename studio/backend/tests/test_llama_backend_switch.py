@@ -1552,6 +1552,113 @@ def test_concurrent_forced_asset_reads_share_one_fetch(monkeypatch):
     assert len(fetched) == 2
 
 
+def test_an_install_during_a_resolve_drops_its_pre_install_answer(monkeypatch, tmp_path):
+    release_first = threading.Event()
+    first_started = threading.Event()
+    calls: list = []
+
+    def _run(cmd, **kwargs):
+        calls.append(len(calls))
+        n = len(calls)
+        if n == 1:
+            first_started.set()
+            assert release_first.wait(10)
+        payload = {"backends": [], "run": n}
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload)})()
+
+    monkeypatch.setattr(upd._flow.subprocess, "run", _run)
+    memo: dict = {}
+    results: dict = {}
+    before = threading.Thread(
+        target = lambda: results.__setitem__(
+            "before", upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+        )
+    )
+    before.start()
+    assert first_started.wait(10)
+    # The install finishes while that child still runs.
+    upd.single_flight.invalidate(memo)
+    # A caller after the install does not join the pre-install flight: it runs its own child.
+    after = upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
+    assert after["run"] == 2 and len(calls) == 2
+    release_first.set()
+    before.join(10)
+    assert not before.is_alive()
+    # The pre-install caller still gets its own answer, but it is never stored or reused.
+    assert results["before"]["run"] == 1
+    assert memo["value"]["run"] == 2
+    assert (
+        upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))["run"]
+        == 2
+    )
+    assert len(calls) == 2
+
+
+def test_an_install_during_an_asset_read_drops_its_pre_install_sizes(monkeypatch):
+    release_first = threading.Event()
+    first_started = threading.Event()
+    fetched: list = []
+
+    def _fetch(repo, timeout = 5.0):
+        fetched.append(repo)
+        n = len(fetched)
+        if n == 1:
+            first_started.set()
+            assert release_first.wait(10)
+        return {"a.tar.gz": n}
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_assets", _fetch)
+    repo = "unslothai/llama.cpp"
+    results: dict = {}
+    before = threading.Thread(
+        target = lambda: results.__setitem__(
+            "before", freshness.latest_release_assets(repo, force_refresh = True)
+        )
+    )
+    before.start()
+    assert first_started.wait(10)
+    freshness.reset_caches()
+    after = freshness.latest_release_assets(repo, force_refresh = True, max_age = 120)
+    assert after == {"a.tar.gz": 2} and len(fetched) == 2
+    release_first.set()
+    before.join(10)
+    assert not before.is_alive()
+    assert results["before"] == {"a.tar.gz": 1}
+    assert freshness._assets_memo[repo][1] == {"a.tar.gz": 2}
+    assert freshness.latest_release_assets(repo, force_refresh = True, max_age = 120) == {"a.tar.gz": 2}
+    assert len(fetched) == 2
+
+
+def test_a_re_entrant_same_key_single_flight_call_returns(monkeypatch):
+    from utils.prebuilt import single_flight
+
+    out: dict = {}
+
+    def _inner():
+        return "inner"
+
+    def _outer():
+        return ("outer", single_flight.run(("reentry-test",), _inner))
+
+    worker = threading.Thread(
+        target = lambda: out.__setitem__("v", single_flight.run(("reentry-test",), _outer)),
+        daemon = True,
+    )
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "re-entrant single_flight.run deadlocked"
+    assert out["v"] == ("outer", "inner")
+    assert ("reentry-test",) not in single_flight._inflight
+
+
+def test_the_install_path_invalidates_the_backends_memo():
+    import inspect
+
+    source = inspect.getsource(upd._run_llama_phase)
+    assert "single_flight.invalidate(_backends_memo)" in source
+    assert "_backends_memo.clear()" not in source
+
+
 # Captured at import, before the autouse fixture stubs it out.
 _fetch_latest_release_tag = freshness._fetch_latest_release_tag
 
@@ -1620,7 +1727,7 @@ def test_a_finished_install_is_never_answered_from_the_reuse_window(monkeypatch,
     assert len(calls) == 1
     # _run_llama_phase drops both caches after the installer swaps the tree.
     freshness.reset_caches(drop_disk = True)
-    upd._backends_memo.clear()
+    upd.single_flight.invalidate(upd._backends_memo)
     upd.get_backend_status(force_refresh = True, max_age = 120)
     assert len(calls) == 2
 

@@ -32,6 +32,7 @@ from utils.llama_cpp_changelog import (
     unavailable_reason,
 )
 from utils.prebuilt import freshness_flow as _freshness_flow
+from utils.prebuilt import single_flight
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -877,7 +878,7 @@ def _run_llama_phase(
 
         # Drop stale caches so the banner re-checks the swapped marker. If GitHub is offline, latest stays unknown and the banner fails open.
         reset_caches(drop_disk = True)
-        _backends_memo.clear()
+        single_flight.invalidate(_backends_memo)
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive

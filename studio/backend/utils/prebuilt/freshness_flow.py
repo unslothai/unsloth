@@ -351,9 +351,10 @@ def latest_release_assets(
             return cached[1]
         if force_refresh and max_age is not None and 0 <= age < max_age:
             return cached[1]
+    gen = single_flight.generation(memo)
     return single_flight.run(
-        ("release_assets", id(memo), repo),
-        lambda: _fetch_release_assets_into(repo, memo, fetch),
+        ("release_assets", id(memo), gen, repo),
+        lambda: _fetch_release_assets_into(repo, memo, fetch, gen),
     )
 
 
@@ -361,13 +362,16 @@ def _fetch_release_assets_into(
     repo: str,
     memo: dict[str, tuple[float, dict[str, int]]],
     fetch: Callable[[str], Optional[dict[str, int]]],
+    gen: int,
 ) -> Optional[dict[str, int]]:
     now = time.time()
     assets = fetch(repo)
     if assets is None:
         cached = memo.get(repo)
         return cached[1] if cached else None
-    memo[repo] = (now, assets)
+    # Not stored if an install invalidated the memo during the read.
+    if single_flight.generation(memo) == gen:
+        memo[repo] = (now, assets)
     return assets
 
 
@@ -453,8 +457,9 @@ def reset_caches(
     caches: tuple[dict, ...], *, drop_disk: bool, cache_dir: Callable[[], Path]
 ) -> None:
     """Drop the in-memory freshness caches; with drop_disk also the on-disk 24h release cache (see the component modules for why)."""
+    # invalidate() also bumps each cache's generation, so a fill already running when an install resets them does not write its pre-install answer back.
     for cache in caches:
-        cache.clear()
+        single_flight.invalidate(cache)
     if drop_disk:
         import shutil
 

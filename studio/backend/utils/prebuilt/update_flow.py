@@ -229,10 +229,12 @@ def resolve_prebuilt_for_host(
             return memo.get("value")
         if force_refresh and max_age is not None and 0 <= age < max_age:
             return memo.get("value")
+    gen = single_flight.generation(memo)
     return single_flight.run(
-        ("resolve", id(memo), cache_key),
+        ("resolve", id(memo), gen, cache_key),
         lambda: _run_resolver(
             memo = memo,
+            gen = gen,
             cache_key = cache_key,
             installer_script = installer_script,
             log_message = log_message,
@@ -246,6 +248,7 @@ def resolve_prebuilt_for_host(
 def _run_resolver(
     *,
     memo: dict,
+    gen: int,
     cache_key: tuple,
     installer_script: Callable[[], Optional[Path]],
     log_message: str,
@@ -284,7 +287,8 @@ def _run_resolver(
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
         logger.debug(log_message, error = str(exc))
         value = None
-    if value is not None:
+    # Not stored if an install invalidated the memo while this child ran: its answer describes the host before that install.
+    if value is not None and single_flight.generation(memo) == gen:
         memo.update(at = now, key = cache_key, value = value)
     return value
 
