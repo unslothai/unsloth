@@ -40,7 +40,11 @@ class _Accelerator:
         return torch.cat(out)
 
 
-def _trainer_class(layout, calls):
+def _trainer_class(
+    layout,
+    calls,
+    dp = 0,
+):
     """TRL-shaped _generate: 7 items (0.26 - 1.8), 8 (1.9 - 1.18), 9 (>= 1.19) or 5 with a bad leaf."""
 
     class Trainer:
@@ -85,6 +89,8 @@ def _trainer_class(layout, calls):
                 )
             if layout == "eight":  # TRL 1.9 - 1.18: tool_images = [] without tools
                 return prompt_ids, completion_ids, None, completions, logprobs, {}, None, []
+            if layout == "mixed" and dp == 1:  # mergeable here, unmergeable in the other dp group
+                return prompt_ids, completion_ids, total, logprobs, {}
             # A leaf that is not per sample: must fall back to the root generating everything.
             return prompt_ids, completion_ids, total, logprobs, {"pixel_values": torch.ones(3, 2)}
 
@@ -157,11 +163,11 @@ def _worker(rank, world, init_file, queue):
         prompts = [f"dp{dp} prompt {i // GENERATIONS}" for i in range(4 * GENERATIONS)]
 
         results = {}
-        for layout in ("seven", "eight", "nine", "bad"):
+        for layout in ("seven", "eight", "nine", "bad", "mixed"):
             for split in ("1", "0"):
                 os.environ["UNSLOTH_CP_SPLIT_GENERATION"] = split
                 calls = []
-                Trainer = _trainer_class(layout, calls)
+                Trainer = _trainer_class(layout, calls, dp)
                 cp.patch_rl_trainer(Trainer, "grpo_trainer")
                 trainer = Trainer(_args())
                 assert trainer._context_parallel_manager is manager
@@ -192,12 +198,14 @@ def _worker(rank, world, init_file, queue):
             )
             assert split_seen * cp_size == root_seen
 
-        bad, bad_calls, bad_metrics, bad_seen = results["bad", "1"]
-        root, _, root_metrics, root_seen = results["bad", "0"]
-        # Fallback: the share is discarded, its metrics removed, and the root path runs once.
-        assert bad_calls == [len(prompts) // cp_size, len(prompts)], bad_calls
-        assert bad[1] == root[1] and torch.equal(bad[2], root[2])
-        assert bad_metrics == root_metrics and bad_seen == root_seen
+        # Fallback: the share is discarded, its metrics removed, and the root path runs once. With "mixed"
+        # only one data parallel group cannot merge, and every group must still fall back together.
+        for layout in ("bad", "mixed"):
+            bad, bad_calls, bad_metrics, bad_seen = results[layout, "1"]
+            root, _, root_metrics, root_seen = results[layout, "0"]
+            assert bad_calls == [len(prompts) // cp_size, len(prompts)], (layout, bad_calls)
+            assert bad[1] == root[1] and torch.equal(bad[2], root[2])
+            assert bad_metrics == root_metrics and bad_seen == root_seen
         queue.put((rank, "ok"))
     except BaseException:  # pragma: no cover - reported to the parent
         import traceback

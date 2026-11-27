@@ -3174,6 +3174,15 @@ def _gather_generation_shares(result, manager, device, sizes):
     return tuple(merged)
 
 
+def _all_processes_agree(flag: bool, device) -> bool:
+    """True only if every process passes True (a MIN all-reduce over the world)."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return flag
+    value = torch.tensor([int(flag)], device = device)
+    dist.all_reduce(value, op = dist.ReduceOp.MIN)
+    return bool(value.item())
+
+
 def _metrics_snapshot(trainer):
     metrics = getattr(trainer, "_metrics", None)
     lengths = (
@@ -3497,18 +3506,21 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         if manager is None:
             return originals["_generate"](self, prompts, *args, **kwargs)
         _check_same_prompts(prompts, manager)
+        device = self.accelerator.device
         share = _generation_share(self, prompts, args, kwargs, manager)
+        # _generate gathers over every process: all data parallel groups split, or none do.
+        if not _all_processes_agree(share is not None, device):
+            share = None
         if share is not None:
             snapshot = _metrics_snapshot(self)
             with _manager_scope(None):
                 result = originals["_generate"](self, prompts[share], *args, **kwargs)
             sizes = [share.stop - share.start] * manager.size
-            merged = _gather_generation_shares(result, manager, self.accelerator.device, sizes)
-            if merged is not _UNMERGEABLE:
+            merged = _gather_generation_shares(result, manager, device, sizes)
+            if _all_processes_agree(merged is not _UNMERGEABLE, device):
                 return _recount_completion_tokens(self, merged)
-            # Every peer sees the same gathered shares, so all fall back together, once.
             self._unsloth_cp_split_generation_off = True
-            if dist.get_rank() == dist.get_global_rank(manager.group, 0):
+            if dist.get_rank() == 0:
                 print(
                     "Unsloth: context parallel peers could not merge their generations; rank 0 now "
                     "generates every completion for its peers."
