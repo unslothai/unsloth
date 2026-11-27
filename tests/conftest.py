@@ -18,9 +18,8 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
-# One CPU share per xdist worker, set before torch is imported: otherwise each worker starts a
-# torch/OpenMP pool as wide as the machine, slowing CPU training tests; an explicit thread setting
-# is kept; loaded by path because tests/_shared is only put on sys.path below.
+# One CPU share per xdist worker, set before torch import or each worker's OpenMP pool spans the
+# machine; an explicit thread setting wins; loaded by path, as tests/_shared is not on sys.path.
 import os as _os  # noqa: E402
 
 # The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
@@ -105,8 +104,11 @@ def _fresh_new_mapper_cache():
 
 @pytest.hookimpl(trylast = True)
 def pytest_collection_modifyitems(config, items):
-    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py; then UNSLOTH_TEST_SPLIT."""
+    from shard_split import select
     from xdist_group_check import check
+
+    select(config, items)
     check(config, items)
 
 
@@ -117,9 +119,7 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type under a mocked is_available()==True so its
-    @cache captures "cuda"; prereqs are submodules to load first (e.g. 'utils').
-    Returns False if anything is unimportable, so the caller falls back to a stub."""
+    """Mocks is_available() True so @cache captures cuda; prereqs first; False if unimportable."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True
@@ -171,8 +171,7 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stubs the torch.cuda.* probes that fire at import once DEVICE_TYPE is forced to cuda,
-    returning plausible Ampere values so the import finishes; real-tensor tests still run on CPU."""
+    """Stub torch.cuda import probes (DEVICE_TYPE=cuda) with Ampere values; tests run on CPU."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
@@ -263,3 +262,9 @@ def _kernel_lock_dir(tmp_path_factory):
 def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
     # Tests never take (or create) the environment's real kernel install locks.
     monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)
+
+
+# Gloo ranks fork from a zygote that already ran this file and imported unsloth.
+if os.environ.get("UNSLOTH_TEST_RANK_ZYGOTE") == "1":
+    import rank_zygote
+    rank_zygote.install()

@@ -275,6 +275,11 @@ def chat(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help = "Show backend and llama-server logs."
     ),
+    image_generator: Optional[str] = typer.Option(
+        None,
+        "--image-generator",
+        help = "Let chat swap to this local text-to-image model for image requests, then restore the text model.",
+    ),
     no_server: bool = typer.Option(
         False,
         "--no-server",
@@ -293,6 +298,11 @@ def chat(
     err = Console(stderr = True)
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
     should_print = rank == 0
+    image_swap_requirement = (
+        "--image-generator requires a local Unsloth server and a single GGUF or Transformers chat."
+    )
+    if image_generator and (compare or no_server or is_mlx_distributed):
+        raise typer.BadParameter(image_swap_requirement)
 
     if is_mlx_distributed and mlx_distributed_uses_mpi():
         if should_print:
@@ -336,6 +346,8 @@ def chat(
     # An NPU model runs inside Unsloth Studio, never in this process: no HF config to resolve.
     npu_path = npu_model_path(model)
     if npu_path:
+        if image_generator:
+            raise typer.BadParameter(image_swap_requirement)
         model = npu_path
         model_config = SimpleNamespace(
             display_name = npu_path.split(":", 1)[1],
@@ -386,7 +398,11 @@ def chat(
     chat_backend = (
         None
         if (no_server or is_mlx_distributed)
-        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
+        else connect_studio_server(
+            model,
+            **server_load_opts(ctx, load_opts),
+            **({"image_generator": image_generator} if image_generator else {}),
+        )
     )
     server_mode = chat_backend is not None
     if npu_path and not server_mode:
@@ -397,6 +413,10 @@ def chat(
                 markup = False,
             )
         raise typer.Exit(code = 1)
+    if image_generator:
+        if not server_mode:
+            raise typer.BadParameter(image_swap_requirement)
+        compare_blocked = "image swapping needs the model slot for one text model"
     if server_mode and should_print:
         console.print(
             "(Unsloth server connected — model stays warm after /exit)",

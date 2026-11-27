@@ -762,11 +762,22 @@ def _wan5b(
     guided = True,
     cls = WanTransformer3DModel,
     need = 9582 + 0,
+    tokens = 5070,
+    text_tokens = None,
+    names = ("Tesla T4", "Tesla T4"),
 ):
     _priced(monkeypatch, need_mib = need, compute_s = 2.65, tokens = 5070)
-    host = Host([Card(0, T4, _WAN5B_USED[0]), Card(1, T4, _WAN5B_USED[1])])
+    host = Host(
+        [
+            Card(0, T4, _WAN5B_USED[0], name = names[0]),
+            Card(1, T4, _WAN5B_USED[1], name = names[1]),
+        ]
+    )
     pipe = _DitPipe(cls())
-    mg.note_default_request(pipe, guided = guided, steps = 10, tokens = 5070, why = "default guidance 5")
+    sized = {} if text_tokens is None else {"text_tokens": text_tokens}
+    mg.note_default_request(
+        pipe, guided = guided, steps = 10, tokens = tokens, why = "default guidance 5", **sized
+    )
     return decide(
         monkeypatch,
         host,
@@ -848,6 +859,143 @@ def test_unguided_default_request_keeps_the_layer_split(monkeypatch):
     assert _recorded(d).chosen == "layer_split"
     reasons = {c.kind: c.reason for c in _recorded(d).rejected}
     assert "one denoiser branch per step" in reasons["cfg_replica"]
+
+
+class Flux2Transformer2DModel(WanTransformer3DModel):
+    pass
+
+
+def _flux2_plan(monkeypatch):
+    # stands in for the check of diffusers' context-parallel plan (importing diffusers here would touch CUDA)
+    from core.inference import diffusion_sequence_parallel as sp
+    monkeypatch.setattr(sp, "read_plan", lambda cls: sp.SP_EXEC_PLANS.get(cls.__name__))
+
+
+def test_unguided_flux2_default_request_takes_the_replica_to_split_its_tokens(monkeypatch):
+    # a distilled FLUX.2 klein render has one branch per step: the replica runs half of each step's tokens
+    _flux2_plan(monkeypatch)
+    d = _wan5b(monkeypatch, guided = False, cls = Flux2Transformer2DModel, **_KLEIN_1024)
+    assert d.plan.layer_split is None and d.plan.secondary_ordinal is None
+    recorded = _recorded(d)
+    assert recorded.chosen == "cfg_replica", recorded
+    assert "half of each step's tokens" in recorded.summary
+    kinds = {c.kind: c.reason for c in recorded.rejected}
+    assert "half of each step's tokens on each card" in kinds["layer_split"]
+    est = d.status["mode_estimate"]
+    assert est["replica_render_s"] < est["alternative_render_s"]
+
+
+def test_unguided_flux2_keeps_the_layer_split_with_sequence_parallel_off(monkeypatch):
+    from core.inference import diffusion_sequence_parallel as sp
+
+    _flux2_plan(monkeypatch)
+    monkeypatch.setenv(sp.SP_ENV, "0")
+    d = _wan5b(monkeypatch, guided = False, cls = Flux2Transformer2DModel, **_KLEIN_1024)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert (
+        "one denoiser branch per step" in reasons["cfg_replica"]
+        and sp.SP_ENV in reasons["cfg_replica"]
+    )
+
+
+def test_unguided_flux2_with_compiled_blocks_keeps_the_layer_split(monkeypatch):
+    # speed default / max compile the blocks before placement; a compiled call never splits by tokens, so a replica
+    # placed for the split would only cost a second copy of the model
+    _flux2_plan(monkeypatch)
+
+    def compiled_init(self):
+        Flux2Transformer2DModel.__init__(self)
+        self.proj._compiled_call_impl = object()
+
+    compiled = type(
+        "Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"__init__": compiled_init}
+    )
+    d = _wan5b(monkeypatch, guided = False, cls = compiled, **_KLEIN_1024)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "compiled submodules" in reasons["cfg_replica"], reasons
+
+
+def test_unguided_flux2_with_per_call_activation_scaling_keeps_the_layer_split(monkeypatch):
+    # dynamic NVFP4 linears scale by each call's amax, so the router refuses every token split of such a denoiser
+    _flux2_plan(monkeypatch)
+
+    class ComfyNVFP4DynamicLinear(torch.nn.Linear):
+        pass
+
+    def scaled_init(self):
+        Flux2Transformer2DModel.__init__(self)
+        self.proj = ComfyNVFP4DynamicLinear(4, 4)
+
+    scaled = type("Flux2Transformer2DModel", (Flux2Transformer2DModel,), {"__init__": scaled_init})
+    d = _wan5b(monkeypatch, guided = False, cls = scaled, **_KLEIN_1024)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "per-call activation scaling" in reasons["cfg_replica"], reasons
+
+
+# a default request whose size clears MIN_TOKENS, priced like the Wan 5B fixture (5070 tokens) plus a 512-token prompt
+_KLEIN_1024 = {"tokens": 5070, "text_tokens": 512}
+
+
+@pytest.mark.parametrize(
+    "sized, why",
+    [
+        (
+            {"tokens": 2304, "text_tokens": 512},
+            "2816 tokens, under 4096",
+        ),  # a 768 px default request
+        ({"tokens": None, "text_tokens": None}, "token count is unknown"),
+        ({"tokens": 4096, "text_tokens": None}, "token count is unknown"),
+    ],
+    ids = ["768px", "unsized", "no_text_length"],
+)
+def test_unguided_flux2_under_the_threshold_or_unsized_keeps_the_layer_split(
+    monkeypatch, sized, why
+):
+    # the router never splits such calls: giving the layer split up for a replica would buy nothing
+    _flux2_plan(monkeypatch)
+    d = _wan5b(monkeypatch, guided = False, cls = Flux2Transformer2DModel, **sized)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert why in reasons["cfg_replica"], reasons
+
+
+def test_unguided_flux2_on_two_different_cards_keeps_the_layer_split(monkeypatch):
+    # CFG-parallel force takes any card for a replica; the router still refuses a token split across two card models
+    # (it keeps the CFG force only for guided branches), so placement does too
+    _flux2_plan(monkeypatch)
+    monkeypatch.setattr(mg, "_NAMES", {})  # card names are cached per process
+    monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "force")
+    d = _wan5b(
+        monkeypatch,
+        guided = False,
+        cls = Flux2Transformer2DModel,
+        names = ("NVIDIA GeForce RTX 5090", "NVIDIA GeForce RTX 5080"),
+        **_KLEIN_1024,
+    )
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "different cards" in reasons["cfg_replica"], reasons
+
+
+def test_unguided_wan_default_request_keeps_main_placement(monkeypatch):
+    # the unguided token-split replica is FLUX.2 only: an unguided Wan default request places as on main
+    from core.inference import diffusion_sequence_parallel as sp
+
+    monkeypatch.setattr(sp, "read_plan", lambda cls: sp.SP_EXEC_PLANS.get(cls.__name__))
+    d = _wan5b(monkeypatch, guided = False)
+    assert d.plan.layer_split is not None
+    reasons = {c.kind: c.reason for c in _recorded(d).rejected}
+    assert "one denoiser branch per step" in reasons["cfg_replica"], reasons
+
+
+def test_sequence_split_pricing_takes_a_share_of_the_step():
+    replica, alternative = mg.price_replica_layout(
+        guided = False, compute_s = 1.0, primary_stream_s = 0.0, steps = 4, sequence_split = True
+    )
+    assert alternative == 4.0 and abs(replica - 4 * mg.SEQUENCE_SPLIT_STEP_SHARE) < 1e-9
 
 
 def test_replica_that_does_not_fit_the_second_card_keeps_the_layer_split(monkeypatch):

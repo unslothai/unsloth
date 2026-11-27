@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
+from .huggingface import processor_folder_name_error
 from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
@@ -810,6 +811,13 @@ def validate_recipe_names(recipe: dict[str, Any]) -> None:
             raise ValueError(
                 f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
             )
+    name_error = processor_folder_name_error(
+        item["name"]
+        for item in (processors if isinstance(processors, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    if name_error:
+        raise ValueError(name_error)
 
 
 def _safe_module_name(record_id: Any, column_name: str) -> str:

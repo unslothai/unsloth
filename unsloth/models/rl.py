@@ -140,11 +140,37 @@ _ONLINE_DPO_VLLM_SYNC_FUNCTIONS = frozenset(
     )
 )
 
+# Trainers whose vision forward sees the same images several times: GRPO / RLOO repeat each prompt's images
+# num_generations times, DPO concatenates chosen and rejected (images twice), Online DPO samples 2 completions
+# per prompt. KTO, ORPO and CPO pass each image once per forward, so they are left alone.
+_IMAGE_DEDUP_TRAINERS = ("grpo_trainer", "rloo_trainer", "dpo_trainer", "online_dpo_trainer")
+
+
+def _image_dedup_post(trainer_file):
+    """__init__ tail that encodes each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables)."""
+    if trainer_file not in _IMAGE_DEDUP_TRAINERS:
+        return ""
+    # Preference trainers also wrap a separate ref_model: it runs the same repeated images under no_grad.
+    models = "getattr(self, 'model', None),"
+    if trainer_file != "grpo_trainer":
+        models += " getattr(self, 'ref_model', None),"
+    return (
+        "try:\n"
+        "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+        "except ImportError:\n"
+        "    _unsloth_install_image_dedup = None\n"
+        "if _unsloth_install_image_dedup is not None:\n"
+        f"    for _unsloth_dedup_model in ({models}):\n"
+        "        _unsloth_install_image_dedup(_unsloth_dedup_model)\n"
+        "pass\n"
+    )
+
 
 def _strip_vllm_weight_loads(function, source, trainer_file):
     # GRPO's _move_model_to_vllm returns early under fast_inference (grpo_trainer__move_model_to_vllm),
     # and TRL's own vLLM (colocate or server) needs these lines to receive the trainer weights.
-    if trainer_file == "grpo_trainer" and function in _GRPO_VLLM_SYNC_FUNCTIONS:
+    # RLOO on TRL 0.22 to 0.27 carries the same methods (rloo_trainer__move_model_to_vllm).
+    if trainer_file in ("grpo_trainer", "rloo_trainer") and function in _GRPO_VLLM_SYNC_FUNCTIONS:
         return source
     if trainer_file == "online_dpo_trainer" and function in _ONLINE_DPO_VLLM_SYNC_FUNCTIONS:
         return source
@@ -573,9 +599,9 @@ try:
 except Exception:
     def _unsloth_dataset_column_names(dataset): return dataset.column_names
 try:
-    from unsloth.models._utils import _unsloth_tp_skip_dpo_ref_adapter
+    from unsloth.models._utils import _unsloth_tp_skip_ref_adapter
 except Exception:
-    def _unsloth_tp_skip_dpo_ref_adapter(model): return False
+    def _unsloth_tp_skip_ref_adapter(model, trainer = None): return False
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -992,9 +1018,13 @@ def _wrap_distillation_padding_mask(trainer_cls):
     def wrapped(self, unwrapped_model, *args, **kwargs):
         # Distillation calls the backbone directly, bypassing CausalLM's _has_no_labels update.
         missing = object()
+        # teacher_model = "base" holds no modules itself: flag the student it scores.
+        modules_owner = getattr(
+            unwrapped_model, "_unsloth_adapter_off_student_model", unwrapped_model
+        )
         states = [
             (module, getattr(module, "_unsloth_keep_padding_mask", missing))
-            for module in unwrapped_model.modules()
+            for module in modules_owner.modules()
             if hasattr(module, "embed_tokens")
         ]
         for module, _ in states:
@@ -1122,6 +1152,34 @@ def _restore_optimizer_from_host(record):
         state[name] = restored[id(host)]
     for param, host in grads:
         param.grad = restored[id(host)]
+
+
+def _wrap_grpo_vllm_lora_rounding(trainer_cls, always = False):
+    """train / evaluate / predict of an RL trainer with use_vllm (GRPO, RLOO, Online DPO; always for AsyncGRPO, which only
+    samples with vLLM) run under vllm_lora_rounding, so the trainer rounds the LoRA term as the rollout does;
+    the previous order comes back afterwards (a later SFT keeps the fused one)."""
+    from ..kernels.utils import vllm_lora_rounding
+    for name in ("train", "evaluate", "predict"):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
+            continue
+
+        def wrapped(
+            self,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            # TRL 0.22's Online DPO keeps the flag only on its args.
+            use_vllm = getattr(self, "use_vllm", None)
+            if use_vllm is None:
+                use_vllm = getattr(getattr(self, "args", None), "use_vllm", False)
+            with vllm_lora_rounding(always or bool(use_vllm)):
+                return _original(self, *args, **kwargs)
+
+        functools.update_wrapper(wrapped, original)
+        wrapped._unsloth_vllm_lora_rounding = True
+        setattr(trainer_cls, name, wrapped)
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -3648,32 +3706,44 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "pass\n"
         )
 
-    # GRPO repeats each prompt's images num_generations times; encode each distinct image once (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
-    if trainer_file == "grpo_trainer":
+    # fast_inference sizes vLLM max_num_seqs before the trainer exists: warn when one generate call exceeds it.
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
         RLTrainer_post += (
             "try:\n"
-            "    from unsloth_zoo.vision_dedup import install_image_dedup as _unsloth_install_image_dedup\n"
+            "    from unsloth.models._vllm_batch_cap import grpo_check_max_num_seqs as _unsloth_check_max_num_seqs\n"
+            "    _unsloth_check_max_num_seqs(self)\n"
             "except ImportError:\n"
-            "    _unsloth_install_image_dedup = None\n"
-            "if _unsloth_install_image_dedup is not None:\n"
-            "    _unsloth_install_image_dedup(getattr(self, 'model', None))\n"
-            "pass\n"
+            "    pass\n"
         )
+
+    # unsloth_distillation_coef / unsloth_sampler_kl_coef: validate once and resolve the teacher (adapter-off base by default).
+    if trainer_file == "grpo_trainer":
+        RLTrainer_post += (
+            "from unsloth.models._on_policy_distillation import grpo_setup_distillation as _unsloth_grpo_setup_distillation\n"
+            "from unsloth.models._on_policy_distillation import grpo_check_sampler_kl as _unsloth_grpo_check_sampler_kl\n"
+            "_unsloth_grpo_setup_distillation(self, locals().get('_unsloth_grpo_teacher_model', None))\n"
+            "_unsloth_grpo_check_sampler_kl(self)\n"
+        )
+
+    # Encode each distinct image of a vision forward once where the trainer repeats them (UNSLOTH_GRPO_IMAGE_DEDUP=0 disables).
+    RLTrainer_post += _image_dedup_post(trainer_file)
 
     if trainer_file == "grpo_trainer":
         RLTrainer_post += (
-            "if os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine'):\n"
+            "# R3 replays vLLM's rollout routes (fast_inference); R2 (UNSLOTH_GRPO_ROUTING_REPLAY_R2=1) replays pi_old's, no vLLM needed.\n"
+            "_unsloth_replay_on = os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY', '0') == '1' and hasattr(model, 'vllm_engine')\n"
+            "if _unsloth_replay_on or os.environ.get('UNSLOTH_GRPO_ROUTING_REPLAY_R2', '0') == '1':\n"
             "    try:\n"
             "        from unsloth_zoo.routing_replay import install_routing_replay\n"
             "    except ImportError:\n"
-            "        print('Unsloth: UNSLOTH_GRPO_ROUTING_REPLAY=1 needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
+            "        print('Unsloth: MoE routing replay needs a newer unsloth_zoo: pip install -U unsloth_zoo')\n"
             "    else:\n"
             "        from unsloth.models._routing_replay import routing_replay_hook_snapshot, prepare_routing_replay\n"
             "        # TRL scores the PEFT reference through self.model.disable_adapter(), so prepare that object.\n"
             "        _unsloth_replay_model = getattr(self, 'model', None)\n"
             "        _unsloth_replay_model = model if _unsloth_replay_model is None else _unsloth_replay_model\n"
             "        _unsloth_replay_hooks_before = routing_replay_hook_snapshot(_unsloth_replay_model)\n"
-            "        install_routing_replay(model, model.vllm_engine, getattr(self, 'processing_class', None))\n"
+            "        install_routing_replay(model, getattr(model, 'vllm_engine', None), getattr(self, 'processing_class', None))\n"
             "        # Pick the router weight formulas outside compilation; PEFT reference scoring routes naturally.\n"
             "        prepare_routing_replay(_unsloth_replay_model, _unsloth_replay_hooks_before)\n"
             "pass\n"
@@ -3875,6 +3945,38 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_post += (
             "\n        self.context_parallel_size = context_parallel_size"
             "\n        self.context_parallel_backend = context_parallel_backend"
+        )
+
+    # On-policy distillation and the StableReinforce sampler KL (unsloth/models/_on_policy_distillation.py).
+    if trainer_file == "grpo_trainer" and "unsloth_distillation_coef" not in call_args:
+        max_seq_length_pre += """
+    unsloth_distillation_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'On-policy distillation: adds -coef * (log q - log p_teacher) per sampled token to the advantages (Tinker uses 1.0). 0 disables it.'},
+    )
+    unsloth_distillation_teacher : Optional[str] = field(
+        default = 'base',
+        metadata = {'help': "Teacher for unsloth_distillation_coef: 'base' is the LoRA student's base model with the adapter disabled. Pass any other teacher as GRPOTrainer(teacher_model = model)."},
+    )
+    unsloth_sampler_kl_coef : Optional[float] = field(
+        default = 0.0,
+        metadata = {'help': 'StableReinforce: adds coef * KL(sampler || policy) per sampled token (Tinker uses 0.01). 0 disables it.'},
+    )
+    unsloth_sampler_kl_estimator : Optional[str] = field(
+        default = 'k1',
+        metadata = {'help': "Estimator for unsloth_sampler_kl_coef: 'k1' (log q - log p) or 'k3' (r - 1 - log r, r = p / q)."},
+    )"""
+        max_seq_length_call += (
+            "unsloth_distillation_coef = 0.0,"
+            "unsloth_distillation_teacher = 'base',"
+            "unsloth_sampler_kl_coef = 0.0,"
+            "unsloth_sampler_kl_estimator = 'k1',"
+        )
+        max_seq_length_post += (
+            "\n        self.unsloth_distillation_coef = unsloth_distillation_coef"
+            "\n        self.unsloth_distillation_teacher = unsloth_distillation_teacher"
+            "\n        self.unsloth_sampler_kl_coef = unsloth_sampler_kl_coef"
+            "\n        self.unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator"
         )
 
     if "output_dir" in call_args:
@@ -4456,7 +4558,24 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception as e:
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
+    if trainer_file in ("rloo_trainer", "online_dpo_trainer"):
+        # Both can score vLLM samples with the trainer, as GRPO does.
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
+
     if trainer_file == "grpo_trainer":
+        # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
+        try:
+            from ._partial_rollout import wrap_grpo_partial_rollout
+            wrap_grpo_partial_rollout(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap GRPO partial rollout for {RLTrainer_name}: {e}")
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
@@ -4501,6 +4620,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
     if trainer_file in ("distillation_trainer", "server_distillation_trainer"):
         _wrap_distillation_padding_mask(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+    if trainer_file == "grpo_trainer":
+        try:
+            from ._on_policy_distillation import wrap_grpo_on_policy_distillation
+            wrap_grpo_on_policy_distillation(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap GRPO on-policy distillation for {RLTrainer_name}: {e}"
+            )
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
@@ -4563,7 +4690,7 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-# TRL >= 1.0 DPOTrainer copies ".default." into a "ref" adapter (1.0-1.6 peft_config["default"], 1.7+ default_config).
+# TRL >= 1.0 DPOTrainer / >= 1.10 KTOTrainer copy ".default." into a "ref" adapter (DPO 1.0-1.6 peft_config["default"], else default_config).
 _DPO_REF_ADAPTER_BLOCK = re.compile(
     r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
     r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
@@ -4572,12 +4699,60 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 )
 
 
-def _guard_dpo_ref_adapter_for_tp(init):
+# Owner of TRL 0.27+ add_adapter("ref") in GRPO (beta != 0) / RLOO: `if is_peft_available() and ...` to 1.3, `elif` after.
+_RL_REF_ADAPTER_HEADER = re.compile(
+    r"^(?P<head>[ \t]*(?:el)?if\s+)(?:is_peft_available\(\)\s+and\s+)?is_peft_model\(model\)"
+    r"(?:\s+and\s+args\.beta\s*!=\s*0(?:\.0)?)?\s*:(?P<tail>[ \t]*(?:#.*)?)$"
+)
+
+
+def _skip_rl_ref_adapter(init):
+    """Disable the frozen "ref" adapter copy (vLLM's LoRA sync rejects its weights; the base model is the reference).
+    The header stays and its body goes under `if False:`, so an elif / else chain keeps its meaning."""
+    lines = init.split("\n")
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#") or not re.search(r"\.add_adapter\(\s*[\"']ref[\"']", line):
+            continue
+        depth = len(line) - len(line.lstrip())
+        for j in range(i - 1, -1, -1):
+            above = lines[j]
+            if not above.strip() or above.lstrip().startswith("#"):
+                continue
+            indent = len(above) - len(above.lstrip())
+            if indent >= depth:
+                continue
+            depth = indent
+            if _RL_REF_ADAPTER_HEADER.match(above):
+                end = j + 1
+                while end < len(lines) and (
+                    not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent
+                ):
+                    end += 1
+                while end > j + 1 and not lines[end - 1].strip():
+                    end -= 1
+                body = lines[j + 1 : end]
+                inner = min(len(x) - len(x.lstrip()) for x in body if x.strip())
+                lines[j + 1 : end] = [
+                    " " * inner
+                    + "if False:  # Unsloth: no frozen ref adapter, the base model is the reference"
+                ] + [("    " + x) if x.strip() else x for x in body]
+                break
+            if above.lstrip().startswith(("if ", "elif ", "def ")) or indent == 0:
+                break  # another condition owns it (DPO's ref_model is None, ...): leave it
+        else:
+            continue
+        break
+    return "\n".join(lines)
+
+
+def _guard_ref_adapter_for_tp(init, trainer = "DPOTrainer"):
+    """Guard TRL's "ref" adapter copy (DPO >= 1.0, KTO >= 1.10) so a tp model skips or refuses it."""
+
     def _guard(match):
         indent = match.group("indent")
         lines = match.group(0).split("\n")
         body = "\n".join("    " + line if line.strip() else line for line in lines)
-        return f"{indent}if not _unsloth_tp_skip_dpo_ref_adapter(model):\n{body}"
+        return f"{indent}if not _unsloth_tp_skip_ref_adapter(model, {trainer!r}):\n{body}"
 
     return _DPO_REF_ADAPTER_BLOCK.sub(_guard, init, count = 1)
 
@@ -4641,9 +4816,11 @@ def patch_functions(
         return "\n".join(commented_lines)
 
     init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        init = _skip_rl_ref_adapter(init)
 
-    if trainer_file == "dpo_trainer":
-        init = _guard_dpo_ref_adapter_for_tp(init)
+    if trainer_file in ("dpo_trainer", "kto_trainer"):
+        init = _guard_ref_adapter_for_tp(init, RLTrainer_name)
 
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches the first match, .+? the final one.
@@ -4681,16 +4858,19 @@ def patch_functions(
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
-                if trl_version >= Version("0.23.0"):
-                    # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have disabled it); fall back to the standby env var when the engine cannot be introspected.
-                    vllm_setter += (
-                        " " * 12
-                        + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
-                        + " " * 12
-                        + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
-                        + " " * 16
-                        + "args.vllm_enable_sleep_mode=True\n"
-                    )
+            # RLOO and OnlineDPO read the same flag: without it a standby engine never sleeps and training gets ~10% of VRAM.
+            if trl_version >= Version("0.23.0") and (
+                "grpo" in trainer_file or trainer_file in ("rloo_trainer", "online_dpo_trainer")
+            ):
+                # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have disabled it); fall back to the standby env var when the engine cannot be introspected.
+                vllm_setter += (
+                    " " * 12
+                    + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
+                    + " " * 12
+                    + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
+                    + " " * 16
+                    + "args.vllm_enable_sleep_mode=True\n"
+                )
 
             init = init.replace(replacer, replacer + vllm_setter)
 
@@ -6346,6 +6526,54 @@ def _async_grpo_masked_compute_loss(compute_loss):
     return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
 
 
+# StableReinforce (Tinker stable_reinforce): coef * KL(sampler || policy) per trained token, k1 = log q - log p or
+# k3 = r - 1 - log r with r = p / q. AsyncGRPO's old_log_probs are the sampler's logprobs. Not IS-weighted or masked:
+# the tokens were drawn from the sampler, and the KL is what keeps a stale or masked token near it.
+_ASYNC_GRPO_SAMPLER_KL = (
+    "{i}_unsloth_kl_log_ratio = torch.clamp(torch.nan_to_num(log_probs - old_log_probs, nan = 0.0), min = -20.0, max = 20.0)\n"
+    "{i}per_token_loss = per_token_loss + self._unsloth_sampler_kl_coef * ("
+    "torch.expm1(_unsloth_kl_log_ratio) - _unsloth_kl_log_ratio "
+    "if self._unsloth_sampler_kl_estimator == 'k3' else -_unsloth_kl_log_ratio)\n"
+)
+
+
+@functools.lru_cache(maxsize = None)
+def _async_grpo_sampler_kl_compute_loss(compute_loss, masked = False):
+    source = textwrap.dedent(inspect.getsource(compute_loss))
+    if masked:
+        if source.count(_ASYNC_GRPO_PPO_LOSS) != 1:
+            raise ValueError(
+                "Unsloth: importance_sampling_mask = True could not find the PPO loss in "
+                f"{compute_loss.__qualname__}, so it cannot be masked. Drop importance_sampling_mask for this trainer."
+            )
+        source = source.replace(_ASYNC_GRPO_PPO_LOSS, _ASYNC_GRPO_MASKED_LOSS)
+        for old, new in _ASYNC_GRPO_MASK_METRICS:
+            source = source.replace(old, new)
+    # The KL joins the per-token loss right before TRL reduces it: `loss = per_token_loss.sum()` (TRL >= 1.16) or
+    # `loss = (per_token_loss * completion_mask).sum()` (1.13 - 1.15).
+    lines = source.splitlines(keepends = True)
+    hits = [
+        n
+        for n, line in enumerate(lines)
+        if line.lstrip().startswith(("loss = per_token_loss", "loss = (per_token_loss"))
+    ]
+    if len(hits) != 1 or "old_log_probs" not in source or "log_probs" not in source:
+        raise ValueError(
+            "Unsloth: unsloth_sampler_kl_coef could not find where "
+            f"{compute_loss.__qualname__} reduces its per-token loss, so the sampler KL cannot be added."
+        )
+    line = lines[hits[0]]
+    indent = line[: len(line) - len(line.lstrip())]
+    lines.insert(hits[0], _ASYNC_GRPO_SAMPLER_KL.format(i = indent))
+    namespace = {}
+    exec(
+        compile("".join(lines), f"<unsloth sampler kl {compute_loss.__qualname__}>", "exec"),
+        compute_loss.__globals__,
+        namespace,
+    )
+    return functools.wraps(compute_loss)(namespace[compute_loss.__name__])
+
+
 def _import_trl_async_grpo_module():
     # TRL >= 1.18: stable module (experimental is a subclassing shim, so both are covered); 1.13-1.17: experimental.
     errors = []
@@ -6428,13 +6656,29 @@ def patch_trl_async_grpo():
         model,
         *args,
         importance_sampling_mask = False,
+        unsloth_sampler_kl_coef = 0.0,
+        unsloth_sampler_kl_estimator = "k1",
         **kwargs,
     ):
-        masked_loss = (
-            _async_grpo_masked_compute_loss(type(self).compute_loss)
-            if importance_sampling_mask
-            else None
-        )
+        sampler_kl_coef = float(unsloth_sampler_kl_coef or 0.0)
+        if not (0.0 <= sampler_kl_coef < float("inf")):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_coef must be a finite float >= 0, not {unsloth_sampler_kl_coef!r}."
+            )
+        if unsloth_sampler_kl_estimator not in ("k1", "k3"):
+            raise ValueError(
+                f"Unsloth: unsloth_sampler_kl_estimator must be 'k1' or 'k3', not {unsloth_sampler_kl_estimator!r}."
+            )
+        if sampler_kl_coef != 0.0:
+            masked_loss = _async_grpo_sampler_kl_compute_loss(
+                type(self).compute_loss, bool(importance_sampling_mask)
+            )
+        else:
+            masked_loss = (
+                _async_grpo_masked_compute_loss(type(self).compute_loss)
+                if importance_sampling_mask
+                else None
+            )
         config = args[1] if len(args) >= 2 else kwargs.get("args")
         if not isinstance(model, str) and config is None:
             name = getattr(getattr(model, "config", None), "_name_or_path", "") or "model"
@@ -6502,6 +6746,8 @@ def patch_trl_async_grpo():
         if server is not None:
             self._unsloth_vllm_server = server
             weakref.finalize(self, server.stop)
+        self._unsloth_sampler_kl_coef = sampler_kl_coef
+        self._unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator
         if masked_loss is not None:
             self.compute_loss = types.MethodType(masked_loss, self)
 
@@ -6510,15 +6756,40 @@ def patch_trl_async_grpo():
 
         @functools.wraps(original_train)
         def train(self, *args, **kwargs):
+            # As prepare_for_training_mode: reset a stray compile cache, leave a pre-train for_inference().
+            model = getattr(self, "model", None)
+            was_training = getattr(model, "training", None)
+            use_gc = getattr(model, "_unsloth_gradient_checkpointing", None)
+            if not hasattr(model, "_unsloth_gradient_checkpointing"):
+                use_gc = getattr(getattr(self, "args", None), "gradient_checkpointing", True)
             try:
+                from ._utils import _unsloth_reset_stray_compile_cache
+                _unsloth_reset_stray_compile_cache(self)
+            except Exception:
+                pass
+            try:
+                if hasattr(model, "for_training"):
+                    model.for_training(use_gradient_checkpointing = use_gc)
                 return original_train(self, *args, **kwargs)
             finally:
-                server = getattr(self, "_unsloth_vllm_server", None)
-                if server is not None:
-                    # The rollout process is gone; drop the requests it left in flight.
-                    server.abort_all()
+                try:
+                    server = getattr(self, "_unsloth_vllm_server", None)
+                    if server is not None:
+                        # The rollout process is gone; drop the requests it left in flight.
+                        server.abort_all()
+                finally:
+                    # Back to inference mode even when train raised, as the model was before.
+                    if was_training is False and getattr(self, "_unsloth_tensor_parallel", False):
+                        model.eval()
+                    elif was_training is False and hasattr(model, "for_inference"):
+                        model.for_inference()
 
         trainer_class.train = train
+    try:
+        # Every rollout comes from vLLM, so score the LoRA term in its rounding order.
+        _wrap_grpo_vllm_lora_rounding(trainer_class, always = True)
+    except Exception as e:
+        logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for AsyncGRPOTrainer: {e}")
 
     if hasattr(async_module, "AsyncRolloutWorker"):
 

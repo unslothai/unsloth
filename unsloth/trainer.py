@@ -2258,6 +2258,13 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 add_mfu_callback(self)
             except Exception as exc:
                 logger.warning(f"Unsloth: could not enable MFU logging ({exc}).")
+        if os.environ.get("UNSLOTH_LOG_MOE_LOAD", "0") not in ("", "0"):
+            try:
+                from .utils.moe_load import add_moe_load_callback, moe_load_interval
+                if moe_load_interval() > 0:
+                    add_moe_load_callback(self)
+            except Exception as exc:
+                logger.warning(f"Unsloth: could not enable MoE routing load logging ({exc}).")
         if os.environ.get("UNSLOTH_MEMORY_REPORT", "0") != "0":
             try:
                 from .utils.run_report import install_memory_report

@@ -2507,6 +2507,10 @@ export const zhTW = {
         confirmDescriptionChatOnly:
           "停止伺服器並重新執行安裝程式。由於這是「僅聊天」安裝，安裝程式也會將其升級為含 PyTorch 的完整安裝，總共需要下載數 GB 的資料。聊天和設定都會保留。此程序可能需要幾分鐘。",
         confirmAction: "立即修復",
+        recommendedTorch:
+          "建議修復：此安裝的 PyTorch {torch} 早於受管理的 {managedTorch}，而 RTX 50 系列 GPU 需要該版本才受支援。",
+        recommendedDriver:
+          "PyTorch {torch} 早於受管理的 {managedTorch}（RTX 50 系列 GPU 需要該版本才受支援），但此 GPU 驅動程式不支援 CUDA 13。請先更新 GPU 驅動程式，再修復安裝。",
       },
       resetPreferences: {
         sectionTitle: "危險區域",
@@ -4603,6 +4607,12 @@ export const zhTW = {
       epochs: "週期數",
       useMaxSteps: "使用最大步數",
       useEpochs: "使用週期數",
+      stepGuidancePass: "在有效批次 {batch} 下，約 {steps} 步可完整走過一次你的 {rows} 列資料。",
+      stepGuidanceFloor: "在有效批次 {batch} 下，走過一次你的 {rows} 列資料只需 {passSteps} 步，因此約 {steps} 步（數次走訪）是合理的下限。",
+      stepGuidanceCap: "在有效批次 {batch} 下，走過一次你的 {rows} 列資料需要 {passSteps} 步；{steps} 步只訓練其中一部分，對首次執行通常已足夠。",
+      stepGuidanceEpoch: "在有效批次 {batch} 下，一個週期約為走過你的 {rows} 列資料的 {passSteps} 步。",
+      stepGuidancePacking: "打包會合併較短的列，因此一次走訪可能需要更少的步數。",
+      useSuggestedSteps: "使用 {steps}",
       maxStepsTooltip: "覆寫最佳化器的總步數。",
       epochsTooltip: "完整遍歷資料集的次數。",
       contextLength: "上下文",
@@ -5140,6 +5150,7 @@ export const zhTW = {
       showPromptDescription: "查看傳送給模型的確切指示。",
     },
     history: {
+      notSaved: "未儲存到歷史記錄：瀏覽器儲存空間已滿。",
       title: "記錄",
       search: "搜尋記錄",
       empty: "您的翻譯會顯示在這裡。",

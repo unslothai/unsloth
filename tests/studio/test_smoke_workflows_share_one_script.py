@@ -24,8 +24,7 @@ def _workflow(name: str) -> str:
 
 @pytest.fixture(scope = "module")
 def script():
-    """The shared script, imported. It reads no environment and imports no SDK at module
-    level precisely so this is possible."""
+    """Script reads no environment and imports no SDK at module level, so it can be imported."""
     assert SCRIPT.is_file(), f"{SCRIPT} is gone; the three legs have nothing to share"
     spec = importlib.util.spec_from_file_location("multi_turn_chat", SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -80,8 +79,7 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
 
 
 def test_history_grounding_is_still_checked(script):
-    """Two of the four turns are answerable only from the earlier ones. Those checks fail
-    when history is dropped, rather than when the model is wrong about France."""
+    """Two of four turns need earlier ones, so those checks fail when history is dropped."""
     good2 = "you asked about 2"
     with pytest.raises(AssertionError, match = "history reached the model"):
         script.check("nohistory", ["1 is 2", good2, "c", "d"], ["1 is 2", good2, "c", "d"])
@@ -103,8 +101,7 @@ def test_grounding_is_asserted_on_a_turn_a_270m_model_can_carry(script):
 
 
 def test_turn_1_must_still_answer_with_a_number(script):
-    """Turn 1 is what makes the conversation multi-turn; a server that cannot do
-    arithmetic at all is not exercising history."""
+    """Turn 1 makes it multi-turn; a server unable to do arithmetic is not exercising history."""
     broken = ["I cannot do arithmetic.", "b", "paris", "paris"]
     with pytest.raises(AssertionError, match = "should contain a number"):
         script.check("nonumber", broken, list(broken))
@@ -152,8 +149,7 @@ def test_the_replay_retry_cannot_pass_a_truly_nondeterministic_server(script, mo
 
 
 def test_a_non_divergence_failure_is_not_retried(script, monkeypatch):
-    """Retrying an empty reply or a dropped history would just cost three runs and
-    still fail, and would let a broken server look intermittent."""
+    """Retries of empty replies or dropped history would still fail and look intermittent."""
     calls = {"n": 0}
 
     def no_history():

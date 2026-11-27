@@ -5217,6 +5217,40 @@ def test_a_text_family_only_mlx_vlm_ships_is_loaded_and_served_there(monkeypatch
     assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
 
 
+@pytest.mark.parametrize("vlm_only", [True, False])
+def test_disabling_vision_recomputes_the_text_route(monkeypatch, vlm_only):
+    backend, config, attempts, _ = _text_family_backend(monkeypatch, vlm_only)
+    config.is_vision = True
+    loader = sys.modules["unsloth_zoo.mlx.loader"]
+    loader._prefer_vlm_loader_for_text = lambda *args: False
+
+    backend.load_model(config, disable_vision = True)
+
+    assert attempts == [not vlm_only]
+    assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
+
+
+def test_a_text_load_uses_the_backend_chosen_by_zoo(monkeypatch):
+    backend, config, attempts, _ = _text_family_backend(monkeypatch, False)
+    tokenizer = SimpleNamespace()
+    processor = SimpleNamespace(tokenizer = tokenizer)
+    model = SimpleNamespace(config = {}, _is_vlm_model = True, _processor = processor)
+
+    def load(name, *, text_only, **kwargs):
+        attempts.append(text_only)
+        return model, SimpleNamespace()
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"]
+    monkeypatch.setattr(loader.FastMLXModel, "from_pretrained", staticmethod(load))
+    monkeypatch.setattr(backend, "_generate_vlm", lambda *args, **kwargs: iter(["reply"]))
+
+    assert backend.load_model(config)
+    assert attempts == [True]
+    assert backend._processor is processor and backend._tokenizer is tokenizer
+    assert backend._is_vlm is True and not backend._reads_vision_input()
+    assert list(backend.generate_chat_response([{"role": "user", "content": "Hi"}])) == ["reply"]
+
+
 def test_a_text_family_only_mlx_vlm_ships_is_routed_by_its_precision_folder_config(monkeypatch):
     # The repo root has no config; the loader builds from 8bit/, whose config declares the family.
     backend, config, attempts, _ = _text_family_backend(

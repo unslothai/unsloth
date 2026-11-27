@@ -53,8 +53,7 @@ def test_float_packed_4bit_weights_count_every_value(storage):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
 def test_unquantized_params4bit_counts_its_dense_values(dtype):
-    # Before bitsandbytes' first quantizing move a Params4bit holds dense values (bnb_quantized
-    # False): one element is one weight, whatever its dtype.
+    # Before bitsandbytes quantizes (bnb_quantized False), one element per weight, any dtype.
     lin = bnb.nn.Linear4bit(64, 32, bias = False, quant_type = "nf4")
     lin.weight = bnb.nn.Params4bit(
         torch.randn(32, 64, dtype = dtype), requires_grad = False, quant_type = "nf4", module = lin
@@ -65,8 +64,7 @@ def test_unquantized_params4bit_counts_its_dense_values(dtype):
 
 @pytest.mark.parametrize("storage", [torch.bfloat16, torch.float32])
 def test_fsdp2_sharded_4bit_weight_counts_every_value(storage):
-    # FSDP2 replaces the Params4bit with a DTensor-like parameter that keeps quant_state and the
-    # other quant attributes (fsdp2_qlora), not the Params4bit class.
+    # FSDP2 swaps Params4bit for a DTensor-like parameter keeping quant_state (fsdp2_qlora).
     packed = 32 * 64 // 2 // torch.empty((), dtype = storage).element_size()
     p = torch.nn.Parameter(torch.zeros(packed, 1, dtype = storage), requires_grad = False)
     p.quant_state = _model(torch.uint8)[0].weight.quant_state
@@ -77,8 +75,7 @@ def test_fsdp2_sharded_4bit_weight_counts_every_value(storage):
 
 
 def test_non_bitsandbytes_quant_state_is_not_counted_as_4bit():
-    # compressed-tensors packed int32 weights (2, 4 or 8 bit) carry their own quant_state: the
-    # bitsandbytes two-per-byte count does not apply to them.
+    # compressed-tensors int32 packing has own quant_state; no bitsandbytes two-per-byte count.
     p = torch.nn.Parameter(torch.zeros(32, 8, dtype = torch.int32), requires_grad = False)
     p.quant_state = object()
     module = torch.nn.Module()

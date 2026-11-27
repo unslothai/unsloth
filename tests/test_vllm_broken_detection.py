@@ -75,8 +75,7 @@ def _fake_vllm(
     broken,
     error = _LIBCUDART_ERROR,
 ):
-    """Install a synthetic lazy vLLM, restoring VLLM_BROKEN, find_spec,
-    meta_path, and the vllm* sys.modules entries on exit."""
+    """Stub a lazy vLLM; on exit restore VLLM_BROKEN, find_spec, meta_path, vllm* sys.modules."""
     from unsloth import import_fixes
 
     submodules = import_fixes._VLLM_COMPILED_EXTENSIONS

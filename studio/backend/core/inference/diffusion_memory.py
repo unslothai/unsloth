@@ -1195,19 +1195,24 @@ class DeviceMemory:
     total_mib: Optional[int] = None
     # Metal's recommended working set when it bounds free / total (mps); None everywhere else.
     metal_working_set_mib: Optional[int] = None
+    # Non-driver reading that bounded free / total (WINDOWS_COMMIT_CREDIT), else None.
+    credit_basis: Optional[str] = None
 
     @property
     def is_unified(self) -> bool:
         return self.memory_kind in ("unified_memory", "system_memory")
 
     def as_public_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "backend": self.backend,
             "device": self.device,
             "memory_kind": self.memory_kind,
             "free_mib": self.free_mib,
             "total_mib": self.total_mib,
         }
+        if self.credit_basis is not None:
+            out["credit_basis"] = self.credit_basis
+        return out
 
 
 @dataclass(frozen = True)
@@ -1271,8 +1276,8 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
     backend = getattr(target, "backend", device)
 
     if device == "cuda":
-        free, total, kind = _cuda_memory(backend)
-        return DeviceMemory(backend, device, kind, free, total)
+        free, total, kind, basis = _cuda_memory_reading(backend)
+        return DeviceMemory(backend, device, kind, free, total, credit_basis = basis)
     if device == "xpu":
         free, total = _xpu_memory()
         return DeviceMemory(backend, device, "discrete_vram", free, total)
@@ -1457,6 +1462,29 @@ def _settle_delay(delay_s: float) -> float:
         return delay_s  # a typo in the env must not change production behaviour
 
 
+# Kill switch for the unified-memory stable stop below (default on).
+SETTLE_STABLE_ENV = "UNSLOTH_SETTLE_UNIFIED_STABLE_STOP"
+
+
+def _settle_stable_tolerance_mib(total_mib: int) -> int:
+    """Read-to-read drift still counted as stable on a unified pool: OS jitter, far below any plan threshold."""
+    return max(256, int(total_mib) // 200)
+
+
+def _settle_stable(prev: DeviceMemory, nxt: DeviceMemory) -> bool:
+    """Unified / system memory only: two consecutive reads agree, so nothing is being released or taken. Discrete
+    VRAM keeps its full spacing (a transient tenant on a busy card is what that spacing waits out)."""
+    if (os.environ.get(SETTLE_STABLE_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if not (prev.is_unified and nxt.is_unified):
+        return False
+    if None in (prev.free_mib, nxt.free_mib, nxt.total_mib):
+        return False
+    return abs(int(nxt.free_mib) - int(prev.free_mib)) <= _settle_stable_tolerance_mib(
+        nxt.total_mib
+    )
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -1485,7 +1513,7 @@ def settled_snapshot_device_memory(
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - settle is best-effort; the snapshot below still runs
         pass
-    best = snapshot_device_memory(target)
+    best = prev = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
     for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
@@ -1500,12 +1528,20 @@ def settled_snapshot_device_memory(
         except Exception:  # noqa: BLE001
             break
         nxt = snapshot_device_memory(target)
+        stable = _settle_stable(prev, nxt)
+        prev = nxt
         if nxt.free_mib is not None and (best.free_mib is None or nxt.free_mib > best.free_mib):
             best = nxt
+        if stable:
+            break
     return best
 
 
 def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
+    return _cuda_memory_reading(backend)[:3]
+
+
+def _cuda_memory_reading(backend: str) -> tuple[Optional[int], Optional[int], str, Optional[str]]:
     try:
         import torch
 
@@ -1524,10 +1560,37 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free_mib, total_mib = int(free // (1024 * 1024)), int(total // (1024 * 1024))
         # ROCm APUs over-report free (free == total on Windows HIP): never credit host memory.
         if kind == "unified_memory" and not _torch_is_rocm(torch):
+            commit = _windows_integrated_commit_credit_mib(free_mib, total_mib)
+            if commit is not None:
+                return commit[0], commit[1], kind, WINDOWS_COMMIT_CREDIT
             free_mib, total_mib = _unified_reclaimable_memory_mib(free_mib, total_mib)
-        return free_mib, total_mib, kind
+        return free_mib, total_mib, kind, None
     except Exception:
-        return None, None, "discrete_vram"
+        return None, None, "discrete_vram", None
+
+
+WINDOWS_COMMIT_CREDIT = "windows_commit"
+_WIN_IGPU_COMMIT_CAP_ENV = "UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP"
+
+
+def _windows_integrated_commit_credit_mib(
+    free_mib: int, total_mib: int
+) -> Optional[tuple[int, int]]:
+    """Windows iGPU (RTX Spark): mem_get_info counts carve-out plus shared RAM, charged to commit 1:1; no reserve here."""
+    if sys.platform != "win32":
+        return None
+    if os.environ.get(_WIN_IGPU_COMMIT_CAP_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        from utils import host_memory
+        reading = host_memory.windows_commit_mib()
+    except Exception:  # noqa: BLE001
+        return None
+    if reading is None:
+        return None
+    available_mib, limit_mib = reading
+    capacity = min(int(total_mib), int(limit_mib))
+    return min(int(free_mib), int(available_mib), capacity), capacity
 
 
 def _torch_is_rocm(torch) -> bool:

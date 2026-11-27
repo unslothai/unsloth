@@ -655,6 +655,46 @@ def test_preview_can_swap_out_prior_preview_model(fake_slot):
     assert fake_slot["ident"] == "/outputs/run/ckpt-b"
 
 
+def test_owner_can_swap_a_transformers_model_loaded_by_preview(fake_slot, monkeypatch):
+    from core.inference import chat_media_swap
+    from models.inference import LoadResponse
+
+    model = "/outputs/run/ckpt-a"
+    orchestrator = SimpleNamespace(active_model_name = None, models = {}, _proc = None)
+    monkeypatch.setattr(inference, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(chat_media_swap, "_transformers_load", None)
+    monkeypatch.setenv(chat_media_swap.SWAP_ENV, "1")
+
+    async def preview_or_noop(load_request, *_args, **_kwargs):
+        assert load_request.model_path == model
+        status = "already_loaded"
+        if orchestrator.active_model_name is None:
+            status = "loaded"
+            fake_slot["ident"] = model
+            orchestrator.active_model_name = model
+            orchestrator.models[model] = {}
+            orchestrator._proc = SimpleNamespace(is_alive = lambda: True)
+        return LoadResponse(status = status, model = model, display_name = "Preview", inference = {})
+
+    monkeypatch.setattr(inference, "_load_model_impl", preview_or_noop)
+
+    async def adopt():
+        request = chat_media_swap._in_process_request()
+        await inference.load_model_for_preview(
+            LoadRequest(model_path = model, max_seq_length = 8192), request, "admin"
+        )
+        return await inference.load_model_gated(
+            LoadRequest(model_path = model), request, "admin", user_initiated = True
+        )
+
+    assert asyncio.run(adopt()).status == "already_loaded"
+    assert chat_media_swap.chat_can_swap()
+    assert chat_media_swap._transformers_load.launch.max_seq_length == 8192
+
+
 @pytest.mark.parametrize("owner", ["diffusion", "video"])
 def test_preview_load_refused_while_image_or_video_owns_gpu(fake_slot, monkeypatch, owner):
     from core.inference import gpu_arbiter

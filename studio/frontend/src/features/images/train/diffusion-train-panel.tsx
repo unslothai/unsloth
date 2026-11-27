@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { DiffusionRunProgress } from "./diffusion-run-progress";
+import { stepGuidanceText } from "./step-guidance";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -1095,11 +1096,17 @@ export function DiffusionTrainPanel({
 
   const openPrevRun = useCallback(async (jobId: string) => {
     try {
-      setViewRun(await getDiffusionTrainingRun(jobId));
+      const detail = await getDiffusionTrainingRun(jobId);
+      setViewRun(detail);
+      // Opening a run from history points an untouched form at its family and base; a user's own pick stays.
+      if (!modelPickedByUser.current) {
+        const opened = trainingRunSelection(detail, families);
+        if (opened) applyRunSelection(opened);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not load that run");
     }
-  }, []);
+  }, [families, applyRunSelection]);
 
   const viewLossHistory: TrainingSeriesPoint[] = useMemo(() => {
     const h = viewRun?.metric_history;
@@ -1623,6 +1630,14 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // Only families with a measured step sweep get a per-family count, scaled to the picked set; the rest keep the
+  // generic hint.
+  const familyStepGuidance = stepGuidanceText(
+    family?.label ?? familyName,
+    reportedFamily?.step_guidance,
+    selectedItemCount,
+    effectiveBatchSize * Math.max(1, gradAccum),
+  );
   const durationField = (
     <div className={fieldClass}>
       <FieldLabel
@@ -1667,6 +1682,11 @@ export function DiffusionTrainPanel({
           </SelectContent>
         </Select>
       </div>
+      {familyStepGuidance ? (
+        <p className="text-ui-10 leading-snug text-muted-foreground" data-testid="train-step-guidance">
+          {familyStepGuidance}
+        </p>
+      ) : null}
     </div>
   );
 
@@ -1674,7 +1694,7 @@ export function DiffusionTrainPanel({
     m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
   ): string => {
     if (m === "auto") return "Auto";
-    if (m === "nf4") return "nf4 (lowest VRAM)";
+    if (m === "nf4") return "NF4 (bitsandbytes, not NVFP4)";
     if (m === "bf16") return "bf16 (fastest)";
     if (m === "int8") return "int8";
     if (m === "mxfp8") return "mxfp8 (Blackwell)";
@@ -1881,7 +1901,7 @@ export function DiffusionTrainPanel({
 
         {isDiT ? (
           <div className={fieldClass}>
-            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; nf4 uses the least VRAM.">
+            <FieldLabel hint="How the frozen base is quantised while the LoRA trains. Auto picks the best fit for your GPU; NF4 uses the least VRAM. NF4 is the bitsandbytes 4-bit format QLoRA uses, not NVIDIA's NVFP4, which Studio runs for image and video generation only.">
               Base precision
             </FieldLabel>
             <Select
