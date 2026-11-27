@@ -427,8 +427,7 @@ def process_results(doc, results):
 def _csv_text(value):
     import pyarrow as pa
 
-    # A typed scalar keeps literal NA tokens through pandas' missing-value pass.
-    # Datasets converts it to a string column, including when every cell is empty.
+    # a typed scalar survives pandas' NA pass ("NA" stays text) and keeps all-empty columns string
     return pa.scalar(value or None, type = pa.string())
 
 
