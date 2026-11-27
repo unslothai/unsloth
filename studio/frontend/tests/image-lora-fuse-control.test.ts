@@ -41,3 +41,16 @@ test("the page sends lora_fuse only when not auto, and badges it", () => {
   const api = readFileSync(new URL("../src/features/images/api.ts", import.meta.url), "utf8");
   assert.match(api, /lora_fuse\?: "on" \| "off";/);
 });
+
+test("a reload with another lora_fuse choice changes the reseed key", async () => {
+  const { resolvedSeedKey } = await import("../src/lib/resolved-precision.ts");
+  const quant: ResolvedControl = { value: "off", requested: null, source: "auto", status: "applied", reason: "" };
+  const at = (lora_fuse: ResolvedControl) => resolvedSeedKey({ transformer_quant: quant, lora_fuse });
+  const auto: ResolvedControl = { value: "off", requested: null, source: "auto", status: "applied", reason: "default" };
+  const on: ResolvedControl = { value: "on", requested: "on", source: "explicit", status: "applied", reason: "" };
+  const off: ResolvedControl = { value: "off", requested: "off", source: "explicit", status: "applied", reason: "" };
+  assert.notEqual(at(auto), at(on));
+  assert.notEqual(at(on), at(off));
+  assert.notEqual(at(auto), at(off));
+  assert.equal(at(on), at({ ...on, reason: "chosen for this load" }));
+});
