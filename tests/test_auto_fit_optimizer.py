@@ -821,3 +821,16 @@ def test_ready_batches_never_exceed_batch_bytes(af, monkeypatch):
     batches = [b for b in batches if b]
     assert len(batches) > 1 and any(len(b) > 1 for b in batches)
     assert all(sum(b) <= limit or len(b) == 1 for b in batches), batches
+
+
+def test_planner_budgets_the_batch_workspace(af, monkeypatch):
+    """While a batch steps, the gradient that arrived is alive too, and torch's foreach AdamW without the one-pass
+    kernel adds a moment-sized temporary over the batch: one more largest weight in the in-backward budget."""
+    model = _plan_model()
+    largest = max(p.numel() * p.element_size() for p in model.parameters())
+    monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
+    one_pass = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
+    monkeypatch.setenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "0")
+    foreach = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
+    assert foreach["in_backward"] - one_pass["in_backward"] == largest
+    assert one_pass["in_backward"] - one_pass["states"] - (256 << 20) == 2 * largest

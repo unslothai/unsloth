@@ -760,12 +760,13 @@ def plan_auto_fit(
         "8bit" in label or "bnb" in label or "paged" in label or "fused" in label or _sr_on(params)
     )
     step_temp = 0 if per_weight else states // 2
-    # In backward: the batch of ready gradients waiting for their step (at most the largest weight's size) and
-    # the gradient that fills it. The largest weight (the embedding) is stepped last, once activations are freed,
-    # so it overlaps them. The SGD tier (LOMO's update) keeps no state but steps a float32 copy of that weight
-    # and its gradient.
-    live = largest_bytes * 2
-    live_lomo = largest_bytes + largest * 8
+    # In backward: the batch of ready gradients being stepped (at most the largest weight's size) and the
+    # gradient that arrived while it waited. A multi-tensor update without a one-pass kernel (torch foreach
+    # AdamW on float32 weights, or with stochastic rounding off) also holds a moment-sized temporary over that
+    # batch. The largest weight (the embedding) is stepped last, once activations are freed, so it overlaps them.
+    # The SGD tier (LOMO's update) keeps no state but steps a float32 copy of a weight and its gradient.
+    live = largest_bytes * 2 + (0 if per_weight else largest_bytes)
+    live_lomo = largest_bytes * 2 + largest * 8
     seq, batch = _seq_and_batch(trainer, model)
     activations = _activation_bytes(model, seq, batch)
     margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
