@@ -12,8 +12,8 @@ so losses and gradients match standard accumulation bitwise.
 
 "auto" by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
 decoder; "auto" (or unset) only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
-accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (always
-on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement), and only while the held layer inputs fit on the
+accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (on after
+them with UNSLOTH_OFFLOAD_STATS = 0, which removes the stall measurement), and only while the held layer inputs fit on the
 card beside the standard step's peak measured in the second step; "0": never. Every refusal below applies to
 both. Without an active block swap nothing here runs.
 
@@ -618,38 +618,35 @@ def _auto_ready(
     swapper,
     model = None,
 ):
-    """auto: two standard steps, then on only if the second one's swap copies stalled the GPU. The second step
-    also measures each card's peak above the step's start (_fits keeps the held layer inputs beside it)."""
+    """auto: two standard steps, then on only if the second one's swap copies stalled the GPU (with
+    UNSLOTH_OFFLOAD_STATS = 0, which removes the stall measurement: on). The second step also measures each card's
+    peak above the step's start; _fits keeps the held layer inputs beside it."""
     state = _auto_state(trainer)
     if state["on"] is not None:
         return state["on"]
-    if state["steps"] == _AUTO_PROBE_STEPS and model is not None:
-        state["peak"] = _peak_probe_end(state["peak_start"])
-    if not getattr(sys.modules.get(type(swapper).__module__), "_TIMING", True):
-        state["on"] = True  # UNSLOTH_OFFLOAD_STATS = 0: no stall measurement
+    timing = getattr(sys.modules.get(type(swapper).__module__), "_TIMING", True)
     state["steps"] += 1
-    if state["steps"] == _AUTO_PROBE_STEPS and model is not None:
-        state["peak_start"] = _peak_probe_start(model)
-    if state["on"] is not None:
-        return state["on"]
     if state["steps"] == _AUTO_PROBE_STEPS:
-        state["since"] = swap_totals(swapper)
-    elif state["steps"] > _AUTO_PROBE_STEPS:
-        frac = (
-            stall_fraction(state["since"], swap_totals(swapper))
-            if state["since"] is not None
-            else None
+        state["since"] = swap_totals(swapper) if timing else None
+        state["peak_start"] = _peak_probe_start(model) if model is not None else None
+    if state["steps"] <= _AUTO_PROBE_STEPS:
+        return False
+    state["peak"] = _peak_probe_end(state["peak_start"])
+    if not timing:
+        state["on"] = True
+        return True
+    frac = (
+        stall_fraction(state["since"], swap_totals(swapper)) if state["since"] is not None else None
+    )
+    state["on"] = frac is not None and frac > _AUTO_STALL
+    if not state["on"]:
+        _say_once(
+            trainer,
+            "hidden",
+            "Unsloth: offload_layers copies already hide behind compute "
+            f"({100 * (frac or 0):.1f}% stall), so micro-batches stay one after another.",
         )
-        state["on"] = frac is not None and frac > _AUTO_STALL
-        if not state["on"]:
-            _say_once(
-                trainer,
-                "hidden",
-                "Unsloth: offload_layers copies already hide behind compute "
-                f"({100 * (frac or 0):.1f}% stall), so micro-batches stay one after another.",
-            )
-        return state["on"]
-    return False
+    return state["on"]
 
 
 def _micro_step(trainer, model, inputs, num_items_in_batch, args, kwargs):

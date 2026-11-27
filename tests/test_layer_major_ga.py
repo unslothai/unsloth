@@ -1105,6 +1105,19 @@ def test_auto_measures_the_standard_step_peak_in_its_probe_step(ga, tmp_path, mo
     assert seen == [{"card": 7}, {"card": 7}] and _windows(engine) == 2
 
 
+def test_auto_without_stall_stats_runs_after_the_measured_probe(ga, tmp_path, monkeypatch):
+    """UNSLOTH_OFFLOAD_STATS = 0 removes the stall measurement: auto still runs its two standard steps (the second
+    measures the step's peak for _fits), then windows."""
+    mod, engine = ga
+    monkeypatch.setattr(sys.modules[_Swap.__module__], "_TIMING", False, raising = False)
+    engine.layer_major_stats(reset = True)
+    off = _train(mod, tmp_path, monkeypatch, "0", steps = 4)
+    engine.layer_major_stats(reset = True)
+    run = _train(mod, tmp_path, monkeypatch, None, steps = 4)
+    assert _windows(engine) == 2
+    _same(off, run)
+
+
 def test_auto_declines_when_the_inputs_do_not_fit_beside_the_step_peak(ga, monkeypatch):
     """Free VRAM just above the standard step's peak: the held layer inputs pass the 60% rule but not the room left
     beside that peak, so the window is declined instead of running out of memory."""
