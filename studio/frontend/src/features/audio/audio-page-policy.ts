@@ -846,6 +846,8 @@ export function audioRestoreRequest(
       ? lastLoad
       : {
           ...defaults,
+          max_seq_length:
+            status.requested_context_length || defaults.max_seq_length,
           model_path: modelPath,
           load_in_4bit: false,
           is_lora: false,

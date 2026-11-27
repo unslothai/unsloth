@@ -1383,6 +1383,15 @@ test("a status-only rollback keeps the resident model's custom-code trust and RA
   assert.equal(request.gpu_memory_mode, "manual");
   assert.equal(request.gpu_layers, 0);
   assert.equal(request.speculative_type, "off");
+  assert.equal(
+    audioRestoreRequest(
+      { ...status, requested_context_length: 2048 },
+      "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+      null,
+      restoreDefaults,
+    ).max_seq_length,
+    2048,
+  );
   const onGpu = audioRestoreRequest(
     { ...status, resident_on_gpu: true, inference: null },
     "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
