@@ -1112,7 +1112,11 @@ def _base_state_items(model, dtype):
     for key, tensor in base.state_dict(keep_vars = True).items():
         if "lora_" in key or "lora_magnitude_vector" in key:
             continue
-        name = key.replace(".base_layer", "")
+        # modules_to_save / trainable-token wrappers: the base is `original_module`; the trained copies are the
+        # adapter's, which the merge reads from the model.
+        if ".modules_to_save." in key or ".token_adapter." in key:
+            continue
+        name = key.replace(".base_layer", "").replace(".original_module", "")
         owner_name, _, leaf = key.rpartition(".")
         owner = modules.get(owner_name)
         if leaf == "weight_packed" and isinstance(owner, UnslothGGUFLinear):

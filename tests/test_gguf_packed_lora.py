@@ -434,6 +434,40 @@ def test_bf16_packed_load_has_no_float32_advice(tmp_path):
     assert packed.model.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
 
 
+def test_dense_base_unwraps_modules_to_save(tmp_path):
+    # Trained embeddings / lm_head (modules_to_save): the base checkpoint holds their original weights under the
+    # canonical names, not the PEFT wrapper's.
+    _new_gguf_path()
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    dense = AutoModelForCausalLM.from_pretrained(
+        tmp_path, gguf_file = "tiny.gguf", dtype = torch.float32
+    )
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.float32,
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    config = peft.LoraConfig(
+        r = 4, target_modules = ["q_proj"], modules_to_save = ["lm_head", "embed_tokens"]
+    )
+    lora = peft.get_peft_model(packed, config)
+    with torch.no_grad():
+        for name, param in lora.named_parameters():
+            if ".modules_to_save." in name:
+                param.add_(1.0)  # trained copies differ from the base
+    out = gp.write_gguf_dense_base(lora, tmp_path / "base")
+    reloaded = AutoModelForCausalLM.from_pretrained(out, dtype = torch.float32).state_dict()
+    reference = dense.state_dict()
+    assert set(reloaded) == set(reference)
+    for key, value in reloaded.items():
+        assert torch.equal(value, reference[key]), key
+
+
 def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     # After merge_and_unload the model is no PeftModel and its non-target linears are still packed: the
     # export writes dequantized weights, never the uint8 blocks.
