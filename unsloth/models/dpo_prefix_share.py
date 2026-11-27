@@ -109,8 +109,9 @@ def _matmul_flops(device) -> Optional[float]:
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         n = 4096
         with torch.no_grad(), torch.cuda.device(device):
-            a = torch.randn(n, n, device = device, dtype = dtype)
-            b = torch.randn(n, n, device = device, dtype = dtype)
+            # Constant operands: drawing them would advance the training RNG (dropout, sampling).
+            a = torch.full((n, n), 0.5, device = device, dtype = dtype)
+            b = torch.full((n, n), 0.5, device = device, dtype = dtype)
             for _ in range(2):
                 a @ b
             start = torch.cuda.Event(enable_timing = True)

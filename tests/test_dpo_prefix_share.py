@@ -621,8 +621,11 @@ def test_cost_gate_keeps_small_batches_unshared(monkeypatch):
 def test_matmul_flops_probe():
     device = torch.device("cuda", torch.cuda.current_device())
     dps._MATMUL_FLOPS.pop(str(device), None)
+    rng = torch.cuda.get_rng_state(device)
     flops = dps._matmul_flops(device)
     assert flops is not None and 1e12 < flops < 1e17
+    # The probe must not move the training RNG (dropout masks, sampling after a resume).
+    assert torch.equal(torch.cuda.get_rng_state(device), rng)
     assert dps._matmul_flops(device) == flops  # measured once
 
 
