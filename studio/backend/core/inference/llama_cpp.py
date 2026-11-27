@@ -1681,6 +1681,19 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     return count
 
 
+def _has_unpriced_media(messages: list[dict]) -> bool:
+    """Audio or video, which every fit leaves uncounted; images are priced."""
+    from core.inference.context_window import _IMAGE_PART_TYPES, _UNPRICED_MEDIA_TYPES
+
+    uncounted = _UNPRICED_MEDIA_TYPES - _IMAGE_PART_TYPES
+    return any(
+        isinstance(part, dict) and part.get("type") in uncounted
+        for message in messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+
+
 def _records_boundary(truncation: dict) -> bool:
     """Not the fits flag: a rescued fit still evicts, and skipping the save compacts silently. Saving is not replaying: sticky logic declines fits-false records."""
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
@@ -41945,12 +41958,14 @@ class LlamaCppBackend:
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
+                    _fit_recall_cap = float("inf")
                     if (
                         _retry_whole_document
                         and not _initial_searches_sent
                         and truncation
                         and truncation.get("fits")
                         and truncation.get("dropped_messages")
+                        and not _has_unpriced_media(conversation)
                     ):
                         try:
                             old_ids = {id(message) for message in (_auto or {}).get("messages", ())}
@@ -41979,10 +41994,8 @@ class LlamaCppBackend:
                                         len(base),
                                     )
                                     candidate = base[:at] + refreshed["messages"] + base[at:]
-                                    satisfies_choice = (
-                                        tool_choice == "required"
-                                        or initial_forced_name == "search_knowledge_base"
-                                    )
+                                    # A forced name stays forced: this fit priced and worded the prompt for that one tool.
+                                    satisfies_choice = tool_choice == "required"
                                     candidate_tools, candidate_choice, candidate_name = (
                                         _round_tool_choice(
                                             active_tools, document_satisfies_choice = satisfies_choice
@@ -41991,29 +42004,24 @@ class LlamaCppBackend:
                                     measured = _fit_count_tokens(
                                         candidate, candidate_tools, _reasoning_kw
                                     )
+                                    # Leave the compaction headroom and, when recall runs, its reserve free, also on a replay.
                                     budget = prompt_budget(
                                         self._effective_context_length, _iteration_max_tokens
                                     )
-                                    if truncation.get("checkpoint_started"):
-                                        headroom = int(
-                                            budget
-                                            * _effective_headroom_ratio(compaction_headroom_ratio)
-                                        )
-                                        budget = min(
-                                            budget,
-                                            max(
-                                                budget - headroom, truncation["prompt_tokens_after"]
-                                            ),
-                                        )
-                                    elif "trim_target" in truncation:
-                                        budget = min(
-                                            budget,
-                                            max(
-                                                truncation["trim_target"],
-                                                truncation["prompt_tokens_after"],
-                                            ),
-                                        )
-                                    if measured <= budget:
+                                    headroom_line = budget - int(
+                                        budget
+                                        * _effective_headroom_ratio(compaction_headroom_ratio)
+                                    )
+                                    reserve = (
+                                        _conversation_recall_reserve(thread_id)
+                                        if truncation.get("checkpoint_started", True)
+                                        else 0
+                                    )
+                                    fitted_tokens = truncation["prompt_tokens_after"]
+                                    if measured <= max(headroom_line - reserve, fitted_tokens):
+                                        # A larger prompt leaves this fit's recall the room up to the headroom, not into it.
+                                        if measured > fitted_tokens:
+                                            _fit_recall_cap = max(0, headroom_line - measured)
                                         _auto = refreshed
                                         conversation = candidate
                                         truncation["prompt_tokens_after"] = measured
@@ -42055,12 +42063,15 @@ class LlamaCppBackend:
                             # A rescued refusal may evict messages; archive them without recall.
                             recall_done = _conversation_recall_done or not truncation["fits"],
                             # Leave room for the answer appended on the next iteration.
-                            recall_budget_tokens = _retrieval_budget(
-                                self._effective_context_length,
-                                # As above: the cap this iteration will actually send.
-                                _iteration_max_tokens,
-                                truncation.get("prompt_tokens_after") or 0,
-                                reply_returns = True,
+                            recall_budget_tokens = min(
+                                _retrieval_budget(
+                                    self._effective_context_length,
+                                    # As above: the cap this iteration will actually send.
+                                    _iteration_max_tokens,
+                                    truncation.get("prompt_tokens_after") or 0,
+                                    reply_returns = True,
+                                ),
+                                _fit_recall_cap,
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(

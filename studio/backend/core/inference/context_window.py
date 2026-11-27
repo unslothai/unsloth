@@ -1000,7 +1000,6 @@ def fit_rolling_context(
         "prompt_tokens_before": initial_tokens,
         "prompt_tokens_after": current_tokens,
         "context_length": context_length,
-        "trim_target": trim_target,
         "fits": True,
     }
 

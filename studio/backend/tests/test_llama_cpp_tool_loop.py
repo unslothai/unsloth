@@ -7714,27 +7714,35 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "policy, tool_choice, whole_doc, sticky, complete, expected_passage",
+    "policy, tool_choice, whole_doc, sticky, reserve, audio, complete, expected_passage",
     [
-        ("checkpoint", None, True, 0, "Complete document", "Complete document"),
-        ("checkpoint", "required", True, 0, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 0, 0, False, "Complete document", "Complete document"),
+        ("checkpoint", "required", True, 0, 0, False, "Complete document", "Complete document"),
         (
             "checkpoint",
             {"type": "function", "function": {"name": "search_knowledge_base"}},
             True,
             0,
+            0,
+            False,
             "Complete document",
             "Complete document",
         ),
-        ("rolling", None, True, 0, "Complete document", "Complete document"),
-        ("rolling", None, True, 0, "Large document " * 50, "Partial passage"),
-        ("checkpoint", None, True, 2, "Complete document", "Complete document"),
-        ("checkpoint", None, True, 0, "Large document " * 50, "Partial passage"),
-        ("checkpoint", None, False, 0, "", None),
+        ("rolling", None, True, 0, 0, False, "Complete document", "Complete document"),
+        ("rolling", None, True, 0, 0, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 2, 0, False, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 2, 0, False, "Medium document " * 45, "Partial passage"),
+        ("rolling", None, True, 2, 0, False, "Medium document " * 45, "Partial passage"),
+        ("rolling", None, True, 2, 0, False, "Medium document " * 25, "Medium document " * 25),
+        ("rolling", None, True, 2, 300, False, "Medium document " * 25, "Partial passage"),
+        ("rolling", None, True, 2, 100, False, "Medium document " * 25, "Medium document " * 25),
+        ("checkpoint", None, True, 0, 0, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 0, 0, True, "Complete document", "Partial passage"),
+        ("checkpoint", None, False, 0, 0, False, "", None),
     ],
 )
 def test_first_context_fit_retries_whole_document_in_prompt_order(
-    monkeypatch, policy, tool_choice, whole_doc, sticky, complete, expected_passage
+    monkeypatch, policy, tool_choice, whole_doc, sticky, reserve, audio, complete, expected_passage
 ):
     from core.inference import tools
 
@@ -7749,15 +7757,18 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     monkeypatch.setattr(
         llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
     )
-    monkeypatch.setattr(
-        llama_cpp,
-        "_archive_and_recall",
-        lambda conversation, *_a, **_kw: dict(conversation = conversation, counts = {}, recalled = False),
-    )
+    recall_budgets = []
+
+    def archive_and_recall(conversation, *_a, recall_budget_tokens, **_kw):
+        recall_budgets.append(recall_budget_tokens)
+        return dict(conversation = conversation, counts = {}, recalled = False)
+
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", archive_and_recall)
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     monkeypatch.setattr(
         llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, False)
     )
+    monkeypatch.setattr(llama_cpp, "_conversation_recall_reserve", lambda _thread_id: reserve)
 
     def exchange(name, prefix, text):
         return tools.build_synthetic_search_exchange(
@@ -7791,6 +7802,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         }
 
     monkeypatch.setattr(tools, "build_rag_autoinject", inject)
+    audio_part = [{"type": "input_audio", "input_audio": {"data": "", "format": "wav"}}] * audio
     mcp = exchange(tools.MCP_TOOL_SEARCH_NAME, "mcp_auto_", "Matching MCP tools")
     catalog = [
         {"type": "function", "function": {"name": name}}
@@ -7801,7 +7813,10 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
             messages = [
                 {"role": "user", "content": "ancient " * 250},
                 {"role": "assistant", "content": "Prior answer"},
-                {"role": "user", "content": "Summarize the document"},
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Summarize the document"}, *audio_part],
+                },
             ],
             tools = catalog,
             mcp_match_exchange = {**mcp, "names": []},
@@ -7821,8 +7836,23 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     if not isinstance(tool_choice, dict):
         expected.append("Matching MCP tools")
     assert sent == expected
-    assert payloads[0]["tool_choice"] == "auto"
+    assert payloads[0]["tool_choice"] == ("required" if isinstance(tool_choice, dict) else "auto")
     assert [e["result"] for e in events if e["type"] == "tool_end"] == sent
     truncation = next(e for e in events if e["type"] == "context_truncated")
     assert truncation["fits"] and truncation["dropped_messages"] == 2
+    if not audio:
+        assert truncation["prompt_tokens_after"] == sum(
+            len(str(m.get("content", ""))) for m in payloads[0]["messages"]
+        )
+    if policy == "rolling":
+        from core.inference.context_window import prompt_budget, retrieval_budget
+
+        prompt = truncation["prompt_tokens_after"]
+        recall = retrieval_budget(1000, 80, prompt, reply_returns = True)
+        if expected_passage == complete:
+            target = prompt_budget(1000, 80)
+            recall = min(recall, target - int(target * 0.25) - prompt)
+        assert recall_budgets[0] == recall
+    if isinstance(tool_choice, dict):
+        assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]
     assert bool(truncation.get("checkpoint_started")) is (policy == "checkpoint" and not sticky)
