@@ -9586,6 +9586,12 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
             }
         return model.save_pretrained(save_directory, *args, **kwargs)
 
+    if _is_unsloth_pipeline_parallel(model):
+        # Each stage holds only its own layers' LoRA: a local state_dict would make every stage write its part
+        # into the same directory. Gather every stage's adapter and write the 1-GPU adapter from rank 0
+        # (collective), as save_pretrained does on a pipeline parallel model.
+        from .pp_env import pp_save_adapter
+        return pp_save_adapter(model, (save_directory, *args), kwargs, cast_lora = True)
     if _is_unsloth_tensor_parallel(model):
         # A state_dict built here would hold the sharded DTensors (safetensors cannot read their storage) and
         # bypass the tensor parallel save: build it on rank 0 from the gathered adapter instead.
@@ -9615,6 +9621,24 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
             return model.save_pretrained(save_directory, *args, **kwargs)
 
         return _agree_write(ep_write)
+    # By class name (fully_shard subclasses each unit from FSDPModule): an unsharded model imports nothing here.
+    if any(c.__name__ == "FSDPModule" for m in model.modules() for c in type(m).__mro__):
+        from .fsdp2_save import fsdp2_gather_active, fsdp2_units
+        sharded = not fsdp2_gather_active() and bool(fsdp2_units(model))
+    else:
+        sharded = False
+    if sharded:
+        # FSDP2 shards: a local state_dict holds DTensors and the save_pretrained decorator passes a given
+        # state_dict through, so every rank would write its shards. Gather the adapter (and the frozen weights
+        # PEFT still writes) onto rank 0, which writes; every rank enters and learns whether the write failed.
+        from ..save import _fsdp2_peft_saved_frozen
+        from .fsdp2_save import fsdp2_gathered
+
+        include = _fsdp2_peft_saved_frozen(model, kwargs)
+        with fsdp2_gathered(model, trainable_only = True, include = include) as writer:
+            if writer is False:
+                return None
+            return write()
     return write()
 
 

@@ -3272,6 +3272,7 @@ class PipelineParallel:
         from . import frozen_table_provenance as provenance
 
         provenance.install()
+        cast_lora = kwargs.pop("_unsloth_cast_lora", False)
         # Each stage holds its own frozen tables: the file next to the adapter lists every stage's.
         tables = provenance.table_provenance(self.model)
         if self.num_stages > 1:
@@ -3281,6 +3282,14 @@ class PipelineParallel:
         merged = self.adapter_state_dict(**kwargs)
 
         def write():
+            nonlocal merged
+            if merged is not None and cast_lora:
+                # model.save_lora: the LoRA tensors in the input embedding dtype (the writer is the first stage).
+                dtype = self.model.get_input_embeddings().weight.dtype
+                merged = {
+                    adapter: {k: (v.to(dtype) if "lora_" in k else v) for k, v in tensors.items()}
+                    for adapter, tensors in merged.items()
+                }
             if merged is not None:
                 import peft.peft_model as peft_model
 
