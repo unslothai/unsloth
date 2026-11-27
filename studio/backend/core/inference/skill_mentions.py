@@ -200,12 +200,6 @@ def load_mentioned_skills(
                 continue
             if cancel_event is not None and cancel_event.is_set():
                 return
-            event = {
-                "type": "skill_load",
-                "load_id": f"skill-load-{uuid.uuid4().hex}",
-                "name": name,
-                "resource": "SKILL.md",
-            }
             if name in reads and not is_latest:
                 continue
             mode, bypass = request_permissions
@@ -215,6 +209,12 @@ def load_mentioned_skills(
             # An earlier @mention is no proof its Ask approval was granted, so it is not rebuilt.
             if asks and not is_latest:
                 continue
+            event = {
+                "type": "skill_load",
+                "load_id": f"skill-load-{uuid.uuid4().hex}",
+                "name": name,
+                "resource": "SKILL.md",
+            }
             if asks and name in loadable:
                 approval_id = new_approval_id()
                 slot = begin_tool_decision(session_id, approval_id)
@@ -262,9 +262,11 @@ def load_mentioned_skills(
                 (
                     message
                     for message in messages
-                    if message.get("role") == "system"
-                    or (reuse_tool_result and message.get("role") == "tool")
-                    if result in _text(message)
+                    if (
+                        message.get("role") == "system"
+                        or (reuse_tool_result and message.get("role") == "tool")
+                    )
+                    and result in _text(message)
                 ),
                 None,
             )

@@ -20,8 +20,9 @@ message**, optionally followed by sentence punctuation. Prefix matching is never
 used. Inline/fenced/indented Markdown code, blockquotes, balanced quotation spans,
 email addresses, URL/path suffixes, and assistant mentions do not load
 instructions; earlier user mentions are rebuilt by the same contract (below),
-against the current catalog, so a skill installed later can apply to them. Unquoted pasted prose is indistinguishable from typed prose and
-uses the same contract. Use quotation marks or code formatting when discussing a
+against the current catalog, so a skill installed later can apply to them.
+Unquoted pasted prose is indistinguishable from typed prose and uses the same
+contract. Use quotation marks or code formatting when discussing a
 mention literally. Code and blockquotes follow CommonMark block structure, with one
 exception: user text is shown unrendered, so a line typed directly under a quote
 without its own `>` is a reply, not quoted text. A backslash-escaped quote mark does
@@ -56,10 +57,10 @@ Continue/partial-assistant resumes rebuild without activating. A manifest alread
 in the system prompt is not injected again. For the latest message only, a
 complete copy in a tool result is reused where native fitting can keep it (local
 GGUF), still counting toward the budget; on later turns that mention is rebuilt
-into the system prompt, since a tool result may be compacted away. Under Ask, earlier mentions are not rebuilt, since their
-approval is not on record; under Auto, which permits the read, they are,
-including one denied earlier under Ask. A saved UI card is never taken as proof
-that instructions survived compaction.
+into the system prompt, since a tool result may be compacted away. Under Ask,
+earlier mentions are not rebuilt, since their approval is not on record; under
+Auto, which permits the read, they are, including one denied earlier under Ask.
+A saved UI card is never taken as proof that instructions survived compaction.
 
 The Unsloth chat-completions path covers local GGUF, safetensors, managed engines,
 and external Unsloth-owned tool loops (including the shared Codex transport). It
