@@ -432,6 +432,48 @@ class TestBuildShRocm:
         assert "needs.prepare.outputs.stable == 'true'" in body
         assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
+    @pytest.mark.parametrize(
+        "ref, stable, newest, expected",
+        [
+            ("refs/heads/main", "true", "false", {"nightly", "nightly-studio"}),
+            ("refs/tags/v0.1.916-beta", "true", "true", {"latest", "studio"}),
+            ("refs/tags/v0.1.900-beta", "true", "false", set()),
+            ("refs/heads/main", "false", "false", set()),
+            ("refs/tags/v0.1.916-beta", "false", "true", set()),
+            ("refs/heads/other", "true", "false", set()),
+        ],
+    )
+    def test_release_and_nightly_aliases_move_on_their_own_events(
+        self, ref, stable, newest, expected
+    ):
+        # unslothai/unsloth#17470: the weekly main build moved :latest and :studio too.
+        import yaml
+
+        jobs = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))["jobs"]
+        context = {
+            "github.event.repository.default_branch": "'main'",
+            "github.ref": repr(ref),
+            "needs.prepare.outputs.stable": repr(stable),
+            "steps.newest_release.outputs.newest": repr(newest),
+        }
+        moved = set()
+        for job in ("tag", "tag-studio"):
+            meta = next(s for s in jobs[job]["steps"] if s.get("id") == "meta")
+            assert meta["with"].get("flavor") == "latest=false", job
+            for line in meta["with"]["tags"].splitlines():
+                m = re.fullmatch(r"\s*type=raw,value=([\w-]+),enable=\$\{\{(.*)\}\}\s*", line)
+                if not m or m.group(1) not in {"latest", "studio", "nightly", "nightly-studio"}:
+                    continue
+                expr = re.sub(
+                    r"format\('refs/heads/\{0\}', ([\w.]+)\)", r"'refs/heads/' + \1", m.group(2)
+                )
+                expr = re.sub(r"startsWith\(([\w.]+), ('[^']*')\)", r"\1.startswith(\2)", expr)
+                for name, value in context.items():
+                    expr = expr.replace(name, value)
+                if eval(expr.replace("&&", " and ").replace("||", " or ")):
+                    moved.add(m.group(1))
+        assert moved == expected
+
 
 class TestTheUserFacingDocsCoverWsl:
     """docker/DOCKERHUB-ROCM.md is synced to the Docker Hub page and README.md is the
@@ -965,6 +1007,49 @@ class TestRocmEntrypoint:
         rc, got, log = self._build_args(tmp_path)
         assert rc == 0 and got["stable"] == "true" and got["gfx_tag"] == "false", got
 
+    def test_only_the_newest_release_tag_moves_latest(self, tmp_path):
+        """Re-running an older release must not roll :latest/:studio back to it."""
+        import yaml
+
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        # Checked in each publishing job, right before its tags resolve.
+        steps = {}
+        for job in ("tag", "tag-studio"):
+            ids = [s.get("id") for s in wf["jobs"][job]["steps"]]
+            assert ids.index("newest_release") == ids.index("meta") - 1, (job, ids)
+            steps[job] = wf["jobs"][job]["steps"][ids.index("newest_release")]
+        assert steps["tag"] == steps["tag-studio"]
+        assert all(s.get("id") != "newest_release" for s in wf["jobs"]["prepare"]["steps"])
+        step = steps["tag"]
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        (fake / "git").write_text(
+            '#!/bin/sh\n[ -n "$GIT_FAIL" ] && exit 128\n'
+            "printf 'a\\trefs/tags/v0.1.99-beta\\nb\\trefs/tags/v0.1.930-beta\\n"
+            "c\\trefs/tags/v0.1.916-beta\\n'\n"
+        )
+        (fake / "git").chmod(0o755)
+
+        def newest(tag, **extra):
+            out = tmp_path / f"out{len(os.listdir(tmp_path))}"
+            out.write_text("")
+            env = {
+                "PATH": f"{fake}:{os.environ['PATH']}",
+                "GITHUB_OUTPUT": str(out),
+                "TAG_NAME": tag,
+            }
+            env.update(extra)
+            proc = subprocess.run(
+                ["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True
+            )
+            return proc.returncode, out.read_text().strip()
+
+        assert newest("v0.1.930-beta") == (0, "newest=true")
+        assert newest("v0.1.916-beta") == (0, "newest=false")
+        assert newest("v0.1.99-beta") == (0, "newest=false")
+        assert newest("") == (0, "newest=false")
+        assert newest("v0.1.930-beta", GIT_FAIL = "1")[0] != 0
+
     def test_the_workflow_accepts_a_gfx906_dispatch(self):
         """Dockerfile.rocm relies on ROCM_GFX=gfx906 to leave out bitsandbytes, so the
         dispatch validation must let it through (with a 6.3 base)."""
@@ -1029,16 +1114,15 @@ class TestRocmEntrypoint:
             assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
         assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
 
-    def test_a_release_does_not_move_latest(self):
+    def test_each_tag_job_has_one_release_alias(self):
         import yaml
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
         for job in ("tag", "tag-studio"):
             meta = next(s for s in wf["jobs"][job]["steps"] if s.get("id") == "meta")
-            assert meta["with"].get("flavor") == "latest=false", job
             lines = meta["with"]["tags"].splitlines()
             alias = [ln for ln in lines if re.search(r"value=(latest|studio),", ln)]
             assert len(alias) == 1, (job, alias)
-            assert "github.ref == format('refs/heads/{0}', github.event" in alias[0]
+            assert "steps.newest_release.outputs.newest == 'true'" in alias[0], alias[0]
 
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
         """A dispatch that bakes another notebooks ref is an experiment like any

@@ -48,7 +48,7 @@ env:
   GFX906_ROCM_VERSION: '6.3.4'
 
 # On main each RUN gets its own group so a pending run is not discarded. Never cancel in
-# progress: a half-pushed digest is worse than a briefly stale :latest.
+# progress: a half-pushed digest is worse than a briefly stale :nightly.
 concurrency:
   group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || '' }}
   cancel-in-progress: false
@@ -261,6 +261,7 @@ jobs:
             UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
 
   # Tag only after both digests exist, so :latest and :studio always move onto the same base.
+  # :latest/:studio follow the newest v* release; :nightly/:nightly-studio follow main.
   tag:
     runs-on: ubuntu-latest
     needs: [prepare, build, build-studio]
@@ -276,18 +277,37 @@ jobs:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
+      # Checked here, not in prepare: a newer v* can land while this run builds, and re-running an
+      # older release must not roll :latest/:studio back.
+      - name: Resolve whether this is the newest v* tag
+        id: newest_release
+        env:
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          NEWEST=false
+          if [ -n "$TAG_NAME" ]; then
+              if ! LS_OUT="$(git ls-remote --tags --refs https://github.com/unslothai/unsloth 'v*')"; then
+                  echo "::error::unslothai/unsloth unreachable; cannot tell whether ${TAG_NAME} is the newest release"
+                  exit 1
+              fi
+              TOP="$(printf '%s\n' "$LS_OUT" | sed 's#.*refs/tags/##' | sort -V | tail -n 1)"
+              [ "$TOP" = "$TAG_NAME" ] && NEWEST=true
+              echo "newest v* tag: ${TOP}"
+          fi
+          echo "newest=${NEWEST}" >> "$GITHUB_OUTPUT"
+
       - name: Resolve tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # latest=auto would tag :latest on a v* push, and tag-studio runs last
+          # latest=auto would add :latest on every v* push, in tag-studio too.
           flavor: latest=false
           # Override builds' sha tags carry the run id so two experiments at one commit do not collide.
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=latest,enable=${{ steps.newest_release.outputs.newest == 'true' && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=nightly,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}
 
@@ -306,7 +326,7 @@ jobs:
               docker buildx imagetools inspect "$tag"
           done
 
-  # Builds Studio on the base by DIGEST: :latest may already be a newer run's.
+  # Builds Studio on the base by DIGEST: the base's tags may already be a newer run's.
   build-studio:
     needs: [prepare, build]
     runs-on: ubuntu-latest
@@ -385,6 +405,25 @@ jobs:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
+      # Checked here, not in prepare: a newer v* can land while this run builds, and re-running an
+      # older release must not roll :latest/:studio back.
+      - name: Resolve whether this is the newest v* tag
+        id: newest_release
+        env:
+          TAG_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          NEWEST=false
+          if [ -n "$TAG_NAME" ]; then
+              if ! LS_OUT="$(git ls-remote --tags --refs https://github.com/unslothai/unsloth 'v*')"; then
+                  echo "::error::unslothai/unsloth unreachable; cannot tell whether ${TAG_NAME} is the newest release"
+                  exit 1
+              fi
+              TOP="$(printf '%s\n' "$LS_OUT" | sed 's#.*refs/tags/##' | sort -V | tail -n 1)"
+              [ "$TOP" = "$TAG_NAME" ] && NEWEST=true
+              echo "newest v* tag: ${TOP}"
+          fi
+          echo "newest=${NEWEST}" >> "$GITHUB_OUTPUT"
+
       - name: Resolve tags
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
@@ -394,9 +433,9 @@ jobs:
           # format(), not a bare ${{ }}-studio: tests/python/test_docker_rocm.py matches the raw gfx line
           # by name and it must stay unique to the base.
           tags: |
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=studio,enable=${{ steps.newest_release.outputs.newest == 'true' && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,suffix=-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=schedule,pattern=nightly-studio,enable=${{ needs.prepare.outputs.stable == 'true' }}
+            type=raw,value=nightly-studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=raw,value=${{ format('{0}-studio', needs.prepare.outputs.rocm_gfx) }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}-studio
 
