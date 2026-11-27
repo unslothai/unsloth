@@ -12,15 +12,69 @@ export interface ImportSource {
   chunks(): AsyncIterable<TextChunk>;
 }
 
-/** `fatal` rejects invalid UTF-8, which the desktop path requires. */
+const ENCODING_SAMPLE_BYTES = 1024;
+
+function isJsonWhitespace(byte: number): boolean {
+  return byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
+}
+
+/** Detect a BOM or the UTF-16 form of the first JSON object/array opener. */
+function sniffJsonEncoding(head: Uint8Array, atEnd: boolean): string | undefined {
+  if (head.length >= 2 && head[0] === 0xfe && head[1] === 0xff) return "utf-16be";
+  if (head.length >= 2 && head[0] === 0xff && head[1] === 0xfe) {
+    if (head.length < 4 && !atEnd) return undefined;
+    // FF FE 00 00 is a UTF-32LE BOM, which TextDecoder does not support.
+    return head[2] === 0 && head[3] === 0 ? "utf-8" : "utf-16le";
+  }
+
+  let littleEndian: boolean | undefined;
+  for (let i = 0; i + 1 < head.length; i += 2) {
+    const first = head[i];
+    const second = head[i + 1];
+    const byte = first || second;
+    if ((first === 0) === (second === 0)) return "utf-8";
+    if (littleEndian !== undefined && littleEndian !== (second === 0)) return "utf-8";
+    littleEndian = second === 0;
+    if (isJsonWhitespace(byte)) continue;
+    if (byte === 0x7b || byte === 0x5b) {
+      return littleEndian ? "utf-16le" : "utf-16be";
+    }
+    return "utf-8";
+  }
+  return atEnd || head.length === ENCODING_SAMPLE_BYTES ? "utf-8" : undefined;
+}
+
+/** The desktop importer uses fatal decoding to reject malformed text. */
 export async function* decodeTextChunks(
   byteChunks: AsyncIterable<Uint8Array>,
   fatal = false,
 ): AsyncGenerator<TextChunk> {
-  const decoder = new TextDecoder("utf-8", { fatal });
+  const head = new Uint8Array(ENCODING_SAMPLE_BYTES);
+  let headBytes = 0;
+  let decoder: TextDecoder | undefined;
   for await (const bytes of byteChunks) {
     if (!bytes.byteLength) continue;
-    yield { text: decoder.decode(bytes, { stream: true }), bytes: bytes.byteLength };
+    if (!decoder) {
+      const size = Math.min(head.length - headBytes, bytes.byteLength);
+      head.set(bytes.subarray(0, size), headBytes);
+      headBytes += size;
+      const sample = head.subarray(0, headBytes);
+      const encoding = sniffJsonEncoding(sample, false);
+      if (!encoding) continue;
+      decoder = new TextDecoder(encoding, { fatal });
+      const prefix = decoder.decode(sample, { stream: true });
+      const suffix = decoder.decode(bytes.subarray(size), { stream: true });
+      yield { text: prefix + suffix, bytes: headBytes + bytes.byteLength - size };
+    } else {
+      yield { text: decoder.decode(bytes, { stream: true }), bytes: bytes.byteLength };
+    }
+  }
+  if (!decoder) {
+    if (!headBytes) return;
+    const sample = head.subarray(0, headBytes);
+    decoder = new TextDecoder(sniffJsonEncoding(sample, true), { fatal });
+    yield { text: decoder.decode(sample), bytes: headBytes };
+    return;
   }
   const tail = decoder.decode();
   if (tail) yield { text: tail, bytes: 0 };
