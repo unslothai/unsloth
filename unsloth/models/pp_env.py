@@ -582,9 +582,15 @@ def pp_collective(model, what, call):
             release_replica(stage)
 
 
-def pp_save_adapter(model, args, kwargs):
+def pp_save_adapter(
+    model,
+    args,
+    kwargs,
+    cast_lora = False,
+):
     """PeftModel.save_pretrained on a pipeline parallel model: every stage's adapter weights gathered, the
-    standard 1-GPU adapter written by rank 0 (collective)."""
+    standard 1-GPU adapter written by rank 0 (collective). `cast_lora`: the LoRA tensors are written in the
+    input embedding dtype, as `model.save_lora` does on one GPU."""
     import inspect
 
     from peft import PeftModel
@@ -614,6 +620,8 @@ def pp_save_adapter(model, args, kwargs):
     if values.get("safe_serialization", True) is None:
         values["safe_serialization"] = True
     values.pop("is_main_process", None)
+    if cast_lora:
+        extra["_unsloth_cast_lora"] = True
     stage.save_adapter(directory, **values, **extra)
     return None
 
