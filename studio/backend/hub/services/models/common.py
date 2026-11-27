@@ -897,7 +897,7 @@ def _classify_local_path(
     partial: bool = False,
     active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
-    # A loose GGUF companion can be paired with weights, but has no standalone inventory row.
+    # A loose mmproj, MTP drafter or imatrix pairs with weights; it is not a model of its own.
     if (
         _is_gguf_filename(scan_path.name)
         and not _is_main_gguf_filename(scan_path.name)
