@@ -113,23 +113,18 @@ def _cross_entropy_forward(
         logits = tl.where(mask, logits, -float("inf"))
 
     c = tl.max(logits, 0)
-    # One reduction that skips the label (col_offsets never equals -100); the label is added back below.
+    # One reduction that skips the label; the label is added back below.
     sum_others = tl.sum(tl.where(col_offsets == label_idx, 0.0, tl.exp(logits - c)), 0)
     logsumexp = c + tl.log(sum_others)
 
-    if label_idx != -100:
-        x = tl.load(logits_ptr + label_idx).to(tl.float32)
-        # Go logit scaling for Cohere: t * x
-        if DO_LOGIT_SCALING:
-            x = LOGIT_SCALE * x
-        # Do logit softcapping for Gemma 2: t * tanh(1/t * x)
-        if DO_SOFTCAPPING:
-            x = SOFTCAP * triton_tanh(x / SOFTCAP)
-        # lse - x rounds to 0 past a ~16.6 nat margin in fp32 (softmax collapse, arXiv 2610.31642).
-        loss = _softplus(logsumexp - x)
-        logsumexp = c + tl.log(sum_others + tl.exp(x - c))
-    else:
-        loss = 0.0
+    x = tl.load(logits_ptr + label_idx).to(tl.float32)
+    if DO_LOGIT_SCALING:
+        x = LOGIT_SCALE * x
+    if DO_SOFTCAPPING:
+        x = SOFTCAP * triton_tanh(x / SOFTCAP)
+    # lse - x rounds to 0 past a ~16.6 nat margin in fp32 (softmax collapse, arXiv 2610.31642).
+    loss = _softplus(logsumexp - x)
+    logsumexp = c + tl.log(sum_others + tl.exp(x - c))
     tl.store(logsumexp_ptr, logsumexp)
     tl.store(loss_ptr, loss)
 
@@ -247,6 +242,7 @@ def _chunked_cross_entropy_forward(
         if chunk_idx == 0:
             tl.store(loss_ptr, 0.0)
         tl.store(logsumexp_ptr, 0.0)
+        tl.store(logsumexp_others_ptr, 0.0)
         return
     logits = tl.load(
         logits_ptr + col_offsets, mask = mask, other = -float("inf"), eviction_policy = EVICT
@@ -283,16 +279,12 @@ def _chunked_cross_entropy_forward(
 
     if chunk_idx == 0:
         # logsumexp(chunked_logsumexp) - x, with the -x done separately.
-        if label_idx != -100:
-            x = tl.load(logits_ptr + label_idx).to(tl.float32)
-            if DO_LOGIT_SCALING:
-                x = LOGIT_SCALE * x
-            if DO_SOFTCAPPING:
-                x = SOFTCAP * triton_tanh(x / SOFTCAP)
-            loss = -1.0 * x
-        else:
-            loss = 0.0
-        tl.store(loss_ptr, loss)
+        x = tl.load(logits_ptr + label_idx).to(tl.float32)
+        if DO_LOGIT_SCALING:
+            x = LOGIT_SCALE * x
+        if DO_SOFTCAPPING:
+            x = SOFTCAP * triton_tanh(x / SOFTCAP)
+        tl.store(loss_ptr, -1.0 * x)
     tl.store(logsumexp_ptr, logsumexp)
 
 
@@ -384,7 +376,6 @@ def _cross_entropy_backward(
         # d/dx [t * tanh(1/t * x)] = 1 - tanh^2(1/t * x)
         y = y * (1.0 - partial * partial)
 
-    # If y == 0 then dC/dx = 0, and it is already masked to 0, so dloss = 0.
     tl.store(dlogits_ptr + col_offsets, dloss * y, mask = mask)
 
 
