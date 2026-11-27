@@ -397,6 +397,9 @@ def test_unified_memory_from_pretrained_reads_with_pread_and_weights_match(monke
     model_cls = _save_llama(tmp_path, torch.bfloat16)
     expected = model_cls.from_pretrained(tmp_path, dtype = torch.bfloat16).state_dict()
     seen = _spy(monkeypatch)
+    monkeypatch.setattr(
+        sys, "platform", "linux"
+    )  # an ARM Linux box (GB10), also on macOS / Windows runners
     monkeypatch.setattr(ws.platform, "machine", lambda: "aarch64")
     assert ws.patch_windows_safetensors_pread()
     monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
