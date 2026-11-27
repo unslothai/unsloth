@@ -1206,6 +1206,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             assistant_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
             request_hash TEXT NOT NULL,
             request_json TEXT NOT NULL,
+            anthropic_workspace_applied TEXT,
             worker_token TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN (
                 'queued', 'running', 'cancelling', 'cancelled', 'completed', 'failed'
@@ -1226,6 +1227,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "worker_token" not in chat_generation_run_cols:
         conn.execute("ALTER TABLE chat_generation_runs ADD COLUMN worker_token TEXT")
+    if "anthropic_workspace_applied" not in chat_generation_run_cols:
+        conn.execute("ALTER TABLE chat_generation_runs ADD COLUMN anthropic_workspace_applied TEXT")
     conn.execute(
         """UPDATE chat_generation_runs SET worker_token=lower(hex(randomblob(16)))
            WHERE worker_token IS NULL"""

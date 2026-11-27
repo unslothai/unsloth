@@ -198,16 +198,20 @@ def test_append_events_still_persists_through_a_reused_connection():
 
 
 @pytest.mark.parametrize(
-    "expected,current,kind,result",
+    "expected,current,workspaces,replacement,result",
     [
-        (None, None, "container_ready", "new-workspace"),
-        ("old-workspace", "old-workspace", "container_invalidated", None),
-        ("old-workspace", "different-workspace", "container_invalidated", "different-workspace"),
-        (None, "different-workspace", "container_ready", "different-workspace"),
+        (None, None, ["new-workspace"], None, "new-workspace"),
+        ("old-workspace", "old-workspace", [None], None, None),
+        ("old-workspace", "different-workspace", [None], None, "different-workspace"),
+        (None, "different-workspace", ["new-workspace"], None, "different-workspace"),
+        (None, None, ["first-workspace", "new-workspace"], None, "new-workspace"),
+        ("old-workspace", "old-workspace", [None, "new-workspace"], None, "new-workspace"),
+        (None, None, ["first-workspace", "new-workspace"], "replacement", "replacement"),
     ],
 )
+@pytest.mark.parametrize("without_json1", [False, True])
 def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
-    expected, current, kind, result
+    expected, current, workspaces, replacement, result, without_json1
 ):
     studio_db.upsert_chat_thread(
         {
@@ -243,8 +247,29 @@ def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
     )
     token = runs_db.get_worker_token("r")
     runs_db.mark_running("r", token)
-    event = {"type": kind, "provider_type": "anthropic", "container_id": "new-workspace"}
-    runs_db.append_events("r", token, [("chunk", {"_toolEvent": event})])
+    if without_json1:
+
+        def deny_json_extract(action, _arg1, arg2, _db, _trigger):
+            if action == sqlite3.SQLITE_FUNCTION and arg2 == "json_extract":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn = runs_db._connect()
+        conn.set_authorizer(deny_json_extract)
+        conn.close()
+
+    for index, workspace in enumerate(workspaces):
+        event = {
+            "type": "container_ready" if workspace else "container_invalidated",
+            "provider_type": "anthropic",
+            "container_id": workspace,
+        }
+        runs_db.append_events("r", token, [("chunk", {"_toolEvent": event})])
+        if index == 0 and replacement:
+            studio_db.update_chat_thread("t", {"anthropicCodeExecContainerId": replacement})
+    assert len([event for event in runs_db.list_events("r", 0) if event["type"] == "chunk"]) == len(
+        workspaces
+    )
     assert studio_db.get_chat_thread("t")["anthropicCodeExecContainerId"] == result
 
 

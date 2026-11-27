@@ -398,6 +398,42 @@ def _run_json_from_row(row: sqlite3.Row) -> str:
     return f'{head[:-1]},"requestPayload":{row["request_json"]},{tail[1:]}'
 
 
+def _apply_anthropic_workspace_event(
+    conn: sqlite3.Connection, run_id: str, event: dict[str, Any]
+) -> None:
+    kind = event.get("type")
+    container = event.get("container_id")
+    if kind == "container_invalidated":
+        container = None
+    elif kind != "container_ready" or not isinstance(container, str) or not container:
+        return
+
+    run = conn.execute(
+        "SELECT thread_id, request_json, anthropic_workspace_applied FROM chat_generation_runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    request = _loads(run["request_json"], {})
+    if not isinstance(request, dict) or request.get("provider_type") != "anthropic":
+        return
+    applied = run["anthropic_workspace_applied"]
+    # SQL NULL means no write from this run. The JSON value null records a cleared workspace.
+    expected = (
+        request.get("anthropic_code_exec_container_id")
+        if applied is None
+        else _loads(applied, None)
+    )
+    changed = conn.execute(
+        """UPDATE chat_threads SET anthropic_code_exec_container_id = ?
+           WHERE id = ? AND anthropic_code_exec_container_id IS ?""",
+        (container, run["thread_id"], expected),
+    )
+    if changed.rowcount:
+        conn.execute(
+            "UPDATE chat_generation_runs SET anthropic_workspace_applied=? WHERE id=?",
+            (json.dumps(container), run_id),
+        )
+
+
 def _append_events_locked(
     conn: sqlite3.Connection, run_id: str, events: Iterable[ChatGenerationEventInput]
 ) -> list[int]:
@@ -430,23 +466,7 @@ def _append_events_locked(
         sequences.append(seq)
         tool_event = payload.get("_toolEvent") if event_type == "chunk" else None
         if isinstance(tool_event, dict) and tool_event.get("provider_type") == "anthropic":
-            kind = tool_event.get("type")
-            container = tool_event.get("container_id")
-            if kind == "container_invalidated" or (
-                kind == "container_ready" and isinstance(container, str) and container
-            ):
-                # Save with the event. A late event must not replace a newer workspace selection.
-                conn.execute(
-                    """UPDATE chat_threads SET anthropic_code_exec_container_id = ?
-                       WHERE id = (
-                           SELECT thread_id FROM chat_generation_runs
-                           WHERE id = ? AND json_extract(request_json, '$.provider_type') = 'anthropic'
-                       ) AND anthropic_code_exec_container_id IS (
-                           SELECT json_extract(request_json, '$.anthropic_code_exec_container_id')
-                           FROM chat_generation_runs WHERE id = ?
-                       )""",
-                    (container if kind == "container_ready" else None, run_id, run_id),
-                )
+            _apply_anthropic_workspace_event(conn, run_id, tool_event)
     if sequences:
         conn.execute(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",
