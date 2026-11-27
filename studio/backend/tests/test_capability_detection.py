@@ -324,12 +324,29 @@ def test_no_code_execution_on_detection(tmp_path):
         (
             {
                 "model_type": "unlisted_text",
+                "architectures": ["UnlistedForCausalLM"],
                 "vision_config": None,
                 "img_processor": {},
                 "projector_config": {},
                 "image_token_index": None,
             },
             False,
+        ),
+        (
+            {
+                "model_type": "unlisted_vision",
+                "architectures": ["UnlistedForCausalLM"],
+                "vision_config": {"image_size": 224},
+            },
+            True,
+        ),
+        (
+            {
+                "model_type": "unlisted_omni",
+                "architectures": ["UnlistedOmniForConditionalGeneration"],
+                "vision_config": {},
+            },
+            True,
         ),
         ({"model_type": "unlisted_vision", "vision_config": {"image_size": 224}}, True),
         ({"model_type": "unlisted_vision", "image_token_index": 0}, True),

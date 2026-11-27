@@ -5238,7 +5238,7 @@ def test_a_text_load_uses_the_backend_chosen_by_zoo(monkeypatch):
 
     def load(name, *, text_only, **kwargs):
         attempts.append(text_only)
-        return model, tokenizer
+        return model, SimpleNamespace()
 
     loader = sys.modules["unsloth_zoo.mlx.loader"]
     monkeypatch.setattr(loader.FastMLXModel, "from_pretrained", staticmethod(load))

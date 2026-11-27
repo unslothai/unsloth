@@ -632,7 +632,6 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
         "cogvlm2",
         "minicpmv",
         "gemma4",
-        "gemma4_unified",
         "deepseek_vl_v2",
         "kimi_k25",
     }
@@ -988,9 +987,12 @@ def _raw_config_has_vision_config(
             return None
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
+        # Empty modality fields mean text only on a causal LM (LFM3); Qwen3-Omni and Molmo2 VLMs ship them too.
+        causal_lm = any(isinstance(x, str) and x.endswith("ForCausalLM") for x in architectures)
         explicit_vision = any(
-            config.get(key) not in (None, {})
+            config[key] not in (None, {}) or not causal_lm
             for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
+            if key in config
         )
         vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
