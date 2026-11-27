@@ -323,8 +323,10 @@ def test_unified_memory_check_never_initialises_cuda(monkeypatch):
         ("linux", None, "1", True, "cuda:0", {}),
         ("linux", "0", "1", True, "cpu", {}),
         ("linux", "1", "0", True, "cpu", {"backend": "pread"}),
-        ("win32", None, "0", True, "cpu", {"backend": "pread"}),
-        ("win32", "0", "0", True, "cpu", {}),
+        # discrete Windows keeps mmap for Unsloth's own loaders (pread is slower there)
+        ("win32", None, "0", True, "cpu", {}),
+        ("win32", None, "1", True, "cpu", {"backend": "pread"}),
+        ("win32", "0", "1", True, "cpu", {}),
     ],
 )
 def test_pread_backend_kwargs(monkeypatch, platform, env, uma, supported, device, expected):

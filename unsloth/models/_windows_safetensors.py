@@ -102,13 +102,14 @@ def _installed(fn) -> bool:
 
 
 def pread_backend_kwargs(device = "cpu") -> dict:
-    """``{"backend": "pread"}`` for a CPU open whose tensors are each read once and copied to the GPU, where pread
-    beats mmap (Windows, CUDA unified-memory GPUs) and safetensors has the keyword; else ``{}`` (stock mmap).
-    Not for tensors that stay on the host: pread turns each into a private copy instead of a page-cache view."""
+    """``{"backend": "pread"}`` for a CPU open whose tensors are each read once and copied to the GPU, on a CUDA
+    unified-memory GPU where pread beats mmap, when safetensors has the keyword; else ``{}`` (stock mmap). Discrete
+    GPUs keep mmap (faster there, Windows included). Not for tensors that stay on the host: pread turns each into a
+    private copy instead of a page-cache view."""
     value = _env()
     if value is False or str(device) != "cpu":
         return {}
-    if value is None and sys.platform != "win32" and not _unified_memory_now():
+    if value is None and not _unified_memory_now():
         return {}
     return {"backend": "pread"} if _supports_backend() else {}
 
