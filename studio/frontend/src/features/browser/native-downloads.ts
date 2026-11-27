@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Desktop only: the app keeps each download's path (browser_downloads.rs) and the page gets an
-// opaque id to reveal the file or check it still exists.
+// Desktop only: the app keeps download paths (browser_downloads.rs); pages get an opaque id.
 
 import { isTauri } from "@/lib/api-base";
 import { NATIVE_FILE_NAME_HEADER, encodeNativeFilename } from "@/lib/native-files";
@@ -13,8 +12,7 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
   return core.invoke<T>(command, args);
 }
 
-/** `marked` is false when the file couldn't be marked as downloaded from the internet (FAT, exFAT, some
- *  network drives), null when nothing marks it. */
+/** marked is false if the web mark failed (FAT, exFAT, some network drives); null if unmarked. */
 export type SavedNativeDownload = { id: string; name: string; marked: boolean | null };
 
 /** Null if cancelled. A website file (`source`) is quarantine-marked so Gatekeeper/SmartScreen check it. */

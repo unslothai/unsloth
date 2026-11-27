@@ -534,9 +534,8 @@ def _oauth_store():
 
 
 def _strip_client_id_under_basic_auth(auth) -> None:
-    """The SDK leaves client_id in the body under Basic auth; strict servers (Notion) read that as
-    two auth methods -- RFC 6749 2.3 -- and 401. Safe to drop: 3.2.1 makes client_id a MAY once
-    authenticated, and an unauthenticated client sends no header, so it keeps it."""
+    """Strict servers (Notion) 401 on client_id in the body under Basic auth, as two auth methods
+    (RFC 6749 2.3); RFC 6749 3.2.1 makes it a MAY once authenticated, so dropping it is safe."""
     context = getattr(auth, "context", None)
     prepare = getattr(context, "prepare_token_auth", None)
     if prepare is None:
@@ -727,8 +726,7 @@ def _is_node_command(command: str) -> bool:
 
 
 def _command_selects_runtime(command: Optional[str]) -> bool:
-    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of PATH, so
-    handing its children a different Node would only split the two."""
+    """A path to node picks the runtime regardless of PATH; children must share that Node."""
     return (
         command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
     )
@@ -956,8 +954,7 @@ _CANCEL_UNWIND_TIMEOUT = 2.0
 # With no read cap, a still-open abandoned reply is bounded by retiring its session after the old cap or a pile-up.
 _ABANDONED_REPLY_TIMEOUT = 300.0
 _MAX_ABANDONED_REPLIES = 8
-# Idle HTTP sessions are re-proved with tools/list before the next dispatch, as servers may expire
-# them (MCP lets a server terminate a session at any time) and no HTTP liveness probe exists
+# Idle HTTP sessions are re-proved with tools/list: servers may expire them and HTTP has no probe.
 _HTTP_IDLE_RECHECK = 30.0
 _DEFAULT_MAX_SESSIONS = 32
 
@@ -2364,8 +2361,7 @@ def _call_session_tool(
         raise _MCPCancelled
     if dispatch is None:
         rpc = ("tools/call", name)
-    # One deadline covers the key-lock wait, connect, call-lock wait, and the call itself, matching the one-shot path
-    # where the caller's timeout wrapped connect plus call in a single window.
+    # One deadline spans every wait and the call, as the one-shot path's single window did.
     deadline = None if timeout is None else time.monotonic() + timeout
 
     def _remaining() -> Optional[float]:
@@ -2504,8 +2500,7 @@ def _call_session_tool(
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)
-            # Drop the broken session from the cache before its borrow is released, so no caller
-            # reuses it.
+            # Drop the broken session from the cache before release, so no caller reuses it.
             if discard_session:
                 _drop_session(key, session)
             _release_session(session, defer_close = not ephemeral)
@@ -2586,8 +2581,7 @@ UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; wai
 
 
 def server_unreachable(exc: BaseException) -> bool:
-    """A refused or unanswered connection anywhere in the cause chain (httpx is vendored, so match by type name).
-    A TLS failure is not one: httpx raises ConnectError for an untrusted certificate too, but the server answered."""
+    """Refused/unanswered connection in cause chain; name match (httpx vendored); TLS excluded."""
     chain, seen = [], 0
     while exc is not None and seen < 10:
         chain.append(exc)

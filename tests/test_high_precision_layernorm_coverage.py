@@ -65,8 +65,7 @@ def test_norm_types_is_non_empty_and_typed():
 
 
 def test_weightless_norm_is_skipped():
-    """`.to(float32)` on a norm with no weight is a no-op, and named_modules
-    exposes such norms, so the hasattr guard must stay."""
+    """named_modules exposes weightless norms (.to(float32) no-op); keep the hasattr guard."""
 
     class Weightless(nn.LayerNorm):
         def __init__(self):

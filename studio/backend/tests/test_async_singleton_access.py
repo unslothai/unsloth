@@ -44,8 +44,7 @@ def test_no_async_handler_builds_the_singleton_inline():
 
 
 def test_the_offload_is_actually_present():
-    """Guards against the sweep passing because the calls vanished; counted from the AST, since a
-    literal-string count would miss calls a formatter wraps across lines."""
+    """Counted from the AST: a literal-string count would miss calls a formatter wraps."""
     total = 0
     for rel in _ROUTE_FILES:
         tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
@@ -108,8 +107,7 @@ def _nodes_in_scope(roots: list[ast.AST]) -> list[ast.AST]:
 
 
 def _calls_run_in_scope(roots: list[ast.AST]) -> list[ast.Call]:
-    """Calls these nodes make when their own scope runs; nested lambdas, defs and generator
-    expressions are not descended, since they could be returned and run later."""
+    """Own-scope calls only: nested lambdas, defs and genexps may be returned and run later."""
     return [n for n in _nodes_in_scope(roots) if isinstance(n, ast.Call)]
 
 

@@ -419,9 +419,19 @@ def process_results(doc, results):
     response = results[0]
     # a single-line option ends at the first newline, where a single-line dataset's stop ends it
     first_line = response.split("\\n")[0]
-    match = any((response if "\\n" in gold else first_line).strip() == gold for gold in golds)
-    return {"exact_match": float(match)}
+    for gold in golds:
+        candidate = (response if "\\n" in gold else first_line).rstrip()
+        if candidate == gold or candidate.lstrip() == gold:
+            return {"exact_match": 1.0}
+    return {"exact_match": 0.0}
 """
+
+
+def _csv_text(value):
+    import pyarrow as pa
+
+    # a typed scalar survives pandas' NA pass ("NA" stays text) and keeps all-empty columns string
+    return pa.scalar(value or None, type = pa.string())
 
 
 def _stop_sequence(data_file: Path, target_key: str) -> str:
@@ -493,9 +503,25 @@ def make_dataset_task(
                 "TARGET_KEY", repr(target_key)
             )
         )
+        if builder == "csv":
+            # Datasets fingerprints the converter; a stable import lets repeated runs reuse the cache.
+            target.write("\nfrom unsloth_cli.commands.eval import _csv_text\n")
     module = Path(target.name).stem
+    dumper = yaml.SafeDumper
+    if builder == "csv":
+        spec["dataset_kwargs"]["converters"] = dict.fromkeys((input_key, target_key), _csv_text)
+
+        class CsvTaskDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                return True
+
+        CsvTaskDumper.add_representer(
+            type(_csv_text),
+            lambda dumper, fn: dumper.represent_scalar("!function", f"{module}.{fn.__name__}"),
+        )
+        dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
-        yaml.safe_dump(spec, sort_keys = False)
+        yaml.dump(spec, Dumper = dumper, sort_keys = False)
         + f"doc_to_target: !function {module}.doc_to_target\n"
         + f"process_results: !function {module}.process_results\n",
         encoding = "utf-8",

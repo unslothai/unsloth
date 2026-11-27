@@ -16,7 +16,6 @@ import numpy as np
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Modules that need patching but may already be imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
@@ -197,8 +196,7 @@ def _nvidia_smi_gpu_name():
 
 def _reraise_device_type_error_with_gpu_hint(exception):
     mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
-    # An empty or "-1" mask hides every GPU on purpose.
+    # Zoo's error lists AMD, so match "ROCm" only; empty or "-1" mask hides GPUs on purpose.
     if "ROCm" in str(exception) or (mask is not None and "".join(mask.split()) in ("", "-1")):
         raise exception
     gpu_name = _nvidia_smi_gpu_name()
@@ -218,7 +216,6 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     ) from exception
 
 
-# Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
     if Version(unsloth_zoo_version) < Version("2026.8.15"):
@@ -239,8 +236,7 @@ try:
     )
 
     _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
-    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
-    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    # Zoo sets allocator env before CUDA starts; torchrun ranks > 0 bind early and miss them.
     _cuda_started_before = cuda_started()
     import unsloth_zoo
 
@@ -309,8 +305,7 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
             "determine_compile_threads",
             lambda: 1,
         )
-        # Zoo's options dicts were snapshotted at import and outrank the env var in Inductor; rewrite them
-        # in place, since they are shared by identity across modules and the torch_compile partial.
+        # Zoo's options dicts outrank the env var; rewrite in place (shared by identity).
         for module in list(sys.modules.values()):
             name = getattr(module, "__name__", "")
             if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):
@@ -759,7 +754,6 @@ if DEVICE_TYPE == "cuda":
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
                 possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
 
-                # Try linking cuda folder, or everything in local
                 if len(possible_cudas) == 0:
                     os.system("ldconfig /usr/local/")
                 else:
@@ -809,7 +803,6 @@ if DEVICE_TYPE == "cuda":
             )
     del libcuda_dirs
 elif DEVICE_TYPE == "hip":
-    # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
     # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.

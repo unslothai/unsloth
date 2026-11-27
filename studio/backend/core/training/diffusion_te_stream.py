@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streams text-encoder layers to the card during DiT captioning; UNSLOTH_DIFFUSION_TRAIN_TE_STREAM:
-auto (default) streams only the layers needed when encoders do not fit free VRAM; on streams all;
-off is whole-module; embeddings bit-identical to it."""
+"""Streams text-encoder layers during DiT captioning; UNSLOTH_DIFFUSION_TRAIN_TE_STREAM auto streams
+only layers overflowing free VRAM, on: all, off: whole-module; embeddings bit-identical."""
 
 from __future__ import annotations
 
@@ -169,8 +168,7 @@ class TextEncoderStreamer:
         streamed_ids = {id(m) for li in self.order for m in layers[li].modules()}
         self.registered = None
         self.arena = None
-        # (parameter, arena start, nbytes, shape) for every weight moved into the arena, so a failure part way
-        # through can put each one back before the caller falls back to the whole-module move.
+        # Packed weights as (param, arena start, nbytes, shape), for rollback if a build fails.
         self._packed: list = []
         try:
             self._build(torch, encoder, layers, streamed_ids, pin_budget)

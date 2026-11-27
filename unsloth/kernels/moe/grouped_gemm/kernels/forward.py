@@ -184,7 +184,11 @@ def _grouped_gemm_forward_kernel(
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
 
                     x = x.to(w.dtype)
-                    accumulator += tl.dot(x, w.T)
+                    # Triton runs a float32 dot as TF32 by default; float32 weights get a float32 product.
+                    if w.dtype == tl.float32:
+                        accumulator += tl.dot(x, w.T, input_precision = "ieee")
+                    else:
+                        accumulator += tl.dot(x, w.T)
 
                     if not USE_TMA_LOAD_X:
                         x_ptrs += BLOCK_SIZE_K

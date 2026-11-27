@@ -132,8 +132,7 @@ def _worker(rank, world, port, case, tmp, kwargs):
     try:
         res = CASES[case](rank, world, **kwargs)
         torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
-        # Rank 0 hosts the TCPStore: leaving before a slower rank is done with it (dp_x_tp builds its mesh
-        # groups through the store) killed that rank with "Broken pipe".
+        # Rank 0 hosts the TCPStore, so leaving early breaks slower ranks with "Broken pipe".
         dist.barrier()
         finished = True
     finally:

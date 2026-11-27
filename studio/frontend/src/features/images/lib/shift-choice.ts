@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Per-generation Shift override; backend: core/inference/diffusion_flow_shift.py. "sd3" takes one static shift
- * (ComfyUI ModelSamplingSD3 / AuraFlow), "flux" takes base / max shift (ComfyUI ModelSamplingFlux). */
+/** Shift override (core/inference/diffusion_flow_shift.py): sd3 one shift; flux base/max shift. */
 export interface ShiftControl {
   node: "sd3" | "flux";
   // sd3: the loaded value, null when the model's schedule depends on resolution.

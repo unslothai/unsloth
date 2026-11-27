@@ -35,7 +35,6 @@ _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 _SH="${BASH:-/bin/bash}"
 
 _run_gate() {
-    # $1 = STUDIO_LOCAL_INSTALL
     ( PATH="$_BIN"; export PATH
       "$_SH" -c ". '$_HARNESS'; . '$_FN_FILE'; STUDIO_LOCAL_INSTALL=$1; _check_macos_deps; echo \"RC=\$?\"" 2>&1 )
 }
@@ -107,8 +106,7 @@ rm -f "$_BIN"/git
 _r="$(PATH="$_BIN" "$_SH" -c ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
 assert_eq "absent git -> no" "no" "$_r"
 
-# On macOS the probe must never execute /usr/bin/git: the CLT shim raises a GUI dialog.
-# The stub records execution, so an empty marker file proves it stayed unrun.
+# Never run /usr/bin/git on macOS (CLT shim raises a GUI dialog); an empty marker proves it.
 echo "=== macOS: the CLT git shim is never executed ==="
 rm -f "$_BIN"/*
 _RAN="$(mktemp -u)"

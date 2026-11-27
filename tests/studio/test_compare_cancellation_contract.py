@@ -66,7 +66,8 @@ def test_cancelled_load_waits_for_unload_then_reconciles_checkpoint():
 def test_generalized_compare_does_not_relist_threads_mid_send():
     page = _read("chat-page.tsx")
     general = _between(page, "const GeneralCompareContent = memo(", "return (")
-    assert "(anyRunning || comparing) && listedPairRef.current === pairId" in general
+    assert "const busy = anyRunning || comparing;" in general
+    assert "if (busy || !wasBusy) return;" in general
     assert "onComparingChange={setComparing}" in page
     body = _between(page, "const GeneralCompareContent = memo(", "\n});")
     composer = _between(body, "<SharedComposer", "/>")

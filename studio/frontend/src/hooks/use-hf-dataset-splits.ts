@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 import { hubTokenHeader } from "@/features/hub";
 import {
   getHfDatasetsServerBase,
@@ -133,11 +134,8 @@ async function fetchHubSplits({
     signal,
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
     throw new Error(
-      typeof body?.detail === "string"
-        ? body.detail
-        : `Failed to read dataset options (${response.status})`,
+      await readFastApiError(response, "Failed to read dataset options"),
     );
   }
   const payload = (await response.json()) as { splits?: unknown };

@@ -72,8 +72,7 @@ test("the Windows page blur learns about the sidebar frame from the root, not a 
     root,
     /data-slot="page-wallpaper-blur"\s+\/\/[^\n]*\n\s+data-sidebar-frame=\{\(pinned && !mobileShell\) \|\| undefined\}/,
   );
-  // The flag mirrors AppSidebar's own condition (windowsWallpaperPage already implies the in-page titlebar,
-  // which Windows and Linux share).
+  // Mirrors AppSidebar's condition; windowsWallpaperPage already implies the in-page titlebar.
   assert.match(
     readSrc("components/app-sidebar.tsx"),
     /data-windows-glass-frame=\{\(pinned && usesCustomTitlebar\) \|\| undefined\}/,

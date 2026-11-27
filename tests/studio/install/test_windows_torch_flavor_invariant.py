@@ -42,7 +42,7 @@ def _line_of(source: str, needle: str) -> int:
 
 def _publication_block() -> str:
     """Sliced between two section markers, since a fixed character count breaks when a comment grows."""
-    start = _SETUP_SRC.index("# ── Publish the torch flavor this run settled on ──")
+    start = _SETUP_SRC.index("# -- Publish the torch flavor this run settled on --")
     end = _SETUP_SRC.index("# Ordered heavy dependency installation", start)
     return _SETUP_SRC[start:end]
 
@@ -125,8 +125,7 @@ class TestSetupPs1PublishesTheFlavor:
 
 
 class TestInstallPs1Parity:
-    """A venv repaired by `studio update` and one repaired by install.ps1 must land on the
-    same wheels, and a support log from either must read the same."""
+    """A venv repaired by studio update or install.ps1 must get the same wheels and log text."""
 
     def test_the_repair_trio_matches_install_ps1(self):
         # install.ps1 builds the non-XPU trio as three scalars; a kept pin substitutes one by one.
@@ -288,10 +287,9 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the no-torch
-        # case also gets the runtime-deps slot; both carry diffusers main (11c), spent even when
-        # opting out, and the HNSW slot (11e, on demand by default); causal-conv1d and mamba-ssm
-        # have no slot.
+        # Both carry the Windows-only accelerate repair (8c, ignores NO_TORCH) and diffusers main
+        # (11c, even when opting out); the no-torch case adds the runtime-deps slot; causal-conv1d
+        # and mamba-ssm have no slot; the HNSW slot (11e) is on demand by default.
         assert _base_total(IS_WINDOWS = True) == 19
         assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 17
 
@@ -501,8 +499,7 @@ class TestTheProvenanceMarkerSurvivesAResolution:
 
 
 class TestAnUnknownMirrorPinNamesNoFlavor:
-    """A mirror whose leaf names no family leaves nothing to name the flavor; the manifest describes
-    the replaced install and the CUDA probe reads the leaf as a flavor."""
+    """A mirror leaf with no family gives no flavor, so the old manifest must not supply one."""
 
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]

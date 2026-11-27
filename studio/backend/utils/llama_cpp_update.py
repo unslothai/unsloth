@@ -31,6 +31,7 @@ from utils.llama_cpp_changelog import (
     release_page_url,
     unavailable_reason,
 )
+from utils.prebuilt import freshness_flow as _freshness_flow
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -407,9 +408,10 @@ def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
-    status = _llama_only_status(force_refresh = force_refresh)
-    status = _merge_whisper_status(status, force_refresh = force_refresh)
-    status = _merge_audio_status(status, force_refresh = force_refresh)
+    with _freshness_flow.shared_release_fetches():
+        status = _llama_only_status(force_refresh = force_refresh)
+        status = _merge_whisper_status(status, force_refresh = force_refresh)
+        status = _merge_audio_status(status, force_refresh = force_refresh)
     return _settle_whisper_rider(status)
 
 

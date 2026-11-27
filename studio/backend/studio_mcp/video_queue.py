@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Queues videos Studio refused while busy, submitting each in order once the previous one ends; per
-account; lost on MCP server restart"""
+"""Queues videos Studio refused while busy, per account, in order; lost on MCP server restart."""
 
 from __future__ import annotations
 
@@ -93,8 +92,7 @@ def _is_busy(response: httpx.Response) -> bool:
 
 
 def _ended(item: QueuedVideo) -> bool:
-    # A submitted video runs until the next one starts (one at a time), so only the one this
-    # account's queue still waits on may be running; its queue id must keep working until then.
+    # Videos run one at a time: a submitted one keeps its queue id valid until the next starts.
     if item.status == "queued" or item.posting:
         return False
     running = _running.get(item.account_id)
@@ -256,8 +254,7 @@ async def post_or_queue(
     hints: Optional[dict] = None,
 ) -> Union[dict, VideoJobRef]:
     """POST the video, or queue it when Unsloth Studio is busy with another video (or this account already has videos waiting, to keep their order). Returns the route's job, or the queued video's reference."""
-    # One admission at a time per account: a second call must not start while the first, refused as
-    # busy, is still on its way into the queue, or it would overtake it.
+    # One admission at a time per account; a second call cannot overtake a first still queued.
     async with _admission.setdefault(caller.account_id, asyncio.Lock()):
         return await _admit(caller, body, hints)
 

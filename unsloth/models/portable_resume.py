@@ -131,9 +131,15 @@ def _full_value(model, p, value):
     an id map), laid out as `p` is (tensor parallel DTensor, expert parallel shard, or whole)."""
     if _is_dtensor(p):
         from .tp_native import _dtensor_api, _full, _param_layouts
+
+        device = _local(p).device
+        if _is_dtensor(value) and _local(value).device != device:
+            # A host-backed shard (UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps the state's local tensor in CPU memory):
+            # NCCL gathers device tensors only, so this one tensor goes back to the parameter's device for it.
+            value = _local(value)
         if not _is_dtensor(value):
             value = _dtensor_api()[0].from_local(
-                value.to(_local(p).device),
+                value.to(device),
                 p.device_mesh,
                 p.placements,
                 run_check = False,
@@ -771,7 +777,13 @@ def _load_named(
     if bnb:
         return _bnb_import(inner, loaded)
     # The class method: a Trainer load in progress may have routed the instance's load_state_dict here.
-    return type(inner).load_state_dict(inner, loaded)
+    result = type(inner).load_state_dict(inner, loaded)
+    # That skips the instance override UNSLOTH_OFFLOAD_OPTIMIZER_STATE installs: put the state back on the host
+    # now, as that override does, instead of holding all of it on the device until the first step.
+    offloader = getattr(inner, "_unsloth_state_offloader", None)
+    if offloader is not None:
+        offloader.finish(offloader.offload())
+    return result
 
 
 def remap_scheduler_state(optimizer, state):

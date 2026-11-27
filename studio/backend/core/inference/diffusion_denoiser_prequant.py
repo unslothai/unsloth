@@ -20,7 +20,6 @@ _UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
 def pipeline_seed_supported(fam: Any) -> bool:
-    """Whether a seeded denoiser reaches this family's pipeline assembly at all."""
     name = str(getattr(fam, "name", "") or "")
     return bool(name) and name not in _UNSEEDABLE_PIPELINE_FAMILIES
 

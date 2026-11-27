@@ -2642,6 +2642,10 @@ export const cs = {
         confirmDescriptionChatOnly:
           "Zastaví server a znovu spustí instalační program. Toto je instalace Pouze chat, takže ji instalační program zároveň upgraduje na úplnou instalaci s PyTorch, celkem několik gigabajtů. Chaty a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Opravit nyní",
+        recommendedTorch:
+          "Doporučena oprava: tato instalace má PyTorch {torch}, starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} je starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50, ale tento ovladač GPU nepodporuje CUDA 13. Nejprve aktualizujte ovladač GPU a pak instalaci opravte.",
       },
       resetPreferences: {
         sectionTitle: "Nebezpečná zóna",
@@ -4856,6 +4860,12 @@ export const cs = {
       epochs: "Epochy",
       useMaxSteps: "Použít Maximum kroků",
       useEpochs: "Použít epochy",
+      stepGuidancePass: "Přibližně {steps} kroků je jeden průchod vašimi {rows} řádky při efektivní dávce {batch}.",
+      stepGuidanceFloor: "Jeden průchod vašimi {rows} řádky je jen {passSteps} kroků při efektivní dávce {batch}, takže přibližně {steps} kroků (několik průchodů) je rozumné minimum.",
+      stepGuidanceCap: "Jeden průchod vašimi {rows} řádky je {passSteps} kroků při efektivní dávce {batch}; {steps} kroků trénuje na jejich části, což pro první běh často stačí.",
+      stepGuidanceEpoch: "Jedna epocha je přibližně {passSteps} kroků přes vašich {rows} řádků při efektivní dávce {batch}.",
+      stepGuidancePacking: "Packing spojuje krátké řádky, takže průchod může zabrat méně kroků.",
+      useSuggestedSteps: "Použít {steps}",
       maxStepsTooltip: "Přepíše celkový počet kroků optimalizátoru.",
       epochsTooltip: "Počet úplných průchodů datovou sadou.",
       contextLength: "Kontext",

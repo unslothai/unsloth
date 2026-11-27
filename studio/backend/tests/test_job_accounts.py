@@ -269,10 +269,12 @@ def test_export_busy_status_hides_checkpoint(export, monkeypatch):
     backend._result_account = ALICE
     backend.current_checkpoint = "alice-private-model"
     backend._export_active = True
+    backend._last_op = {"seq": 1, "id": "alice-op", "status": "success"}
     monkeypatch.setattr(route, "get_export_backend", lambda: backend)
     result = asyncio.run(arun_as(BOB, route.get_export_status("bob")))
     assert result.active_op_kind == "busy"
     assert result.current_checkpoint is None and result.is_peft is False
+    assert result.last_op_id is None
 
 
 def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, monkeypatch):
@@ -281,7 +283,10 @@ def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, m
     backend, _ = export
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
     monkeypatch.setattr(route, "get_export_backend", lambda: backend)
-    assert run_as(OWNER, backend.load_checkpoint, "/arbitrary/checkpoint") == (True, "done")
+    assert run_as(OWNER, backend.load_checkpoint, "/arbitrary/checkpoint", op_id = "load-1") == (
+        True,
+        "done",
+    )
     result = asyncio.run(route.get_export_status("unsloth"))
     expected = {
         "current_checkpoint": "/arbitrary/checkpoint",
@@ -290,6 +295,7 @@ def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, m
         "is_export_active": False,
         "active_op_kind": None,
         "last_op_seq": 1,
+        "last_op_id": "load-1",
         "last_op_kind": "load_checkpoint",
         "last_op_status": "success",
         "last_op_output_path": None,

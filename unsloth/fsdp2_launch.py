@@ -63,14 +63,12 @@ def unsloth_fsdp2_native_requested():
     if backend == "" and _env_flag("ACCELERATE_USE_FSDP"):
         return False
     if _non_cuda_accelerate_route() is not None:
-        # Native FSDP2 is CUDA / ROCm / CPU only: an XPU / NPU / ... install keeps accelerate's FSDP2
-        # (pre-native behaviour); an explicit native pick stays native and is refused there.
+        # Native FSDP2 is CUDA/ROCm/CPU only; XPU/NPU keep accelerate's FSDP2, refuse native.
         return False
     return True
 
 
-# {key: value before} of the accelerate env exported only because this is a non-CUDA install, so a
-# CPU Trainer can be handed back to native FSDP2.
+# Accelerate env values saved for non-CUDA installs so CPU Trainer can revert to native FSDP2.
 _NON_CUDA_EXPORT = None
 _CPU_TRAINER = False
 
@@ -116,9 +114,8 @@ def reclaim_native_fsdp2_for_cpu_trainer(training_args):
 
 
 def _torch_build():
-    """{"cuda", "hip", "xpu"}: the torch build's `torch.version` strings (None when absent), read from
-    torch/version.py without importing torch (the launch step runs before torch is imported), or None
-    when torch is not found. Same answer at the launch step and at Trainer setup."""
+    """Reads cuda/hip/xpu version strings from torch/version.py without importing torch (launch runs
+    first); None if absent or torch is missing, same answer at Trainer setup."""
     torch = sys.modules.get("torch")
     version = getattr(torch, "version", None) if torch is not None else None
     if version is not None:
@@ -147,8 +144,7 @@ def _torch_build():
 
 
 def _xpu_from_label(build, label):
-    """A `+xpu` wheel can ship torch.version.xpu = None (and torch < 2.7 has no xpu attribute at all):
-    the version label is then the only build marker, read the same way with and without torch."""
+    """+xpu wheel: xpu may be None (or missing before torch 2.7), so the label is the marker."""
     if not build.get("xpu") and "+xpu" in str(label or "").lower():
         build["xpu"] = str(label)
     return build
@@ -261,8 +257,7 @@ NATIVE_BACKEND_TABLE = (
         "type": "XLA",
         "action": "refuse",
         "label": "torch_xla (TPU / XLA)",
-        # accelerate/utils/imports.py:30-41 (USE_TORCH_XLA, default on), state.py:766-767: XLA wins
-        # whenever torch_xla imports.
+        # XLA wins whenever torch_xla imports; USE_TORCH_XLA defaults on.
         "package": "torch_xla",
         "unless_env_false": "USE_TORCH_XLA",
     },
@@ -323,8 +318,7 @@ def _set_arg(training_args, name):
 
 
 def _import_vendor(package):
-    """The vendor extension that registers its device with torch, as accelerate imports it
-    (accelerate/utils/imports.py is_*_available). Written-out names only."""
+    """Imports the vendor torch extension as accelerate does; package names are written out."""
     if package == "torch_mlu":
         import torch_mlu  # noqa: F401
     elif package == "torch_sdaa":

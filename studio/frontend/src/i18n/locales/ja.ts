@@ -2399,6 +2399,10 @@ export const ja = {
         confirmDescriptionChatOnly:
           "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
+        recommendedTorch:
+          "修復を推奨: このインストールの PyTorch {torch} は、RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いバージョンです。",
+        recommendedDriver:
+          "PyTorch {torch} は RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いですが、この GPU ドライバーは CUDA 13 に対応していません。先に GPU ドライバーを更新してから、インストールを修復してください。",
       },
       resetPreferences: {
         sectionTitle: "危険ゾーン",
@@ -4489,6 +4493,12 @@ export const ja = {
       epochs: "エポック数",
       useMaxSteps: "最大ステップ数を使用",
       useEpochs: "エポック数を使用",
+      stepGuidancePass: "約 {steps} ステップで、実効バッチ {batch} のとき {rows} 行を 1 周します。",
+      stepGuidanceFloor: "実効バッチ {batch} では {rows} 行の 1 周はわずか {passSteps} ステップなので、約 {steps} ステップ (数周) が妥当な最小値です。",
+      stepGuidanceCap: "実効バッチ {batch} では {rows} 行の 1 周は {passSteps} ステップです。{steps} ステップはその一部を学習し、最初の実行には十分なことが多いです。",
+      stepGuidanceEpoch: "1 エポックは実効バッチ {batch} で {rows} 行を約 {passSteps} ステップで回ります。",
+      stepGuidancePacking: "パッキングは短い行をまとめるため、1 周のステップ数が少なくなることがあります。",
+      useSuggestedSteps: "{steps} を使用",
       maxStepsTooltip: "オプティマイザーの総ステップ数を上書きします。",
       epochsTooltip: "データセット全体の完全な学習回数。",
       contextLength: "コンテキスト",

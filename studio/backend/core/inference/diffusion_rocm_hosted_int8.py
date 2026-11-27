@@ -22,8 +22,7 @@ from typing import Any, Optional
 
 ROCM_IMAGE_HOSTED_INT8_ENV = "UNSLOTH_ROCM_IMAGE_HOSTED_INT8"
 
-# gfx archs where the hosted W8A8 read was measured on hardware (gfx1151, Linux AMD CI). The RDNA W8A8 kernels accept
-# every gfx11xx / gfx12xx card, but no other arch has a speed or quality number, so they keep the at-load build.
+# Hosted W8A8 measured only on gfx1151; other gfx11xx/gfx12xx cards keep the at-load build.
 ROCM_IMAGE_HOSTED_INT8_ARCHS = frozenset({"gfx1151"})
 
 
@@ -64,9 +63,8 @@ def _is_convrot_safetensors(name: Any) -> bool:
 
 
 def rocm_convrot_source(source: Any) -> Any:
-    """``source`` narrowed to its int8 ConvRot safetensors names, or None. The planner's header probe and the
-    loader's resolver both use it, so a mirror or cache holding only the plain int8 file cannot make the plan pick
-    the ConvRot file while the load resolves (and refuses) the plain one. Never raises."""
+    """``source`` narrowed to its int8 ConvRot safetensors names, or None; shared by planner and
+    loader so a plain-only mirror cannot split them. Never raises."""
     try:
         if getattr(source, "kind", None) != "repo":
             return None
@@ -88,9 +86,8 @@ def rocm_convrot_source(source: Any) -> Any:
 
 
 def rocm_image_hosted_int8_reason(fam: Any, requested: Optional[str], target: Any) -> Optional[str]:
-    """Why an EXPLICIT int8 image request on this ROCm RDNA card reads the hosted int8 ConvRot DiT as native W8A8,
-    else None (the dense shards are quantised at load, as before). Host-level only: the caller still requires a
-    resident ``pipeline`` load on a compiling speed tier. Never raises."""
+    """Reason an explicit int8 request on this ROCm RDNA card reads the hosted ConvRot DiT as native
+    W8A8, else None; callers still need a resident compiling-tier pipeline. Never raises."""
     try:
         if fam is None or not rocm_image_hosted_int8_enabled():
             return None

@@ -161,6 +161,73 @@ def test_gguf_effort_without_an_allowlist_passes_through():
     assert backend._request_reasoning_kwargs(False, None, None) == {"reasoning_effort": "low"}
 
 
+# Inkling 2's effort dial and thinking channel; its template never reads enable_thinking.
+INKLING2_EFFORT_TEMPLATE = """
+{%- set effort_map = {"none": 0.0, "minimal": 0.1, "low": 0.2, "medium": 0.7, "high": 0.9} -%}
+{{- "Thinking effort level: " ~ effort_map[reasoning_effort or "high"] -}}
+{%- for m in messages %}<|message_model|><|content_thinking|>{{ m['content'] }}<|end_message|>{% endfor %}
+"""
+
+
+def test_gguf_thinking_off_takes_inklings_none_level():
+    backend = _gguf_backend(INKLING2_EFFORT_TEMPLATE)
+    assert backend._request_reasoning_kwargs(False, None, None) == {"reasoning_effort": "none"}
+    assert backend._reasoning_kwargs(False) == {"reasoning_effort": "none"}
+    # A quoted "none" elsewhere is no off switch, so other ladders keep the smallest budget.
+    other = _gguf_backend(INKLING2_EFFORT_TEMPLATE.replace("<|content_thinking|>", ""))
+    assert other._request_reasoning_kwargs(False, None, None) == {"reasoning_effort": "low"}
+
+
+def test_transformers_and_mlx_render_turn_inkling_thinking_off():
+    from jinja2 import Environment
+
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    class _Tokenizer:
+        chat_template = INKLING2_EFFORT_TEMPLATE
+
+        def apply_chat_template(
+            self,
+            messages,
+            *,
+            tokenize = False,
+            add_generation_prompt = True,
+            **kw,
+        ):
+            return Environment().from_string(self.chat_template).render(messages = messages, **kw)
+
+    messages = [{"role": "user", "content": "hi"}]
+    off = apply_chat_template_for_generation(_Tokenizer(), messages, enable_thinking = False)
+    assert off.startswith("Thinking effort level: 0.0")
+    on = apply_chat_template_for_generation(_Tokenizer(), messages, enable_thinking = True)
+    assert on.startswith("Thinking effort level: 0.9")
+    high = apply_chat_template_for_generation(_Tokenizer(), messages, reasoning_effort = "high")
+    assert high.startswith("Thinking effort level: 0.9")
+
+    class _NoEnableThinking(_Tokenizer):
+        def apply_chat_template(self, messages, **kw):
+            if "enable_thinking" in kw:
+                raise TypeError("unexpected keyword argument 'enable_thinking'")
+            return super().apply_chat_template(messages, **kw)
+
+    off = apply_chat_template_for_generation(_NoEnableThinking(), messages, enable_thinking = False)
+    assert off.startswith("Thinking effort level: 0.0")
+
+    class _ReadsEnableThinking(_Tokenizer):
+        chat_template = "{{ enable_thinking }}" + INKLING2_EFFORT_TEMPLATE
+
+    off = apply_chat_template_for_generation(
+        _ReadsEnableThinking(), messages, enable_thinking = False
+    )
+    assert off.startswith("FalseThinking effort level: 0.9")
+
+    class _GuardedLadder(_Tokenizer):
+        chat_template = _guarded_template(["low", "high"]) + INKLING2_EFFORT_TEMPLATE
+
+    off = apply_chat_template_for_generation(_GuardedLadder(), messages, enable_thinking = False)
+    assert "[low]Thinking effort level: 0.2" in off
+
+
 def test_gguf_override_allowlist_wins_over_the_embedded_template():
     backend = _gguf_backend(GPT_OSS_TEMPLATE)
     backend._chat_template_override = MISTRAL_SMALL_4_TEMPLATE

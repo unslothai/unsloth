@@ -2663,6 +2663,10 @@ export const nl = {
         confirmDescriptionChatOnly:
           "Stopt de server en voert het installatieprogramma opnieuw uit. Dit is een installatie voor Alleen chat, dus het installatieprogramma upgradet deze ook naar de volledige installatie met PyTorch, in totaal enkele gigabytes. Chats en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Nu herstellen",
+        recommendedTorch:
+          "Reparatie aanbevolen: deze installatie heeft PyTorch {torch}, ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund.",
+        recommendedDriver:
+          "PyTorch {torch} is ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund, maar dit GPU-stuurprogramma ondersteunt CUDA 13 niet. Werk eerst het GPU-stuurprogramma bij en repareer daarna de installatie.",
       },
       resetPreferences: {
         sectionTitle: "Gevarenzone",
@@ -4887,6 +4891,12 @@ export const nl = {
       epochs: "Epochs",
       useMaxSteps: "Max. stappen gebruiken",
       useEpochs: "Epochs gebruiken",
+      stepGuidancePass: "Ongeveer {steps} stappen is één doorgang over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidanceFloor: "Eén doorgang over je {rows} rijen is maar {passSteps} stappen bij een effectieve batch van {batch}, dus ongeveer {steps} stappen (een paar doorgangen) is een redelijk minimum.",
+      stepGuidanceCap: "Eén doorgang over je {rows} rijen is {passSteps} stappen bij een effectieve batch van {batch}; {steps} stappen trainen op een deel ervan, wat vaak genoeg is voor een eerste run.",
+      stepGuidanceEpoch: "Eén epoch is ongeveer {passSteps} stappen over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidancePacking: "Packing voegt korte rijen samen, dus een doorgang kan minder stappen kosten.",
+      useSuggestedSteps: "{steps} gebruiken",
       maxStepsTooltip: "Het totale aantal optimizerstappen overschrijven.",
       epochsTooltip: "Aantal volledige doorlopen van de dataset.",
       contextLength: "Context",

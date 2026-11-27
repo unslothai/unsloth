@@ -3,9 +3,11 @@
 
 """Load-Model memory estimate tests (POST /api/inference/estimate-memory) on synthetic GGUF headers."""
 
+import gzip
 import inspect
 import json
 import os
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -4318,6 +4320,24 @@ def _caption(
     return mm._cache_width_name(plan, bits, converted, "bf16", n_ctx, mm.MLX_PREFILL_CHUNK)
 
 
+def _snapshot_or_headers(repo, tmp_path):
+    """The repo rebuilt from its committed config and shard headers over sparse bytes, else its local snapshot."""
+    fixture = (
+        Path(__file__).parent / "data" / "mlx_headers" / (repo.replace("/", "--") + ".json.gz")
+    )
+    if not fixture.exists():
+        return _local_snapshot(repo)
+    data = json.loads(gzip.decompress(fixture.read_bytes()))
+    for name, text in data["files"].items():
+        (tmp_path / name).write_text(text)
+    for name, shard in data["shards"].items():
+        header = shard["header"].encode()
+        with open(tmp_path / name, "wb") as f:
+            f.write(struct.pack("<Q", len(header)) + header)
+            f.truncate(shard["size"])
+    return str(tmp_path)
+
+
 def _local_snapshot(repo):
     """This repo's snapshot directory, skipping the test when it is not here."""
     hub = os.path.expanduser("~/.cache/huggingface/hub")
@@ -4683,8 +4703,8 @@ def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch)
 def _longest_unfused_d256_tail():
     from unsloth_zoo.mlx.nax import nax_available
 
-    # NAX fuses head_dim 256 from 1024 queries.
-    return 1023 if nax_available() else 2047
+    # NAX fuses half-precision head_dim 256 from 512 queries once batch x heads reaches 8.
+    return 511 if nax_available() else 2047
 
 
 @_NEEDS_MLX
@@ -4968,8 +4988,8 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
         "widths, scored_cells",
         [
             ((3584, 18944, 16, 4, 256, 256), 2047 * (3 * 2048 + 2047)),
-            # mlx's own kernel for this width starts above 8 queries.
-            ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
+            # Off NAX, one KV head leaves mlx's split kernel out: its own kernel for this width starts above 8 queries.
+            ((3584, 18944, 32, 1, 64, 64), 8 * (16 * 2048 + 8)),
         ],
     )
     def test_a_prefill_is_charged_its_dequantized_cache_and_any_scores(self, widths, scored_cells):
@@ -5412,7 +5432,13 @@ class TestPricingALoad:
             "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
         )
         assert (wide, quantized) == (2_886_144, 813_568 if embeddings_quantized else 1_001_984)
-        assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
+        # The shard is the header mlx writes plus the tensor bytes; mlx's header length varies by release.
+        assert (
+            quantized
+            < wide
+            < mm._shard_bytes(str(tmp_path), config)
+            == (tmp_path / "model.safetensors").stat().st_size
+        )
 
     def test_engram_mlx_vlm_reads_from_disk_is_not_priced(self, tmp_path, monkeypatch):
         import mlx.core as mx
@@ -5658,9 +5684,9 @@ class TestShardsTheLoaderReads:
             mm.mlx_shard_files(str(tmp_path), self._VISION)
 
 
-# mlx 0.32.4 leaves head_dim 256 prefill unfused below NAX, and tails under 1024 queries on NAX.
+# mlx leaves head_dim 256 prefill unfused below NAX, and short tails on NAX.
 _UNFUSED_HEAD_DIM_256_SCORES = {
-    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_298_923_560, False: 2_682_961_960}
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_916_689_812, False: 2_400_014_208}
 }
 
 
@@ -5772,11 +5798,11 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
     ],
 )
 def test_a_real_checkpoint_is_priced_to_the_byte(
-    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption
+    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption, tmp_path
 ):
     _on_bfloat16_chip()
     breakdown = mm.mlx_memory_breakdown(
-        _local_snapshot(repo), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
+        _snapshot_or_headers(repo, tmp_path), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
     )
     assert breakdown is not None
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)

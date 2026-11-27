@@ -10,7 +10,6 @@ from typing import Tuple
 
 
 def hash_password(password: str, salt: str | None = None) -> Tuple[str, str]:
-    """Hash a password using PBKDF2-HMAC-SHA256. Returns (salt, hex_hash) tuple."""
     if salt is None:
         salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac(

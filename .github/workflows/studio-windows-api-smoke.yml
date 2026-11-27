@@ -10,8 +10,7 @@ name: Windows Unsloth API + Update CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip draft PRs, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # studio/frontend/** stays: install.ps1 builds it and the dist cache key hashes it.
@@ -73,9 +72,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR; on main cancel-in-progress is false, so running runs are never killed.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -105,9 +102,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Update phase: the workflow triggers on uninstall.ps1 but neither test uninstalls; the three
-      # unit-test steps run in the background since they only read the checkout, and the update
-      # phase collects them, so a failure fails the job without blocking the API phase.
+      # Background unit steps (read-only checkout): failures fail the job, not the API phase.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
         id: ps-uninstall-units
         background: true
@@ -242,16 +237,14 @@ jobs:
           fi
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
-      # `wait:` takes no `if:` (the workflow is rejected), so the units are collected here, after the
-      # shared setup and before either phase, as the update smoke did on its own. A failed unit
-      # test fails this step; the API steps below chain on the shim and on each other with
-      # !cancelled(), so it does not skip them, as when the API smoke was its own workflow.
+      # `wait:` takes no `if:` (the workflow is rejected), so units are collected here after the
+      # shared setup and before either phase; a failed unit test fails this step but not the API
+      # steps, which use !cancelled().
       - name: Collect the PowerShell unit tests
         wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
 
-      # API-phase fixture: after the shared install, so a failed download costs the API phase
-      # only and the update phase still runs on the install, as when it was its own workflow.
-      # Cross-OS key: the hf-cache tree is byte-identical on every OS.
+      # API-phase fixture: after the shared install, so a failed download costs only the API phase;
+      # cross-OS key: the hf-cache tree is byte-identical on every OS.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         if: ${{ !cancelled() && steps.shim.outcome == 'success' }}
@@ -278,8 +271,7 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
+        # Main only: PR-scoped caches serve one PR and evict shared copies from the repo cache.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -327,9 +319,8 @@ jobs:
           BASE_URL: http://127.0.0.1:18895
         run: python tests/studio/studio_api_smoke.py
 
-      # The update phase runs on this install next, and uninstall.ps1 must be able to delete every
-      # file: a llama-server.exe the API test loaded, or the studio process, would keep its files
-      # open after a bash kill, so anything left is stopped, and the step fails if it cannot be.
+      # The update phase reuses this install, and uninstall.ps1 must delete every file, so leftover
+      # llama-server.exe or studio processes after a bash kill are stopped here or fail.
       - name: Stop API-phase Unsloth
         id: api_stop
         if: always()
@@ -338,8 +329,7 @@ jobs:
           # The PID goes to bash as an argument, never into its source.
           if ($env:STUDIO_PID -match '^[0-9]+$') { & bash -c 'kill "$1" 2>/dev/null || true' _ $env:STUDIO_PID }
           Start-Sleep -Seconds 2
-          # Anything executing from ~/.unsloth (the studio venv's python, llama-server, the shim),
-          # on a path-component boundary as uninstall.ps1 matches it: not ~/.unsloth-backup.
+          # Matches anything run from ~/.unsloth on a path boundary, not ~/.unsloth-backup.
           $root = (Join-Path $env:USERPROFILE '.unsloth').TrimEnd('\', '/')
           function Get-UnslothProcess {
             Get-Process -ErrorAction SilentlyContinue |
@@ -377,9 +367,7 @@ jobs:
       # ---------------------------------------------------------------
       - name: First update should be a no-op (prebuilt already validated)
         id: update_first
-        # Runs whether or not the API phase passed: each phase reports its own failure.
-        # As in the standalone update smoke: it needs green PowerShell units (collected there before
-        # the install) and an API phase that left nothing running.
+        # Runs even if the API phase failed; needs green PowerShell units and a clean API stop.
         if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.shim.outcome == 'success' && steps.api_stop.outcome == 'success' && steps.ps-uninstall-units.outcome == 'success' && steps.ps-modulepath-units.outcome == 'success' && steps.ps51-uninstall-guard.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -409,8 +397,7 @@ jobs:
         id: update_gguf_only
         if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
         run: |
-          # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv. The skip
-          # line only prints when the dependency pass runs.
+          # setup.ps1 must recover --no-torch from the manifest or it deletes its own venv.
           if grep -q "running ordered dependency installation" logs/update.log \
              && ! grep -q "skipping direct PyTorch and Triton installation (no-torch mode)" logs/update.log; then
             echo "::error::studio update left no-torch mode; it would reinstall PyTorch."

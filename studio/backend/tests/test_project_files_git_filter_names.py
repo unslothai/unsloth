@@ -57,6 +57,5 @@ def test_a_managed_accounts_git_runs_under_its_tool_confinement(tmp_path, monkey
     monkeypatch.setattr(project_files, "_disabled_filters", lambda *a, **k: [])
     out = run_as(BOB, project_files.git_changes, str(repo))
     assert not marker.exists()
-    # The account still sees its changes.
     assert out["repo"] is True
     assert "edit.py" in [c["path"] for c in out["changes"]]

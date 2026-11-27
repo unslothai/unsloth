@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
@@ -336,6 +337,7 @@ import {
 
 import {
   type ControlNetSpecInput,
+  type ChatImageSwapSetting,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionGenerateRequest,
@@ -351,6 +353,7 @@ import {
   GenerateResponseLostError,
   cancelDiffusionGeneration,
   cancelDiffusionQueueJob,
+  chatImageSwapSetting,
   clearDiffusionQueue,
   deleteGalleryImage,
   enqueueDiffusionImage,
@@ -494,7 +497,14 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
-import { loraFuseLabel } from "./lib/lora-fuse";
+import {
+  LORA_FUSE_CONTROL_HINT,
+  LORA_FUSE_CONTROL_LABEL,
+  LORA_FUSE_OPTIONS,
+  loraFuseLabel,
+  loraFuseSelection,
+  type LoraFuseChoice,
+} from "./lib/lora-fuse";
 import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
 import {
   ENGINE_HINT,
@@ -1715,6 +1725,7 @@ type LoadAdvanced = Pick<
   | "text_encoder_quant"
   | "attention_backend"
   | "int8_attention"
+  | "lora_fuse"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -2135,6 +2146,7 @@ export function ImagesPage({
     "auto",
   );
   const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
+  const [loraFuse, setLoraFuse] = useState<LoraFuseChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -2209,6 +2221,34 @@ export function ImagesPage({
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const isOwner = useIsAccountOwner();
+  const [swapSetting, setSwapSetting] = useState<ChatImageSwapSetting | null>(null);
+  const [savingSwap, setSavingSwap] = useState(false);
+  useEffect(() => {
+    if (!isOwner || !advancedOpen) return;
+    const request = new AbortController();
+    setSwapSetting(null);
+    void chatImageSwapSetting(undefined, request.signal)
+      .then((value) => {
+        if (!request.signal.aborted) setSwapSetting(value);
+      })
+      .catch((error) => {
+        if (!request.signal.aborted) {
+          toast.error("Could not load chat image swapping", { description: String(error) });
+        }
+      });
+    return () => request.abort();
+  }, [advancedOpen, isOwner]);
+  async function toggleChatImageSwap(on: boolean) {
+    setSavingSwap(true);
+    try {
+      setSwapSetting(await chatImageSwapSetting(on));
+    } catch (error) {
+      toast.error("Could not save chat image swapping", { description: String(error) });
+    } finally {
+      setSavingSwap(false);
+    }
+  }
   const residentReconciledFor = useRef<DiffusionStatus | null>(null);
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
@@ -4080,6 +4120,7 @@ export function ImagesPage({
       setMemoryMode("auto");
       setAttentionBackend("auto");
       setInt8Attention("auto");
+      setLoraFuse("auto");
       return;
     }
     if (action !== "record" || !record) return;
@@ -4111,6 +4152,8 @@ export function ImagesPage({
     if (attention) setAttentionBackend(attention);
     const int8 = int8AttentionSelection(record.int8_attention);
     if (int8) setInt8Attention(int8);
+    const fuse = loraFuseSelection(record.lora_fuse);
+    if (fuse) setLoraFuse(fuse);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
   }, [resolvedKey, failedLoadReseed]);
 
@@ -4136,6 +4179,8 @@ export function ImagesPage({
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         // Always sent: the backend reads "auto" as no per-load override.
         int8_attention: int8Attention,
+        // Only an explicit choice: auto leaves the env switch in charge, as on an older backend.
+        lora_fuse: loraFuse === "auto" ? undefined : loraFuse,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -4160,6 +4205,7 @@ export function ImagesPage({
       textEncoderQuant,
       attentionBackend,
       int8Attention,
+      loraFuse,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -4262,6 +4308,7 @@ export function ImagesPage({
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           int8_attention: advanced.int8_attention,
+          lora_fuse: advanced.lora_fuse,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -6601,6 +6648,22 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      {isOwner && swapSetting && (
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Swap models for chat images
+            <InfoHint>{swapSetting.managed_by_env
+              ? "Configured by UNSLOTH_CHAT_IMAGE_SWAP."
+              : "Let chat load an image generator when you ask for an image, then resume with the same chat model."}</InfoHint>
+          </span>
+          <Switch
+            aria-label="Swap models for chat images"
+            checked={swapSetting.enabled}
+            disabled={savingSwap || swapSetting.managed_by_env}
+            onCheckedChange={toggleChatImageSwap}
+          />
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ALLOW_OVERSIZED_LABEL}
@@ -7533,6 +7596,16 @@ export function ImagesPage({
                       Folders
                     </Button>
                   </div>
+                </div>
+                <div className="mt-2">
+                  <AdvancedSelect
+                    label={LORA_FUSE_CONTROL_LABEL}
+                    hint={LORA_FUSE_CONTROL_HINT}
+                    badge={<ResolvedBadge status={status} controlKey="lora_fuse" />}
+                    value={loraFuse}
+                    onValueChange={(v) => setLoraFuse(v as LoraFuseChoice)}
+                    options={LORA_FUSE_OPTIONS}
+                  />
                 </div>
                 <OnDeviceFoldersDialog
                   open={loraFoldersOpen}

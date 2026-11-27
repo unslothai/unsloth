@@ -299,7 +299,8 @@ test("panel insets are written to their consumers, never to <html>", () => {
   const toaster = readSrc("components/ui/sonner.tsx");
   assert.match(toaster, /<div\s+ref=\{toasterScope\}\s+style=\{\{ display: "contents" \}\}/);
   assert.match(toaster, /function toasterScope\([\s\S]*?cornerInsetScope\(element\)/);
-  assert.equal(readSrc("app/provider.tsx").match(/ref=\{cornerInsetScope\}\s*\/\/ Scrolls at the cap/g)?.length, 2, "both corner rails read the Run settings inset");
+  assert.equal(readSrc("app/provider.tsx").match(/ref=\{overlayRailScope\}\s*\/\/ Scrolls at the cap/g)?.length, 2, "both corner rails read the Run settings inset");
+  assert.match(readSrc("lib/toast-offset.ts"), /function overlayRailScope\([\s\S]*?cornerInsetScope\(element\)/);
   for (const file of ["features/chat/chat-settings-sheet.tsx", "features/browser/native-view.ts", "lib/toast-offset.ts"]) {
     assert.equal(/documentElement\.style\.setProperty\((?:CHAT_SETTINGS_INSET_VAR|BROWSER_PAGE_INSET_VAR)/.test(readSrc(file)), false, file);
   }

@@ -14,9 +14,7 @@ type ApiCodingAgentsInfo = {
   detected: string[];
 };
 
-// Which CLIs are on PATH is environment state, so this only de-dupes concurrent in-flight calls
-// (e.g. the strict-mode double mount), never caching across the module lifetime; each fresh call
-// re-checks PATH.
+// Dedupes in-flight calls (strict-mode double mount); PATH is environment state, not cached.
 let inFlightInfo: Promise<CodingAgentsInfo> | null = null;
 
 function fromApi(info: ApiCodingAgentsInfo): CodingAgentsInfo {

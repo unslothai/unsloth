@@ -128,8 +128,7 @@ def test_streaming_still_starts_on_a_non_mlx_host_during_the_warm_window(
 def test_non_streaming_start_detects_before_entering_the_sync_backend(
     monkeypatch, hardware_globals, spawn_calls, client
 ):
-    """An ordinary start reaches a synchronous worker-config build that reads the
-    device, so it must also detect through the route's off-loop handoff."""
+    """Worker-config build reads the device, so detection must also use the off-loop handoff."""
     _pretend_cpu_linux(monkeypatch)
     hardware_globals.DEVICE = None
 
