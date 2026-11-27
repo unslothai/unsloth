@@ -42258,7 +42258,6 @@ class LlamaCppBackend:
                     _sticky_boundary_applied = True
                     _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     _fit_recall_cap = float("inf")
-                    _fit_grew_prompt = False
                     if (
                         _retry_whole_document
                         and not _initial_searches_sent
@@ -42311,11 +42310,17 @@ class LlamaCppBackend:
                                         else 0
                                     )
                                     fitted_tokens = truncation["prompt_tokens_after"]
-                                    if measured <= max(headroom_line - reserve, fitted_tokens):
+                                    # Growth stays under the unfitted prompt, which admission already priced.
+                                    if measured <= max(
+                                        fitted_tokens,
+                                        min(
+                                            headroom_line - reserve,
+                                            truncation["prompt_tokens_before"],
+                                        ),
+                                    ):
                                         # A larger prompt leaves this fit's recall the room up to the headroom, not into it.
                                         if measured > fitted_tokens:
                                             _fit_recall_cap = max(0, headroom_line - measured)
-                                            _fit_grew_prompt = True
                                         _auto = refreshed
                                         conversation = candidate
                                         truncation["prompt_tokens_after"] = measured
@@ -42384,12 +42389,6 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
-                    if _fit_grew_prompt and on_conversation_grew is not None:
-                        # Admission was priced on the excerpts at the top of the round; recost what is sent.
-                        try:
-                            on_conversation_grew(conversation)
-                        except Exception:
-                            logger.debug("tool loop recost failed", exc_info = True)
                     if truncation and _records_boundary(truncation):
                         truncation = {
                             **truncation,

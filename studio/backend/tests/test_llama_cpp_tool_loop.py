@@ -7714,10 +7714,20 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "policy, tool_choice, whole_doc, sticky, reserve, audio, complete, expected_passage",
+    "policy, tool_choice, whole_doc, sticky, reserve, audio, manual, complete, expected_passage",
     [
-        ("checkpoint", None, True, 0, 0, False, "Complete document", "Complete document"),
-        ("checkpoint", "required", True, 0, 0, False, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 0, 0, False, False, "Complete document", "Complete document"),
+        (
+            "checkpoint",
+            "required",
+            True,
+            0,
+            0,
+            False,
+            False,
+            "Complete document",
+            "Complete document",
+        ),
         (
             "checkpoint",
             {"type": "function", "function": {"name": "search_knowledge_base"}},
@@ -7725,25 +7735,66 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
             0,
             0,
             False,
+            False,
             "Complete document",
             "Complete document",
         ),
-        ("rolling", None, True, 0, 0, False, "Complete document", "Complete document"),
-        ("rolling", None, True, 0, 0, False, "Large document " * 50, "Partial passage"),
-        ("checkpoint", None, True, 2, 0, False, "Complete document", "Complete document"),
-        ("checkpoint", None, True, 2, 0, False, "Medium document " * 45, "Partial passage"),
-        ("rolling", None, True, 2, 0, False, "Medium document " * 45, "Partial passage"),
-        ("rolling", None, True, 2, 0, False, "Medium document " * 25, "Medium document " * 25),
-        ("rolling", None, True, 2, 300, False, "Medium document " * 25, "Partial passage"),
-        ("rolling", None, True, 2, 100, False, "Medium document " * 25, "Medium document " * 25),
-        ("checkpoint", None, True, 0, 300, False, "Medium document " * 25, "Medium document " * 25),
-        ("checkpoint", None, True, 0, 0, False, "Large document " * 50, "Partial passage"),
-        ("checkpoint", None, True, 0, 0, True, "Complete document", "Partial passage"),
-        ("checkpoint", None, False, 0, 0, False, "", None),
+        ("rolling", None, True, 0, 0, False, False, "Complete document", "Complete document"),
+        ("rolling", None, True, 0, 0, False, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 2, 0, False, False, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 2, 0, False, False, "Medium document " * 45, "Partial passage"),
+        ("rolling", None, True, 2, 0, False, False, "Medium document " * 45, "Partial passage"),
+        (
+            "rolling",
+            None,
+            True,
+            2,
+            0,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        ("rolling", None, True, 2, 300, False, False, "Medium document " * 25, "Partial passage"),
+        (
+            "rolling",
+            None,
+            True,
+            2,
+            100,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        (
+            "checkpoint",
+            None,
+            True,
+            0,
+            300,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        ("checkpoint", None, True, 0, 0, False, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 0, 0, True, False, "Complete document", "Partial passage"),
+        ("checkpoint", None, True, 2, 0, False, True, "Medium document " * 25, "Partial passage"),
+        ("checkpoint", None, False, 0, 0, False, False, "", None),
     ],
 )
 def test_first_context_fit_retries_whole_document_in_prompt_order(
-    monkeypatch, policy, tool_choice, whole_doc, sticky, reserve, audio, complete, expected_passage
+    monkeypatch,
+    policy,
+    tool_choice,
+    whole_doc,
+    sticky,
+    reserve,
+    audio,
+    manual,
+    complete,
+    expected_passage,
 ):
     from core.inference import tools
 
@@ -7759,19 +7810,22 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
     )
     recall_budgets = []
-    grown = []
 
     def archive_and_recall(conversation, *_a, recall_budget_tokens, **_kw):
         recall_budgets.append(recall_budget_tokens)
-        grown.append("recall")
         return dict(conversation = conversation, counts = {}, recalled = False)
 
     monkeypatch.setattr(llama_cpp, "_archive_and_recall", archive_and_recall)
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     monkeypatch.setattr(
-        llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, False)
+        llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, manual)
     )
     monkeypatch.setattr(llama_cpp, "_conversation_recall_reserve", lambda _thread_id: reserve)
+    if manual:
+        from core.inference import checkpoint
+
+        # No carried-forward block, so the replay leaves the prompt smaller than it was.
+        monkeypatch.setattr(checkpoint, "MAX_TOKENS", 0)
 
     def exchange(name, prefix, text):
         return tools.build_synthetic_search_exchange(
@@ -7792,7 +7846,11 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         if not scope["whole_doc"]:
             return None
         if whole_document_only:
-            assert not any("ancient" in str(message.get("content")) for message in messages)
+            assert not any(
+                "ancient" in str(message.get("content"))
+                for message in messages
+                if message["role"] != "system"
+            )
             assert not any(message.get("content") == "Partial passage" for message in messages)
             text = complete
         elif tool_choice is not None:
@@ -7814,7 +7872,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [
-                {"role": "user", "content": "ancient " * 250},
+                {"role": "user", "content": "ancient " * (5 if manual else 250)},
                 {"role": "assistant", "content": "Prior answer"},
                 {
                     "role": "user",
@@ -7831,15 +7889,10 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
             max_tool_iterations = 2,
             tool_choice = tool_choice,
             rag_scope = {"thread_id": "t1", "context_length": 1000, "whole_doc": whole_doc},
-            on_conversation_grew = lambda conversation: grown.append(list(conversation)),
         )
     )
 
     sent = [m.get("content") for m in payloads[0]["messages"] if m["role"] == "tool"]
-    # Recosted after recall when the document grew the prompt, and only then.
-    assert (grown[-1] != "recall") is bool(complete and expected_passage == complete)
-    recosts = [conversation for conversation in grown if conversation != "recall"]
-    assert [m.get("content") for m in recosts[-1] if m["role"] == "tool"] == sent
     expected = [expected_passage] if expected_passage else []
     if not isinstance(tool_choice, dict):
         expected.append("Matching MCP tools")
