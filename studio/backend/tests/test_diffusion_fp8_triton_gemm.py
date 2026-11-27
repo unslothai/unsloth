@@ -80,6 +80,7 @@ class _Kernel:
         verify = True,
         eager_result = "ref",
         traced = True,
+        precise = False,
     ):
         self.eager, self.traced, self.verified = [], [], []
         monkeypatch.setattr(tg, "available", lambda: True)
@@ -106,6 +107,7 @@ class _Kernel:
         )
         monkeypatch.setattr(tg, "eager_gemm", fake_eager)
         monkeypatch.setattr(tg, "traced_gemm", fake_traced)
+        monkeypatch.setattr(tg, "verify_precise", lambda index: precise)
 
 
 def _call(
@@ -135,7 +137,11 @@ def test_fallback_card_runs_the_fused_kernel_in_eager(monkeypatch, cap, bias):
     assert us.stats()["triton_gemm"] == 1 and us.stats()["unit_scale"] == 0
     status = us.gemm_path(0)
     assert status["path"] == "unit_scale_fallback"
-    assert status["triton_gemm"] == {"eager": True, "compiled": cap[0] == 12}
+    assert status["triton_gemm"] == {
+        "eager": True,
+        "compiled": cap[0] == 12,
+        "precise_accumulate": False,
+    }
 
 
 @pytest.mark.parametrize("cap,compiled", [((12, 0), True), ((12, 1), True), ((8, 9), False)])
@@ -170,7 +176,11 @@ def test_kill_switch_keeps_the_tensorwise_route_and_its_tag(monkeypatch):
     calls.clear()
     _call()
     assert calls == ["tensorwise32"] and k.eager == []
-    assert us.gemm_path(0)["triton_gemm"] == {"eager": False, "compiled": False}
+    assert us.gemm_path(0)["triton_gemm"] == {
+        "eager": False,
+        "compiled": False,
+        "precise_accumulate": False,
+    }
 
 
 def test_compiled_kernel_keys_the_compile_cache_on_its_source(monkeypatch):
@@ -206,7 +216,11 @@ def test_no_triton_op_keeps_compiled_on_the_fallback(monkeypatch):
     k = _Kernel(monkeypatch, traced = False)
     tq._make_quant_config(tq.TQ_FP8)
     assert ccfg.cache_key_tag == "unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0"
-    assert us.gemm_path(0)["triton_gemm"] == {"eager": True, "compiled": False}
+    assert us.gemm_path(0)["triton_gemm"] == {
+        "eager": True,
+        "compiled": False,
+        "precise_accumulate": False,
+    }
     _call()
     assert k.eager == [torch.bfloat16]
 
@@ -251,7 +265,12 @@ def test_rocm_never_loads_the_kernel(monkeypatch):
     monkeypatch.setenv(us.UNIT_SCALE_ENV, "fallback")
     k = _Kernel(monkeypatch)
     monkeypatch.setattr(_torchao_stub, "torch_is_rocm", lambda: True)
-    assert us._triton_cards(frozenset({0}), {0: (12, 0)}) == (frozenset(), frozenset(), None)
+    assert us._triton_cards(frozenset({0}), {0: (12, 0)}) == (
+        frozenset(),
+        frozenset(),
+        frozenset(),
+        None,
+    )
     assert k.verified == []
 
 
@@ -259,7 +278,9 @@ def test_rowwise_cards_never_reach_the_kernel(monkeypatch):
     # Linux (row-wise kernel present): these cards run byte for byte what they ran before.
     seen = []
     monkeypatch.setattr(
-        us, "_triton_cards", lambda *a, **k: seen.append(a) or (frozenset(), frozenset(), None)
+        us,
+        "_triton_cards",
+        lambda *a, **k: seen.append(a) or (frozenset(), frozenset(), frozenset(), None),
     )
     rf._fake_card(monkeypatch, (12, 0), rowwise_ok = True)
     tq._make_quant_config(tq.TQ_FP8)
@@ -469,14 +490,104 @@ def test_triton_op_registers_and_traces_with_fake_tensors():
     assert "unsloth_studio.fp8_rowwise_gemm" in g.code
 
 
-def test_precise_accumulate_keeps_the_tensorwise_gemm(monkeypatch):
-    # The kernel was matched against cuBLAS's fast accumulate; a precise-accumulate request keeps cuBLAS's own.
+def test_precise_accumulate_keeps_the_tensorwise_gemm_without_the_accumulator_check(monkeypatch):
+    # A card whose accumulator check failed (or did not run): precise-accumulate requests keep cuBLAS's own.
     calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
-    k = _Kernel(monkeypatch)
+    k = _Kernel(monkeypatch, precise = False)
     tq._make_quant_config(tq.TQ_FP8)
     calls.clear()
     _call(fast = False)
     assert calls == ["tensorwise32"] and k.eager == []
+    _call(fast = True)
+    assert k.eager == [torch.bfloat16]
+    assert us.gemm_path(0)["triton_gemm"]["precise_accumulate"] is False
+
+
+@pytest.mark.parametrize("cap,compiled", [((12, 0), True), ((12, 1), True), ((8, 9), False)])
+@pytest.mark.parametrize("meta_fast", [False, None])
+def test_prequant_checkpoint_load_routes_precise_gemms_to_the_kernel(
+    monkeypatch, cap, compiled, meta_fast
+):
+    # Studio's own FP8 load seeds the hosted pre-quantized denoiser (unsloth/FLUX.2-klein-4B-FP8): its Float8Tensors
+    # are baked with Float8MMConfig(use_fast_accum=False), and the dispatcher is installed from the checkpoint, not
+    # from _make_quant_config. On a card whose accumulator check passed, those GEMMs must take the kernel, eager and
+    # (sm_12x) traced, exactly like the quantize_ route. The 5090 compiled render missed this (unit_scale only).
+    from core.inference import diffusion_prequant as dp
+
+    calls = rf._fake_card(monkeypatch, cap, rowwise_ok = False)
+    k = _Kernel(monkeypatch, precise = True)
+    meta = {"scheme": "fp8"}
+    if meta_fast is not None:
+        meta["fast_accum"] = meta_fast
+    dp._install_fp8_unit_scale_for({"metadata": meta, "state_dict": {}})
+    assert us.stats()["installed"] is True and us.fallback_cards() == frozenset({0})
+    assert us.gemm_path(0)["triton_gemm"] == {
+        "eager": True,
+        "compiled": compiled,
+        "precise_accumulate": True,
+    }
+    calls.clear()
+    _call(fast = False)
+    assert k.eager == [torch.bfloat16] and calls == []
+    monkeypatch.setattr(us, "_traced", lambda t: True)
+    monkeypatch.setattr(us, "_compiling", lambda: True)
+    _call(fast = False)
+    if compiled:
+        assert k.traced == [torch.bfloat16] and calls == []
+    else:
+        assert k.traced == [] and calls == ["tensorwise32"]
+
+
+def test_accumulator_check_threshold_separates_fp32_from_a_14_bit_accumulator():
+    # The real check operands on CPU: an fp32 accumulator (blocked like a tensor-core k loop) leaves a residue far
+    # under the bound, a 14-bit one (Hopper-style fast accumulate, emulated) far over it.
+    a, b, partial = tg._precise_operands("cpu")
+    A, B = a.float(), b.float()
+
+    def run(bits):
+        acc = torch.zeros(A.shape[0], B.shape[1])
+        for k0 in range(0, A.shape[1], 32):
+            acc = acc + A[:, k0 : k0 + 32] @ B[k0 : k0 + 32]
+            if bits:
+                m, e = torch.frexp(acc)
+                acc = torch.ldexp(torch.round(m * 2**bits) / 2**bits, e)
+        return float(acc.abs().max()) / partial
+
+    assert run(0) * 2**5 < tg._PRECISE_RESIDUE
+    assert run(14) > tg._PRECISE_RESIDUE * 2**3
+
+
+@pytest.mark.parametrize("kernel_residue,ok", [(2.0**-22, True), (2.0**-11, False)])
+def test_verify_precise_compares_the_kernel_with_cublas_precise(monkeypatch, kernel_residue, ok):
+    if not tg.available():
+        pytest.skip("no triton")
+    import contextlib
+
+    a, b, partial = tg._precise_operands("cpu")
+    monkeypatch.setitem(tg._STATE, "precise", {})
+    monkeypatch.setattr(tg, "verified", lambda index, dt: True)
+    monkeypatch.setattr(tg, "_precise_operands", lambda device: (a, b, partial))
+    monkeypatch.setattr(torch.cuda, "device", lambda index: contextlib.nullcontext())
+    real_ones = torch.ones
+    monkeypatch.setattr(torch, "ones", lambda *s, device = None, **k: real_ones(*s, **k))
+    precise_flags = []
+
+    def scaled_mm(a, b, scale_a, scale_b, out_dtype, use_fast_accum):
+        precise_flags.append(use_fast_accum)
+        return torch.full((a.shape[0], b.shape[1]), 2.0**-22 * partial)
+
+    monkeypatch.setattr(torch, "_scaled_mm", scaled_mm)
+    monkeypatch.setattr(
+        tg,
+        "_launch",
+        lambda kern, a, sa, b, sb, bias, dt: torch.full(
+            (a.shape[0], b.shape[1]), kernel_residue * partial
+        ).to(dt),
+    )
+    assert tg.verify_precise(0) is ok
+    assert precise_flags == [False, True]
+    info = tg.describe()["precise"][0]
+    assert info["ok"] is ok and abs(info["cublas_precise"] - 2.0**-22) < 1e-9
 
 
 def test_traced_call_needs_a_self_checked_dtype(monkeypatch):

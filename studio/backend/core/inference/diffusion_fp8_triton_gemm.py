@@ -30,6 +30,7 @@ _STATE: dict = {
     "skip": set(),
     "unfit": {},
     "check": {},
+    "precise": {},
     "op": None,
     "op_error": None,
 }
@@ -485,6 +486,67 @@ def verify(index: int, output_dtype: Any) -> bool:
     return ok
 
 
+def _precise_operands(device: str) -> tuple:
+    """Rows whose exact product is 0: K/2 random e4m3 products, then the same products negated. What survives is the
+    accumulator's rounding residue: about 2**-22 of the largest partial sum for an fp32 accumulator, 2**-11 for a
+    14-bit one (Hopper-style fast accumulate), emulated on CPU."""
+    import torch
+
+    g = torch.Generator(device = "cpu").manual_seed(1)
+    m, half, n = 64, 2048, 128
+    x = (torch.randn(m, half, generator = g) * 64).to(torch.float8_e4m3fn)
+    w = (torch.randn(n, half, generator = g) * 64).to(torch.float8_e4m3fn)
+    a = torch.cat([x, x], 1)
+    wb = torch.cat([w, (-w.float()).to(torch.float8_e4m3fn)], 1)
+    partial = float((x.float() @ w.float().t()).abs().max())
+    return a.to(device), wb.to(device).t(), partial
+
+
+# Residue bound at K = 4096: 2**6 above an fp32 accumulator's, 2**5 below a 14-bit one's.
+_PRECISE_RESIDUE = 2.0**-16
+
+
+def verify_precise(index: int) -> bool:
+    """Whether card ``index``'s fp8 tensor-core accumulation is as precise as cuBLAS's precise accumulate, so a
+    precise-accumulate GEMM may take the kernel: every shipped config, on cancelling rows, against the tensorwise
+    ``_scaled_mm`` at ``use_fast_accum=False``. Needs the bf16 self-check; cached per card; an OOM is no verdict."""
+    import torch
+
+    if index in _STATE["precise"]:
+        return bool(_STATE["precise"][index].get("ok"))
+    if triton is None or not verified(index, torch.bfloat16):
+        return False
+    info: dict = {"ok": False}
+    try:
+        with _LOCK, torch.cuda.device(index):
+            dev = f"cuda:{index}"
+            a, b, partial = _precise_operands(dev)
+            sa = torch.ones((a.shape[0], 1), device = dev)
+            sb = torch.ones((1, b.shape[1]), device = dev)
+            one = torch.ones((), device = dev)
+            for fast in (False, True):
+                acc = torch._scaled_mm(
+                    a, b, scale_a = one, scale_b = one, out_dtype = torch.float32, use_fast_accum = fast
+                )
+                acc = acc[0] if isinstance(acc, tuple) else acc
+                info["cublas_fast" if fast else "cublas_precise"] = float(acc.abs().max()) / partial
+            worst = 0.0
+            for cfg in _fp8_rowwise_gemm.configs:
+                try:
+                    got = _launch(_ConfigLaunch(cfg), a, sa, b, sb, None, torch.bfloat16)
+                except _UNFIT:
+                    continue
+                worst = max(worst, float(got.float().abs().max()) / partial)
+            info["kernel"] = worst
+            info["ok"] = worst <= max(4 * info["cublas_precise"], _PRECISE_RESIDUE)
+    except Exception as exc:  # noqa: BLE001 - unknown accumulator: precise requests keep cuBLAS
+        if _is_oom(exc):
+            return False
+        info["error"] = f"{type(exc).__name__}: {exc}"[:500]
+    _STATE["precise"][index] = info
+    return bool(info["ok"])
+
+
 class _ConfigLaunch:
     """``kernel[grid](...)`` with one fixed autotune config."""
 
@@ -514,5 +576,6 @@ def describe() -> dict:
             f"{i}:{str(d).replace('torch.', '')}": v for (i, d), v in _STATE["check"].items()
         },
         "unfit": {i: list(v) for i, v in _STATE["unfit"].items()},
+        "precise": {i: dict(v) for i, v in _STATE["precise"].items()},
         "op_error": _STATE["op_error"],
     }
