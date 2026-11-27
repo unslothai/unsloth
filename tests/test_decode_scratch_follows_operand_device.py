@@ -172,9 +172,8 @@ def test_falcon_h1_decode_buffers_follow_embeddings(monkeypatch):
 
 
 def test_gemma2_static_masks_are_built_on_the_embeddings_device():
-    """The static sliding-window and global masks were built on the bare device type, which is
-    the current device (cuda:0) for a model placed on cuda:1. Read from source: building them
-    needs a whole model forward."""
+    """Static sliding-window and global masks were built on the bare device type, the current device
+    (cuda:0) for a model on cuda:1; read from source since building them needs a forward."""
     import ast
     import pathlib
 

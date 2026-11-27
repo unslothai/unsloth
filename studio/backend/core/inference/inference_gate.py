@@ -69,8 +69,7 @@ def pauses_background_embedding(fn):
 
 
 def gated_async_client(*args, **kwargs):
-    """Per-request AsyncClient to a local engine (API passthroughs) keeps background embedding
-    paused until aclosed or collected; built at call time so a patched client class is honoured."""
+    """Embedding paused until aclosed or collected; built at call time so patches apply."""
     from core.rag.conversation_archive import hold_inference
 
     client = httpx.AsyncClient(*args, **kwargs)

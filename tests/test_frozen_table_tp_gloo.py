@@ -64,8 +64,7 @@ def test_tp_sharded_load_never_reads_the_table(ckpt, table_mode):
     res = ftp.run(2, mode = "tp", table_mode = table_mode, path = ckpt, sharded_load = True)
     refused = [r["load_refused"] for r in res if "load_refused" in r]
     if refused:
-        # Sharded (meta-device) loading refuses this MoE model before reading anything: the full load (the tests
-        # above, which prove the table is never read) is the only path. A future sharded MoE load runs the checks.
+        # Sharded load refuses this MoE model; future sharded MoE loads will run the checks.
         assert len(refused) == len(res) and all(
             "experts" in m or "mixture-of-experts" in m for m in refused
         ), refused

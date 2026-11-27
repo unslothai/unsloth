@@ -83,7 +83,6 @@ def test_hipinfo_under_a_mask_picks_the_first_listed_device(monkeypatch, env):
     # setup.ps1 forwards the same card, so the probe and the forward now agree.
     routed = m._apply_host_overrides(host, override_rocm_gfx = "gfx1201")
     assert m._active_rocm_gfx_target(routed) == "gfx1201"
-    # A mask still blocks the automatic Vulkan route.
     assert m._should_auto_vulkan_for_amd_windows(routed) is False
     # amd-smi lists every physical device, so the mask index still applies there.
     unfiltered = detect(monkeypatch, "amd-smi", amd_smi_listing(PHYSICAL), env)

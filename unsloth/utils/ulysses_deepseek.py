@@ -75,9 +75,8 @@ def _attn_chunk() -> int:
 def _sink_attention_chunk(
     q, kv, block_bias, sinks, q_start, full_seq, window, scaling, dropout_p, training
 ):
-    """Sink-softmax attention for query rows [q_start, q_start + q.shape[2]): q [B, H, rows, D], kv
-    [B, 1, full_seq + n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows,
-    H, D]."""
+    """Sink-softmax attention for query rows from q_start: q [B, H, rows, D], kv [B, 1, full_seq +
+    n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows, H, D]."""
     batch, _, rows, _ = q.shape
     dtype = q.dtype
     q_idx = torch.arange(q_start, q_start + rows, device = q.device)
@@ -112,9 +111,7 @@ def _refuse_dropout(dropout_p, training):
 
 
 def _recompute_rows(chunk, full_seq, run, grad_out, row_inputs, full_inputs, needs):
-    """Backward of a query-chunked op: recomputes each chunk and accumulates input grads; run(start,
-    end, *rows, *full) -> [B, rows, H, D]; row_inputs sliced on dim 2, full_inputs not; needs is
-    ctx.needs_input_grad for row_inputs + full_inputs."""
+    """Backward recomputes chunks; run -> [B, rows, H, D]; only row_inputs sliced, on dim 2."""
     row_need, full_need = needs[: len(row_inputs)], needs[len(row_inputs) :]
     row_grads = [torch.zeros_like(t) if n else None for t, n in zip(row_inputs, row_need)]
     full_grads = [
@@ -198,9 +195,8 @@ class _ChunkedSinkAttention(torch.autograd.Function):
 
 
 def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, training):
-    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S,
-    S]; with grad, chunks are recomputed in backward (_ChunkedSinkAttention), keeping peak memory
-    O(chunk * S) per layer."""
+    """Query-chunked sink attention: scores are [H/cp, chunk, S] not [H/cp, S, S]; with grad, chunks
+    are recomputed in backward (_ChunkedSinkAttention) for O(chunk * S) memory."""
     _refuse_dropout(dropout_p, training)
     full_seq = q.shape[2]
     chunk = _attn_chunk()
@@ -224,6 +220,50 @@ def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, traini
         for s in range(0, full_seq, chunk)
     ]
     return outs[0] if len(outs) == 1 else torch.cat(outs, dim = 1)
+
+
+def _position_key(position_ids, group):
+    # Under inference mode the gathered tensor is an inference tensor (no version counter): gather every call.
+    if torch.is_inference_mode_enabled():
+        return None
+    try:
+        version = position_ids._version
+    except RuntimeError:  # inference tensors carry no version counter
+        return None
+    return (
+        position_ids.data_ptr(),
+        version,
+        tuple(position_ids.shape),
+        position_ids.stride(),
+        position_ids.dtype,
+        position_ids.device,
+        id(group),
+    )
+
+
+def _full_position_ids(position_ids, group):
+    """All-gather the local position shard once per step: every compressor layer, and its gradient
+    checkpoint recompute, sees the same positions. Cached on the active CP manager, which drops it
+    when the step's scope exits. The cache holds the local tensor, so its storage cannot be reused
+    within the step, and an in-place write bumps _version, so neither gives a stale hit. Hits are
+    rank-consistent: every rank passes the same layers the same positions object (or a detached
+    alias of it), so all ranks gather on the same calls."""
+    from ..context_parallel import get_cp_manager
+
+    manager = get_cp_manager()
+    key = _position_key(position_ids, group)
+    cached = getattr(manager, "_deepseek_full_position_ids", None)
+    if key is not None and cached is not None and cached[0] == key:
+        full, version = cached[2], cached[3]
+        if full._version == version:
+            return full
+    pos_local = position_ids.contiguous()
+    pos_list = [torch.empty_like(pos_local) for _ in range(dist.get_world_size(group))]
+    dist.all_gather(pos_list, pos_local, group = group)
+    full = torch.cat(pos_list, dim = -1)
+    if manager is not None and key is not None:
+        manager._deepseek_full_position_ids = (key, position_ids, full, full._version)
+    return full
 
 
 def ulysses_deepseek_v4_forward(
@@ -270,10 +310,7 @@ def ulysses_deepseek_v4_forward(
     if module.compressor is not None:
         full_hidden = _gather_seq(hidden_states, group)
         full_q_res = _gather_seq(q_residual, group)
-        pos_local = position_ids.contiguous()
-        pos_list = [torch.empty_like(pos_local) for _ in range(cp)]
-        dist.all_gather(pos_list, pos_local, group = group)
-        full_pos_ids = torch.cat(pos_list, dim = -1)
+        full_pos_ids = _full_position_ids(position_ids, group)
         compressed_kv, block_bias = module.compressor(
             full_hidden, full_q_res, full_pos_ids, None, module.layer_idx
         )

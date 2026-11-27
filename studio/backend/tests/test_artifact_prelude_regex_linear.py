@@ -45,5 +45,4 @@ def test_doctype_after_comments_still_found():
     assert out.endswith("<p>x</p>")
     assert out != page
     unclosed = "<!-- never closed <!doctype html>"
-    # No closed comment, no leading doctype: the prelude goes first, page untouched after it.
     assert inf._artifact_page_with_prelude(unclosed).endswith(unclosed)

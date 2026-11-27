@@ -297,6 +297,23 @@ def test_batch_without_encoder_ar_targets_is_finite(model, rows):
     assert float(metrics["encoder_ar_loss"]) == 0.0 and float(metrics["diffusion_loss"]) == 0.0
 
 
+class _ZeroWeight(torch.nn.Module):
+    def forward(self, w):
+        return w * 0
+
+
+def test_encoder_ar_loss_uses_the_fake_quantized_head():
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(TINY, dtype = torch.float32)
+    m._unsloth_diffusion_eos_token_id = 1
+    m.train()
+    m.get_output_embeddings().weight_fake_quantizer = _ZeroWeight()
+    batch = _batch(m.config.text_config.vocab_size, m.config.canvas_length)
+    torch.manual_seed(0)
+    _, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(m, batch, _args())
+    expected = torch.log(torch.tensor(float(m.config.text_config.vocab_size)))
+    torch.testing.assert_close(metrics["encoder_ar_loss"], expected)
+
+
 def test_reloaded_adapter_still_refuses_merge(tmp_path):
     from peft import LoraConfig, get_peft_model
 
@@ -375,6 +392,19 @@ def test_full_finetuning_skips_lora():
     )
     assert FastModel.get_peft_model(m, r = 4) is m
     assert not any("lora_" in name for name, _ in m.named_parameters())
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "the CPU backend refuses qat_scheme")
+def test_full_finetuning_applies_qat():
+    pytest.importorskip("torchao")
+    from torchao.quantization.qat import FakeQuantizedLinear
+
+    from unsloth import FastModel
+
+    m, _ = FastModel.from_pretrained(
+        TINY, dtype = torch.float32, full_finetuning = True, qat_scheme = "int8-int4"
+    )
+    assert any(isinstance(x, FakeQuantizedLinear) for x in m.modules())
 
 
 def test_caller_config_is_the_one_loaded():

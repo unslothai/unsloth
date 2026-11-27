@@ -15,8 +15,7 @@ import { readSrc } from "./helpers/kit.ts";
 const THREAD_SOURCE = readSrc("components/assistant-ui/thread.tsx");
 
 test("the assistant part components are not an inline object literal", () => {
-  // Scoped to MessagePrimitive.Parts: ThreadPrimitive.Messages always carries props, so a hoist
-  // cannot fix it there; that one uses the children form instead.
+  // MessagePrimitive.Parts only: ThreadPrimitive.Messages always has props, so hoisting fails.
   const inline = [
     ...THREAD_SOURCE.matchAll(/<MessagePrimitive\.Parts[^>]*components=\{\{/gs),
   ];
@@ -42,8 +41,7 @@ test("the assistant part components are a single module-scope object", () => {
 });
 
 test("the upstream memo still compares components.tools by identity", () => {
-  // Pins upstream comparator behaviour; if it changes, re-measure whether the hoist still helps.
-  // A named path variable distinguishes a missing file from a changed comparator.
+  // Pins upstream comparator behaviour; if changed, re-measure whether the hoist still helps.
   const comparatorPath = new URL(
     "../node_modules/@assistant-ui/core/dist/react/primitives/message/MessageParts.js",
     import.meta.url,

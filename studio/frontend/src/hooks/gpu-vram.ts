@@ -97,8 +97,7 @@ export function gpuMemoryTotalsGb(
   };
 }
 
-/** One device row's total split the way the VRAM tile splits it; null for dedicated-only VRAM. A Windows ROCm iGPU
- * reports its BIOS carve-out plus the shared pool as one total (#8942). */
+/** Null for dedicated-only VRAM; a Windows ROCm iGPU total is carve-out plus shared (#8942). */
 export function deviceSharedMemorySplitGb(
   device: MemoryTotalDevice,
 ): GpuMemoryTotalsGb | null {
@@ -272,8 +271,7 @@ export interface MemoryCapacityInput {
   pinnedDevices: MemoryCapacityDevice[];
   hostDevices?: MemoryCapacityDevice[];
   hostGpuTotalGb: number;
-  /** Excludes shared-memory devices, whose budget is already inside system RAM. Absent means
-   * the same as `hostGpuTotalGb`. */
+  /** Excludes shared-memory devices (budget already in RAM); absent, it matches hostGpuTotalGb. */
   hostDedicatedGpuTotalGb?: number;
   /** Only consulted when nothing is pinned. */
   hostSharesSystemRam: boolean;
@@ -289,10 +287,7 @@ export interface MemoryCapacityInput {
   gpuBudgetFraction?: number;
 }
 
-/**
- * RAM is added only where it is a pool BESIDE the GPU budget, judged per device: a Vulkan iGPU's
- * budget is already a view of RAM. Both figures are 0 when nothing was probed ("no verdict").
- */
+/** RAM is added only as a pool beside the GPU budget, not a Vulkan iGPU view; 0 when unprobed. */
 export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   gpuCapacityGb: number;
   totalCapacityGb: number;
@@ -335,7 +330,6 @@ export function resolveMemoryCapacityGb(input: MemoryCapacityInput): {
   const capacityDeviceTotals = gpuMemoryTotalsGb(
     capacityDevices.map((device) => ({
       memory_total_gb: device.memoryTotalGb,
-      // Both flags raw, as above.
       shared_memory: device.sharedMemory === true,
       unified_memory: device.unifiedMemory === true,
       shared_memory_host_backed_gb: device.sharedMemoryHostBackedGb,
@@ -386,8 +380,7 @@ export function gpuVramUsedIsPerDevice(
   );
 }
 
-/** Null when unknown, never 0 (#7072). Prefers per-device usage; Windows ROCm cannot attribute
- * usage per card, so the backend's sum is used there (#7452). */
+/** Null when unknown, never 0 (#7072); per-device, except Windows ROCm's backend sum (#7452). */
 export function resolveGpuVramUsedGb(
   gpu: VramReportingGpu | null | undefined,
 ): number | null {

@@ -175,8 +175,7 @@ def test_the_base_preflight_reads_the_cache_and_never_the_hub_offline(monkeypatc
 
 
 def test_the_prefetch_signature_declares_the_flag():
-    """A default-True or missing parameter here is the bug itself: this is the call that moves the
-    weights, so the flag has to be a named, default-False parameter of it."""
+    """A default-True local_files_only on _prefetch_files is the bug; it must default to False."""
     import inspect
 
     param = inspect.signature(DiffusionBackend._prefetch_files).parameters["local_files_only"]

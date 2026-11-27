@@ -598,7 +598,12 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     capabilities: list[tuple[int, int]] = []
     for line in result.stdout.strip().splitlines():
-        major, _, minor = line.strip().partition(".")
+        cap = line.strip()
+        # A device with no compute capability (an NPU nvidia-smi lists beside the GPU) runs no CUDA
+        # kernels, so no load lands there; skip it rather than reading the whole host as unknown.
+        if cap.strip("[]").upper() == "N/A":
+            continue
+        major, _, minor = cap.partition(".")
         if not (major.isdigit() and minor.isdigit()):
             return []
         capabilities.append((int(major), int(minor)))
@@ -606,6 +611,55 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     floor = min(capabilities)
     return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
+
+
+def _fp8_rowwise_gemm_runs() -> bool:
+    """Whether torch's row-wise fp8 ``_scaled_mm`` runs here. Torch-free: a verdict this process already
+    probed wins (any card without it answers False); else the platform, since the Windows torch wheels ship
+    no row-wise kernel ("Rowwise scaling is not currently supported on your device")."""
+    import sys
+
+    probed = sys.modules.get("core.inference.diffusion_fp8_unit_scale")
+    verdicts = [v for v in getattr(probed, "_ROWWISE", {}).values() if isinstance(v, bool)]
+    if verdicts:
+        return all(verdicts)
+    return sys.platform != "win32"
+
+
+def _fp8_tensorwise_backend_available() -> bool:
+    """Whether the installed core library runs FP8 checkpoints on the tensorwise ``_scaled_mm`` when the
+    row-wise one is missing. Read from its source, so the polled route imports neither unsloth nor torch."""
+    try:
+        import importlib.util
+        import re
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("unsloth")
+        roots = list(spec.submodule_search_locations or ()) if spec else []
+        for root in roots:
+            source = Path(root, "kernels", "fp8.py")
+            if source.is_file():
+                match = re.search(
+                    r"^_FP8_ROWWISE_BACKENDS\s*=\s*\(([^)]*)\)",
+                    source.read_text(encoding = "utf-8", errors = "replace"),
+                    re.M,
+                )
+                return bool(match and "tensorwise" in match.group(1))
+    except Exception:  # noqa: BLE001 -- unknown counts as absent
+        pass
+    return False
+
+
+def get_checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Checkpoint kinds that load here but run dequantized to 16-bit. ``fp8_rowwise``: per-channel (row-wise
+    scaled) FP8 checkpoints, when torch has no row-wise fp8 GEMM and the core library has no tensorwise
+    fallback. Block-scaled FP8 checkpoints run their own Triton GEMM and are not covered. The checkpoints stay
+    listed in ``formats``; this only says the FP8 speedup is not delivered for that kind."""
+    if "fp8" not in formats:
+        return []
+    if _fp8_rowwise_gemm_runs() or _fp8_tensorwise_backend_available():
+        return []
+    return ["fp8_rowwise"]
 
 
 def get_compute_capabilities() -> dict[int, tuple[int, int]]:

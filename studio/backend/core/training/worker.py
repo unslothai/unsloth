@@ -54,6 +54,8 @@ install_openblas_runtime_cap()
 from utils.hardware import apply_gpu_ids
 from utils.keep_awake import keeps_system_awake
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
+from utils.process_memory_peaks import PeakStampingQueue as _PeakStampingQueue
+from utils.process_memory_peaks import process_memory_peaks as _process_memory_peaks
 
 # Light module: the MLX branch runs on torch-less hosts.
 from core.training.dataset_bounds import (
@@ -4193,6 +4195,7 @@ def _run_mlx_training(
             eval_loss = None,
             status_message = None,
             peak_memory_gb = peak_gb,
+            memory_peaks = _process_memory_peaks(),
         )
         if wandb_run is not None:
             try:
@@ -4450,6 +4453,8 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
 @keeps_system_awake
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Fresh subprocess entrypoint: events out on event_queue, stop commands in on stop_queue."""
+    # Error and complete events from every exit path carry this process's memory peaks.
+    event_queue = _PeakStampingQueue(event_queue)
     # Off on Linux: forked map() workers deadlock.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
@@ -5862,6 +5867,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "output_dir": saved_output_dir,
                     "status_message": (progress.status_message or "Training completed")
                     + drafter_note,
+                    "memory_peaks": _process_memory_peaks(),
                     "ts": time.time(),
                 }
             )
@@ -6050,6 +6056,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
                     "offload": getattr(progress, "offload", None),
+                    "memory_peaks": _process_memory_peaks(),
                     "ts": time.time(),
                 }
             )

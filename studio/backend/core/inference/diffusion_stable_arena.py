@@ -20,7 +20,6 @@ _ARENA_ATTR = "_unsloth_stable_arena"
 _ALIGN = 512
 _OFF = ("0", "off", "false", "no")
 
-# CUDA driver enums
 _CU_MEM_ALLOCATION_TYPE_PINNED = 1
 _CU_MEM_LOCATION_TYPE_DEVICE = 1
 _CU_MEM_ACCESS_FLAGS_PROT_READWRITE = 3
@@ -279,9 +278,7 @@ class VmmArena:
                 _check(_set_access_settled(lib, self.va, self.size, access), "cuMemSetAccess")
                 base = torch.as_tensor(_CudaArray(self.va, self.size), device = self.device)
             except BaseException:
-                # The range is mapped but not yet recorded in self._handle: any failure here (a driver error, an
-                # interrupt during the NOT_READY retry sleep, a failed wrap) unmaps and releases it, so the arena is
-                # unmapped and retryable and the caller's stock fallback holds the only copy.
+                # Unmap on failure (not in self._handle); retryable; stock holds the only copy
                 lib.cuMemUnmap(self.va, self.size)
                 lib.cuMemRelease(handle.value)
                 raise
@@ -315,8 +312,7 @@ class VmmArena:
         return flat.as_strided(shape, stride)
 
     def unmap(self) -> None:
-        """Release the physical memory. The caller guarantees no tensor over the range is used again before ``map()``
-        (pending work on the card is waited for here)."""
+        """Release memory once pending work finishes; range tensors are invalid until map()."""
         import torch
 
         if self._handle is None:
@@ -355,9 +351,8 @@ class VmmArena:
                 pass
 
     def close_from_finalizer(self) -> None:
-        """``close`` for weakref finalizers: never blocks on the capture gate (the finalizer's thread may hold its
-        lock). Runs now when no capture records and the lock is free, else at the next gated point; the memory is
-        freed only after a device sync with no capture recording, as ``unmap`` does."""
+        """Never blocks on the capture gate (the finalizer thread may hold the lock); frees after
+        device sync, if no capture records and lock is free, else at next gated point"""
         if self.closed:
             return
         from .diffusion_cuda_graph import release_when_capture_idle
@@ -409,8 +404,7 @@ def _set_tensor(owner: Any, leaf: str, kind: str, value: Any) -> None:
 
 
 def _entries(module: Any) -> list:
-    """Yields (qualified name, registrations, kind, tensor) per tensor, each once; a shared buffer's
-    registrations must each point at the placed copy."""
+    """Yields each tensor once; shared buffer registrations must each point at the placed copy."""
     out: list = []
     index: dict = {}
     for mod_name, mod in module.named_modules(remove_duplicate = False):
@@ -453,8 +447,7 @@ class ModuleArena:
         self._module = weakref.ref(module)
         self._stock_to = type(module).to
         module.__dict__["to"] = self._to
-        # accelerate's remove_hook_from_module pops ``to`` from the instance (its _accelerate_added_attributes) and
-        # diffusers re-hooks before every render: put it back before the hook's pre-forward onloads the module.
+        # remove_hook_from_module pops instance 'to'; diffusers re-hooks; restore before onload
         self._reinstall_handle = module.register_forward_pre_hook(self._reinstall)
         weakref.finalize(module, ModuleArena._finalize, self.__dict__)
 
@@ -524,8 +517,7 @@ class ModuleArena:
                     else 0
                 )
                 slot = (offset, tuple(t.shape), tuple(t.stride()), t.dtype, span)
-                # Every registration name of a shared tensor maps to its one slot: Module.to() moves each
-                # registration on its own, so after an offload they come back as separate (equal) host copies.
+                # Shared registrations map to one slot; Module.to() would make separate copies.
                 suffix = key[len(name) :]
                 for _owner, _leaf, qual in regs:
                     layout[qual + suffix] = slot
@@ -602,8 +594,7 @@ class ModuleArena:
                 for slot, (_, t) in zip(slots, pieces)
             ):
                 continue
-            # A slot already filled by another registration of a once-shared buffer is reused only when the copies
-            # still hold the same values; otherwise this one keeps the stock move.
+            # Reuse a filled slot only if copies hold equal values; else use the stock move.
             if any(
                 slot[0] in filled and not torch.equal(filled[slot[0]][0], t)
                 for slot, (_, t) in zip(slots, pieces)
@@ -612,8 +603,7 @@ class ModuleArena:
             views = []
             for slot, (_, t) in zip(slots, pieces):
                 if slot[0] in filled:
-                    # the same view object: the registrations share one tensor again, as on the first onload, so the
-                    # graph's placement fingerprint (one entry per tensor) does not change
+                    # Same view keeps the graph's per-tensor placement fingerprint unchanged.
                     views.append(filled[slot[0]][1])
                     continue
                 view = self.arena.view(slot[0], slot[1], slot[3], slot[2])
@@ -660,8 +650,7 @@ class ModuleArena:
             == self.device.index
         ):
             try:
-                # accelerate calls ``to`` on every forward (its device check compares "cuda" with "cuda:0"): only a
-                # module whose weights are on the host is placed
+                # accelerate calls to() each forward (cuda vs cuda:0); place only host weights.
                 if self._on_host(module):
                     self._onload(module, True)
                     self.stats["onloads"] += 1
@@ -680,7 +669,6 @@ class ModuleArena:
         return out
 
     def _release(self, module: Any) -> None:
-        """Unmap the range once no tensor of the module lives in it (its weights went back to the host)."""
         if self.arena is None or not self.arena.mapped or self._referenced(module):
             return
         self.arena.unmap()
@@ -738,9 +726,7 @@ def arena_of(module: Any) -> Optional[ModuleArena]:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Block offload gives resident groups a reserved address range, since the stock re-pin after an
-# encode lands at new allocator addresses and re-records the step graph each prompt; opt out with
-# UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0.
+# Reserved address range so CUDA graphs replay; UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE=0 opts out
 
 REPIN_ENV = "UNSLOTH_DIFFUSION_GROUP_REPIN_RANGE"
 _REPIN_ATTR = "_unsloth_repin_range"
@@ -753,8 +739,7 @@ def repin_disabled() -> bool:
 
 
 def want_stable_repin(module: Any) -> Optional[str]:
-    """Mark ``module`` (a block-offloaded denoiser whose step records a graph) so its group re-pins land in stable
-    ranges from now on. Returns why not, else None."""
+    """Marks a block-offloaded denoiser for stable graph re-pins; returns why not, else None"""
     if repin_disabled():
         return f"disabled by {REPIN_ENV}=0"
     try:
@@ -785,8 +770,7 @@ def want_stable_repin(module: Any) -> Optional[str]:
 
 
 def drop_stable_repin(module: Any) -> None:
-    """Graphing stopped for ``module``: later re-pins move the stock way. A mapped range is unmapped by the next
-    release as before; the address ranges themselves go with the module."""
+    """Later re-pins use the stock move; mapped ranges unmap on release and go with the module."""
     try:
         module.__dict__.pop(_REPIN_WANTED, None)
     except Exception:  # noqa: BLE001
@@ -906,10 +890,8 @@ def pin_group_in_range(
     device: Any,
     swap_wrapper: Any,
 ) -> set:
-    """Place ``group``'s ``tensors`` for which ``pending`` holds (not on the card yet) into its stable range, copied
-    from ``host_of(t)`` (queued on the current stream: the caller synchronizes). The range is laid out over the
-    tensors pending at the first re-pin (a tied tensor another group placed takes no room here); a slot is keyed on
-    the tensor's position in ``tensors``. Returns the ids placed; the caller moves the rest the stock way."""
+    """Copies pending tensors from host_of(t) into range (caller syncs); layout fixed by first
+    re-pin; tied tensors placed elsewhere take no room; returns placed ids, others stock-moved"""
     import torch
 
     device = torch.device(device)
@@ -971,8 +953,7 @@ def pin_group_in_range(
 
 
 def release_group_range(owner: Any, group: Any, tensors: list) -> bool:
-    """After ``group`` streamed again (its tensors back on their host copies): unmap its range. False when a tensor
-    still lives in it (the memory then stays until the next re-pin reuses it)."""
+    """Unmaps the range once tensors are back on host; False if a tensor still lives in it."""
     rng = getattr(group, "__dict__", {}).get(_REPIN_ATTR)
     if rng is None or not rng.arena.mapped:
         return True

@@ -110,7 +110,6 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Falcon H1 multiplies key states by a multiplier.
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
@@ -324,7 +323,6 @@ def FalconH1Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -461,7 +459,6 @@ def FalconH1DecoderLayer_fast_forward(
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
-        # Residual connection after attention + Mamba.
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -640,7 +637,6 @@ def _fast_prepare_inputs_for_generation(
         if not empty_past_kv:
             position_ids = position_ids[:, -input_ids.shape[1] :]
 
-    # inputs_embeds are only used in the 1st generation step.
     if inputs_embeds is not None and empty_past_kv:
         model_inputs = {"inputs_embeds": inputs_embeds}
     else:

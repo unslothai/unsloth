@@ -24,8 +24,7 @@ export function hubAudioTaskSearch(
   return tasks.length > 0 ? tasks : undefined;
 }
 
-/** Whether a Hub row fits the linked audio tasks. A typed search drops the task server-side, so the
- *  rows are checked here; a row without a pipeline tag stays, as the task listing keeps it too. */
+/** Typed searches drop the task server-side, so rows are re-checked here; untagged rows stay. */
 export function matchesHubAudioTask(
   pipelineTag: string | null | undefined,
   tasks: readonly PipelineType[] | null | undefined,

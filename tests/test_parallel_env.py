@@ -1415,8 +1415,8 @@ def test_rl_cp_without_trainer_args_builds_the_default_config(clean_env):
 
 
 def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
-    # Failing before: the env pipeline added coef x aux per micro-batch, a different objective from the one-GPU
-    # Trainer step (aux over the whole batch); the micro-batch count changed the loss and gradients.
+    # The env pipeline forms the aux loss over the whole split batch (one-GPU objective) only under GPipe, which
+    # runs every forward before the first backward; an explicit 1F1B / multi-stage schedule is refused.
     import types
 
     from unsloth.models import pp_env
@@ -1428,10 +1428,20 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
         ctx = types.SimpleNamespace(moe = types.SimpleNamespace(owner = owner, config = owner.config)),
         env_layout = None,
         num_stages = 2,
+        schedule = "1f1b",
     )
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
         pp_env._refuse_split_router_aux(stage, 2)
     pp_env._refuse_split_router_aux(stage, 1)
+    stage.schedule_auto = True  # UNSLOTH_PP_SCHEDULE unset: the step runs GPipe
+    pp_env._refuse_split_router_aux(stage, 2)
+    stage.schedule_auto, stage.schedule = False, "gpipe"
+    pp_env._refuse_split_router_aux(stage, 2)
+    stage.schedule, stage.spec = "gpipe", types.SimpleNamespace(multi = True)
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
+        pp_env._refuse_split_router_aux(stage, 2)
+    del stage.spec
+    stage.schedule = "1f1b"
     owner.config.output_router_logits = False
     pp_env._refuse_split_router_aux(stage, 2)
 
@@ -1440,7 +1450,7 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
     wrapper = type("Qwen4ExpForConditionalGeneration", (), {})()
     wrapper.config = types.SimpleNamespace(text_config = text)
     stage.ctx.moe = types.SimpleNamespace(owner = wrapper, config = text)
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
         pp_env._refuse_split_router_aux(stage, 2)
     text.router_aux_loss_coef = 0.0
     pp_env._refuse_split_router_aux(stage, 2)
@@ -1470,9 +1480,17 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
     )
     model = Qwen3MoeForCausalLM(config)
 
-    def layout(mb = None, schedule = "gpipe"):
+    def layout(
+        mb = None,
+        schedule = "1f1b",
+        auto = False,
+    ):
         return types.SimpleNamespace(
-            pp = 2, microbatches = mb, schedule = schedule, env_vars = "UNSLOTH_PP_SIZE=2"
+            pp = 2,
+            microbatches = mb,
+            schedule = schedule,
+            schedule_auto = auto,
+            env_vars = "UNSLOTH_PP_SIZE=2",
         )
 
     def args(
@@ -1497,56 +1515,15 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
         return pp_env._refuse_split_router_aux_at_init(*a, **k)
 
     T, SFT = transformers.Trainer, type("SFTTrainer", (transformers.Trainer,), {})
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+    # Explicit 1F1B: a split training batch is refused before the split.
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
         refuse(T, args(2), layout(), model)
     with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
-        refuse(T, args(1), layout(schedule = "1f1b"), model)  # 1F1B pads up to pp
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model)
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(1), layout(), model)  # 1F1B pads up to pp
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
         refuse(SFT, args(2, coef = None), layout(), model)  # TRL takes the architecture's coefficient
-    refuse(T, args(4), layout(mb = 1), model)
-    # UNSLOTH_PP_MICROBATCHES the schedule cannot run: the split refuses it with the schedule's own reason.
-    refuse(T, args(4), layout(mb = 1, schedule = "1f1b"), model)
-    if not pp_env._gpipe_needs_stage_count():
-        refuse(T, args(1), layout(), model)
-    refuse(SFT, args(4, coef = 0.0), layout(), model)
-    refuse(T, args(4), layout(mb = 3), model)  # the step raises its own error
-    model.router_aux_loss_coef = 0.0
-    refuse(T, args(4), layout(), model)
-    model.router_aux_loss_coef = 0.5
-    config.output_router_logits = False
-    refuse(T, args(4), layout(), model)
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+    with pytest.raises(NotImplementedError, match = "only the GPipe schedule does that"):
         refuse(SFT, args(4, coef = 0.1), layout(), model)  # TRL turns it on inside its __init__
-    refuse(T, args(4), layout(), model.model)  # not a carried family: the split decides
-    # No train_dataset (evaluation only): the unused training batch is not checked.
-    config.output_router_logits = True
-    eval_only = args(8, eval_strategy = "steps", eval_bs = 1)
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(T, eval_only, layout(), model)
-    if not pp_env._gpipe_needs_stage_count():
-        refuse(T, eval_only, layout(), model, train_dataset = None)
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, train_dataset = None)
-    # Fewer rows than one batch per dp rank, no len() or packing: only the step knows the batch size.
-    if not pp_env._gpipe_needs_stage_count():
-        refuse(T, args(8), layout(), model, train_dataset = [0])
-        refuse(
-            T, args(8), types.SimpleNamespace(**vars(layout()), dp = 4), model, train_dataset = rows[:4]
-        )
-        refuse(
-            T,
-            args(8, eval_strategy = "steps", eval_bs = 8),
-            layout(),
-            model,
-            train_dataset = None,
-            eval_dataset = {"a": [0]},
-        )
-        refuse(
-            T, args(5), types.SimpleNamespace(**vars(layout()), dp = 2), model, train_dataset = rows[:8]
-        )
-    refuse(T, args(8), layout(), model, train_dataset = [0, 1])
     with pytest.raises(NotImplementedError, match = "into 4 micro-batches"):
         refuse(
             T,
@@ -1555,19 +1532,29 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
             model,
             train_dataset = rows[:16],
         )
-    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(
-            T,
-            args(8, eval_strategy = "steps", eval_bs = 8),
-            layout(),
-            model,
-            train_dataset = None,
-            eval_dataset = {"a": [0], "b": rows},
-        )
+    # GPipe, or the default schedule (which then runs GPipe): the aux loss is formed over the whole batch.
+    for allowed in (layout(schedule = "gpipe"), layout(auto = True), layout(mb = 4, schedule = "gpipe")):
+        refuse(T, args(4), allowed, model)
+        refuse(SFT, args(4, coef = 0.1), allowed, model)
+        refuse(T, args(1, eval_strategy = "steps", eval_bs = 4), allowed, model)
+    refuse(T, args(4), layout(mb = 1), model)
+    refuse(T, args(4), layout(mb = 1, schedule = "gpipe"), model)
+    refuse(SFT, args(4, coef = 0.0), layout(), model)
+    refuse(T, args(4), layout(mb = 3), model)  # the step raises its own error
+    model.router_aux_loss_coef = 0.0
+    refuse(T, args(4), layout(), model)
+    model.router_aux_loss_coef = 0.5
+    config.output_router_logits = False
+    refuse(T, args(4), layout(), model)
+    refuse(T, args(4), layout(), model.model)  # not a carried family: the split decides
+    config.output_router_logits = True
+    # Evaluation runs forward only: never refused, whatever the schedule.
+    eval_only = args(8, eval_strategy = "steps", eval_bs = 4)
+    refuse(T, eval_only, layout(), model, train_dataset = None)
     refuse(T, args(8), layout(), model, train_dataset = iter(rows))
     packed = args(8)
     packed.packing = True
-    refuse(T, packed, layout(), model)
+    refuse(T, packed, layout(schedule = "gpipe"), model)
 
 
 def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):

@@ -18,6 +18,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread, current_account, run_as
+from utils.process_memory_peaks import merge_memory_peaks
 import json as _json
 import math
 import multiprocessing as mp
@@ -768,6 +769,8 @@ class TrainingProgress:
     peak_memory_gb: Optional[float] = None
     # BlockSwap.stats() from the last logged step, for the live offload panel.
     offload: Optional[dict] = None
+    # The training process's own peaks (utils.process_memory_peaks), bytes; None until reported.
+    memory_peaks: Optional[dict] = None
     output_dir: Optional[str] = None
     # Run summary has no step loss so the progress filter drops it, yet holds the only full elapsed time.
     is_run_summary: bool = False
@@ -2381,6 +2384,7 @@ class TrainingBackend:
                         final_loss = None
                     duration = self._progress.elapsed_seconds
                     loss_history = list(self.loss_history)
+                    memory_peaks = self._progress.memory_peaks
                     config_json = (
                         _json.dumps(_sanitize_db_config(self._db_config))
                         if self._db_config is not None
@@ -2388,6 +2392,7 @@ class TrainingBackend:
                     )
                 else:
                     config_json = None
+                    memory_peaks = None
             if claim:
                 self._finish_stopped_run(
                     run_id,
@@ -2402,6 +2407,7 @@ class TrainingBackend:
                     clear_output_dir = clear_output_dir,
                     resume_blocked = resume_blocked,
                     config_json = config_json,
+                    memory_peaks = memory_peaks,
                 )
         with self._lock:
             if target_proc is None or self._proc is target_proc:
@@ -2421,6 +2427,7 @@ class TrainingBackend:
         clear_output_dir: bool = False,
         resume_blocked: bool = False,
         config_json: Optional[str] = None,
+        memory_peaks: Optional[dict] = None,
     ) -> None:
         """Retries transient DB errors, since the watchdog is the only finalizer once _proc is dropped."""
         for attempt in range(_DB_FINALIZE_RETRIES):
@@ -2444,6 +2451,7 @@ class TrainingBackend:
                     clear_output_dir = clear_output_dir,
                     resume_blocked = resume_blocked,
                     config_json = config_json,
+                    memory_peaks = memory_peaks,
                 )
                 return
             except Exception:
@@ -3176,6 +3184,10 @@ class TrainingBackend:
             return
 
         with self._lock:
+            if event.get("memory_peaks") and etype in ("progress", "complete", "error"):
+                self._progress.memory_peaks = merge_memory_peaks(
+                    self._progress.memory_peaks, event["memory_peaks"]
+                )
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
@@ -3609,6 +3621,7 @@ class TrainingBackend:
                     final_loss = None
                 duration = self._progress.elapsed_seconds
                 loss_history = list(self.loss_history)
+                memory_peaks = self._progress.memory_peaks
                 config_json = (
                     _json.dumps(_sanitize_db_config(self._db_config))
                     if self._db_config is not None
@@ -3633,6 +3646,7 @@ class TrainingBackend:
                         clear_output_dir = clear_output_dir,
                         resume_blocked = resume_blocked,
                         config_json = config_json,
+                        memory_peaks = memory_peaks,
                     )
                     return
                 except Exception:

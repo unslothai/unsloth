@@ -7,8 +7,7 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 test("the reply stats card stays open while the pointer moves onto it", () => {
-  // TooltipProvider defaults to non-hoverable content; the stats card opts back in so its
-  // prompt and generation figures can be selected and copied.
+  // The stats card opts back into hoverable content so its figures can be selected and copied.
   const timing = readSrc("components/assistant-ui/message-timing.tsx");
   const root = timing.match(/<Tooltip\b[^>]*>/);
   assert.ok(root, "message timing renders a Tooltip");

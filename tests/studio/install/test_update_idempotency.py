@@ -33,8 +33,7 @@ PAYLOAD_HOSTS = (
     "objects.githubusercontent.com",
     "nodejs.org",
 )
-# Not a payload host: prebuilt metadata and payload share this host, and only the largest single
-# transfer separates them (metadata <= 19 KB, payloads >= 567 KB, no Range).
+# Not a payload host: metadata shares it, so only transfer size (<=19 KB, >=567 KB) separates.
 PREBUILT_METADATA_HOST = "release-assets.githubusercontent.com"
 PREBUILT_METADATA_CEILING = 256 * 1024
 
@@ -140,8 +139,7 @@ def _studio_home() -> pathlib.Path:
 
 
 def _unsloth_home() -> pathlib.Path:
-    """Where the prebuilts (llama.cpp, whisper.cpp, node) live: setup.sh's UNSLOTH_HOME
-    rule, which nests them under a CUSTOM Studio home and keeps ~/.unsloth otherwise."""
+    """Prebuilts follow setup.sh's UNSLOTH_HOME rule: a custom Studio home, else ~/.unsloth."""
     if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
         return _studio_home()
     return _home() / ".unsloth"
@@ -285,8 +283,7 @@ def _wait_until(
     timeout: float = 5.0,
     interval: float = 0.05,
 ) -> bool:
-    """Poll until `predicate` holds or the monotonic deadline passes; a fixed sleep would waste time
-    on every ordinary run."""
+    """Poll until predicate holds or the monotonic deadline passes; a fixed sleep wastes time."""
     deadline = time.monotonic() + timeout
     while True:
         if predicate():
@@ -859,8 +856,7 @@ def test_full_deps_forces_every_step_and_still_changes_nothing(install, settled)
 
 
 def test_the_install_is_left_working(install, settled):
-    """Runs last; fault cases legitimately move mtimes, so this checks only that the same packages
-    are installed and the install reports complete."""
+    """Runs last; checks only same packages and a complete report, as fault cases move mtimes."""
     _directory, before = settled
     _assert_install_working(install, before)
 

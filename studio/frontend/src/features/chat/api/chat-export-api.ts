@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export async function renderConversationPdf(
   title: string,
@@ -14,15 +15,7 @@ export async function renderConversationPdf(
     body: JSON.stringify({ title, html, model }),
   });
   if (!response.ok) {
-    const detail = await response
-      .json()
-      .then((body: { detail?: unknown }) => body?.detail)
-      .catch(() => undefined);
-    throw new Error(
-      typeof detail === "string"
-        ? detail
-        : `PDF export failed (${response.status})`,
-    );
+    throw new Error(await readFastApiError(response, "PDF export failed"));
   }
   return new Uint8Array(await response.arrayBuffer());
 }

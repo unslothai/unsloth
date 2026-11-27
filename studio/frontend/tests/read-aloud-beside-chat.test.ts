@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Read aloud with an Unsloth speech model while chatting: the speech model and the chat
-// model stay loaded together when Keep multiple models loaded allows it, and the settings say so.
+// Speech and chat models stay loaded together when Keep multiple models loaded allows it.
 
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
@@ -51,8 +50,7 @@ test("a speech load from Audio keeps the chat model loaded", () => {
     slotHook,
     /if \(!keepsChat\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}/,
   );
-  // Ejecting a speech model with the chat model kept beside it (in a slot, or active with the chat
-  // model in a slot) asks nothing, stops no queue and unloads it by its routing id.
+  // Ejecting speech beside the chat model asks nothing, stops no queue, unloads by routing id.
   assert.match(
     slotHook,
     /const slotModel = audioSlotRoutingId\(activeModel\);\s*const slotEject =\s*slotModel !== null \|\| \(statusRef\.current\?\.serving\?\.length \?\? 0\) > 1;/,

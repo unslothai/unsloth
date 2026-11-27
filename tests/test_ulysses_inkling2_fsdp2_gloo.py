@@ -87,8 +87,7 @@ def _train(loop, lora, gc, flex, patch, output_dir):
         flex_stats = fx._STATS
     if lora:
         model = T._lora(model)
-    # Full finetuning keeps the vision tower trainable: a text batch gives it no gradient on either side, which
-    # native FSDP2 (unlike DDP) reduces without it.
+    # Text batches give a trainable vision tower no grads; native FSDP2 copes, DDP does not.
     forwards = []
     model.register_forward_pre_hook(lambda module, args: forwards.append(1))
     ids = torch.randint(3, T.VOCAB, (4, SEQ), generator = torch.Generator().manual_seed(1))
@@ -231,8 +230,7 @@ def _worker(rank, world, out, loop, lora, gc, flex):
         import unsloth  # noqa: F401
         from unsloth.models import fsdp2_load
 
-        # Which load this launch selects: a QLoRA load takes the FSDP2 sharded quantize-on-load over the world, the
-        # shard mesh (the dense fakes below are built from config, so this is the launcher's choice, not a load).
+        # Launcher picks FSDP2 sharded QLoRA load; dense fakes come from config, not a load.
         auto_sharded = bool(fsdp2_load._auto_sharded_load())
         output_dir = os.path.join(out, f"trainer-{world}-{rank}")
         os.makedirs(output_dir, exist_ok = True)
@@ -397,8 +395,7 @@ def _fake_inkling2(text_attention):
 
 @pytest.mark.parametrize("fsdp2", [True, False], ids = ["fsdp2", "ddp"])
 def test_inkling2_cp_capability_reads_the_text_attention(fsdp2):
-    """enable_inkling2_flex switches only the text config to Inkling 2's flex: the registry classifies the query as
-    flex (not the outer config's eager), and both Inkling cp cells cover it (the mini-flex parity cases)."""
+    """Only the text config goes flex; the registry must classify the query as flex, not eager."""
     from unsloth import parallel_capabilities as pc
 
     layout = types.SimpleNamespace(dp = 1, tp = 1, pp = 1, cp = 2, cp_backend = "ulysses", fsdp2 = fsdp2)
@@ -410,7 +407,6 @@ def test_inkling2_cp_capability_reads_the_text_attention(fsdp2):
     pc.check(q)
     assert pc.cell_status(q)[0] == "supported"
     assert pc.query_from(layout, model = _fake_inkling2("eager")).attention == "eager"
-    # The generic cp x flex refusal still holds for other families and for ring.
     with pytest.raises(NotImplementedError, match = "flex"):
         pc.check(dataclasses.replace(q, family = "llama", hybrid = False, moe = False))
     with pytest.raises(NotImplementedError):
@@ -419,9 +415,7 @@ def test_inkling2_cp_capability_reads_the_text_attention(fsdp2):
 
 @pytest.mark.parametrize("native", [True, False], ids = ["native-fsdp2", "ddp"])
 def test_cp_trainable_tower_refusal_is_ddp_only(monkeypatch, native):
-    """A trainable vision tower that a text batch leaves without gradients breaks DDP at the second step, so the cp
-    trainer refuses it there. Native FSDP2 reports MULTI_* to accelerate too but reduces only the gradients that
-    exist (the small-full parity case trains through it), so it is not refused."""
+    """Trainable tower with no grads breaks DDP at step 2, so cp refuses; native FSDP2 is not."""
     from unsloth import context_parallel as cpm
     from unsloth.models import fsdp2_native
 

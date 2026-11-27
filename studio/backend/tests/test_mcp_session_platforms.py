@@ -23,8 +23,7 @@ STDIO_URL = "npx fake-stateful-server"
 
 
 class _FakeProactorLoop(asyncio.SelectorEventLoop):
-    """Stands in for the Proactor loop Linux cannot construct; only its identity matters, since the
-    win32 branch must ask for a Proactor."""
+    """Stands in for the Proactor loop Linux cannot build; win32 asks only for its identity."""
 
 
 @pytest.fixture
@@ -104,9 +103,8 @@ def test_connect_window_policy_is_platform_independent(monkeypatch, platform):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX fork semantics")
 def test_a_forked_child_does_not_inherit_a_usable_session():
-    """Only the forking thread survives a fork, so an inherited session's loop thread is gone and
-    the child must not treat the cache as usable; touching the dead loop would hang, so the
-    parent asserts a clean exit 0."""
+    """Only the forking thread survives a fork, so the child must not treat an inherited session as
+    usable; touching its dead loop would hang, so the parent asserts exit 0."""
     import multiprocessing
 
     ctx = multiprocessing.get_context("fork")

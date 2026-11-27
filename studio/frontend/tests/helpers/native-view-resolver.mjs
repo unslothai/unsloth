@@ -13,7 +13,6 @@ const STUBS = {
     "export const getLocale = () => 'en'; export const translate = (key) => key;",
   ),
   "@/lib/open-link": stub("export const openExternalLink = () => {};"),
-  // globalThis.nativeViewZoom is the applied interface zoom; nativeViewZoomChanged announces a change.
   "@/features/settings/lib/interface-scale-runtime": stub(
     "export const getAppliedInterfaceZoom = () => globalThis.nativeViewZoom ?? 1;" +
       " export const subscribeAppliedInterfaceZoom = (listener) => { globalThis.nativeViewZoomChanged = listener; return () => {}; };",
@@ -32,7 +31,6 @@ const STUBS = {
     export const setLocalViewCloser = (close) => { globalThis.nativeViewCloseLocal = close; };
   `),
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
-  // globalThis.nativeViewDownloadsButton puts a Downloads button on screen; calls land in nativeViewActivity.
   "./download-activity": stub(`
     const buttons = () => (globalThis.nativeViewDownloadsButton ? 1 : 0);
     const active = {};

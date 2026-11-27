@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 export interface YoutubeTranscript {
   videoId: string;
@@ -30,12 +30,9 @@ export async function fetchYoutubeTranscript(
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail =
-      body && typeof body === "object"
-        ? formatFastApiDetail((body as { detail?: unknown }).detail)
-        : null;
     throw new Error(
-      detail ?? `Could not fetch the transcript (${response.status})`,
+      formatApiErrorBody(body) ??
+        `Could not fetch the transcript (${response.status})`,
     );
   }
   return body as YoutubeTranscript;

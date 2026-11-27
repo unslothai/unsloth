@@ -50,7 +50,6 @@ export function pickGgufFilename(
     );
     return (byLabel.find((v) => v.downloaded) ?? byLabel[0])?.filename ?? null;
   }
-  // Only a lone file names itself; downloaded first.
   const downloaded = listed.filter((v) => v.downloaded);
   if (downloaded.length === 1) return downloaded[0].filename;
   if (listed.length === 1) return listed[0].filename;

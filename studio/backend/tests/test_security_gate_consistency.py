@@ -59,8 +59,7 @@ def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
 
 
 def test_capability_detection_caches_are_token_aware():
-    """Every capability cache is keyed by (model, token_fingerprint) so an unauthenticated
-    miss cannot poison a later authenticated lookup (the audio-cache regression)."""
+    """Keyed by (model, token_fingerprint): unauthenticated misses cannot poison later lookups."""
     src = (_BACKEND / "utils" / "models" / "model_config.py").read_text(encoding = "utf-8")
     # Resolve type aliases first: an aliased cache is still tuple-keyed, so matching "Dict[Tuple" fails.
     tuple_aliases = {

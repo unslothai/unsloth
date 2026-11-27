@@ -1088,6 +1088,7 @@ def test_stats_and_describe_are_json_safe(stub_torch):
         "refused_float": 0,
         "refused_host_tensor": 0,
         "refused_object": 0,
+        "refused_branch": 0,
         "placements": ["resident"],
         "poisoned": False,
         "capture_error": None,
@@ -1337,6 +1338,65 @@ def test_live_status_names_float_refusals_and_a_poisoned_capture(stub_torch):
     assert cg.never_engaged((poisoned,)) == (
         "capture failed (RuntimeError); every denoiser step runs eager"
     )
+
+
+def test_live_status_names_a_branch_key_decline_not_a_non_tensor_argument(stub_torch):
+    """Krea 2's prefix K/V hook declines every planned call: the status says so, not "a non-tensor argument"."""
+
+    class Declined(RuntimeError):
+        graph_decline = "declined by Krea 2 prefix K/V attention (test)"
+
+    def hook():
+        raise Declined("plan (1, 98)")
+
+    module = _FakeDiT()
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, hook)
+    handle = _armed(module)
+    for _ in range(3):
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.stats["eager_calls"] == 3 and handle.stats["captures"] == 0
+    assert handle.stats["refused_branch"] == 3 and handle.stats["refused_object"] == 0
+    assert cg.never_engaged((handle,)) == (
+        "armed, but all 3 denoiser call(s) so far ran eager "
+        "(3 declined by Krea 2 prefix K/V attention (test))"
+    )
+    assert cg.stats((handle,))["refused_branch"] == 3
+
+    def unreadable():
+        raise KeyError("flag")
+
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, unreadable)
+    other = _armed(module)
+    other(_t(), timestep = _t((1,)), return_dict = False)
+    assert "1 declined: branch key unreadable (KeyError)" in cg.never_engaged((other,))
+
+
+def test_a_declined_call_that_fails_eager_raises_once_and_is_not_retried(stub_torch):
+    """An error in the eager forward of a declined call propagates; the key handler never runs the denoiser again."""
+
+    class Declined(RuntimeError):
+        graph_decline = "declined (test)"
+
+    class Boom(_FakeDiT):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+            return_dict = True,
+        ):
+            self.calls += 1
+            raise MemoryError("out of memory (test)")
+
+    def hook():
+        raise Declined("plan")
+
+    module = Boom()
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, hook)
+    handle = _armed(module)
+    with pytest.raises(MemoryError):
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert module.calls == 1
+    assert handle.stats["refused_branch"] == 1 and handle.stats["refused_object"] == 0
 
 
 @side_stream

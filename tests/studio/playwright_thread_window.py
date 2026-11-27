@@ -74,8 +74,7 @@ WHEEL_PX = 700
 WHEEL_GAP_MS = 40
 # Rows are separated by gaps, so a covered viewport is not rows from edge to edge.
 MIN_COVERAGE = 0.5
-# How long the window may take to catch up with one wheel step before it counts as lost. Not a
-# pace: a shared CI runner serving unminified modules takes whole frames for a commit.
+# Catch-up limit per wheel step before it counts as lost; not a pace, CI runners are slow.
 CATCH_UP_MS = 30_000
 # Very long replies, for the full mount: a few thousand px each.
 TALL_MESSAGES = 60
@@ -104,7 +103,6 @@ STATE = """() => {
   };
 }"""
 
-# One sample per frame: how much of the viewport rows cover, and which messages are mounted.
 RECORD = """() => {
   const viewport = window.__threadWeight.viewport();
   const record = { frames: 0, minCoverage: 1, seen: new Set(), live: true };
@@ -125,7 +123,6 @@ RECORD = """() => {
   requestAnimationFrame(tick);
 }"""
 
-# Rows over at least `min` of the viewport: the window is where the reader is.
 COVERED = """(min) => {
   const box = window.__threadWeight.viewport().getBoundingClientRect();
   let covered = 0;
@@ -155,7 +152,6 @@ STOP_RECORD = """() => {
   return { frames: record.frames, minCoverage: record.minCoverage, seen: [...record.seen] };
 }"""
 
-# The first row the reader can see, and where it sits, over a run of frames.
 REST = """async (frames) => {
   const viewport = window.__threadWeight.viewport();
   const fold = viewport.getBoundingClientRect().top;
@@ -200,7 +196,6 @@ PINNED = """() => {
   };
 }"""
 
-# The first mounted row's ordinal and the counter increments of the spacer standing in for the rest.
 SPACER_EQUATIONS = """() => ({
   first: Number(document.querySelector('[data-role][aria-posinset]').getAttribute('aria-posinset')),
   increment: document.querySelector('[data-thread-spacer="top"]').style.counterIncrement,

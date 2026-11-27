@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- the barrel would load the model picker components here.
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   signalRunningLlamaJob,
@@ -63,6 +65,18 @@ export interface LlamaUpdateStatus {
   from_backend: string | null;
   to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+const folderChangedListeners = new Set<() => void>();
+
+export function afterLlamaInstallChanged(): void {
+  invalidateLlamaFlagCatalog();
+  void refreshHardwareInfo();
+}
+
+export function afterLlamaFolderChanged(): void {
+  afterLlamaInstallChanged();
+  for (const listener of folderChangedListeners) listener();
 }
 
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
@@ -349,6 +363,57 @@ async function fetchStatus(
   }
 }
 
+// Copies share an in-flight forced read; an auto check soon after one reads the server cache. refresh() always forces.
+const FORCED_REUSE_MS = 5 * 60 * 1000;
+const FORCED_AT_STORAGE_KEY = "unsloth_llama_update_forced_at";
+let forcedInFlight: Promise<LlamaUpdateStatus | null> | null = null;
+let forcedAt: number | null = null;
+
+/** "cached" reads the server's cache, "auto" is a scheduled check, "explicit" is a user's Check. */
+type StatusRead = "cached" | "auto" | "explicit";
+
+function lastForcedAt(): number | null {
+  try {
+    const raw = localStorage.getItem(FORCED_AT_STORAGE_KEY);
+    const stored = raw === null ? Number.NaN : Number(raw);
+    if (Number.isFinite(stored) && (forcedAt === null || stored > forcedAt)) {
+      return stored;
+    }
+  } catch {
+    // storage unavailable
+  }
+  return forcedAt;
+}
+
+function fetchForcedStatus(): Promise<LlamaUpdateStatus | null> {
+  const request = fetchStatus(true).then((next) => {
+    if (next) {
+      const at = Date.now();
+      forcedAt = at;
+      try {
+        localStorage.setItem(FORCED_AT_STORAGE_KEY, String(at));
+      } catch {
+        // storage unavailable
+      }
+    }
+    if (forcedInFlight === request) forcedInFlight = null;
+    return next;
+  });
+  forcedInFlight = request;
+  return request;
+}
+
+function fetchStatusFor(read: StatusRead): Promise<LlamaUpdateStatus | null> {
+  if (read === "cached") return fetchStatus(false);
+  if (read === "explicit") return fetchForcedStatus();
+  if (forcedInFlight) return forcedInFlight;
+  const at = lastForcedAt();
+  const age = at === null ? Number.NaN : Date.now() - at;
+  // A record from the future (the clock moved back) is not trusted.
+  if (age >= 0 && age < FORCED_REUSE_MS) return fetchStatus(false);
+  return fetchForcedStatus();
+}
+
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
   /** The update unloaded the model server-side; resync chat. Also fires for cross-tab updates. */
@@ -382,10 +447,10 @@ export function useLlamaUpdateCheck({
   const surfaceRef = useRef<(next: LlamaUpdateStatus | null) => void>(() => {});
   const statusReadRef = useRef({ issued: 0, accepted: 0 });
 
-  const readStatus = useCallback(async (forceRefresh = false) => {
+  const readStatus = useCallback(async (read: StatusRead = "cached") => {
     const sequence = ++statusReadRef.current.issued;
     const suppressionAtRequest = suppressionRef.current;
-    const next = await fetchStatus(forceRefresh);
+    const next = await fetchStatusFor(read);
     if (!next || sequence < statusReadRef.current.accepted) return null;
     if (
       next.job.state === "running" &&
@@ -410,7 +475,7 @@ export function useLlamaUpdateCheck({
     if (remaining <= 0) return;
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      readStatus(true).then((next) => {
+      readStatus("auto").then((next) => {
         if (activeRef.current) surfaceRef.current(next);
       });
     }, remaining);
@@ -517,8 +582,8 @@ export function useLlamaUpdateCheck({
         if (presentation.running) return;
         clearPollTimer();
         notifySettledOnce(s.job);
+        afterLlamaInstallChanged();
         if (s.job.state === "success") {
-          void refreshHardwareInfo();
           // Fires here, not only in apply's onDone, so cross-tab updates are covered.
           notifyReloadIfNeeded(s.job);
           onDone?.({
@@ -573,18 +638,18 @@ export function useLlamaUpdateCheck({
     if (statusRef.current) presentStatus(statusRef.current);
     else armSnoozeTimer();
 
-    const check = (forceRefresh: boolean) => () => {
-      readStatus(forceRefresh).then((s) => {
+    const check = (read: StatusRead) => () => {
+      readStatus(read).then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     };
     let firstTimer: ReturnType<typeof setTimeout> | undefined;
     let reminder: ReturnType<typeof setInterval> | undefined;
     if (passive) {
-      check(false)();
+      check("cached")();
     } else {
-      firstTimer = setTimeout(check(true), FIRST_CHECK_DELAY_MS);
-      reminder = setInterval(check(true), REMINDER_INTERVAL_MS);
+      firstTimer = setTimeout(check("auto"), FIRST_CHECK_DELAY_MS);
+      reminder = setInterval(check("auto"), REMINDER_INTERVAL_MS);
     }
 
     return () => {
@@ -632,7 +697,7 @@ export function useLlamaUpdateCheck({
         event.newValue &&
         event.newValue !== reloadNotifiedForRef.current
       ) {
-        readStatus(!passive).then(surfaceIfAvailable);
+        readStatus(passive ? "cached" : "auto").then(surfaceIfAvailable);
       }
     };
     window.addEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
@@ -653,9 +718,17 @@ export function useLlamaUpdateCheck({
 
   useEffect(() => {
     if (!enabled) return;
-    return subscribeToLlamaJobStarted(() => {
-      readStatus().then(surfaceIfAvailable);
-    });
+    const reread = () =>
+      void readStatus().then((next) => {
+        if (activeRef.current) surfaceIfAvailable(next);
+      });
+    // A llama.cpp folder change runs no job, so the installed tag held here would stay the old folder's.
+    folderChangedListeners.add(reread);
+    const unsubscribe = subscribeToLlamaJobStarted(reread);
+    return () => {
+      folderChangedListeners.delete(reread);
+      unsubscribe();
+    };
   }, [enabled, readStatus, surfaceIfAvailable]);
 
   const dismiss = useCallback((): string | null => {
@@ -758,7 +831,7 @@ export function useLlamaUpdateCheck({
   }, [applying, startJobPoll, notifyReloadIfNeeded, clearSuppression]);
 
   const refresh = useCallback(async (): Promise<LlamaUpdateStatus | null> => {
-    const next = await readStatus(true);
+    const next = await readStatus("explicit");
     if (activeRef.current) surfaceIfAvailable(next);
     return next;
   }, [readStatus, surfaceIfAvailable]);

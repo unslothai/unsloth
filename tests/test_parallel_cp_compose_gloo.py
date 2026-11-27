@@ -905,6 +905,9 @@ def _case_train(
         "is_tp": is_tp,
         "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
+        "carried_aux_steps": None
+        if stage is None
+        else int(getattr(stage, "carried_router_aux_steps", 0)),
         "seen_lengths": sorted(seen_lengths),
         "autocast_seen": sorted(autocast_seen),
         "ulysses_calls": None if compile else len(ulysses_calls),

@@ -42,6 +42,9 @@ function harness() {
     {
       react,
       "@/features/auth": { authFetch, getAuthToken: () => "token" },
+      "@/features/model-picker/api/llama-flags": {
+        invalidateLlamaFlagCatalog() {},
+      },
       "@/hooks/use-hardware-info": { refreshHardwareInfo: async () => {} },
       "@/lib/model-lifecycle-events": { notifyModelLifecycle() {} },
       "@/lib/llama-job-events": {

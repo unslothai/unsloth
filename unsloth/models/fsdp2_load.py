@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Inside fsdp2_sharded_loading() or UNSLOTH_FSDP2_SHARDED_LOAD=1, each rank reads only its dim-0
-chunk of nn.Linear / nn.Embedding weights (output head included); others whole. 16-bit and pre-quantized bitsandbytes 4-bit
-checkpoints: a 4-bit weight's chunk is its byte range of the packed storage (the QuantState stays whole),
+chunk of nn.Linear / nn.Embedding weights (output head included) and 3-D MoE expert stacks; others whole. 16-bit
+and pre-quantized bitsandbytes 4-bit checkpoints: a 4-bit weight's chunk is its byte range of the packed storage (the QuantState stays whole),
 which FSDP2 shards the same way whatever float dtype later holds the packed bytes.
 
 Quantizing on load (bitsandbytes 4-bit of a 16-bit or transformers-converted checkpoint, transformers 5): transformers
@@ -49,8 +49,7 @@ _PACKED_UNIT = 4
 
 
 def _chunk_rows(rows, world, rank):
-    """Rows [start, stop) of dim-0 chunk `rank` as fully_shard cuts it (torch.chunk: ceil(rows / world) per
-    chunk, so the last ranks may hold fewer rows or none)."""
+    """Rows [start, stop) of rank's torch.chunk piece; last ranks may hold fewer rows or none."""
     size = math.ceil(rows / world) if rows else 0
     start = min(rank * size, rows)
     return start, min(start + size, rows)
@@ -104,8 +103,30 @@ def _refuse_unsharded_forward(
     )
 
 
+def _guard_expert_lora_shape():
+    """PEFT sizes expert LoRA from the parameter's dim 0: give it the whole stack's expert count."""
+    try:
+        from peft.tuners.lora.layer import ParamWrapper
+    except ImportError:
+        return
+
+    update = ParamWrapper.update_layer
+    if getattr(update, _GUARD, False):
+        return
+
+    @functools.wraps(update)
+    def full_shape(self, *args, **kwargs):
+        info = _preload(self.get_param())
+        if info is not None and len(info["shape"]) == 3:
+            self.num_experts = info["shape"][0]
+        return update(self, *args, **kwargs)
+
+    setattr(full_shape, _GUARD, True)
+    ParamWrapper.update_layer = full_shape
+
+
 def _materialize(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model: nn.Linear / nn.Embedding weights as this rank's dim-0 chunk, the rest whole."""
+    """Fill a meta model: Linear / Embedding weights and 3-D expert stacks as this rank's dim-0 chunk, the rest whole."""
     from .tp_native import _fill_from_checkpoint
 
     world, rank = mesh.size(), mesh.get_local_rank()
@@ -116,10 +137,17 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         if isinstance(m, (nn.Linear, nn.Embedding))
         and isinstance(getattr(m, "weight", None), torch.Tensor)
     }
+    experts = {
+        id(p)
+        for module_name, module in model.named_modules()
+        if module_name.rsplit(".", 1)[-1] == "experts"
+        for p in module.parameters(recurse = False)
+        if p.ndim == 3
+    }
     owners = {}
 
     def read_local(old, reader, key):
-        if id(old) not in linear or old.ndim < 2:
+        if (id(old) not in linear and id(old) not in experts) or old.ndim < 2:
             return None
         module = reader.quant.module(old) if reader.quant is not None else None
         if module is not None:
@@ -161,6 +189,7 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         read_local,
         label = "native FSDP2",
         fallback = "a full load, then shard_model",
+        stacked_experts = True,
     )
     guards = [model.register_forward_pre_hook(_refuse_unsharded_forward)]
     for module in model.modules():
@@ -179,13 +208,15 @@ def _materialize(model, name, kwargs, mesh, plan, device):
     model.__dict__[_STATS] = stats
     if owners and world > 1:
         _guard_dora_init()
+    if experts:
+        _guard_expert_lora_shape()
     return stats
 
 
 @contextlib.contextmanager
 def fsdp2_sharded_loading(mesh = None):
     """Every transformers `from_pretrained` inside reads only this rank's native FSDP2 shard of the linear
-    weights (see the module docstring). `mesh`: the 1-D DeviceMesh shard_model will use (default: the
+    and expert weights (see the module docstring). `mesh`: the 1-D DeviceMesh shard_model will use (default: the
     world, which is shard_model's default too)."""
     with _fsdp2_loading(mesh) as live:
         yield live
@@ -288,9 +319,8 @@ def quantized_load_bytes(index, kwargs):
 
 
 def _keep_chunk(module, p, world, rank, ranks):
-    """This rank's dim-0 chunk of a just-loaded parameter, tagged like a sharded-loaded one, or None (kept
-    whole): a quantized Params4bit (packed [n, 1] bytes, the QuantState whole) or a 16-bit nn.Linear /
-    nn.Embedding weight."""
+    """This rank's dim-0 chunk of a just-loaded param, tagged as sharded, for quantized Params4bit
+    (packed [n, 1] bytes, QuantState whole) or 16-bit Linear/Embedding; else None."""
     if not isinstance(p, torch.Tensor) or p.is_meta or _preload(p) is not None:
         return None
     is4 = any(c.__name__ == "Params4bit" for c in type(p).__mro__)

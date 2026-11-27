@@ -167,8 +167,7 @@ class TestLauncherDefaultOnly:
 
 
 class TestSafetensorsGateHonorsStatedIntent:
-    """Safetensors has no llama-server fallback, so the launcher default must not withdraw
-    tool_choice or take a client catalog into the Unsloth loop."""
+    """No llama-server fallback for safetensors; keep tool_choice and skip client catalogs."""
 
     def test_plain_chat_still_gets_the_default(self):
         set_tool_policy_default(True)

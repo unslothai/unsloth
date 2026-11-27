@@ -2406,6 +2406,10 @@ export const ko = {
         confirmDescriptionChatOnly:
           "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
+        recommendedTorch:
+          "복구 권장: 이 설치의 PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었습니다.",
+        recommendedDriver:
+          "PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었지만, 이 GPU 드라이버는 CUDA 13을 지원하지 않습니다. 먼저 GPU 드라이버를 업데이트한 다음 설치를 복구하세요.",
       },
       resetPreferences: {
         sectionTitle: "위험 구역",
@@ -4513,6 +4517,12 @@ export const ko = {
       epochs: "에포크",
       useMaxSteps: "최대 스텝 사용",
       useEpochs: "에포크 사용",
+      stepGuidancePass: "약 {steps} 스텝이 유효 배치 {batch}에서 {rows}개 행을 한 번 도는 양입니다.",
+      stepGuidanceFloor: "유효 배치 {batch}에서 {rows}개 행을 한 번 도는 데 {passSteps} 스텝뿐이므로, 약 {steps} 스텝(몇 회 반복)이 적절한 최솟값입니다.",
+      stepGuidanceCap: "유효 배치 {batch}에서 {rows}개 행을 한 번 도는 데 {passSteps} 스텝입니다. {steps} 스텝은 그 일부로 학습하며, 첫 실행에는 보통 충분합니다.",
+      stepGuidanceEpoch: "1 에포크는 유효 배치 {batch}에서 {rows}개 행에 대해 약 {passSteps} 스텝입니다.",
+      stepGuidancePacking: "패킹은 짧은 행을 합치므로 한 번 도는 데 스텝이 더 적을 수 있습니다.",
+      useSuggestedSteps: "{steps} 사용",
       maxStepsTooltip: "전체 옵티마이저 스텝 수를 재정의합니다.",
       epochsTooltip: "데이터셋을 완전히 순회하는 횟수입니다.",
       contextLength: "컨텍스트",

@@ -805,3 +805,360 @@ def test_async_sampler_kl_rewrites_the_installed_trl_loss():
         patched = RL["_async_grpo_sampler_kl_compute_loss"](AsyncGRPOTrainer.compute_loss, masked)
         assert patched.__globals__ is AsyncGRPOTrainer.compute_loss.__globals__
         assert "_unsloth_sampler_kl_coef" in patched.__code__.co_names
+
+
+def _reference_score(
+    model,
+    prompt_ids,
+    prompt_mask,
+    completion_ids,
+    completion_mask,
+    temperature = 1.0,
+):
+    """The unchunked scoring: one float32 [B, C, V] gather and log_softmax over the whole completion."""
+    input_ids = torch.cat([prompt_ids, completion_ids], 1)
+    attention_mask = torch.cat([prompt_mask, completion_mask], 1).long()
+    B, L = input_ids.shape
+    P, C = prompt_ids.shape[1], completion_ids.shape[1]
+    left_pad = (attention_mask.cumsum(1) == 0).sum(1)
+    roll = (torch.arange(L).unsqueeze(0) + left_pad.unsqueeze(1)) % L
+    ids = input_ids.gather(1, roll)
+    pos = ((P - 1 - left_pad).unsqueeze(1) + torch.arange(C).unsqueeze(0)).clamp(min = 0)
+    with torch.no_grad():
+        logits = model(ids).logits
+    picked = logits.gather(1, pos.unsqueeze(-1).expand(-1, -1, logits.shape[-1])).to(torch.float32)
+    if temperature != 1.0:
+        picked = picked / temperature
+    out = torch.log_softmax(picked, -1).gather(-1, completion_ids.unsqueeze(-1)).squeeze(-1)
+    return out.masked_fill(~completion_mask.bool(), 0.0)
+
+
+@pytest.mark.parametrize("dtype", (torch.float64, torch.float32, torch.bfloat16))
+@pytest.mark.parametrize("temperature", (1.0, 0.7))
+@pytest.mark.parametrize("columns_per_chunk", (None, 1, 3, 100))
+def test_score_completion_logps_column_chunks_are_bitwise(dtype, temperature, columns_per_chunk):
+    # log_softmax is per position, so scoring the completion a few columns at a time changes no bit.
+    model = KeepCausalLM(vocab = 97, hidden = 16).to(dtype)
+    batch = _left_padded_batch(vocab = 97)
+    want = _reference_score(model, *batch, temperature = temperature)
+    for rows_per_chunk in (None, 1, 2):
+        got = opd.score_completion_logps(
+            model,
+            *batch,
+            temperature = temperature,
+            rows_per_chunk = rows_per_chunk,
+            columns_per_chunk = columns_per_chunk,
+        )
+        assert torch.equal(got, want)
+    if dtype == torch.float64:
+        torch.testing.assert_close(
+            got.double(),
+            _oracle_logps(model, *batch, temperature = temperature),
+            rtol = 1e-6,
+            atol = 1e-6,
+        )
+
+
+def test_columns_per_chunk_bounds_the_float32_copies():
+    assert opd._columns_per_chunk(1, 151936) == (1 << 25) // 151936
+    assert opd._columns_per_chunk(4, 1 << 26) == 1
+    assert opd._columns_per_chunk(0, 0) == 1 << 25
+
+
+def test_score_completion_logps_pads_to_the_synced_chunk_count(monkeypatch):
+    # Another rank has more chunks: this one runs one-token forwards until the counts match, same log-probs.
+    model = KeepCausalLM().double()
+    batch = _left_padded_batch()
+    want = opd.score_completion_logps(model, *batch, rows_per_chunk = 2)
+    seen = []
+    monkeypatch.setattr(opd, "_max_over_ranks", lambda value, device: seen.append(value) or 5)
+    model.widths.clear()
+    got = opd.score_completion_logps(model, *batch, rows_per_chunk = 2, sync_chunks = True)
+    assert torch.equal(got, want) and seen == [2]
+    assert len(model.widths) == 5 and model.widths[2:] == [(1, 1)] * 3
+    # An empty rank still joins every forward.
+    model.widths.clear()
+    empty = [t[:0] for t in batch]
+    out = opd.score_completion_logps(model, *empty, sync_chunks = True)
+    assert out.shape == (0, batch[2].shape[1]) and model.widths == [(1, 1)] * 5
+    # Not synced: no all_reduce, no padding.
+    seen.clear()
+    model.widths.clear()
+    opd.score_completion_logps(model, *batch, rows_per_chunk = 2)
+    assert seen == [] and len(model.widths) == 2
+
+
+def test_forwards_are_collective_off_without_distributed():
+    assert opd.forwards_are_collective(ToyCausalLM()) is False
+    assert opd._max_over_ranks(3, torch.device("cpu")) == 3
+
+
+def test_resolve_teacher_model_refuses_native_sharding(monkeypatch):
+    student = FakeLora(ToyCausalLM())
+    flags = {}
+    for module, check, name in (
+        ("pp_native", "is_pipeline_parallel", "pp"),
+        ("fsdp2_native", "is_native_fsdp2", "fsdp2"),
+        ("tp_native", "is_tensor_parallel", "tp"),
+        ("ep_native", "is_expert_parallel", "ep"),
+    ):
+        fake = types.ModuleType(f"unsloth.models.{module}")
+        setattr(fake, check, lambda model, name = name: flags.get(name, False))
+        monkeypatch.setitem(__import__("sys").modules, f"unsloth.models.{module}", fake)
+    assert isinstance(opd.resolve_teacher_model("base", student), opd.AdapterOffTeacher)
+    for name, label in (("fsdp2", "FSDP2"), ("tp", "tensor parallel"), ("ep", "expert parallel")):
+        flags.clear()
+        flags[name] = True
+        # GKD / DistillationTrainer run the teacher themselves: refused.
+        with pytest.raises(ValueError, match = f"sharded by {label}"):
+            opd.resolve_teacher_model("base", student, who = "GKDTrainer")
+        with pytest.raises(ValueError, match = f"sharded by {label}"):
+            opd.resolve_teacher_model({"a": "base"}, student, who = "DistillationTrainer")
+        # GRPO scores whole forwards, the same number on every rank.
+        teacher = opd.resolve_teacher_model("base", student, sharded_forward_ok = True)
+        assert isinstance(teacher, opd.AdapterOffTeacher)
+    flags.clear()
+    flags["pp"] = True
+    with pytest.raises(ValueError, match = "sharded by pipeline parallel"):
+        opd.resolve_teacher_model("base", student, sharded_forward_ok = True)
+    # A separate teacher is the caller's to place.
+    other = ToyCausalLM()
+    assert opd.resolve_teacher_model(other, student) is other
+
+
+def _run_collective_ranks(
+    opd_path,
+    scenario,
+    tmp_path,
+    timeout = 120,
+):
+    import json
+    import subprocess
+    import sys
+
+    worker = os.path.join(os.path.dirname(__file__), "_opd_collective_worker.py")
+    init_file = tmp_path / f"init_{scenario}"
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", PYTHONPATH = "")
+    procs = [
+        subprocess.Popen(
+            [sys.executable, worker, str(r), "2", init_file.as_uri(), opd_path, scenario],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = env,
+        )
+        for r in range(2)
+    ]
+    results = []
+    for p in procs:
+        try:
+            out, _ = p.communicate(timeout = timeout)
+        except subprocess.TimeoutExpired:
+            for q in procs:
+                q.kill()
+            return None
+        lines = [l for l in out.splitlines() if l.startswith("{")]
+        results.append((p.returncode, json.loads(lines[-1]) if lines else out[-2000:]))
+    return results
+
+
+@pytest.mark.skipif(not torch.distributed.is_available(), reason = "torch.distributed is not built")
+@pytest.mark.parametrize("scenario", ("unequal_lengths", "one_rank_sampled"))
+def test_grpo_distillation_runs_equal_forward_counts_across_ranks(scenario, tmp_path):
+    # Two gloo ranks whose model forwards all-reduce, scoring rollouts of 600 and 1500 tokens (2 vs 4 chunks):
+    # every rank must run the same number of forwards, or the collectives pair up wrongly and hang.
+    results = _run_collective_ranks(OPD_PATH, scenario, tmp_path)
+    assert results is not None, "ranks hung"
+    for code, result in results:
+        assert code == 0, result
+        assert result["equal"], result
+        assert result["counts"][0] == result["counts"][1], result
+
+
+# Opt-in terminal set (unsloth_distillation_terminal_tokens): stop tokens scored as one action.
+
+TERMINAL = (9, 10)
+
+
+def _terminal_batch():
+    prompt_ids, prompt_mask, completion_ids, completion_mask = _left_padded_batch()
+    # Every row ends on a stop: rows 0 and 2 on 9, row 1 on 10; row 1 also has a 9 mid-row.
+    completion_ids = completion_ids.clone()
+    completion_ids[0, 1] = 9
+    completion_ids[1, 1] = 9
+    completion_ids[1, 3] = 10
+    completion_ids[2, 2] = 9
+    return prompt_ids, prompt_mask, completion_ids, completion_mask
+
+
+def _oracle_terminal_logps(
+    model,
+    prompt_ids,
+    prompt_mask,
+    completion_ids,
+    completion_mask,
+    temperature = 1.0,
+):
+    out = torch.zeros(completion_ids.shape, dtype = torch.float64)
+    for b in range(completion_ids.shape[0]):
+        p = prompt_ids[b][prompt_mask[b].bool()]
+        c = completion_ids[b][completion_mask[b].bool()]
+        with torch.no_grad():
+            logits = model(torch.cat([p, c]).unsqueeze(0)).logits[0].double()
+        lp = torch.log_softmax(logits[p.numel() - 1 : p.numel() - 1 + c.numel()] / temperature, -1)
+        for j, t in enumerate(c.tolist()):
+            out[b, j] = torch.logsumexp(lp[j, list(TERMINAL)], 0) if t in TERMINAL else lp[j, t]
+    return out
+
+
+@pytest.mark.parametrize("temperature", (1.0, 0.7))
+@pytest.mark.parametrize("columns_per_chunk", (None, 1))
+def test_score_completion_logps_terminal_set_matches_oracle(temperature, columns_per_chunk):
+    model = ToyCausalLM().double()
+    batch = _terminal_batch()
+    ids = torch.tensor(TERMINAL)
+    got = opd.score_completion_logps(
+        model,
+        *batch,
+        temperature = temperature,
+        columns_per_chunk = columns_per_chunk,
+        terminal_ids = ids,
+    )
+    want = _oracle_terminal_logps(model, *batch, temperature = temperature)
+    torch.testing.assert_close(got.double(), want, rtol = 1e-6, atol = 1e-6)
+    plain = opd.score_completion_logps(model, *batch, temperature = temperature)
+    gap = opd.score_completion_logps(
+        model, *batch, temperature = temperature, terminal_ids = ids, terminal_gap = True
+    )
+    torch.testing.assert_close(
+        gap.double(), (want - plain.double()) * batch[3], rtol = 1e-6, atol = 1e-6
+    )
+    stops = torch.isin(batch[2], ids) & batch[3].bool()
+    assert torch.all(gap[~stops] == 0) and torch.all(gap[stops] > 0)
+
+
+def test_grpo_terminal_set_scores_the_stop_as_one_action(monkeypatch):
+    # The teacher (adapter-off base) and the student split stop mass differently over 9 / 10: with the terminal set,
+    # the stop's advantage is -coef * (log q(set) - log p(set)) on both the rescoring and the sampling-logprob path.
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+    trainer = _grpo_trainer(
+        unsloth_distillation_coef = 0.5, temperature = 1.0, unsloth_distillation_terminal_tokens = "9, 10"
+    )
+    trainer.processing_class = types.SimpleNamespace(convert_tokens_to_ids = int, unk_token_id = None)
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == list(TERMINAL)
+    batch = _terminal_batch()
+    prompt_ids, prompt_mask, completion_ids, completion_mask = batch
+    output = dict(
+        prompt_ids = prompt_ids,
+        prompt_mask = prompt_mask,
+        completion_ids = completion_ids,
+        completion_mask = completion_mask,
+        advantages = torch.zeros(3),
+    )
+    opd.grpo_add_distillation_advantages(trainer, output)
+    student = _oracle_terminal_logps(trainer.model, *batch)
+    teacher = _oracle_terminal_logps(trainer.model.inner, *batch)
+    want = -0.5 * (student - teacher) * completion_mask
+    torch.testing.assert_close(
+        output["unsloth_distillation_advantages"].double(), want, rtol = 1e-5, atol = 1e-5
+    )
+    exact = -0.5 * (
+        _oracle_logps(trainer.model, *batch) - _oracle_logps(trainer.model.inner, *batch)
+    )
+    stops = torch.isin(completion_ids, torch.tensor(TERMINAL)) & completion_mask.bool()
+    assert not torch.allclose(exact[stops], want[stops], atol = 1e-3)
+    torch.testing.assert_close(
+        exact[~stops] * completion_mask[~stops], want[~stops], rtol = 1e-5, atol = 1e-5
+    )
+    # Sampling logprobs: q stays the sampler's, plus the student's own mass on the set's other tokens at the stops.
+    sampled = -torch.rand(completion_ids.shape, dtype = torch.float32)
+    output["sampling_per_token_logps"] = sampled
+    opd.grpo_add_distillation_advantages(trainer, output)
+    plain = _oracle_logps(trainer.model, *batch)
+    want = -0.5 * (sampled.double() + (student - plain) - teacher) * completion_mask
+    torch.testing.assert_close(
+        output["unsloth_distillation_advantages"].double(), want, rtol = 1e-5, atol = 1e-5
+    )
+
+
+def test_grpo_terminal_set_validates(monkeypatch):
+    monkeypatch.setattr(opd, "_require_zoo", lambda flag, option: None)
+
+    class Tok:
+        unk_token, unk_token_id = "<unk>", 0
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|im_end|>": 9, "<|endoftext|>": 10}.get(token, 0)
+
+    def make(value, **args):
+        trainer = _grpo_trainer(
+            unsloth_distillation_coef = args.pop("coef", 1.0),
+            unsloth_distillation_terminal_tokens = value,
+            **args,
+        )
+        trainer.processing_class = types.SimpleNamespace(
+            tokenizer = Tok()
+        )  # a processor wrapping the tokenizer
+        return trainer
+
+    trainer = make("<|im_end|>,<|endoftext|>")
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == [9, 10]
+    trainer = make([10, "<|im_end|>", 10])
+    opd.grpo_setup_distillation(trainer)
+    assert trainer._unsloth_distillation_terminal_ids.tolist() == [10, 9]
+    for value, match in (
+        ("<|im_end|>", "at least two"),
+        ("<|im_end|>,<|nope|>", "not a single token"),
+        ([9, 11], "not a token id"),
+        ([9, -1], "not a token id"),
+        ([9, True], "not a token id"),
+    ):
+        with pytest.raises(ValueError, match = match):
+            opd.grpo_setup_distillation(make(value))
+    with pytest.raises(ValueError, match = "coef is 0"):
+        opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", coef = 0.0))
+    with pytest.raises(ValueError, match = "top_p"):
+        opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", top_p = 0.9, use_vllm = True))
+    for extra, match in (
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(presence_penalty = 0.5)),
+            "presence_penalty",
+        ),
+        (dict(generation_kwargs = {"frequency_penalty": 0.3}), "frequency_penalty"),
+        (dict(generation_kwargs = {"logit_bias": {9: 2.0}}), "logit_bias"),
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(allowed_token_ids = [9])),
+            "allowed_token_ids",
+        ),
+    ):
+        with pytest.raises(ValueError, match = match):
+            opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", use_vllm = True, **extra))
+    # Neutral values pass, and without the terminal set the penalties stay vLLM's business as before.
+    opd.grpo_setup_distillation(
+        make(
+            "<|im_end|>,<|endoftext|>",
+            use_vllm = True,
+            generation_kwargs = {"presence_penalty": 0.0, "logit_bias": {}},
+        )
+    )
+    plain = _grpo_trainer(
+        unsloth_distillation_coef = 1.0, use_vllm = True, generation_kwargs = {"presence_penalty": 0.5}
+    )
+    opd.grpo_setup_distillation(plain)
+    off = _grpo_trainer(unsloth_distillation_coef = 1.0)
+    opd.grpo_setup_distillation(off)
+    assert off._unsloth_distillation_terminal_ids is None
+
+
+def test_grpo_config_declares_the_terminal_set_off_by_default():
+    source = open(RL_SOURCE_PATH, encoding = "utf-8").read()
+    assert (
+        "unsloth_distillation_terminal_tokens : Optional[str] = field(\n        default = None,"
+        in source
+    )
+    assert "unsloth_distillation_terminal_tokens = None," in source
+    assert (
+        "self.unsloth_distillation_terminal_tokens = unsloth_distillation_terminal_tokens" in source
+    )

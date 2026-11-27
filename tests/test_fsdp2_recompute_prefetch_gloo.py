@@ -122,9 +122,8 @@ def test_recompute_does_not_refire_forward_prefetch(tmp_path):
         )
         assert base["fits"] and base["prefetch"], base
         if reentrant:
-            # Reentrant checkpointing runs the forward under no_grad (no FSDP pre-backward hook), so the
-            # recompute's pre-forward runs in full and prefetches the block after it. The kill switch
-            # reproduces that waste (the counter can fail); the default removes it.
+            # Reentrant checkpointing runs forward under no_grad (no FSDP pre-backward hook), so
+            # recompute prefetches the next block; kill switch reproduces it, default removes it.
             assert all(h < b for h, b in zip(head["per_step"], base["per_step"])), (
                 base["per_step"],
                 head["per_step"],

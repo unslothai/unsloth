@@ -263,9 +263,11 @@ def _case_parity(
     ids, labels = batch(bsz)
     parts = world if mode == "fsdp2" else n_mb
     variant = dict(experts = experts, gc = gc)
-    if gc:
-        # unsloth_zoo on its CPU backend, patched before either model is built (as a run imports it first)
+    if gc or mode == "pp":
+        # unsloth_zoo on its CPU backend (its fused CE scores the last stage), patched before either model is built
+        # (as a run imports it first)
         os.environ["UNSLOTH_FORCE_CPU"] = "1"
+    if gc:
         assert dsv41.ensure_checkpoint_replay()
     ref = _reference(mode, ids, labels, parts, steps, dropout, **variant)
     if fault == "reentrant_no_replay":
@@ -351,6 +353,7 @@ def _case_parity(
             }
         )
     opt = torch.optim.SGD(params, lr = 1e-2)
+    routes = dict(getattr(ppn, "PP_FUSED_CE_STATS", {}))
     losses, grads = [], None
     for s in range(steps):
         loss = step()
@@ -369,6 +372,10 @@ def _case_parity(
     if mode == "pp":
         info["stage_calls"] = len(info["stage_calls"])
         info["replays"] = _replay_runs() - replays
+        # last-stage loss routes taken (fused CE vs lm_head + loss_function)
+        info["ce_routes"] = {
+            k: v - routes.get(k, 0) for k, v in getattr(ppn, "PP_FUSED_CE_STATS", {}).items()
+        }
         pp.save_adapter(save_dir)
     elif mode == "tp":
         tpn.save_tp_adapter(model, save_dir)
@@ -675,6 +682,10 @@ def test_deepseek_v41_parallel_matches_one_process(cell):
             )
             if kwargs.get("gc"):
                 assert info["replays"] > 0  # zoo's checkpoint replay ran the recompute
+        # the last stage scored every micro-batch through the fused CE, never building the logits
+        fused = sum(i["ce_routes"].get("fused", 0) for i in infos)
+        assert fused == kwargs.get("n_mb", 2) * 2, [i["ce_routes"] for i in infos]
+        assert sum(i["ce_routes"].get("logits", 0) for i in infos) == 0
         assert sorted(sum((i["owned"] for i in infos), [])) == list(
             range(_config().text_config.num_hidden_layers)
         )

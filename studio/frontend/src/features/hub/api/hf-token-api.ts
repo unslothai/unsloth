@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 export interface SavedHfTokenResponse {
   token: string | null;
@@ -25,10 +25,9 @@ async function parse(response: Response): Promise<SavedHfTokenResponse> {
     | { detail?: unknown }
     | null;
   if (!response.ok) {
-    const detail =
-      body && "detail" in body ? formatFastApiDetail(body.detail) : null;
     throw new Error(
-      detail || `Hugging Face credential request failed (${response.status})`,
+      formatApiErrorBody(body) ??
+        `Hugging Face credential request failed (${response.status})`,
     );
   }
   if (!isSavedHfTokenResponse(body)) {

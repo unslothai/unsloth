@@ -40,8 +40,7 @@ def _pow2_ceil(n: int) -> int:
 
 
 def _slab_size(nbytes: int, slab_bytes: int, remaining: Optional[int]) -> int:
-    """A new slab for an ``nbytes`` tensor. With ``remaining`` (bytes still to place, this tensor included) known, the
-    tail slabs halve with what is left (largest power of two not above it) instead of a whole slab per small module."""
+    """Tail slabs take the largest power of two not above remaining, not one slab per module."""
     size = slab_bytes
     if remaining is not None and remaining < slab_bytes:
         size = 1 << (max(int(remaining), 1).bit_length() - 1)
@@ -105,8 +104,6 @@ class PinnedArena:
         return slab[:nbytes]
 
     def pin_plain(self, tensor: Any) -> Any:
-        """A pinned copy of a plain CPU tensor, as a view into a slab. Falls back to ``pin_memory()``
-        for anything the packing cannot represent exactly."""
         if tensor.device.type != "cpu" or not _packable(tensor):
             return tensor.pin_memory()
         nbytes = tensor.numel() * tensor.element_size()
@@ -116,8 +113,7 @@ class PinnedArena:
         return dst
 
     def pin(self, tensor: Any) -> Any:
-        """Pinned copy of ``tensor``. A traceable wrapper subclass (torchao Int8Tensor and friends) is
-        rebuilt from pinned inner tensors, which is what its own ``pin_memory()`` produces."""
+        """Wrapper subclasses are rebuilt from pinned inner tensors, as its pin_memory() does."""
         from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
         if is_traceable_wrapper_subclass(tensor):
@@ -148,8 +144,7 @@ def packable_bytes(tensors: Any) -> int:
 
 
 def arena_reserved_bytes(tensors: Any, slab_bytes: int = DEFAULT_SLAB_BYTES) -> int:
-    """Pinned bytes an arena sized by ``packable_bytes(tensors)`` reserves for them: its packing replayed in order, and
-    a tensor it hands back to ``pin_memory()`` priced at the host allocator's power-of-two rounding."""
+    """Reserved bytes: packing replayed in order; pin_memory() tensors priced at pow2 rounding."""
     tensors = list(tensors)
     slab_bytes = _pow2_ceil(slab_bytes)
     expected = packable_bytes(tensors)
@@ -172,8 +167,7 @@ def arena_reserved_bytes(tensors: Any, slab_bytes: int = DEFAULT_SLAB_BYTES) -> 
 
 
 def _repoint(param: Any, pinned: Any) -> None:
-    """Make ``param`` read the pinned copy now, so its pageable storage is freed during setup.
-    Group offloading's own offload does exactly this after every forward."""
+    """Repoint param at its pinned copy, freeing pageable storage; group offload does likewise."""
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
     if is_traceable_wrapper_subclass(param):
         names, _ = pinned.__tensor_flatten__()

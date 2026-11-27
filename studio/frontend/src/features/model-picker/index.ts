@@ -3,7 +3,6 @@
 
 export { ModelSelector } from "./components/model-selector";
 export { FolderBrowser } from "./components/model-selector/folder-browser";
-export { invalidateLlamaFlagCatalog } from "./api/llama-flags";
 export { ModelRowMenu } from "./components/model-selector/model-row-menu";
 export {
   formatFootprintBytes,
@@ -11,7 +10,8 @@ export {
   ModelRow,
 } from "./components/model-selector/pickers";
 export {
-  makePinRank,
+  makeRepoPinRank,
+  pinCoversId,
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
