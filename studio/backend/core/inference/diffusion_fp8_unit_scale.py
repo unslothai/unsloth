@@ -129,6 +129,8 @@ _UNSUPPORTED_WORDS = (
     "not supported",
     "unsupported",
     "is only supported",
+    # torch 2.10 sends sm_12x row-wise scales to cuBLASLt, which refuses them (Windows RTX 5090 wheel)
+    "cublas_status_not_supported",
 )
 
 

@@ -206,9 +206,18 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+    try:
         from .diffusion_compile_config import apply
-
         apply()
+    except Exception:  # noqa: BLE001 - best-effort; the tag below must not depend on it
+        pass
+    try:
+        import torch  # noqa: PLC0415
+
+        # Read on its own: a failure above (seen on a Windows torch 2.10 wheel) must not drop the fp8 dispatcher's tag,
+        # or a bundle compiled without the dispatcher would be reused with it.
         tag = getattr(getattr(torch, "compiler", None), "config", None)
         tag = getattr(tag, "cache_key_tag", None)
         if isinstance(tag, str) and tag:
