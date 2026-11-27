@@ -1371,6 +1371,34 @@ def test_live_status_names_a_branch_key_decline_not_a_non_tensor_argument(stub_t
     assert "1 declined: branch key unreadable (KeyError)" in cg.never_engaged((other,))
 
 
+def test_a_declined_call_that_fails_eager_raises_once_and_is_not_retried(stub_torch):
+    """An error in the eager forward of a declined call propagates; the key handler never runs the denoiser again."""
+
+    class Declined(RuntimeError):
+        graph_decline = "declined (test)"
+
+    class Boom(_FakeDiT):
+        def forward(
+            self,
+            hidden_states,
+            timestep = None,
+            return_dict = True,
+        ):
+            self.calls += 1
+            raise MemoryError("out of memory (test)")
+
+    def hook():
+        raise Declined("plan")
+
+    module = Boom()
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, hook)
+    handle = _armed(module)
+    with pytest.raises(MemoryError):
+        handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert module.calls == 1
+    assert handle.stats["refused_branch"] == 1 and handle.stats["refused_object"] == 0
+
+
 @side_stream
 def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch):
     handle = _armed()

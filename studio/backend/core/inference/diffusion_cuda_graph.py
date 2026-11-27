@@ -1876,6 +1876,7 @@ class GraphedForward:
             # no static buffer holds that, and a capture failing on it would poison the graphs of every plain call.
             self.stats["refused_object"] += 1
             return self._eager(eager_args, eager_kwargs)
+        declined = False
         try:
             key = graph_key((args, kwargs))
             if self.protect_keyed is None:
@@ -1902,15 +1903,22 @@ class GraphedForward:
                     branch = extra()
                 except Exception as exc:  # noqa: BLE001 - the hook declines this call: it runs eager
                     self._branch_declined(exc)
-                    return self._eager(eager_args, eager_kwargs)
-                key = key + (("x", branch),)
-            entry = self.cache.get(key)
-            scope = _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
-            # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a later
-            # step of this render still has to record: its scope seals when the render ends (seal_lengths).
-            step_keyed = bool(self.protect_keyed) or callable(extra)
+                    declined = True
+                else:
+                    key = key + (("x", branch),)
+            if not declined:
+                entry = self.cache.get(key)
+                scope = (
+                    _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
+                )
+                # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a
+                # later step of this render still has to record: its scope seals when the render ends (seal_lengths).
+                step_keyed = bool(self.protect_keyed) or callable(extra)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
+            return self._eager(eager_args, eager_kwargs)
+        if declined:
+            # Outside the key handler: an error in the eager forward propagates instead of running it twice.
             return self._eager(eager_args, eager_kwargs)
 
         if entry is None:
