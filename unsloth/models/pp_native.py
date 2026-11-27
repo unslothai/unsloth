@@ -1929,6 +1929,80 @@ class _WireDtypes:
         return dtypes
 
 
+# Last-stage loss routes: "fused" = chunked lm_head + CE (no [mb, seq, vocab] logits), "logits" = lm_head then
+# loss_function. UNSLOTH_PP_FUSED_CE=0 keeps the logits route.
+PP_FUSED_CE_STATS = {"fused": 0, "logits": 0}
+
+
+def _is_causal_lm_loss(fn):
+    """Stock ForCausalLMLoss or unsloth_zoo's drop-in for it: shifted token CE, ignore_index -100."""
+    return getattr(fn, "_unsloth_fused_loss", None) is not None or (
+        getattr(fn, "__name__", None) == "ForCausalLMLoss"
+        and str(getattr(fn, "__module__", "")).startswith("transformers.")
+    )
+
+
+def _fusable_head_weight(head, h):
+    """lm_head's weight when the head is a plain bias-free nn.Linear (or a PEFT layer over one with no live
+    adapter), else None: the fused CE projects with the weight alone."""
+    base = getattr(head, "base_layer", head)
+    if type(base) is not nn.Linear or base.bias is not None:
+        return None
+    if getattr(head, "_unsloth_vocab_parallel", False) or getattr(
+        base, "_unsloth_vocab_parallel", False
+    ):
+        return None  # a vocab-sharded head scores its own shard
+    if base is not head:
+        try:
+            from .fused_label_smoothing import output_head_not_fusable
+        except Exception:
+            return None
+        if output_head_not_fusable(head):
+            return None
+    weight = base.weight
+    if type(weight) not in (torch.Tensor, nn.Parameter) or not weight.is_floating_point():
+        return None
+    if any(
+        getattr(m, a, None) is not None
+        for m in (head, base)
+        for a in ("activation_fake_quantizer", "weight_fake_quantizer")
+    ):
+        return None
+    if h.dtype != weight.dtype and not torch.is_autocast_enabled(h.device.type):
+        return None  # lm_head(h) raises on the mismatch; keep that path's behaviour
+    return weight
+
+
+def _fused_stage_loss(inner, h, labels, num_items_in_batch):
+    """The causal LM loss of lm_head(h) without materializing the logits, or None when it does not apply."""
+    if os.environ.get("UNSLOTH_PP_FUSED_CE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    head = getattr(inner, "lm_head", None)
+    if head is None or not _is_causal_lm_loss(inner.loss_function):
+        return None
+    weight = _fusable_head_weight(head, h)
+    if weight is None:
+        return None
+    try:
+        from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fused_ce_loss
+    except Exception:
+        return None
+    PP_FUSED_CE_STATS["fused"] += 1
+    return unsloth_fused_ce_loss(
+        trainer = None,
+        hidden_states = h,
+        lm_head_weight = weight,
+        lm_head_bias = None,
+        labels = labels,
+        mask = None,
+        n_items = num_items_in_batch,
+        scaling = None,
+        target_gb = None,
+        torch_compile = True,
+        shift_labels = True,
+    )
+
+
 class _PPStageModule(nn.Module):
     """What PipelineStage runs: the whole model's forward on this stage's slice.
 
@@ -1969,8 +2043,8 @@ class _PPStageModule(nn.Module):
 
     def _model_stage_forward(self, input_ids, kwargs):
         """This stage's layers through the model's own pipeline_stage_forward (DeepSeek-V4.1): only the owned
-        layers run and only their engram tables are read. The last stage forms the causal LM loss exactly as the
-        model's forward does (lm_head, loss_function with num_items_in_batch)."""
+        layers run and only their engram tables are read. The last stage forms the causal LM loss as the model's
+        forward does (lm_head, loss_function with num_items_in_batch), through the chunked fused CE when it applies."""
         ctx = self._pp_ctx
         decoder, inner, segments = ctx.stage_forward
         mask = kwargs.get("attention_mask")
@@ -1999,6 +2073,10 @@ class _PPStageModule(nn.Module):
         labels = kwargs.get("labels")
         if labels is None:
             raise RuntimeError("Unsloth: the last pipeline stage needs labels to return a loss.")
+        loss = _fused_stage_loss(inner, h, labels, ctx.num_items_in_batch)
+        if loss is not None:
+            return loss
+        PP_FUSED_CE_STATS["logits"] += 1
         extra = (
             {} if ctx.num_items_in_batch is None else {"num_items_in_batch": ctx.num_items_in_batch}
         )
