@@ -32,7 +32,7 @@ def _custom_rows(*roots: Path):
     rows = []
     for root in roots:
         for row in local_inventory._scan_custom_folder(root):
-            row = local_inventory._promote_to_custom_source(row)
+            row = local_inventory._promote_to_custom_source(row, ())
             row._scan_root = str(root)
             rows.append(row)
     return local_inventory._dedupe_local_models(rows)
@@ -662,7 +662,8 @@ def test_physical_identity_preserves_native_posix_names(tmp_path):
                 load_path = path,
                 source = "lmstudio",
                 model_format = "gguf",
-            )
+            ),
+            (),
         )
         for path in paths
     ]

@@ -59,6 +59,11 @@ def test_legacy_scanner_tags_rows_ollama(tmp_path):
 
 @pytest.mark.parametrize("source", ["hf_cache", "ollama", "hermes"])
 def test_custom_folder_merge_keeps_real_sources(source):
+    # The legacy merge keeps an attributed label: a registered ~/.ollama/models (or a
+    # folder shadowing the HF cache) must not re-stamp its rows as generic custom
+    # entries. The Hub inventory re-attributes parked cache-layout copies to "custom"
+    # unless they sit under a configured cache root (#12258); test_model_services.py
+    # pins that side.
     src = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
         encoding = "utf-8"
     )
