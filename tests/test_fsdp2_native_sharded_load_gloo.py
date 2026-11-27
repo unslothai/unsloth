@@ -36,6 +36,32 @@ def _load_module():
 
 VLM = "trl-internal-testing/tiny-Qwen2_5_VLForConditionalGeneration"
 
+# Tiny transformers 5 MoE decoders: per-expert checkpoints stacked on load (gate and up concatenated for
+# Qwen3-MoE / Mixtral / GLM4-MoE), and gpt-oss's checkpoint already stacked (gate and up interleaved).
+MOE = {
+    "qwen3_moe": (
+        "Qwen3MoeConfig",
+        dict(head_dim = 8, moe_intermediate_size = 8, num_experts = 12, decoder_sparse_step = 1),
+    ),
+    "mixtral": ("MixtralConfig", dict(head_dim = 8, num_local_experts = 12)),
+    "glm4_moe": (
+        "Glm4MoeConfig",
+        dict(
+            head_dim = 8,
+            moe_intermediate_size = 8,
+            n_routed_experts = 12,
+            n_shared_experts = 1,
+            first_k_dense_replace = 1,
+            n_group = 1,
+            topk_group = 1,
+        ),
+    ),
+    "gpt_oss": (
+        "GptOssConfig",
+        dict(head_dim = 8, num_local_experts = 12, layer_types = ["sliding_attention", "full_attention"]),
+    ),
+}
+
 
 def _auto(arch):
     import transformers
@@ -74,6 +100,22 @@ def _save(
                 use_mamba_kernels = False,
             )
         ).bfloat16()
+    elif arch in MOE:
+        import transformers
+
+        name, kwargs = MOE[arch]
+        config = getattr(transformers, name)(
+            vocab_size = 128,
+            hidden_size = 16,
+            intermediate_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 2,
+            num_key_value_heads = 2,
+            num_experts_per_tok = 2,
+            **{**kwargs, **(overrides or {})},
+        )
+        torch.manual_seed(0)
+        model = transformers.AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
     elif arch == "qwen2_5_vl":
         import transformers
 
@@ -131,11 +173,20 @@ def _prep(model, mode):
 
         torch.manual_seed(1)
         if mode == "expert_lora":
+            # Every stacked expert parameter (Nemotron-H up / down, gate_up / down elsewhere).
+            stacks = sorted(
+                {
+                    "experts." + n.rsplit(".", 1)[-1]
+                    for n, p in model.named_parameters()
+                    if n.rsplit(".", 2)[-2] == "experts" and p.ndim == 3
+                }
+            )
+            assert stacks, "no stacked expert parameters"
             config = LoraConfig(
                 r = 4,
                 lora_alpha = 8,
                 target_modules = "all-linear",
-                target_parameters = ["experts.up_proj", "experts.down_proj"],
+                target_parameters = stacks,
                 init_lora_weights = False,
             )
         elif mode == "lora":
@@ -249,12 +300,27 @@ def _case(
     buffer_bytes = sum(
         b.numel() * element_size for n, b in model.named_buffers() if n in state_keys
     )
-    if arch == "nemotron_h":
-        # Every rank reads only its expert stack, in numeric expert order (including 10 and 11).
-        for name, param in model.named_parameters():
-            if ".experts." in name:
-                assert getattr(param, loading._PRELOAD)["shape"][0] == 12
-                assert param.shape[0] == 12 // world
+    if arch == "nemotron_h" or arch in MOE:
+        # Every rank reads only its chunk of each expert stack (in numeric expert order, 10 and 11 included).
+        experts = getattr(model.config, "num_local_experts", None) or getattr(
+            model.config, "num_experts", None
+        )
+        experts = experts or model.config.n_routed_experts
+        stacks = [
+            (n, p)
+            for n, p in model.named_parameters()
+            if n.rsplit(".", 2)[-2] == "experts" and p.ndim == 3
+        ]
+        assert stacks
+        for name, param in stacks:
+            info = getattr(param, loading._PRELOAD)
+            assert info["shape"][0] == experts, (name, info)
+            start, stop = info["rows"]
+            assert param.shape[0] == stop - start > 0, (name, info)
+            assert (start, stop) == (
+                rank * -(-experts // world),
+                min(experts, (rank + 1) * -(-experts // world)),
+            ), (name, info)
     loaded_numel = sum(p.numel() for p in model.parameters())
     full_numel = sum(
         p.numel() for p in AutoModelForCausalLM.from_pretrained(ckpt, **kw).parameters()
@@ -519,6 +585,12 @@ def _spawn(
         ("qwen3", None, "full", False),
         ("nemotron_h", None, "full", False),
         ("nemotron_h", None, "expert_lora", False),
+        ("qwen3_moe", None, "full", False),
+        ("qwen3_moe", None, "expert_lora", False),
+        ("qwen3_moe", {"num_experts": 5}, "full", False),  # 5 experts over 2 ranks: uneven chunks
+        ("mixtral", None, "lora", False),
+        ("glm4_moe", None, "expert_lora", False),
+        ("gpt_oss", None, "full", False),  # checkpoint already stacked: no conversion
         ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
         # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
         ("llama", {"intermediate_size": 37}, "full", "ignore"),

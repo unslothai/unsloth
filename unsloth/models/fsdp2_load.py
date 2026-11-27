@@ -106,7 +106,10 @@ def _refuse_unsharded_forward(
 
 def _guard_expert_lora_shape():
     """PEFT sizes expert LoRA from the parameter's dim 0: give it the whole stack's expert count."""
-    from peft.tuners.lora.layer import ParamWrapper
+    try:
+        from peft.tuners.lora.layer import ParamWrapper
+    except ImportError:
+        return  # no PEFT, or one without target_parameters: no expert LoRA to size
 
     update = ParamWrapper.update_layer
     if getattr(update, _GUARD, False):

@@ -1,0 +1,223 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Native FSDP2 sharded loading of per-expert checkpoints that transformers 5 stacks on load: which checkpoint
+tensors make each expert row, and which layouts keep the refusal (CPU only, no process group)."""
+
+import glob
+import json
+import os
+import sys
+import tempfile
+
+import pytest
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_fsdp2_native_units import _load_native  # noqa: E402
+
+pytest.importorskip("transformers.core_model_loading")
+
+
+def _tp():
+    _load_native()
+    import importlib
+    return importlib.import_module("unsloth.models.tp_native")
+
+
+def _qwen3_moe(directory, experts = 12):
+    import transformers
+
+    config = transformers.Qwen3MoeConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        moe_intermediate_size = 8,
+        num_experts = experts,
+        num_experts_per_tok = 2,
+    )
+    torch.manual_seed(0)
+    model = transformers.AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
+    model.save_pretrained(directory, safe_serialization = True)
+    return model
+
+
+def _meta(directory):
+    import transformers
+    from accelerate import init_empty_weights
+
+    config = transformers.AutoConfig.from_pretrained(directory)
+    with init_empty_weights():
+        return transformers.AutoModelForCausalLM.from_config(config)
+
+
+def _index(directory):
+    files = glob.glob(os.path.join(directory, "*.safetensors"))
+    from safetensors import safe_open
+
+    out = {}
+    for path in files:
+        with safe_open(path, framework = "pt") as f:
+            out.update(dict.fromkeys(f.keys(), path))
+    return out
+
+
+def test_gate_up_rows_are_each_experts_gate_then_up():
+    tp = _tp()
+    with tempfile.TemporaryDirectory() as d:
+        full = _qwen3_moe(d)
+        index = _index(d)
+        aliases = tp._checkpoint_aliases(_meta(d), index, stacked_experts = True)
+        gate_up = aliases["model.layers.0.mlp.experts.gate_up_proj"]
+        assert gate_up[10] == (
+            "model.layers.0.mlp.experts.10.gate_proj.weight",
+            "model.layers.0.mlp.experts.10.up_proj.weight",
+        )
+        assert aliases["model.layers.0.mlp.experts.down_proj"][11] == (
+            "model.layers.0.mlp.experts.11.down_proj.weight",
+        )
+        # Without stacked_experts the converted keys keep the refusal (tensor parallel, pipeline parallel).
+        assert (
+            tp._checkpoint_aliases(_meta(d), index)["model.layers.0.mlp.experts.gate_up_proj"]
+            is None
+        )
+        reader = tp._SliceReader(index)
+        want = full.model.layers[0].mlp.experts.gate_up_proj.detach()
+        assert reader.shape(gate_up) == tuple(want.shape)
+        assert torch.equal(reader.rows_to(gate_up, 5, 12, torch.float32, "cpu"), want[5:12])
+        assert reader.slice_bytes == want[5:12].numel() * 4 and reader.full_bytes == 0
+
+
+def test_missing_expert_keeps_the_refusal():
+    tp = _tp()
+    with tempfile.TemporaryDirectory() as d:
+        _qwen3_moe(d)
+        index = {k: v for k, v in _index(d).items() if ".experts.3.up_proj." not in k}
+        aliases = tp._checkpoint_aliases(_meta(d), index, stacked_experts = True)
+        assert aliases["model.layers.0.mlp.experts.gate_up_proj"] is None
+        assert isinstance(aliases["model.layers.0.mlp.experts.down_proj"], tuple)
+
+
+def test_packed_per_expert_checkpoint_refuses_as_unsupported():
+    """A per-expert checkpoint that does not stack to the model's shape (bitsandbytes 4-bit bytes [n, 1] per
+    expert) raises _TensorByTensorUnsupported, which the pre-quantized load falls back on, before any read."""
+    tp = _tp()
+    from safetensors.torch import load_file, save_file
+
+    with tempfile.TemporaryDirectory() as d:
+        _qwen3_moe(d)
+        for path in glob.glob(os.path.join(d, "*.safetensors")):
+            tensors = load_file(path)
+            for key in list(tensors):
+                if ".experts." in key and key.endswith("down_proj.weight"):
+                    tensors[key] = torch.zeros((tensors[key].numel() // 2, 1), dtype = torch.uint8)
+                    tensors[key + ".absmax"] = torch.ones(2)
+            save_file(tensors, path, metadata = {"format": "pt"})
+        with open(os.path.join(d, "config.json"), encoding = "utf-8") as f:
+            assert "quantization_config" not in json.load(f)
+        model = _meta(d)
+        reads = []
+
+        def read_local(old, reader, key):
+            reads.append(key)
+            return None
+
+        with pytest.raises(tp._TensorByTensorUnsupported, match = "stack to"):
+            tp._fill_from_checkpoint(
+                model, d, {}, torch.device("cpu"), read_local, stacked_experts = True
+            )
+        assert reads == []
+
+
+FAMILIES = {
+    "Qwen3MoeConfig": dict(head_dim = 8, moe_intermediate_size = 8, num_experts = 12),
+    "MixtralConfig": dict(head_dim = 8, num_local_experts = 12),
+    "Glm4MoeConfig": dict(
+        head_dim = 8,
+        moe_intermediate_size = 8,
+        n_routed_experts = 12,
+        n_shared_experts = 1,
+        first_k_dense_replace = 0,
+        n_group = 1,
+        topk_group = 1,
+    ),
+    "DeepseekV3Config": dict(
+        moe_intermediate_size = 8,
+        n_routed_experts = 12,
+        n_shared_experts = 1,
+        first_k_dense_replace = 0,
+        n_group = 1,
+        topk_group = 1,
+        kv_lora_rank = 8,
+        q_lora_rank = 8,
+        qk_rope_head_dim = 4,
+        qk_nope_head_dim = 4,
+        v_head_dim = 8,
+    ),
+    "Qwen3_5MoeTextConfig": dict(
+        head_dim = 8,
+        moe_intermediate_size = 8,
+        shared_expert_intermediate_size = 8,
+        num_experts = 12,
+        linear_num_value_heads = 2,
+        linear_num_key_heads = 2,
+        linear_key_head_dim = 8,
+        linear_value_head_dim = 8,
+    ),
+    "NemotronHConfig": dict(
+        layers_block_type = ["moe", "full_attention"],
+        head_dim = 8,
+        n_routed_experts = 12,
+        moe_intermediate_size = 8,
+        moe_shared_expert_intermediate_size = 8,
+        moe_latent_size = 8,
+        use_mamba_kernels = False,
+    ),
+    "GptOssConfig": dict(head_dim = 8, num_local_experts = 12),
+}
+
+
+@pytest.mark.parametrize("name", sorted(FAMILIES))
+def test_every_stacked_expert_rows_match_the_full_load(name):
+    """For each family: every 3-D expert stack of the loaded model resolves to checkpoint tensors (per-expert
+    keys transformers stacks on load, or one stored stack), and rows [3, 9) read from them equal the full load."""
+    import transformers
+
+    if not hasattr(transformers, name):
+        pytest.skip(f"transformers {transformers.__version__} has no {name}")
+    tp = _tp()
+    config = getattr(transformers, name)(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        num_experts_per_tok = 2,
+        **FAMILIES[name],
+    )
+    torch.manual_seed(0)
+    model = transformers.AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
+    with tempfile.TemporaryDirectory() as d:
+        model.save_pretrained(d, safe_serialization = True)
+        full = transformers.AutoModelForCausalLM.from_pretrained(d, torch_dtype = torch.float32)
+        index = _index(d)
+        meta = _meta(d)
+        aliases = tp._checkpoint_aliases(meta, index, stacked_experts = True)
+        reader = tp._SliceReader(index)
+        stacks = [
+            (n, p)
+            for n, p in full.named_parameters()
+            if n.rsplit(".", 2)[-2] == "experts" and p.ndim == 3
+        ]
+        assert stacks
+        for n, p in stacks:
+            key = tp._checkpoint_key([n], meta, index) or aliases.get(n)
+            assert key is not None, (n, sorted(index)[:4])
+            assert reader.shape(key) == tuple(p.shape), n
+            got = reader.rows_to(key, 3, 9, torch.float32, "cpu")
+            assert torch.equal(got, p.detach()[3:9]), n
