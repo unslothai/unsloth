@@ -1585,7 +1585,6 @@ def _single_frame_lever() -> Optional[str]:
 
 
 def _install_rocm_single_frame_encoder(vae: Any) -> int:
-    """Returns how many encoder convs were wrapped."""
     return _install_single_frame_encoder(vae)[1]
 
 
