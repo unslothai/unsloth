@@ -313,8 +313,6 @@ def _chat_history(task: dict) -> tuple[list[dict], Optional[str]]:
     kept.reverse()
     while kept and kept[0]["role"] != "user":
         kept.pop(0)
-    if kept and kept[-1]["role"] == "user":
-        kept.pop()
     return kept, (branch[-1]["id"] if branch else None)
 
 
@@ -810,19 +808,24 @@ async def generate_answer(
                 raise RunFailed("timeout") from None
             mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
             tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
+            prompt = task["prompt"]
+            has_history = bool(history)
+            if history and history[-1]["role"] == "user":
+                # Keep the unanswered text while sending a single final user turn to strict templates.
+                prompt = f'{history.pop()["content"]}\n\nScheduled task:\n{prompt}'
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
                         {"role": "system", "content": instructions},
                         *history,
-                        {"role": "user", "content": task["prompt"]},
+                        {"role": "user", "content": prompt},
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
                     # History is budgeted in characters, so a small window must drop turns, not fail.
                     **(
                         {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
-                        if history
+                        if has_history
                         else {}
                     ),
                     **tool_fields,

@@ -3282,6 +3282,33 @@ def test_the_sweep_and_task_delete_leave_the_chat_itself(monkeypatch):
     assert studio_db.get_chat_thread("chat-1") is not None
 
 
+@pytest.mark.parametrize("empty_reply", [False, True])
+def test_a_run_keeps_the_trailing_user_text_in_its_final_turn(monkeypatch, empty_reply):
+    messages = [
+        ("q1", None, "user", "Draft the schedule.", 10),
+        ("a1", "q1", "assistant", "Early draft.", 20),
+        ("q2", "a1", "user", "Use Wednesday instead.", 30),
+    ]
+    if empty_reply:
+        messages.append(("a2", "q2", "assistant", "", 40))
+    _chat_with("unanswered", messages)
+    task, run = claim_manual_run(threadId = "unanswered")
+    producer = FakeProducer(completion("Done."))
+    monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+    execute(task, run)
+
+    assert [(m.role, m.content) for m in producer.payload.messages[1:]] == [
+        ("user", "Draft the schedule."),
+        ("assistant", "Early draft."),
+        ("user", "Use Wednesday instead.\n\nScheduled task:\n" + task["prompt"]),
+    ]
+    prompt_id, reply_id = db.message_ids_for_run(run["id"])
+    prompt = studio_db.get_chat_message("unanswered", prompt_id)
+    assert prompt["parentId"] == ("a2" if empty_reply else "q2")
+    assert prompt["content"] == [{"type": "text", "text": task["prompt"]}]
+    assert studio_db.get_chat_message("unanswered", reply_id)["parentId"] == prompt_id
+
+
 def test_a_run_whose_chat_was_deleted_gets_a_chat_of_its_own(monkeypatch):
     make_chat()
     task, run = claim_manual_run(threadId = "chat-1")
