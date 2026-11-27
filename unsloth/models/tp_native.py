@@ -2168,8 +2168,12 @@ def expert_shard_problem(
     tp = None,
     packed = True,
 ):
-    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can. `packed`:
-    accept zoo's frozen packed stacks (expert parallel slices them; tensor parallel cannot regather them)."""
+    """Why `block`'s routed experts cannot be sharded by index over tp exactly, or None when they can. `packed`
+    (expert parallel callers): accept zoo's frozen packed stacks (expert parallel slices them; tensor parallel
+    cannot regather them) and expert LoRA factors trained swapped against vanilla PEFT's (zoo
+    moe_lora_factor_swap: Llama 4, Qwen3-VL-MoE on transformers 5.x). Cutting lora_A rows [E*R] and lora_B
+    columns [R*E] by expert does not depend on which stack side they factor, and the expert parallel save writes
+    vanilla factors from the gathered ones; tensor parallel's save is not proven on them."""
     chain = _experts_chain(block)
     if not chain:
         return "no `experts` child"
@@ -2186,7 +2190,7 @@ def expert_shard_problem(
         names = ()
     if tuple(_EXPERT_CALL_ALIASES.get(n, n) for n in names) != _EXPERT_CALL:
         return f"its experts forward takes {names}, not {_EXPERT_CALL}"
-    if getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
+    if not packed and getattr(type(leaf), "_unsloth_expert_lora_factors_swapped", False):
         return "swapped expert LoRA factors"
     lists = sorted(
         name
@@ -5254,7 +5258,7 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
         ):
             return 0
-        if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
+        if expert_shard_problem(plan["experts"][id(module)], tp, packed = experts_only) is not None:
             return 0
         cuts = {}
         for n, p in params.items():
