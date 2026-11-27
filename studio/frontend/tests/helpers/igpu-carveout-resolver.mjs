@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Own resolver: registering the toast and store-stub resolvers together would hide one's
-// bare specifier from the other.
+// Own resolver: registering it with the toast and store-stub resolvers hides bare specifiers.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

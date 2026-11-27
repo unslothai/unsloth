@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type {
   ChatPresetSource,
   RecommendedSamplingKey,
@@ -103,34 +104,6 @@ interface ConditionalChatSettingsResponse extends ChatSettingsResponse {
 
 export type ChatSettingsPath = [keyof PersistedChatSettings, ...string[]];
 
-function parseErrorText(status: number, body: unknown): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    typeof body.detail === "string"
-  ) {
-    return body.detail;
-  }
-  if (
-    body &&
-    typeof body === "object" &&
-    "detail" in body &&
-    body.detail != null
-  ) {
-    return `Request failed (${status}): ${JSON.stringify(body.detail)}`;
-  }
-  if (
-    body &&
-    typeof body === "object" &&
-    "message" in body &&
-    typeof body.message === "string"
-  ) {
-    return body.message;
-  }
-  return `Request failed (${status})`;
-}
-
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch((error: unknown) => {
     // A 200 cut off or aborted mid-body has no answer; invalid JSON (SyntaxError) still returns null.
@@ -142,7 +115,7 @@ async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   if (!response.ok) {
     // Typed so the settings queue can tell server-down (keep patch) from rejection (drop fields).
     throw new ChatSettingsRequestError(
-      parseErrorText(response.status, body),
+      formatApiErrorBody(body) ?? `Request failed (${response.status})`,
       response.status,
       body && typeof body === "object" && "detail" in body
         ? (body as { detail: unknown }).detail

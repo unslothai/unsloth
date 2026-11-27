@@ -608,9 +608,8 @@ const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
   { gpuGb: 48, systemRamGb: 48, requiresDenseQuant: true },
 ];
 
-// The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
-// tiers. 24 GiB: encoder on the CPU, 21.3 GB card peak, 72.0 + 25.3 GiB host. 48 GiB: encoder on the card, 37.2 GB
-// card peak, 72.1 + 23.6 GiB host. Both need about 97 GiB of RAM, so one tier covers them.
+// Single file keeps its bf16 DiT (no runtime quant), streamed by group offload; both tiers need
+// about 97 GiB RAM, so one 24 GB tier covers them.
 const LTX25_SINGLE_FILE_OFFLOAD_TIERS: readonly OffloadFitTier[] = [{ gpuGb: 24, systemRamGb: 100 }];
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
@@ -1396,8 +1395,7 @@ export interface DeviceBudget {
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
   quantisedStreaming?: boolean;
-  /** Backend-reported extra offload tiers per lower-cased repo id. They only widen catalog tiers
-   *  and are ignored for artifacts without them. */
+  /** Backend extra tiers by lower-cased repo id; only widen catalog tiers, ignored elsewhere. */
   extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
 }
 
@@ -1617,8 +1615,7 @@ function fitsArtifactBudget(
   return sizeGb <= allowanceGb;
 }
 
-/** The artifact a bare group click loads. Sized artifacts normally use the 0.7 * GPU budget;
- *  measured offload tiers can override that fit check. */
+/** Artifact for bare group click: sized ones fit 0.7 * GPU budget; offload tiers can override. */
 export function pickDefaultArtifact(
   group: CatalogGroup,
   input: RoutingInput,

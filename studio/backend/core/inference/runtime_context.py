@@ -55,7 +55,6 @@ def _declared_context_lengths(model: Any) -> Iterator[Any]:
 
 
 def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Optional[int]:
-    """Return the effective context length a loaded model runs with."""
     # Lazy: a transformers load always has a requested length, so it never reads the config.
     candidates = chain(
         (_attached_window(model), fallback),
@@ -90,7 +89,6 @@ def generation_budget_for_window(
 def generation_budget_within_context(
     model: Any, prompt_length: int, max_new_tokens: Optional[int]
 ) -> Optional[int]:
-    """``generation_budget_for_window`` against the window a loaded model declares."""
     return generation_budget_for_window(
         runtime_context_length(model), prompt_length, max_new_tokens
     )

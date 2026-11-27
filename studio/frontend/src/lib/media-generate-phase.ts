@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export interface MediaGeneratePhaseProgress {
-  // enhance (FLUX.3 prompt upsampler) | encode | denoise | decode | export (video); absent or null (sd.cpp) reads as
-  // denoise.
+  // enhance, encode, denoise, decode, export (video); absent or null (sd.cpp) means denoise.
   phase?: string | null;
   step: number;
   total: number;

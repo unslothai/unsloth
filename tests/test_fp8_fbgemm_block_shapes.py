@@ -15,9 +15,9 @@ pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = 
 
 
 def skip_without_fbgemm():
-    # unsloth's own probe, not an sm_90 check, so future arches enable themselves.
-    # Imported here so collection never imports unsloth.
+    # unsloth's probe, not sm_90: new arches enable. Local import keeps collection off unsloth.
     from unsloth.kernels import fp8
+    fp8.resolve_fp8_block_quant_linear()  # the probe is lazy
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
         pytest.skip("needs fbgemm f8f8bf16_blockwise")
 
@@ -156,8 +156,7 @@ def test_non_square_block_uses_dequant_fallback():
 
 @pytest.mark.parametrize("kind", ["per_tensor", "per_tensor_2d", "bf16_scale", "strided_3d"])
 def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
-    # No block grid (0-dim or (1, 1)), a non-float32 scale, or a strided view must not reach
-    # f8f8bf16_blockwise.
+    # Per-tensor grids, non-float32 scales or strided views must not reach f8f8bf16_blockwise.
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)

@@ -68,7 +68,6 @@ class _Download:
         return None
 
     def follow(self):
-        """Every event so far, then each new one, until the pull ends."""
         seen = 0
         while True:
             with self.changed:
@@ -91,8 +90,7 @@ _deleting: list[Optional[frozenset[str]]] = []
 
 @contextmanager
 def downloads_held(model_ids: Optional[Iterable[str]] = None):
-    """Refuse new pulls of model_ids (all when None) during a delete; the lock is held only to check
-    and mark, so a pull is refused, not blocked; NpuBusy if one is already pulling."""
+    """Refuse, not block, pulls of model_ids (all if None) during a delete; NpuBusy if pulling."""
     ids = None if model_ids is None else frozenset(model_ids)
     with _downloads_lock:
         for model_id, job in _downloads.items():

@@ -13,12 +13,10 @@ from pydantic import BaseModel
 
 
 def _python_name_to_cli_flag(name: str) -> str:
-    """Convert python_name to --cli-flag."""
     return "--" + name.replace("_", "-")
 
 
 def _unwrap_optional(annotation: Any) -> Any:
-    """Unwrap Optional[X] to X."""
     origin = get_origin(annotation)
     if origin is not None:
         args = get_args(annotation)
@@ -48,7 +46,6 @@ def _list_element_type(annotation: Any) -> type:
 
 
 def _get_python_type(annotation: Any) -> type:
-    """Get the Python type for annotation."""
     unwrapped = _unwrap_optional(annotation)
     if unwrapped in (str, int, float, bool, Path):
         return unwrapped
@@ -56,8 +53,7 @@ def _get_python_type(annotation: Any) -> type:
 
 
 def _collect_config_fields(config_class: type[BaseModel]) -> list[tuple[str, Any]]:
-    """Flatten config fields (recursing into nested models) into (name, field_info) tuples; raises
-    ValueError on duplicate field names."""
+    """Flatten config fields, including nested models; raises ValueError on duplicate names."""
     fields = []
     seen_names: set[str] = set()
 

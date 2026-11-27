@@ -3592,3 +3592,41 @@ def test_a_count_during_a_dispatched_generation_is_refused_at_once():
 
     assert sent == [], "the count reached a worker that reads no command until the reply ends"
     assert o._gen_lock.acquire(blocking = False), "the refusal kept the generation lock"
+
+
+def test_thought_spans_survive_the_worker_and_the_relay(monkeypatch):
+    import pickle
+
+    from core.inference import worker
+    from core.inference.chat_template_helpers import ThoughtSpans
+
+    snapshot = ThoughtSpans("<think>t</think>A <think>x</think>.")
+    snapshot.thought_spans = ((0, 1),)
+
+    class _Backend:
+        last_generation_stats = None
+
+        def generate_chat_response(self, **_kwargs):
+            yield "plain"
+            yield snapshot
+
+    sent = []
+    monkeypatch.setattr(worker, "_generation_kwargs", lambda *_a: {})
+    # The response queue pickles each message across the process boundary.
+    monkeypatch.setattr(
+        worker,
+        "_send_response",
+        lambda _q, message: sent.append(pickle.loads(pickle.dumps(message))),
+    )
+    worker._handle_generate(_Backend(), {"request_id": "r"}, None, threading.Event())
+
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_mark_worker_started", lambda *_a: None)
+    monkeypatch.setattr(o, "_forget_request", lambda *_a: None)
+    replies = iter(sent)
+    relayed = list(
+        o._consume_token_stream(lambda _t: next(replies), lambda: None, crash_context = "g")
+    )
+    assert relayed == ["plain", str(snapshot)]
+    assert not hasattr(relayed[0], "thought_spans")
+    assert relayed[1].thought_spans == ((0, 1),)

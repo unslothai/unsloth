@@ -7,22 +7,29 @@ const HOURS_PER_DAY = 24;
 const SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR;
 const MAX_DISPLAYABLE_ETA_SECONDS = HOURS_PER_DAY * SECONDS_PER_HOUR;
 
-export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return "N/A";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = Math.min(
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/** Decimal unit (index into B, KB, MB, GB, TB), scaled value and decimals for a byte count. */
+export function scaleBytes(bytes: number): { value: number; unit: number; decimals: number } {
+  let unit = Math.min(
     Math.max(Math.floor(Math.log(bytes) / Math.log(1000)), 0),
-    units.length - 1,
+    BYTE_UNITS.length - 1,
   );
-  let value = bytes / 1000 ** i;
-  let decimals = i > 0 && Number(value.toFixed(1)) < 10 ? 1 : 0;
-  while (i < units.length - 1 && Number(value.toFixed(decimals)) >= 1000) {
-    i += 1;
-    value = bytes / 1000 ** i;
+  let value = bytes / 1000 ** unit;
+  let decimals = unit > 0 && Number(value.toFixed(1)) < 10 ? 1 : 0;
+  while (unit < BYTE_UNITS.length - 1 && Number(value.toFixed(decimals)) >= 1000) {
+    unit += 1;
+    value = bytes / 1000 ** unit;
     decimals = Number(value.toFixed(1)) < 10 ? 1 : 0;
   }
-  return `${value.toFixed(decimals)} ${units[i]}`;
+  return { value: Number(value.toFixed(decimals)), unit, decimals };
+}
+
+export function formatBytes(bytes: number, unitSeparator = " "): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "N/A";
+  if (bytes === 0) return "0 B";
+  const { value, unit, decimals } = scaleBytes(bytes);
+  return `${value.toFixed(decimals)}${unitSeparator}${BYTE_UNITS[unit]}`;
 }
 
 export function formatRate(bytesPerSec: number): string {

@@ -40,7 +40,6 @@ def test_mps_load_wraps_sdpa(mac):
     wrapped = F.scaled_dot_product_attention
     assert wrapped is not mac
     assert getattr(wrapped, "__wrapped__", None) is mac
-    # A later load does not wrap twice.
     _load("mps")
     assert F.scaled_dot_product_attention is wrapped
 

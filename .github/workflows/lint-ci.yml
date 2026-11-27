@@ -64,15 +64,13 @@ jobs:
       # pre-commit. codespell is pinned so typo reports do not flip with its version.
       - run: pip install 'ruff==0.15.12' 'pyyaml>=6' 'codespell>=2.3,<3'
 
-      # Absorbed read-only suites run in the background, overlapping lint, and are collected in the
-      # last step. Each lane has its own venv: concurrent pip installs into one site-packages race.
+      # Suites overlap lint; each lane has its own venv since concurrent pip installs race.
       - name: Start the absorbed suites (background)
         run: |
           set -euo pipefail
           mkdir -p logs .lanes
 
-          # The .rc file is read by the collect step; a lane that never writes one counts as failed.
-          # Redirecting the subshell's stdio is required: the runner waits on inherited pipes otherwise.
+          # Redirect stdio or the runner waits on inherited pipes; a missing .rc means failure.
           lane() {
             name="$1"; shift
             (
@@ -87,8 +85,7 @@ jobs:
 
           echo "launched 2 background lanes"
 
-      # Bounded and retried so a stalled apt fails this step instead of cancelling the whole job.
-      # update and install retry together: retrying install alone re-reads the same broken list.
+      # Update and install retry together: retrying install alone re-reads a broken list.
       - name: Linux deps for shellcheck
         # Two long attempts, not three short ones: a degraded mirror needs time, the bound only stops hangs.
         timeout-minutes: 15
@@ -99,13 +96,11 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends shellcheck || { apt-get update -qq && apt-get install -y --no-install-recommends shellcheck; }'
 
-      # Read-only independent checks run as one parallel group that fails if any fails
-      # (informational steps keep continue-on-error); the two PR-only diff checks stay out, since
-      # concurrent git fetch calls race on .git/shallow.lock.
+      # Read-only checks run as one parallel group (informational steps keep continue-on-error);
+      # PR-only diff checks stay out: concurrent git fetch races on .git/shallow.lock.
       - parallel:
           - name: Python AST/syntax check (every committed .py must compile)
-            # python -m compileall uses the interpreter's own parser, so anything it rejects would
-            # also crash at import on a user's machine; sub-second across 350+ files; hard gate.
+            # Interpreter's own parser: a file it rejects would crash at import; hard gate.
             run: |
               python -m compileall -q -j 0 \
                 unsloth unsloth_cli studio tests cli.py unsloth-cli.py
@@ -132,9 +127,8 @@ jobs:
             run: python scripts/lint_risky_loaders.py
 
           - name: Python ruff check (whole repo)
-            # The narrow ruff rule set in pyproject.toml [tool.ruff.lint] selects E9, F63, F7 and
-            # F82 (syntax errors, broken comparisons, undefined names); the whole repo passes, so it
-            # is a hard gate.
+            # The narrow ruff set in pyproject.toml [tool.ruff.lint] selects E9, F63, F7, F82
+            # (syntax errors, undefined names); the whole repo passes, so it is a hard gate.
             run: |
               ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
 
@@ -155,14 +149,12 @@ jobs:
 
           - name: Duplicate-definition verifier self-test
             # lint_duplicate_definitions.py rejects names bound twice in one scope, which bad merges
-            # leave and compileall and the ruff set (no F811) both pass; its self-test runs first;
-            # stdlib only.
+            # leave and compileall and ruff (no F811) both pass; self-test runs first; stdlib only.
             run: |
               python scripts/lint_duplicate_definitions.py --self-test
 
           - name: Duplicate definitions (whole tree)
-            # The diff-scoped step passes pre-existing findings, so the backlog regrew
-            # to 38 while it was the only gate. Runs on push too.
+            # Diff step passes pre-existing findings, so this whole-tree gate runs on push too.
             run: |
               python scripts/lint_duplicate_definitions.py \
                 unsloth unsloth_cli studio scripts tests cli.py unsloth-cli.py
@@ -323,8 +315,7 @@ jobs:
               echo "$n shell scripts parse cleanly"
 
           - name: YAML files parse cleanly (yaml.safe_load)
-            # Catches truncated workflow files and broken indents in dependabot.yml and pre-commit
-            # configs; includes .github/workflows YAML so a typo in a new workflow shows up at once.
+            # Catches truncated files, bad indents in dependabot.yml, pre-commit and workflows.
             run: |
               python <<'PY'
               import os, pathlib, subprocess
@@ -496,9 +487,8 @@ jobs:
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
       - name: Duplicate definitions (changed Python files)
-        # Diffs the merge base to the PR head with --diff-filter=ACMRT, not M, so added files,
-        # renames and type changes are checked; findings compare by identity, so a duplicate
-        # inserted above the old copy is caught; pre-existing ones go to the whole-tree step.
+        # Diffs merge base to PR head with --diff-filter=ACMRT (not M); findings compare by
+        # identity, so a duplicate above the old copy is caught; pre-existing ones go to whole-tree.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}

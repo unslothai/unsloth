@@ -18,8 +18,7 @@ _TESTS = Path(__file__).resolve().parent
 
 
 def _statements(tree: ast.Module):
-    """Every node except expressions and what lies below them. Imports are statements and an
-    expression never contains a statement, so this finds the same imports as ast.walk."""
+    """Skips expressions (they never contain statements), so the imports found match ast.walk."""
     stack = [tree]
     while stack:
         node = stack.pop()
@@ -58,8 +57,7 @@ def _bare_relative_imports(tree: ast.Module) -> list[int]:
 
 
 def test_modules_imported_top_level_import_their_helpers_without_a_package():
-    # One parse per file, keeping only what the checks need: holding every tree at once cost
-    # most of this test's time in allocation and garbage collection.
+    # Keeps only what checks need; holding every tree at once cost most of the test's time.
     siblings, relative = {}, {}
     for path in _TESTS.glob("test_*.py"):
         tree = ast.parse(path.read_text(encoding = "utf-8"))

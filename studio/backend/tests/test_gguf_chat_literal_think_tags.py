@@ -4,6 +4,7 @@
 import contextlib
 import json
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -77,6 +78,7 @@ def _post(
     stream = True,
     tools = False,
     messages = None,
+    **body,
 ):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: tools)
@@ -95,6 +97,7 @@ def _post(
             "stream": stream,
             "enable_tools": tools,
             "continue_final_message": messages is not None,
+            **body,
         },
         headers = {"X-Unsloth-Events": "1"} if tools else {},
     )
@@ -134,6 +137,28 @@ class _ScriptedToolLoop(_ThinkingGguf):
         yield {"type": "content", "text": f"<think>{self._turns[-1]}</think>{self._answer}"}
         yield {"type": "status", "text": ""}
         yield {"type": "metadata", "finish_reason": "stop"}
+
+
+class _InklingGguf(_ThinkingGguf):
+    reasoning_always_on = False
+    _chat_template = "<|message_model|><|content_thinking|>{{ r }}<|end_message|>"
+
+    def _request_reasoning_kwargs(self, *args, **kwargs):
+        return {"reasoning_effort": "none"}
+
+
+@pytest.mark.parametrize("stream", [True, False], ids = ["sse", "json"])
+@pytest.mark.parametrize("thought", ["Plan.", ""], ids = ["thought", "no_thought"])
+def test_an_inkling_reply_at_effort_none_splits_only_the_servers_thought(
+    monkeypatch, stream, thought
+):
+    frames = [_sse({"reasoning_content": thought})] if thought else []
+    frames += [_sse({"content": _ANSWER}), "data: [DONE]\n"]
+    backend = _InklingGguf(_llama_server(monkeypatch, frames))
+
+    reasoning, content = _post(monkeypatch, backend, stream = stream, reasoning_effort = "none")
+
+    assert (reasoning, content) == (thought, _ANSWER)
 
 
 def test_literal_think_tags_in_the_answer_stay_answer_text(monkeypatch):

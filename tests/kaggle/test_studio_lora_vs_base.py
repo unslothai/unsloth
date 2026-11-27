@@ -33,8 +33,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_it_compares_against_the_file_the_export_actually_made():
-    """A path recomputed here could name a stale GGUF from an earlier run,
-    which would compare the base against something this session never made."""
+    """Compare against the export's reported GGUF, not a recomputed path that could be stale."""
     body = _body("execute")
     assert 'entry["name"] == "gguf_export"' in body
     assert 'exported_gguf = entry.get("gguf")' in body
@@ -83,8 +82,7 @@ def test_a_non_reproducing_base_is_reported_as_a_failure_not_a_pass():
 
 
 def test_the_canary_is_recorded_and_never_asserted():
-    """It is a property of how many steps the training ran, not of the export
-    path. Failing on it would put a training-tuning red under an export name."""
+    """The canary tracks training steps, not the export: it is recorded but never asserted."""
     func = _func("assert_lora_vs_base")
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "CANARY" in ast.unparse(node.test):
@@ -118,8 +116,7 @@ def test_both_models_are_driven_with_the_same_prompt():
 
 
 def test_the_exported_gguf_picked_is_a_model_and_not_an_mmproj_sidecar():
-    """newest_gguf must not pick the mmproj sidecar: llama.cpp accepts it silently and serves text
-    on CPU."""
+    """newest_gguf must skip mmproj: llama.cpp accepts it silently and serves text on CPU."""
     import sys as _sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
     import time as _time  # noqa: PLC0415

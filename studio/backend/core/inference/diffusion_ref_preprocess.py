@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU FLUX.2 edit-reference preprocessing (Lanczos resize + crop + normalise), byte-identical to the CPU path.
-
-`install(pipe)` patches the pipe's image processor; a per-device probe against Pillow gates it, run at load by
-`warm(pipe)` after placement (lazily on the first request for a device warm() did not see). NVIDIA CUDA only
-(kernel not validated on ROCm). `UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS=0` turns it off.
-"""
+"""GPU FLUX.2 edit-ref preprocessing, byte-identical to CPU; install(pipe) patches the processor,
+gated by a per-device Pillow probe in warm(pipe) after placement (lazily for unseen devices);
+NVIDIA CUDA only (kernel not validated on ROCm); UNSLOTH_DIFFUSION_GPU_REF_PREPROCESS=0 disables
+it."""
 
 from __future__ import annotations
 

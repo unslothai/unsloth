@@ -21,6 +21,7 @@ from core.inference.diffusion_prompt_weighting import (
 from core.inference.diffusion_sd_controls import (
     SdControls,
     apply_prompt_controls,
+    chunk_count_runs,
     diffusers_clip_skip,
     guidance_rescale_kwargs,
     record_fields,
@@ -684,6 +685,56 @@ def test_long_plain_prompt_is_chunked_not_truncated(tiny_sdxl):
     short = {"prompt": "a red fox, snowy forest", "negative_prompt": "blurry"}
     assert apply_prompt_controls(tiny_sdxl, SDXL, None, short, guidance = 7.0) is False
     assert short == {"prompt": "a red fox, snowy forest", "negative_prompt": "blurry"}
+
+
+def _clip_len(pipe, text):
+    return len(pipe.tokenizer(text, add_special_tokens = False)["input_ids"])
+
+
+@pytest.mark.parametrize(
+    "short", ["a red fox in a snowy forest, " * 2, "a (red fox:1.3) in a snowy forest"]
+)
+def test_prompt_list_splits_by_chunk_count_and_keeps_solo_embeds(tiny_sdxl, short):
+    import torch
+
+    long = "a grey owl on a mossy branch, " * 7
+    assert 5 <= _clip_len(tiny_sdxl, short) <= 40
+    assert 100 <= _clip_len(tiny_sdxl, long) <= 130
+    jobs = [(short, 1), (long, 2)]
+    runs = chunk_count_runs(None, SDXL, tiny_sdxl, jobs)
+    assert runs == [[jobs[0]], [jobs[1]]]
+
+    def embeds(prompts):
+        kwargs = {"prompt": list(prompts), "negative_prompt": ["blurry"] * len(prompts)}
+        apply_prompt_controls(tiny_sdxl, SDXL, None, kwargs, guidance = 7.0)
+        if "prompt_embeds" not in kwargs:
+            pos, neg, _, _ = tiny_sdxl.encode_prompt(
+                kwargs["prompt"], device = "cpu", negative_prompt = kwargs["negative_prompt"]
+            )
+            return pos, neg
+        return kwargs["prompt_embeds"], kwargs["negative_prompt_embeds"]
+
+    with torch.inference_mode():
+        calls = [embeds([p for p, _ in run]) for run in runs]
+        solo = embeds([short])
+        padded = embeds([short, long])
+    assert len(calls) == 2
+    assert torch.equal(calls[0][0], solo[0]) and torch.equal(calls[0][1], solo[1])
+    assert solo[0].shape[1] == 77 and calls[1][0].shape[1] == 154
+    # batched together, the short row gains an extra empty chunk
+    assert padded[0].shape[1] == 154
+
+
+def test_chunk_count_runs_keeps_order_and_leaves_plain_batches_alone(tiny_sdxl):
+    short_a, short_b = "a red fox", "a grey owl"
+    long = "a grey owl on a mossy branch, " * 7
+    jobs = [(short_a, 1), (short_b, 2), (long, 3), (short_a, 4)]
+    assert chunk_count_runs(None, SDXL, tiny_sdxl, jobs) == [jobs[:2], [jobs[2]], [jobs[3]]]
+    plain = [(short_a, 1), (short_b, 2)]
+    assert chunk_count_runs(None, SDXL, tiny_sdxl, plain) == [plain]
+    same = [(long, 1), (long, 2)]
+    assert chunk_count_runs(None, SDXL, tiny_sdxl, same) == [same]
+    assert chunk_count_runs(None, FLUX, tiny_sdxl, jobs) == [jobs]
 
 
 # --- SD 1.x layout (one CLIP encoder, final_layer_norm after a skipped layer) ---

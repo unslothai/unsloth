@@ -34,6 +34,7 @@ const { uploadStagedSources } = loadWithStubs<typeof Dropzone>(
     "@/lib/toast": { toast },
     "@/lib/dropped-folders": {},
     "@/features/native-intents": {},
+    "@/features/hub/lib/format": {},
     "@/features/chat/stores/chat-runtime-store": {},
     "./vision-overrides": {
       resolveVisionOverrides: async () => ({ ocr: undefined, caption: undefined }),

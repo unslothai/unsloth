@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pairs the two expert files of a dual-expert (Wan2.2-A14B) video DiT by high/low noise token;
-high-noise is transformer, low-noise is transformer_2."""
+"""Pairs Wan2.2-A14B experts by high/low noise token (high: transformer, low: transformer_2)."""
 
 from __future__ import annotations
 
@@ -10,7 +9,6 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-# "high_noise", "high-noise", "high noise", "highnoise" / "HighNoise": the noise word follows directly.
 _EXPERT_RE = re.compile(r"(high|low)([_\- ]?noise)", re.IGNORECASE)
 
 
@@ -50,7 +48,6 @@ def moe_expert_pair(filename: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 def moe_pick_pairs(fam: Any, *names: Optional[str]) -> bool:
-    """Single-file or GGUF pick: loadable for single-DiT, or MoE whose name pairs its partner."""
     if not getattr(fam, "is_moe", False):
         return True
     return any(moe_partner_filename(Path(str(n)).name if n else None) for n in names if n)

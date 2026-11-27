@@ -3,6 +3,7 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
@@ -303,12 +304,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         });
 
         if (!response.ok) {
-          let message = t("auth.updateFailed");
-          const errorPayload = (await response
-            .json()
-            .catch(() => null)) as { detail?: string } | null;
-          if (errorPayload?.detail) message = errorPayload.detail;
-          throw new Error(message);
+          const errorPayload = await response.json().catch(() => null);
+          throw new Error(
+            formatApiErrorBody(errorPayload) ?? t("auth.updateFailed"),
+          );
         }
 
         token = (await response.json()) as TokenResponse;

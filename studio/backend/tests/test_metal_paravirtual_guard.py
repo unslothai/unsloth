@@ -296,8 +296,7 @@ def test_a_real_mac_keeps_its_offload_flags(monkeypatch):
 
 
 def test_gpu_companions_are_pinned_to_cpu_too():
-    """--gpu-layers 0 does not reach them: clip.cpp offloads per mmproj_use_gpu (default true), and
-    the drafter's params.speculative.draft.n_gpu_layers defaults to -1 (auto)."""
+    """--gpu-layers 0 misses mmproj (mmproj_use_gpu default true) and drafter n_gpu_layers -1."""
     src = _load_model_source()
     assert '"--no-mmproj-offload"' in src
     # Drafter flag name comes from the probe, never a literal; --spec-draft-ngl needs b8955 or newer.
@@ -416,8 +415,7 @@ def test_the_companion_pins_are_keyed_on_the_hardware_not_the_request():
 
 
 def test_a_user_owned_drafter_is_pinned_to_cpu_too():
-    """A user --spec-type makes _build_speculative_flags emit nothing, so their
-    --model-draft never appeared in spec_flags and the drafter kept running corrupt."""
+    """User --spec-type empties _build_speculative_flags, so their --model-draft ran corrupt."""
     user_extras = ["--spec-type", "draft-simple", "--model-draft", "/models/d.gguf"]
     backend = llama_cpp.LlamaCppBackend()
     assert (
@@ -737,8 +735,7 @@ def test_a_drafter_free_spec_mode_keeps_the_speculation_it_asked_for():
 
 
 def test_a_sibling_drafter_still_goes_when_unsloth_owns_the_spec_block():
-    """The negative for the case above: with no user --spec-type the resolver may emit
-    --model-draft for the sibling, so it is a real placement and still drops."""
+    """With no user --spec-type, a sibling --model-draft is a real placement and still drops."""
     drafter, out, warnings = _drafter_gate(paravirtual = True, caps = {}, extra_args = ["--top-k", "40"])
     assert drafter is None
     assert out == ["--top-k", "40"]
@@ -836,8 +833,7 @@ def test_a_diffusion_split_that_cannot_be_pinned_is_refused():
 
 
 def test_the_hf_diffusion_refusal_also_lands_above_the_teardown():
-    """An HF load has no gguf_path before Phase 1, so the refusal used to fire after the healthy
-    server was killed and the model downloaded; the cheap shim probe now gates the preflight."""
+    """The refusal must precede the server kill: an HF load has no gguf_path before Phase 1."""
     src = _load_model_source()
     probe_at = src.index("_pv_diffusion_unpinnable = bool(")
     kill_at = src.index("self._kill_process()")
@@ -848,8 +844,7 @@ def test_the_hf_diffusion_refusal_also_lands_above_the_teardown():
 
 
 def test_the_crash_replay_keeps_the_extras_the_caller_still_sends():
-    """The replay launches a stripped list but the caller keeps sending the original, so
-    a comparator seeing only the stripped one would reload the MTP setup that crashed."""
+    """Comparators must see the caller's original extras, else the crashed MTP setup reloads."""
     src = inspect.getsource(llama_cpp.LlamaCppBackend._maybe_recover_from_mtp_crash)
     load_at = src.index("self.load_model(fallback)")
     restore_at = src.index("self._requested_extra_args = (")
@@ -925,8 +920,7 @@ def test_a_load_with_no_separate_drafter_is_unaffected():
 
 
 def test_mtp_detection_reads_every_accumulated_type():
-    """llama.cpp inserts each --spec-type rather than replacing, and applies the env
-    first, so MTP is on if ANY source names it. The VRAM budget rides on reading them all."""
+    """Each --spec-type accumulates, so MTP is on if any source names it; VRAM needs all."""
     f = llama_cpp._extra_args_requests_mtp
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert f(["--spec-type", "ngram-mod"], env) is True
@@ -1049,8 +1043,7 @@ def test_the_split_mode_override_outlives_the_pass_through_extras():
 
 
 def test_the_mtp_read_judges_the_env_the_child_will_actually_get():
-    """An inherited draft-mtp is scrubbed whenever Unsloth owns the spec block, so os.environ would
-    describe a server without MTP; the env counts only when extras own --spec-type."""
+    """Env MTP counts only when extras own --spec-type, since Unsloth scrubs it otherwise."""
     env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
     assert llama_cpp._child_spec_env([]) == {}
     assert llama_cpp._extra_args_requests_mtp([], llama_cpp._child_spec_env([])) is False
@@ -1110,8 +1103,7 @@ def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
 
 
 def test_the_startup_fallback_records_the_extras_it_actually_launched():
-    """The fallback launched without the spec group, so keeping the MTP list as launched lets the
-    next Apply inherit it and repeat the crash; only the requested state keeps it."""
+    """Recording MTP after a fallback without spec group would repeat the crash on next Apply."""
     src = _load_model_source()
     strip_at = src.index("_fb_stripped_extras = strip_shadowing_flags(")
     swap_at = src.index("extra_args = _fb_stripped_extras")
@@ -1183,8 +1175,7 @@ def _target_state_auto(
 
 
 def _gpu_pin_recorders():
-    """Every `if` in load_model that writes self._gpu_ids, in source order. load_model
-    records the pin more than once, so judging one site would miss a later overwrite."""
+    """Every if in load_model writing self._gpu_ids, since the pin is recorded more than once."""
     tree = _load_model_tree()
     found = [
         node
@@ -1494,9 +1485,8 @@ def test_the_normalizer_still_runs_for_a_request_that_already_asks_for_cpu():
 
 
 def test_the_normalizer_keeps_extras_it_has_no_business_touching():
-    """The negatives: a CPU-targeted override does what this fallback does, a --split-mode
-    is neutralised at the launch instead (the comparators compare the stored list
-    verbatim), and "no opinion" must stay None, not become []."""
+    """A -ot exps=CPU override and --split-mode are left as-is (the latter is neutralised at launch,
+    as comparators compare stored extras verbatim); None stays None, not []."""
     out = _normalized(extra_args = ["-ot", "exps=CPU", "-sm", "row", "--temp", "0.7"])
     assert out.extra_args == ["-ot", "exps=CPU", "-sm", "row", "--temp", "0.7"]
     assert _normalized(extra_args = None).extra_args is None
@@ -1633,8 +1623,7 @@ def _load_request(gguf, **overrides):
 
 
 def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkeypatch, tmp_path):
-    """API clients, a second tab and saved presets keep sending Auto, which the browser normalized
-    echo does not cover; it never covers the extras box, which the UI does not round-trip."""
+    """API clients keep sending Auto, and the browser echo never covers the extras box."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(
@@ -1657,8 +1646,7 @@ def test_a_repeat_auto_request_with_extras_matches_the_cpu_server_it_left(monkey
 
 
 def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
-    """The negative that keeps the normalization honest: off this hardware an Auto request
-    against a Manual/0 server is a genuine settings change and must reload."""
+    """On a real Mac an Auto request against Manual/0 is a genuine change and must reload."""
     _real_mac_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "40"])
@@ -1667,8 +1655,7 @@ def test_the_same_pair_still_mismatches_on_a_real_mac(monkeypatch, tmp_path):
 
 
 def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
-    """Normalizing must not swallow a real edit: only the offload family and GPU-bound
-    tensor overrides are rewritten, so a changed sampler flag is still a change."""
+    """Only offload and GPU-bound tensor overrides are rewritten, so other edits still count."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["--top-k", "40"])
     request = _load_request(gguf, llama_extra_args = ["--top-k", "20"])
@@ -1677,8 +1664,7 @@ def test_a_genuinely_different_extras_box_still_reloads(monkeypatch, tmp_path):
 
 
 def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch, tmp_path):
-    """Pin overrides --split-mode at launch rather than stripping it, so stored extras still say
-    tensor while nothing tensor launched; judging the raw extras would reload on every Apply."""
+    """Pin overrides --split-mode at launch; the stored tensor extras must not force a reload."""
     _paravirtual_everywhere(monkeypatch)
     backend, gguf = _cpu_server(monkeypatch, tmp_path, launched_extras = ["-sm", "tensor"])
     request = _load_request(gguf, llama_extra_args = ["-sm", "tensor"], tensor_parallel = True)
@@ -1690,8 +1676,7 @@ def test_a_tensor_split_mode_in_extras_does_not_reload_a_cpu_server(monkeypatch,
 
 
 def test_a_dropped_drafter_does_not_reload_over_the_extras_it_rewrote(monkeypatch, tmp_path):
-    """Drop strips the spec group and stores the rewrite, but a caller resending its own list
-    mismatches the launched one and reloads on every Apply without bound."""
+    """A caller resending its own list would reload on every Apply after a dropped drafter."""
     _paravirtual_everywhere(monkeypatch)
     asked = ["--draft-max", "8", "--top-k", "40"]
     backend, gguf = _cpu_server(

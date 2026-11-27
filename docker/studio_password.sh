@@ -21,8 +21,7 @@ JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 STATE="${UNSLOTH_STUDIO_PASSWORD_STATE:-}"
 [[ -z "$STATE" && -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]] && STATE=initial
 
-# Same rules as studio/backend/auth/bootstrap_timeout.py: unset/blank/malformed = 3600,
-# <= 0 disables; whitespace stripped and single underscores allowed, as int() does.
+# Same as bootstrap_timeout.py (int() syntax): unset/blank/malformed = 3600; <= 0 disables.
 raw="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}"
 raw="${raw#"${raw%%[![:space:]]*}"}"
 raw="${raw%"${raw##*[![:space:]]}"}"

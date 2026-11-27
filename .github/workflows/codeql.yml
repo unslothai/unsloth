@@ -1,6 +1,4 @@
-# CodeQL advanced setup (replaces default setup) with the same four languages, query suite and
-# threat model; weekly and manual runs only, since each PR push queued twice and each main merge
-# cached a new overlay base.
+# Replaces default setup; weekly/manual only: PR pushes queued twice; main merges cached bases
 name: CodeQL
 
 on:
@@ -8,8 +6,7 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
-# One group per ref. A dispatch while the weekly run is going waits for it rather than
-# cancelling it: each analysis scans the whole tree, so the later run covers the same commits.
+# A dispatch waits rather than cancelling the weekly run; each analysis scans the whole tree.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -44,16 +41,14 @@ jobs:
           category: "/language:${{ matrix.language }}"
 
   # Keeps one overlay-base database per language on main (per-push saves of about 1.3 GB pushed the
-  # repo to its 50 GiB ceiling); restores take the newest per prefix; the save lands inside analyze,
-  # so the entry exists before this job runs; a separate job keeps actions: write off the CodeQL
-  # action.
+  # repo to its 50 GiB ceiling); restores take the newest per prefix; the save runs in analyze, so
+  # the entry exists before this job; a separate job keeps actions: write off the CodeQL action
   prune-overlay-bases:
     name: Prune superseded CodeQL overlay bases
     needs: analyze
     # Only main saves overlay bases; a dispatch on another branch has nothing to prune.
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.analyze.result != 'skipped' }}
-    # A rarely requested hosted label, so this API-only job starts in minutes while the
-    # ubuntu-latest queue is hours deep. It needs only gh and coreutils, both on the image.
+    # ARM label starts in minutes vs hours on ubuntu-latest; only gh and coreutils are needed.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
@@ -74,8 +69,7 @@ jobs:
             echo "::warning::could not list overlay-base caches; nothing pruned"
             exit 0
           fi
-          # Same prefix rule as cache-janitor.yml: strip -<40-hex sha>-<run id>-<attempt>.
-          # Group per (version, prefix); newest first; delete everything after the first.
+          # Strip the suffix as cache-janitor.yml does; keep the newest per (version, prefix).
           freed=0; deleted=0; prev=""
           while IFS=$'\t' read -r group created id size; do
             [ -z "${id:-}" ] && continue

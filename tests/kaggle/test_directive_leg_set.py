@@ -44,9 +44,7 @@ NOT_EXPORTING = ("latest_compile", "gptoss")
 
 
 def test_the_cheap_legs_export_a_gguf_and_run_it():
-    """The flag is what turns on the export AND the inference against the
-    exported file, so a leg without it makes neither claim. At least one leg
-    has to keep it or the directive's llama.cpp item is uncovered."""
+    """--export-gguf gates export and inference; one leg keeps it or llama.cpp is uncovered."""
     missing = [n for n in EXPORTING if "--export-gguf" not in legs.LEGS[n].args]
     assert missing == [], f"these legs never export a GGUF: {missing}"
 
@@ -63,8 +61,7 @@ def test_the_expensive_exports_stay_off():
 
 
 def test_at_least_one_wired_leg_still_exports():
-    """The rule above must not pass by removing every export, so this reads KERNELS rather than a
-    local list; dropping the exporting leg from the wired set fails too."""
+    """Reads KERNELS, not a local list: removing every export, or the exporting leg, fails."""
     wired = {name for kernel in legs.KERNELS for name in kernel}
     exporting = [n for n in wired if "--export-gguf" in legs.LEGS[n].args]
     assert exporting, (
@@ -90,8 +87,7 @@ def test_the_grpo_leg_cannot_share_a_card():
 
 
 def test_no_directive_leg_is_scheduled_beside_a_co_tenant_it_cannot_fit():
-    """A vram_gb over the budget means exclusive; two legs that each need most
-    of a card must not both claim to fit beside something."""
+    """A vram_gb over budget is exclusive: two legs each needing most of a card cannot share."""
     budget = 13.0
     for name in DIRECTIVE:
         vram = legs.LEGS[name].vram_gb

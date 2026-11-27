@@ -91,9 +91,7 @@ def row_bucket(m: int) -> int:
 
 
 FILL_TIE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES"
-# Race timings this close to the fastest winner are a tie. L4, 3072x9216 at 4224 rows: the same tile's sustained race
-# timing moved 1.7-5.7% between loads, and a 256-row tile won by 2.1% while it runs 2.4% slower sustained at 4176 rows
-# (2252 vs 1779 us in the pipeline) than the 128-row tile it beat.
+# Timings within 3% of the fastest winner are a tie; sustained timings moved 1.7-5.7% between loads.
 _FILL_TIE = 0.03
 
 
@@ -153,7 +151,6 @@ def slot(m: int, entry: dict) -> Optional[int]:
 
 
 def large_slots(entry: dict) -> tuple:
-    """Tiles of the entry's slots that serve M >= ``_LARGE_M``."""
     return tuple(v for r, v in entry.items() if r >= _LARGE_M)
 
 
@@ -483,8 +480,7 @@ def _is_oom(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
-# Out-of-memory failures inside ``_probe_tile``, counted here: the allocator's num_ooms stays 0 under
-# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
+# OOMs counted here: num_ooms stays 0 under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync.
 _PROBE_OOMS: list = [0]
 _PROBED: dict = {}
 # The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, this module's source, and
@@ -530,8 +526,7 @@ def _stored_tiles(index: int, fam: int) -> Optional[tuple]:
 
 
 def _alloc_failures(index: int) -> Optional[int]:
-    """The caching allocator's out-of-memory count on ``index`` after a sync; None when the context cannot answer
-    (a sticky launch error). Never raises."""
+    """OOM count after sync; None if context cannot answer (sticky launch error); never raises."""
     try:
         import torch
         torch.cuda.synchronize(index)
@@ -566,8 +561,7 @@ def probed_tiles(index: int) -> tuple:
                 probe_ooms = _PROBE_OOMS[0]
                 ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
-                # a failure persists only when it repeats and nothing around it failed: one transient error, an
-                # out-of-memory on a full card or a broken context must not drop a tile for good
+                # Drop a tile for good only if its failure repeats and nothing else failed.
                 repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
                 after = _alloc_failures(index)
                 if _PROBE_OOMS[0] != probe_ooms or (
@@ -620,7 +614,6 @@ _CLOCK_DRIFT = 0.05
 
 
 def sustained_decides(m: int, short: dict, sustained: dict, base_name: str) -> tuple:
-    """(decide on the sustained timings, today's sustained / short - 1)."""
     try:
         drift = float(sustained[base_name]) / float(short[base_name]) - 1.0
     except (KeyError, TypeError, ZeroDivisionError):
@@ -661,6 +654,53 @@ def time_sustained_us(
         end.synchronize()
         out[name] = start.elapsed_time(end) * 1000.0 / n
     return out
+
+
+PAIRED_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_PAIRED"
+
+
+def paired_enabled() -> bool:
+    raw = (os.environ.get(PAIRED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+# DiT classes whose large-row races (1024 to 8191 rows) also take the pair check: H3-Image (~4100 rows) lost ~5% on Ada.
+PAIRED_ROW_FAMILIES = ("MiniMaxH3ImageTransformer2DModel",)
+_PAIRED_ROWS: dict = {}
+
+
+def set_paired_rows(index: Any, transformer: Any) -> bool:
+    on = type(transformer).__name__ in PAIRED_ROW_FAMILIES
+    _PAIRED_ROWS[index] = on
+    return on
+
+
+def paired_rows(index: Any) -> bool:
+    return bool(_PAIRED_ROWS.get(index))
+
+
+def paired_for(m: int, index: Any = None) -> bool:
+    """Pair-check the 16384-row race, plus large-row races on a ``PAIRED_ROW_FAMILIES`` card. Not other image
+    families: on L4 it vetoed FLUX.2 klein / Qwen-Image-2.1 winners, costing up to 3% a render."""
+    if not (paired_enabled() and sustained_for(m)):
+        return False
+    return m >= _HUGE_M or (m >= _LARGE_M and index is not None and paired_rows(index))
+
+
+def paired_cost_us(fns: dict, base_name: str) -> dict:
+    """{name: us per call} of each candidate run back to back as (candidate, today's path) pairs, minus today's share.
+
+    A candidate timed alone runs at the clock its own draw leaves on a power-capped card. In a denoise step the clock
+    is set by every kernel together: a GEMM that draws more per cycle lowers the clock of the attention and GEMMs
+    around it too, which no timing of it alone sees. Each pair here runs at the clock both halves set, so the pair's
+    excess over a (today's path, today's path) pair is the candidate's cost in the step. RTX 6000 Ada (300 W), MiniMax-H3
+    video: the CUTLASS tiles won every H3 shape alone, sustained, yet the step ran 13% slower on them (SM clock 1240 ->
+    1035 MHz at the same 291 W)."""
+    base = fns[base_name]
+    pairs = {name: (lambda fn = fn: (fn(), base())) for name, fn in fns.items()}
+    t = time_sustained_us(pairs)
+    half = t[base_name] / 2.0
+    return {name: (half if name == base_name else us - half) for name, us in t.items()}
 
 
 def time_us(
@@ -757,6 +797,19 @@ def race(
     dims = tiles(fam)
     rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
     best, fastest = pick(timing, top, base_name, m, rows)
+    if best is not None and paired_for(m, index) and (m >= _HUGE_M or info.get("sustained")):
+        # winners must also win where the clock is shared with today's path; below video rows only when the
+        # sustained timings decided (a clock-stable card keeps its short-timing winners)
+        wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
+        with torch.cuda.device(dev):
+            paired = paired_cost_us(
+                {base_name: fns[base_name], **{t: fns[t] for t in wins}}, base_name
+            )
+        info["paired_us"] = {str(k_): round(v, 1) for k_, v in paired.items()}
+        kept, fastest_paired = pick(paired, wins, base_name, m, rows)
+        if kept != best:
+            info["paired_veto"] = best  # the tile the timings alone picked
+        best, fastest = kept, fastest_paired
     if best != fastest:
         info["fill_tie"] = (
             fastest  # the faster winner this race passed over for a fuller last row tile

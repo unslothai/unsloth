@@ -26,8 +26,7 @@ _PROFILES: dict[str, tuple[str, tuple[int, int], str]] = {
 
 
 def _cuda_spoof():
-    """Load the sibling CUDA spoof by path (robust to sys.path), so we reuse its
-    torch.cuda machinery instead of duplicating it."""
+    """Load the sibling CUDA spoof by path (robust to sys.path) to reuse torch.cuda machinery."""
     if "_zoo_aggressive_cuda_spoof" in sys.modules:
         return sys.modules["_zoo_aggressive_cuda_spoof"]
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_zoo_aggressive_cuda_spoof.py")
@@ -39,8 +38,7 @@ def _cuda_spoof():
 
 
 def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
-    """Present torch as `gfx`. Re-callable to switch arch (identity is overlaid;
-    the underlying no-op machinery is applied once)."""
+    """Present torch as gfx; re-callable to switch arch, no-op machinery applied once."""
     import torch
 
     if gfx not in _PROFILES:

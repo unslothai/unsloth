@@ -13,6 +13,7 @@ import {
   type SystemInfoStatus,
   vulkanRetryDelayMs,
 } from "./system-discovery";
+import type { RepairRecommendation } from "@/features/settings/components/repair-recommendation";
 
 export interface GpuDevice {
   index?: number;
@@ -67,6 +68,10 @@ export interface SystemInfoResponse {
   nvfp4_diffusion?: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
   checkpoint_quant_formats?: string[];
+  /** Checkpoint kinds that load but run dequantized to 16-bit here ("fp8_rowwise"). Absent on older backends. */
+  checkpoint_quant_dequant_only?: string[];
+  /** Windows: an existing home older than the managed torch. Null or absent otherwise. */
+  repair_recommendation?: RepairRecommendation | null;
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
   /** GiB VRAM / GiB available RAM per lower-cased repo id. Absent on older backends. */

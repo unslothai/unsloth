@@ -30,8 +30,7 @@ try {
   }
 } catch (e) {}
 
-// macOS defaults the UI font to the system font (index.css html.client-mac); set before
-// first paint so Inter never flashes. Follows the browser OS, not the possibly remote server.
+// Set client-mac from the browser OS, not the server, before paint so Inter never flashes.
 try {
   if (/Macintosh/.test(navigator.userAgent)) {
     document.documentElement.classList.add("client-mac");

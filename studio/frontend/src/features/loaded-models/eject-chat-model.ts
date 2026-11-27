@@ -59,8 +59,7 @@ export async function ejectChatModel(
   // holds would still stop the active model's queues; a failed read keeps the row's own word.
   const cachedNow = await deps.readCached?.().catch(() => undefined);
   if (cachedNow === undefined ? deps.cachedRow : holdsTarget(cachedNow)) {
-    // A cached row is never the active model, so the scoped read can never
-    // match it. Name it directly: the Transformers backend can still hold it.
+    // A cached row is never active, so scoped reads miss it; Transformers can still hold it.
     await deps.unload(target);
     // /unload answers 200 for a name no longer held, so confirm with a re-read.
     const survived = holdsTarget(await deps.readCached?.());

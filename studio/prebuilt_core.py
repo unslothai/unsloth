@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared core of the ggml prebuilt installers: verified downloads, safe extraction, install lock,
-and descriptor-driven release resolution and activation. Collaborators take an ops handle that
-resolves names in the caller's module first, so monkeypatches still apply."""
+"""ggml installer core: verified downloads, safe extraction, install lock; monkeypatchable ops."""
 
 from __future__ import annotations
 
@@ -121,12 +119,10 @@ _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Toolkit 12.8+ prebuilts use nvcc -compress-mode=size, "not compatible with drivers released
-# before CUDA Toolkit's 12.4 Release" (nvcc docs): every kernel load fails (#12842).
+# 12.8+ nvcc -compress-mode=size: every kernel load fails on drivers older than 12.4 (#12842).
 _COMPRESSED_FATBIN_MIN_DRIVER = (12, 4)
 
-# Blackwell floor is sm_100 (B100/B200 sm_100, B300/GB300 sm_103 below consumer
-# RTX 50 sm_120); the family needs toolkit >= 12.8, sm_103/sm_121 need 12.9.
+# Blackwell floor is sm_100 and the family needs toolkit >= 12.8; sm_103 and sm_121 need 12.9.
 _BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 _BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
@@ -137,8 +133,7 @@ def log(message: str) -> None:
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
-    """Runtime lines a driver of this CUDA major can use (its own major and any
-    older one, newest first down to the minimum we ship)."""
+    """Runtime lines for a driver of this CUDA major: its own major and older, newest first."""
     return [f"cuda{m}" for m in range(major, _MIN_CUDA_MAJOR - 1, -1)]
 
 
@@ -257,8 +252,7 @@ class ComponentDescriptor:
 
 
 def component_namespace(descriptor: ComponentDescriptor) -> dict[str, Any]:
-    """Materialize a descriptor into the module-like namespace ``ModuleOps``
-    resolves against; core defaults cover anything not listed here."""
+    """Namespace for ModuleOps to resolve against; core defaults cover unlisted names."""
     prefix = descriptor.log_prefix
 
     def component_log(message: str) -> None:
@@ -415,8 +409,7 @@ def is_retryable_url_error(exc: Exception) -> bool:
 
 
 def _http_error_retry_delay(exc: Exception) -> float | None:
-    """Recommended wait from rate-limit headers on a 403 or 429; None when no header is present or
-    the wait exceeds _RATE_LIMIT_WAIT_CAP_SECONDS, since the source build fallback is faster."""
+    """Rate-limit wait on 403/429; None if absent or over the cap (source build is faster)."""
     if not isinstance(exc, urllib.error.HTTPError):
         return None
     headers = getattr(exc, "headers", None)
@@ -488,8 +481,7 @@ def atomic_replace_from_tempfile(
     *,
     attempts: int = 8,
 ) -> None:
-    """Retries os.replace on transient Windows sharing violations: rename-over needs DELETE access
-    that a scanner or indexer holding the marker open denies; other errors raise at once."""
+    """Retries os.replace on Windows sharing violations (scanner holds file); others raise."""
     destination.parent.mkdir(parents = True, exist_ok = True)
     delay = 0.25
     for attempt in range(attempts):
@@ -744,9 +736,7 @@ def copy_response_body(
     progress: "DownloadProgress | None" = None,
     chunk_size: int = 1024 * 1024,
 ) -> int:
-    """Streams response into write and returns the byte count, raising retryable StalledDownload or
-    TruncatedDownload; a real HTTPResponse uses read1 because read(n) waits for all n bytes and
-    would never reach the stall window check; progress lands at chunk_size boundaries."""
+    """Byte count; retryable stall/truncation errors; read1 on HTTPResponse, as read(n) blocks."""
     per_receive = isinstance(response, http.client.HTTPResponse)
     read = response.read1 if per_receive else response.read
     downloaded = 0
@@ -942,8 +932,7 @@ def download_file_verified(
 def download_file_verified_strict(
     ops: ModuleOps, url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
-    """Verified download with a required digest (the generic flow fails closed on
-    a missing checksum, so None never reaches here)."""
+    """Verified download; generic flow fails closed on missing checksum, so None never arrives."""
     for attempt in range(1, 3):
         ops.download_file(url, destination)
         actual = ops.sha256_file(destination)
@@ -974,8 +963,7 @@ def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
 
 def release_asset_digests(release: dict[str, Any]) -> dict[str, str]:
     """Maps asset name to bare sha256 hex from GitHub's digest field, accepting only sha256:
-    prefixed digests and skipping others; kept separate from release_asset_map to leave its
-    return type alone."""
+    prefixed digests; kept separate from release_asset_map to leave its return type alone."""
     assets = release.get("assets")
     if not isinstance(assets, list):
         return {}
@@ -1119,9 +1107,8 @@ def web_release_tags(
     *,
     limit: int = 30,
 ) -> list[str]:
-    """Recent release tags, newest first, from the releases.atom feed; the only tokenless source
-    that orders releases, so it restores the older-release walk-back and can name the newest
-    nightly."""
+    """Recent release tags, newest first, from releases.atom: the only tokenless source that orders
+    releases, so it can name the newest nightly and restore the older-release walk-back."""
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases.atom"
     body = _fetch_web_metadata(ops, url)
     tags: list[str] = []
@@ -1138,9 +1125,8 @@ _PRERELEASE_LABEL_RE = re.compile(r"Label--warning[^>]*>\s*Pre-release\s*<", re.
 
 
 def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
-    """Pre-release flag is read from the release page rather than assumed, so the web path never
-    picks a release the REST path filters out; drafts are not checked since reaching the page
-    proves publication."""
+    """Reads the pre-release flag from the release page so the web path never picks a release the
+    REST path filters out; drafts go unchecked since the page proves publication."""
     url = (
         f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/tag/"
         f"{urllib.parse.quote(tag, safe = '')}"
@@ -1151,8 +1137,7 @@ def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
 def _web_release_prerelease_or_default(
     ops: ModuleOps, repo: str, tag: str, default: bool | None
 ) -> bool:
-    """Returns the prerelease flag, or default when the page cannot be read, since the assets
-    already loaded and one failed request must not drop a usable release."""
+    """Returns default when the page is unreadable; a failed request must not drop a release."""
     try:
         return web_release_prerelease(ops, repo, tag)
     except Exception as exc:  # noqa: BLE001 - a known answer beats losing the release
@@ -1238,9 +1223,8 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     def _try_repair_missing_slash(
         member_name: str, link_name: str, archive_names: set[str]
     ) -> str | None:
-        """Repairs mangled Mac llama.cpp symlinks (e.g. b9165, b9169) whose linkname drops the
-        separator and the basename's leading character; accepts only a unique match, returned
-        relative to the member's parent dir because callers join it onto target.parent."""
+        """Repairs Mac llama.cpp symlinks (e.g. b9165) that lost the separator and leading char;
+        unique match, relative to member's parent (callers join onto target.parent)."""
         if "/" not in member_name or "/" in link_name:
             return None
         top, _, _ = member_name.partition("/")
@@ -1375,8 +1359,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 
 
 def restore_tar_exec_bits(archive_path: Path, destination: Path) -> None:
-    """Re-apply tar exec bits after the guarded extraction writes plain files;
-    server binaries must stay executable on Unix."""
+    """Restores exec bits lost in guarded extraction; servers must stay executable on Unix."""
     if os.name == "nt" or not archive_path.name.endswith(".tar.gz"):
         return
     import tarfile
@@ -1467,9 +1450,7 @@ def install_lock_path(install_dir: Path) -> Path:
 
 # ── macOS version parsing ──
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parses a macOS product version into (major, minor), e.g. 14.7.1, 15.5 or bare 26; None when
-    empty or unparseable, so callers defer to runtime validation instead of rejecting every
-    prebuilt."""
+    """(major, minor) of macOS version; None if unparseable, deferring to runtime validation."""
     if not value:
         return None
     match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
@@ -1633,8 +1614,7 @@ def linux_runtime_dirs_for_required_libraries(
 
 
 def detected_linux_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str, list[str]]]:
-    """`cuda<major>` lines with a matching libcudart/libcublas file on disk (glob
-    match, so a versioned-only file counts), plus the dirs that matched."""
+    """cuda<major> lines and dirs holding libcudart/libcublas; globs match versioned names."""
     line_requirements = {
         f"cuda{m}": [f"libcudart.so.{m}", f"libcublas.so.{m}"]
         for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
@@ -1799,8 +1779,7 @@ def detect_torch_cuda_runtime_preference(
 
 
 def artifact_covers_sms(artifact: Any, host_sms: Iterable[str]) -> bool:
-    """True when every host SM is in the artifact's supported_sms and within its
-    [min_sm, max_sm] range."""
+    """True when every host SM is in supported_sms and within [min_sm, max_sm]."""
     if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
         return False
     supported = {str(value) for value in artifact.supported_sms}
@@ -1808,16 +1787,14 @@ def artifact_covers_sms(artifact: Any, host_sms: Iterable[str]) -> bool:
 
 
 def sm_range(artifact: Any) -> int:
-    """SM-coverage span as a sort key (tighter range wins). A bundle with no SM
-    metadata gets a max range so it sorts last, never outranking a targeted bundle."""
+    """SM span sort key (tighter wins); bundles lacking SM metadata get 9999 to sort last."""
     if artifact.min_sm is not None and artifact.max_sm is not None:
         return artifact.max_sm - artifact.min_sm
     return 9999
 
 
 def blackwell_capable_linux_runtime_lines(host_sms: list[str], artifacts: list[Any]) -> list[str]:
-    """CUDA runtime lines, highest major first, whose bundles cover every visible host SM; lets a
-    Blackwell host prefer a native sm_120 line over torch's reported line, mirroring Windows."""
+    """Highest-major CUDA lines covering all host SMs; lets Blackwell prefer native sm_120."""
     lines: set[str] = set()
     for artifact in artifacts:
         line = artifact.runtime_line
@@ -1851,8 +1828,7 @@ def blackwell_min_toolkit_for_host(host: Any) -> tuple[int, int]:
 # ════════════════════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════════════════════
 def host_platform_tokens(host: Any) -> tuple[str, str]:
-    """Default (os, arch) asset tokens; components with their own HostInfo field
-    names override this hook."""
+    """Default (os, arch) asset tokens; components with their own HostInfo field names override it."""
     return host.os_token, host.arch_token
 
 
@@ -1924,8 +1900,7 @@ def macos_min_os_ok(ops: ModuleOps, host: Any, min_os: Any) -> bool:
 def artifacts_for_host(
     ops: ModuleOps, manifest: dict[str, Any], host: Any, backend: str
 ) -> list[dict[str, Any]]:
-    """Manifest artifacts matching this host os/arch/backend. On macOS, drop any
-    whose `min_os` exceeds the host version."""
+    """Host-matching artifacts; on macOS, drops any whose `min_os` exceeds the host version."""
     os_token, arch_token = ops.host_platform_tokens(host)
     return [
         artifact
@@ -1987,8 +1962,7 @@ def artifact_coverage(artifact: dict[str, Any]) -> dict[str, Any]:
 
 # ── Backend resolution ──
 def auto_detect_backend(ops: ModuleOps, host: Any) -> str:
-    """Host-preferred backend: Apple Silicon -> metal, usable NVIDIA -> cuda,
-    AMD gfx -> rocm, otherwise cpu."""
+    """Host-preferred: metal (Apple Silicon), cuda (usable NVIDIA), rocm (AMD gfx), else cpu."""
     if host.is_apple_silicon:
         return "metal"
     if host.has_usable_nvidia:
@@ -2027,9 +2001,8 @@ def valid_sha256(value: Any) -> str | None:
 def parse_release_checksums(
     ops: ModuleOps, repo: str, release_tag: str, payload: Any
 ) -> dict[str, str]:
-    """Asset name to sha256 from the release checksum-index asset, the authority for each asset's
-    digest; the index must match schema, component and release_tag, and malformed input fails
-    closed."""
+    """Maps asset name to sha256 from the checksum-index asset, the authority for each digest; the
+    index must match schema, component and release_tag, and malformed input fails closed."""
     label = f"{ops.SHA256_ASSET_NAME} in {repo}@{release_tag}"
     if not isinstance(payload, dict):
         raise PrebuiltFallback(f"{label} was not a JSON object")
@@ -2060,8 +2033,7 @@ def parse_release_checksums(
 
 
 def fetch_release_checksums(ops: ModuleOps, bundle: "ReleaseBundle") -> dict[str, str]:
-    """Download + parse the release's checksum-index asset; fails closed if the
-    release does not publish it."""
+    """Fetches the checksum-index asset; fails closed if the release does not publish it."""
     sha_asset = ops.SHA256_ASSET_NAME
     url = bundle.asset_urls.get(sha_asset)
     if not url:
@@ -2090,8 +2062,7 @@ def expected_sha256_for(
     *,
     manifest_sha256: str | None = None,
 ) -> str:
-    """The sha256 the archive must match, from the release checksum index; an asset missing from the
-    index fails closed, and a manifest sha256 that disagrees means a tampered manifest."""
+    """Index sha256 of the asset; unlisted assets fail closed, manifest mismatch is tampering."""
     digest = checksums.get(asset_name)
     if digest is None:
         raise ReleaseIntegrityError(
@@ -2395,8 +2366,7 @@ def macos_version_label(host: Any) -> str | None:
 
 
 def walk_back_for(host: Any, skipped_release_tag: str | None) -> WalkBack | None:
-    """Walk-back to record when the planner settled below skipped_release_tag on this host; None
-    without a skipped release, off macOS, or when the host version cannot be compared."""
+    """Walk-back for a skipped release on macOS; None without a skip or a comparable version."""
     if not skipped_release_tag:
         return None
     label = macos_version_label(host)
@@ -2406,8 +2376,7 @@ def walk_back_for(host: Any, skipped_release_tag: str | None) -> WalkBack | None
 
 
 def marker_walk_back(marker: dict[str, Any]) -> WalkBack | None:
-    """The walk-back a marker records, or None when it records none or only half of
-    one (a marker written before the host version was kept beside the tag)."""
+    """Walk-back a marker records; None unless both the tag and the macOS version are present."""
     release_tag = marker.get("walked_back_from")
     macos_version = marker.get("walked_back_on_macos")
     if not (isinstance(release_tag, str) and release_tag):
@@ -2418,8 +2387,7 @@ def marker_walk_back(marker: dict[str, Any]) -> WalkBack | None:
 
 
 def walk_back_stands(marker: dict[str, Any], host: Any, expected_release: str | None) -> bool:
-    """Whether the marker's walk-back still explains why expected_release, the newest published
-    release, is not installed: same skipped release and same host macOS version."""
+    """Walk-back still explains expected_release not being installed; same skip and macOS."""
     recorded = marker_walk_back(marker)
     if recorded is None or not expected_release:
         return False
@@ -2430,9 +2398,7 @@ def walk_back_stands(marker: dict[str, Any], host: Any, expected_release: str | 
 
 
 def walk_back_patch(marker: dict[str, Any], walk_back: WalkBack | None) -> dict[str, Any]:
-    """The marker keys a reused install must take from this run's walk-back: both
-    fields when the plan walked back and the marker says otherwise, None for each
-    one present when the plan no longer walks back."""
+    """Walk-back marker fields to patch; keys still set are None when there is no walk-back."""
     if walk_back is None:
         return {key: None for key in WALK_BACK_KEYS if marker.get(key) is not None}
     return {
@@ -2661,8 +2627,7 @@ def locate_server_in_tree(ops: ModuleOps, root: Path, host: Any) -> Path:
 
 
 def assemble_install_tree(ops: ModuleOps, bundle_root: Path, staged_root: Path, host: Any) -> Path:
-    """Lay out staged_root as a full install in the runtime bin dir: co-locate everything beside the
-    server (shared libs, backend kernel subdirs, license) so RUNPATH=$ORIGIN resolves its libs."""
+    """Co-locates the bundle in the runtime bin dir so RUNPATH=$ORIGIN resolves its libs."""
     bin_dir = ops.runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
     for entry in sorted(bundle_root.iterdir()):
@@ -2806,8 +2771,7 @@ def plan_selection(
     backend: str,
     checksums: dict[str, str],
 ) -> InstallSelection:
-    """Choose an artifact (with the component's fallback policy) and resolve its
-    trusted sha256 from the release checksum index."""
+    """Picks an artifact via the fallback policy; its sha256 comes from the checksum index."""
     artifact, effective_backend, _used_fallback = ops.select_artifact_with_fallback(
         bundle.manifest, host, backend
     )
@@ -2908,9 +2872,8 @@ def install_selected_prebuilt(
 def _settle_kept_install(
     ops: ModuleOps, install_dir: Path, host: Any, selection: InstallSelection, *, locked: bool
 ) -> bool:
-    """Catches up a kept install's marker under the install lock, since an unlocked rewrite can race
-    a concurrent swap; optional per component; returns False only when the locked re-check finds
-    another install; never raises."""
+    """Catches up a kept install's marker under the lock, since an unlocked rewrite can race a swap;
+    optional per component; False only if re-check finds another install; never raises."""
     settle = getattr(ops, "settle_kept_install", None)
     needs_settling = getattr(ops, "kept_install_needs_settling", None)
     try:

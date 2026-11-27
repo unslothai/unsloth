@@ -15,8 +15,7 @@ function rule(selector: string): string {
 }
 
 test("the thread scroller does not inherit a modal layer's body pointer-events lock", () => {
-  // An explicit pointer-events on the scroller stops the Radix body lock inheriting into every
-  // message; zero specificity, so any deliberate pointer-events rule on the scroller still wins.
+  // Explicit pointer-events stops the Radix lock inheriting into messages; zero specificity.
   assert.match(rule(":where(.aui-thread-viewport)"), /pointer-events: auto;/);
 });
 
@@ -46,9 +45,7 @@ test("while the lock is up a cover keeps the thread unclickable, below portaled 
 });
 
 test("in Firefox the cover is permanent and inert, so a lock only flips its pointer-events", () => {
-  // Adding the cover on each open made Firefox lay out the thread root's flex column again, every
-  // message included (about 250 ms per modal open and close at 150 turns). Firefox only: in WebKit a
-  // permanent cover slowed the Glass browser pane open.
+  // Per-open cover re-laid the thread flex column in Firefox; permanent one slowed WebKit.
   const at = CSS.indexOf("@supports (-moz-appearance: none) {\n\t\t.aui-thread-root::after {");
   assert.ok(at >= 0, "missing the Firefox-only permanent cover");
   const block = CSS.slice(at, CSS.indexOf("}", at) + 1);

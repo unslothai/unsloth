@@ -19,8 +19,7 @@ try:
 except Exception:
     _BaseTunerLayer = None
 try:
-    # The same live-adapter check the unsloth_zoo fused forwards use (also catches merged-then-disabled heads and
-    # PEFT's per-example adapter_names hook). Older zoo: the module walk below.
+    # unsloth_zoo's check (catches merged-then-disabled heads); older zoo: the walk below.
     from unsloth_zoo.fused_losses.forward_adapter import (
         lm_head_needs_module_forward as _zoo_head_needs_module_forward,
     )

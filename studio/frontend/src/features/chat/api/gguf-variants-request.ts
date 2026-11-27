@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Split out of chat-api so it imports without the auth barrel; bounded so the picker's expander
-// never hangs on "Loading variants".
+// Split from chat-api to skip the auth barrel; bounded so the variant picker never hangs.
 
 import {
   type PollSignal,
@@ -49,8 +48,7 @@ export function ggufVariantsQuery(
   return params;
 }
 
-/** Signal every variant request carries: the caller's abort (the expander drops the request when
- *  its row collapses) folded with the timeout. Callers MUST dispose once settled. */
+/** Caller abort (row collapse) folded with the timeout; callers MUST dispose once settled. */
 export function ggufVariantsAbort(signal?: AbortSignal): PollSignal {
   return signal
     ? pollSignal(signal, GGUF_VARIANTS_TIMEOUT_MS)

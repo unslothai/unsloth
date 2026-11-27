@@ -68,8 +68,7 @@ def roomy(monkeypatch):
 
 @pytest.mark.parametrize("tile_budget", [None, 32 * 32])
 def test_tiled_flux2_decode_matches_the_untiled_decode(roomy, monkeypatch, tile_budget):
-    """Every would-be-tiled FLUX.2 decode equals the untiled one, whatever tiles the planner would pick (a 32-latent
-    tile budget: the unfused tiles of a low-memory card, where the whole-map strips still fit)."""
+    """Tiled FLUX.2 decode matches the untiled one at any tile budget, incl. a 32-latent one."""
     if tile_budget:
         monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: tile_budget)
     vae = _flux2()
@@ -153,8 +152,7 @@ def _kl(post_quant: bool = True, seed: int = 0):
 def test_tiled_autoencoder_kl_decode_matches_the_untiled_decode(
     roomy, monkeypatch, post_quant, tile_budget
 ):
-    """AutoencoderKL (FLUX.1, Z-Image, HiDream, Lumina-2, Chroma, SDXL) shares FLUX.2's Decoder, so the whole-map
-    decode is the untiled one there too; before, its tiles shifted colour the same way."""
+    """AutoencoderKL shares FLUX.2's Decoder, so its whole-map decode equals the untiled one."""
     if tile_budget:
         monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: tile_budget)
     vae = _kl(post_quant)
@@ -207,8 +205,7 @@ def test_a_decoder_with_non_power_of_two_widths_decodes_the_whole_map(roomy, mon
 
 
 def test_a_vae_whose_decode_differs_keeps_its_tiles(roomy, monkeypatch):
-    """Structure, not names: a KL VAE that does anything else between the latent and the decoder (here a scale) is not
-    reproduced by the strips, so it keeps its tiled decode bit for bit."""
+    """Strips apply by structure, not class name: a KL VAE with an extra step keeps its tiles."""
 
     class ScaledKL(diffusers.AutoencoderKL):
         def _decode(
@@ -348,8 +345,7 @@ class _Log:
 
 
 def test_a_peak_just_over_the_budget_keeps_main_s_tiles_and_says_so_once(monkeypatch):
-    """Free memory a hair under what the whole-map decode needs: the tiled decode is bit-identical to main's (the kill
-    switch path), and one warning names the tiles and the numbers."""
+    """Memory just under the whole-map need keeps main's tiles bit for bit, with one warning."""
     monkeypatch.delenv(FULL_MAP_ENV, raising = False)
     monkeypatch.setattr(vt, "decode_tile_budget", lambda vae, z: 32 * 32)
     vae = _flux2()
@@ -376,8 +372,7 @@ def test_a_peak_just_over_the_budget_keeps_main_s_tiles_and_says_so_once(monkeyp
 
 
 def test_the_mid_block_attention_is_chunked_where_no_fused_kernel_takes_it(roomy, monkeypatch):
-    """ROCm / MPS: no fused SDPA takes the VAE's head dim, and a whole-map math SDPA would hold every score (8 GiB per
-    bf16 copy at 2048 px). The whole-map decode runs under Studio's chunked mode: chunked, and still exact."""
+    """No fused SDPA for VAE head dim on ROCm/MPS: whole-map decode runs chunked, still exact."""
     from core.inference import diffusion_vae_attn_chunked as chunked
 
     calls = []

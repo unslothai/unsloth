@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatBytes } from "../hub/lib/format.ts";
 import {
   TRANSLATION_ONLY_REPOS,
   isTranslationOnlyRepo,
@@ -243,11 +244,7 @@ export function translateInstruction(
 }
 
 export function formatModelBytes(bytes: number): string {
-  if (!(bytes > 0)) return "";
-  const gb = bytes / 1000 ** 3;
-  return gb >= 1
-    ? `${gb.toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
+  return bytes > 0 ? formatBytes(bytes) : "";
 }
 
 export type DownloadedTranslateModel = {

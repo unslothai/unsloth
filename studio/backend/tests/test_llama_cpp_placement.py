@@ -4150,7 +4150,7 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: the replay argv is real.
     backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
-    backend._llama_server_env_for_binary = lambda _binary: {_loader_path_var(): ""}
+    backend._llama_server_env_for_binary = lambda _binary, **_kwargs: {_loader_path_var(): ""}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     monkeypatch.setattr(
@@ -6394,7 +6394,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert src.index("_vulkan_igpu_ids = (") < src.index(
         "_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)"
     )
-    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 8
 
 
 def test_the_oversized_readings_share_their_preflights_ram_snapshot():

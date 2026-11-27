@@ -96,8 +96,7 @@ def _out(key: str, value: str) -> None:
 
 
 def kernel_age_hours(kernel, now: datetime) -> float | None:
-    """Hours since an unfinished kernel's last_run_time, or None if Kaggle did not say; None counts
-    as too young to reap, since guessing old would delete a live session."""
+    """Hours since last_run_time; None if unknown, and too young to reap so live sessions stay."""
     last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
     if last_run is None:
         return None
@@ -162,8 +161,7 @@ def find_ours(
 
 
 def _status_of(api, slug: str) -> str:
-    """A just-deleted kernel still lists but 404s its status call, meaning not running rather than
-    unreadable; conflating the two makes the reaper attack gone kernels and read outages as idle."""
+    """A 404 means the kernel is gone; conflating it with unreadable makes outages look idle."""
     try:
         raw = str(getattr(api.kernels_status(slug), "status", ""))
     except Exception as exc:  # noqa: BLE001
@@ -177,8 +175,7 @@ def _status_of(api, slug: str) -> str:
 
 
 def verdict_of(reports: list[dict], expect: int) -> tuple[str, str]:
-    """Turns payload reports into a verdict exactly as launch.py does inline; kept identical so
-    dispatched and waited-on runs reach the same conclusion from the same evidence."""
+    """Verdict must match launch.py's inline logic so dispatched and waited-on runs agree."""
     if not reports:
         return "infra", (
             "the kernel finished but produced no payload report; "
@@ -200,8 +197,7 @@ def verdict_of(reports: list[dict], expect: int) -> tuple[str, str]:
 
 
 def _gone(exc: BaseException) -> bool:
-    """True when the error says the kernel is gone: another unserialised collector may have deleted
-    it, so it is a result already posted by someone else, not an infra failure."""
+    """True when the kernel is gone, maybe deleted by another collector; not an infra failure."""
     text = f"{exc}".lower()
     return any(m in text for m in GONE_MARKERS)
 
@@ -274,8 +270,7 @@ def collect_one(
     delete: bool = True,
     deadline: float | None = None,
 ) -> dict:
-    """Reads one kernel to a conclusion and returns its result record; deadline covers the whole
-    pass, while the evidence download gets its own budget clamped to what is left."""
+    """Returns the result; deadline covers the pass, evidence download gets what is left."""
     slug = entry["slug"]
     state = _status_of(api, slug)
     record = {
@@ -446,9 +441,8 @@ RELEASE_BUDGET_SEC = 600
 
 
 def delete_collected(result_path: Path, posted_path: Path | None) -> int:
-    """Releases kernels a --no-delete pass judged, once posted.json has them as delivered, refused
-    or gone; a refused post keeps its kernel as the only retry, and a gone commit releases it,
-    since holding it only bills."""
+    """Releases kernels a --no-delete pass judged once posted.json marks delivered, refused or gone;
+    a refused kernel is the only retry, a gone one is freed since holding it only bills."""
     data = json.loads(result_path.read_text(encoding = "utf-8"))
     posted = (
         json.loads(posted_path.read_text(encoding = "utf-8"))

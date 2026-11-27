@@ -39,8 +39,7 @@ WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
 FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
 # Matches HEALTH_PROBE_TIMEOUT in studio/src-tauri/src/commands.rs.
 PROBE_TIMEOUT_S = 10.0
-# Clears the longest observed stall (33.2s). Extends observation, not a retry: a dead backend
-# answers none of these probes, so it cannot turn a real death into a pass.
+# Clears the longest stall (33.2s); extends observation, not retries, so a dead backend fails.
 RECOVERY_WINDOW_S = 90.0
 # A reset returns in ~1ms, so pace probes to avoid hammering a struggling backend.
 RECOVERY_PROBE_SPACING_S = 2.0
@@ -63,8 +62,7 @@ TABS = [
 
 _SIGNED_OUT_PATHS = ("/login", "/change-password")
 
-# Only rows pinned by default (SIDEBAR_NAV_DEFAULT_PINNED, appearance-custom-store.ts) carry a
-# data-testid. test_inline_row_ids_match_the_frontends_default_pinned_set keeps this in sync.
+# Only default-pinned rows (SIDEBAR_NAV_DEFAULT_PINNED) carry a data-testid; a test checks it.
 INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
 # The Projects row yields to the Projects section once projects load (app-sidebar.tsx).
 ROW_STAND_INS = {"projects": '[data-sidebar-section="projects"]'}
@@ -303,8 +301,7 @@ class BackendSurvivalPoller:
                     "unhealthy through the warm window"
                 )
 
-        # Deliberately not a replay of the launcher watchdog, which is not running here and is covered by
-        # the Rust tests in commands.rs. Only a backend that never answers again fails.
+        # Not a watchdog replay (Rust tests cover it); only a backend silent to the end fails.
         observed = list(self.samples) + list(recovery_samples)
         (ART / "survival_samples.json").write_text(
             json.dumps(observed, indent = 1),
@@ -398,7 +395,6 @@ def log_in(page) -> bool:
     if "/change-password" in page.url:
         rotate_password(page)
     try:
-        # Only look for the login form on a signed-out route.
         pw_box = page.locator("#password") if signed_out(page.url) else None
         if pw_box is not None:
             try:
@@ -623,8 +619,7 @@ def drive_tabs(page) -> None:
             else:
                 info(f"{name}: redirected to {landed} after a measured verdict (allowed)")
 
-        # A full navigation boots the app again: on a slow runner it can still show its "Loading..."
-        # screen after the fixed wait, with no sidebar at all. Judge rows only once the shell is up.
+        # Judge rows only once the shell is up; a full navigation reboots the app and may lag.
         shell_up = wait_for_sidebar_shell(page)
         if not shell_up:
             info(f"{name}: no sidebar nav row mounted within {SHELL_TIMEOUT_MS} ms of {route}")

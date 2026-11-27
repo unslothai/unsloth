@@ -107,8 +107,7 @@ def _fast_base_model():
         ):
             node.decorator_list = []
             wanted.insert(0, node)
-    # Follow the lifted code into every other _utils.py helper it names, so a guard either method
-    # gains (for_inference's tensor parallel refusal, #15137) runs here instead of resolving to None.
+    # Follows lifted helpers so guards such as tensor-parallel refusal (#15137) run, not None.
     helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
     # Helpers that import a sibling module (a relative import has no package in this namespace): stubbed with what
     # they return for these fakes. A model split by hand (apply_pipeline_parallel) keeps no UNSLOTH_PP_SIZE replica.
@@ -119,8 +118,7 @@ def _fast_base_model():
         # for_training frees kept decode graphs and their cache; none exist for these fakes.
         "_decode_graphs": types.SimpleNamespace(release_for_training = lambda model: None),
     }
-    # A relative import inside a lifted body (for_inference clearing the NF4 dequant cache, #18285)
-    # resolves through this table; an import missing from it fails here, naming what to stub.
+    # Lifted relative imports resolve here (#18285); missing ones fail naming what to stub.
     relative = {("kernels.dequant_cache", "clear_dequant_cache"): lambda: None}
     lifted = {n.name for n in wanted} | set(stubbed)
     todo = list(wanted)
@@ -298,8 +296,7 @@ def test_flag_set_between_two_train_calls_is_kept(fbm):
 
 
 def test_generated_trainer_init_never_writes_the_flag():
-    # compute_metrics used to force "1" here, leaking into training and the next trainer; the eval
-    # prediction_step forces it per call instead.
+    # Never set the flag in init (it leaks into later trainers); eval forces it per call.
     tree = ast.parse((MODELS / "rl.py").read_text(encoding = "utf-8"))
     patcher = next(
         n
@@ -311,8 +308,7 @@ def test_generated_trainer_init_never_writes_the_flag():
 
 
 def test_train_restores_eval_without_a_replica_on_a_parallel_trainer():
-    # Failing before: the restore called for_inference, which gathers a whole replica under tensor / pipeline
-    # parallel and is refused for pp x tp, so train() raised after the training finished.
+    # Parallel trainers must not call for_inference on restore: it is refused for pp x tp.
     calls = []
     model = _Model()
     model.for_inference = lambda: calls.append("for_inference")
