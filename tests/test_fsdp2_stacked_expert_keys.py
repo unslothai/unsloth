@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 sharded loading of per-expert checkpoints that transformers 5 stacks on load: which checkpoint
-tensors make each expert row, and which layouts keep the refusal (CPU only, no process group)."""
+"""FSDP2 sharded loading of per-expert checkpoints transformers 5 stacks on load (CPU, no process group)."""
 
 import glob
 import json
@@ -80,7 +79,7 @@ def test_gate_up_rows_are_each_experts_gate_then_up():
         assert aliases["model.layers.0.mlp.experts.down_proj"][11] == (
             "model.layers.0.mlp.experts.11.down_proj.weight",
         )
-        # Without stacked_experts the converted keys keep the refusal (tensor parallel, pipeline parallel).
+        # Tensor / pipeline parallel (no stacked_experts) keep the refusal.
         assert (
             tp._checkpoint_aliases(_meta(d), index)["model.layers.0.mlp.experts.gate_up_proj"]
             is None
@@ -103,8 +102,7 @@ def test_missing_expert_keeps_the_refusal():
 
 
 def test_packed_per_expert_checkpoint_refuses_as_unsupported():
-    """A per-expert checkpoint that does not stack to the model's shape (bitsandbytes 4-bit bytes [n, 1] per
-    expert) raises _TensorByTensorUnsupported, which the pre-quantized load falls back on, before any read."""
+    """Packed 4-bit bytes per expert raise _TensorByTensorUnsupported (the pre-quantized fallback) before any read."""
     tp = _tp()
     from safetensors.torch import load_file, save_file
 
@@ -183,8 +181,7 @@ FAMILIES = {
 
 @pytest.mark.parametrize("name", sorted(FAMILIES))
 def test_every_stacked_expert_rows_match_the_full_load(name):
-    """For each family: every 3-D expert stack of the loaded model resolves to checkpoint tensors (per-expert
-    keys transformers stacks on load, or one stored stack), and rows [3, 9) read from them equal the full load."""
+    """Rows read from each expert stack's checkpoint tensors equal the full load."""
     import transformers
 
     if not hasattr(transformers, name):

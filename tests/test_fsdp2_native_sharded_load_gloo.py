@@ -36,8 +36,7 @@ def _load_module():
 
 VLM = "trl-internal-testing/tiny-Qwen2_5_VLForConditionalGeneration"
 
-# Tiny transformers 5 MoE decoders: per-expert checkpoints stacked on load (gate and up concatenated for
-# Qwen3-MoE / Mixtral / GLM4-MoE), and gpt-oss's checkpoint already stacked (gate and up interleaved).
+# Per-expert checkpoints stacked on load (gate + up concatenated); gpt-oss stores its stack (interleaved).
 MOE = {
     "qwen3_moe": (
         "Qwen3MoeConfig",
@@ -173,7 +172,6 @@ def _prep(model, mode):
 
         torch.manual_seed(1)
         if mode == "expert_lora":
-            # Every stacked expert parameter (Nemotron-H up / down, gate_up / down elsewhere).
             stacks = sorted(
                 {
                     "experts." + n.rsplit(".", 1)[-1]
@@ -301,7 +299,6 @@ def _case(
         b.numel() * element_size for n, b in model.named_buffers() if n in state_keys
     )
     if arch == "nemotron_h" or arch in MOE:
-        # Every rank reads only its chunk of each expert stack (in numeric expert order, 10 and 11 included).
         experts = getattr(model.config, "num_local_experts", None) or getattr(
             model.config, "num_experts", None
         )
@@ -587,10 +584,10 @@ def _spawn(
         ("nemotron_h", None, "expert_lora", False),
         ("qwen3_moe", None, "full", False),
         ("qwen3_moe", None, "expert_lora", False),
-        ("qwen3_moe", {"num_experts": 5}, "full", False),  # 5 experts over 2 ranks: uneven chunks
+        ("qwen3_moe", {"num_experts": 5}, "full", False),  # uneven chunks
         ("mixtral", None, "lora", False),
         ("glm4_moe", None, "expert_lora", False),
-        ("gpt_oss", None, "full", False),  # checkpoint already stacked: no conversion
+        ("gpt_oss", None, "full", False),  # stored stacked
         ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
         # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
         ("llama", {"intermediate_size": 37}, "full", "ignore"),

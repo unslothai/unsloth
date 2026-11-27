@@ -108,7 +108,7 @@ def _guard_expert_lora_shape():
     try:
         from peft.tuners.lora.layer import ParamWrapper
     except ImportError:
-        return  # no PEFT, or one without target_parameters: no expert LoRA to size
+        return
 
     update = ParamWrapper.update_layer
     if getattr(update, _GUARD, False):
@@ -126,8 +126,7 @@ def _guard_expert_lora_shape():
 
 
 def _materialize(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model: nn.Linear / nn.Embedding weights and 3-D expert stacks as this rank's dim-0 chunk,
-    the rest whole."""
+    """Fill a meta model: Linear / Embedding weights and 3-D expert stacks as this rank's dim-0 chunk, the rest whole."""
     from .tp_native import _fill_from_checkpoint
 
     world, rank = mesh.size(), mesh.get_local_rank()

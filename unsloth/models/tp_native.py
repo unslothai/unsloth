@@ -4788,7 +4788,6 @@ class _SliceReader:
 
     def shape(self, key):
         if isinstance(key, tuple):
-            # A stacked expert key (_checkpoint_aliases): per expert, the checkpoint tensors concatenated on dim 0.
             parts = [self.shape(source) for source in key[0]]
             tail = parts[0][1:]
             if any(len(s) < 1 or s[1:] != tail for s in parts) or any(
@@ -4833,7 +4832,7 @@ class _SliceReader:
         sliced = True,
     ):
         """Rows [start, stop) as `dtype` on `device`, read in ~_READ_SLICE_BYTES slices (no whole-table host copy).
-        A tuple key is a stacked expert key: row i is expert i's checkpoint tensors, concatenated on dim 0."""
+        A tuple key: row i is expert i's checkpoint tensors concatenated on dim 0."""
         if isinstance(key, tuple):
             out = torch.empty((stop - start,) + self.shape(key)[1:], dtype = dtype, device = device)
             for row, sources in enumerate(key[start:stop]):
@@ -4911,9 +4910,8 @@ def _checkpoint_aliases(
     `_checkpoint_conversion_mapping`. A model key a WeightConverter builds (merged experts, fused or permuted
     weights) maps to None: it is not one checkpoint tensor, so it cannot be read sliced. `key_mapping` is the
     load's own (from_pretrained(key_mapping = ...), e.g. Unsloth's text-only VLM loads).
-    With stacked_experts, a per-expert stack (MergeModulelist(dim=0), optionally then Concatenate(dim=1) of its
-    sources, e.g. gate and up) maps to a tuple holding, per expert in index order, its checkpoint keys in source
-    order; any other conversion, or experts not numbered 0..E-1 for every source, stays None."""
+    stacked_experts: a per-expert stack (see _expert_stack_sources) with experts 0..E-1 maps to a tuple of, per
+    expert, its checkpoint keys in source order."""
     legacy = getattr(model, "_checkpoint_conversion_mapping", None) or {}
     renamings = converters = None
     try:
@@ -4939,7 +4937,7 @@ def _checkpoint_aliases(
     prefix = getattr(model, "base_model_prefix", None) or None
     out = {}
     stacks = {}
-    stack_sources = {}  # source pattern -> (its position among the converter's sources, the source count)
+    stack_sources = {}
     if stacked_experts and converters:
         stack_sources = _expert_stack_sources(converters)
     for key in index:
@@ -4962,7 +4960,7 @@ def _checkpoint_aliases(
                 parts = stacks.setdefault(new, [{} for _ in range(count)])
                 if parts is not None:
                     if expert is None or len(parts) != count or expert in parts[part]:
-                        stacks[new] = None  # not a plain per-expert stack: keep the refusal
+                        stacks[new] = None  # keep the refusal
                     else:
                         parts[part][expert] = key
         elif new != key:
@@ -4975,12 +4973,12 @@ def _checkpoint_aliases(
 
 
 def _expert_stack_sources(converters):
-    """{source pattern: (position, source count)} of the converters that stack per-expert checkpoint tensors by
-    expert index: MergeModulelist(dim=0) of one source, or of several then Concatenate(dim=1) (gate and up)."""
+    """{source pattern: (position, source count)} for MergeModulelist(dim=0) of one source, or of several then
+    Concatenate(dim=1) (gate + up)."""
     try:
         from transformers.core_model_loading import Concatenate, MergeModulelist
     except ImportError:
-        return {}  # transformers 4.x: no weight converters
+        return {}
     out = {}
     for t in converters:
         ops, sources = list(getattr(t, "operations", ()) or ()), list(t.source_patterns)
@@ -5002,7 +5000,7 @@ def _expert_stack_sources(converters):
 
 
 def _expert_number(pattern, key):
-    """The expert index the `*` of a per-expert source pattern matches in checkpoint key `key`, or None."""
+    """The expert index `*` matches in `key`, or None."""
     head, tail = pattern.split("*")
     match = re.search(re.escape(head) + r"(\d+)" + re.escape(tail) + "$", key)
     return int(match.group(1)) if match else None
