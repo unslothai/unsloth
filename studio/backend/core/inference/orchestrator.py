@@ -2396,6 +2396,11 @@ class InferenceOrchestrator:
             sub_config["gpu_selection"] = gpu_selection
             # Parent-detected backend for the worker's apply_gpu_ids().
             sub_config["device_backend"] = get_device().value
+            if sub_config["device_backend"] == "cuda":
+                import utils.hardware.hardware as _hardware
+
+                # On CUDA this is the same build check apply_gpu_ids() makes, so a worker that never imports torch can skip it.
+                sub_config["device_is_rocm"] = bool(_hardware.IS_ROCM)
 
             if load_cancel_event is not None and load_cancel_event.is_set():
                 self.loading_models.discard(model_name)

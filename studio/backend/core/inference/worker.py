@@ -557,6 +557,9 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
     if not resolved_gpu_ids or device_backend not in ("cuda", "xpu"):
         return None
     try:
+        if "torch" not in sys.modules:
+            # Never imported (an audio.cpp proxy), so no allocator owns memory here.
+            return {str(int(physical_id)): 0.0 for physical_id in resolved_gpu_ids}
         import torch
 
         device_module = torch.cuda if device_backend == "cuda" else torch.xpu
@@ -2256,7 +2259,14 @@ def run_inference_process(
 
     mark_log_record_continuations()
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+    # audio.cpp weights run in audiocpp_server and this worker only proxies to it, so it never
+    # imports torch or transformers: no hardware detection, transformers activation or ML import.
+    _audio_cpp_worker = bool(config.get("audio_cpp"))
+    apply_gpu_ids(
+        config.get("resolved_gpu_ids"),
+        backend = config.get("device_backend"),
+        rocm_build = config.get("device_is_rocm") if _audio_cpp_worker else None,
+    )
 
     model_name = config["model_name"]
 
@@ -2278,7 +2288,7 @@ def run_inference_process(
 
     _ensure_backend_on_path()
 
-    if is_apple_silicon():
+    if is_apple_silicon() and not _audio_cpp_worker:
         # Non-fatal: fall through with the installed version, but log the cause rather than swallow it.
         try:
             _activate_transformers_version(model_name, _config_hf_token(config))
@@ -2305,7 +2315,8 @@ def run_inference_process(
         hub_answers.enter_context(shared_hub_model_info())
         model_info_ahead = read_hub_model_info_ahead(model_name, _config_hf_token(config))
 
-    _hw.detect_hardware()
+    if not _audio_cpp_worker:
+        _hw.detect_hardware()
     if _hw.DEVICE != _hw.DeviceType.MLX or _native_audio_worker:
         hub_answers.close()
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
@@ -2586,20 +2597,22 @@ def run_inference_process(
                     warmth.active()
         return
 
-    # Gate before the torchao stub; AMD Triton JIT also needs MSVC CRT headers (#7595).
-    if sys.platform == "win32":
-        from core._msvc_env import gate_torch_compile_on_windows
-        gate_torch_compile_on_windows(logger)
+    # Torch-side preparation only: an audio.cpp worker imports neither torch nor transformers.
+    if not _audio_cpp_worker:
+        # Gate before the torchao stub; AMD Triton JIT also needs MSVC CRT headers (#7595).
+        if sys.platform == "win32":
+            from core._msvc_env import gate_torch_compile_on_windows
+            gate_torch_compile_on_windows(logger)
 
-    # Stub torchao on Windows ROCm before ANY transformers import (incl. _resolve_base_model).
-    from core._torchao_stub import install_torchao_windows_rocm_stub
+        # Stub torchao on Windows ROCm before ANY transformers import (incl. _resolve_base_model).
+        from core._torchao_stub import install_torchao_windows_rocm_stub
 
-    install_torchao_windows_rocm_stub()
+        install_torchao_windows_rocm_stub()
 
-    # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
-    from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
+        # Windows ROCm miscomputes fused SDPA at head dim > 256 (Gemma 4 global layers): pin those calls to math.
+        from core._rocm_windows_sdpa import install_windows_rocm_wide_head_sdpa_guard
 
-    install_windows_rocm_wide_head_sdpa_guard(logger)
+        install_windows_rocm_wide_head_sdpa_guard(logger)
 
     # Resolve the base once before activation, gates and install; _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
@@ -2632,7 +2645,8 @@ def run_inference_process(
         _base = _lora_base or _resolve_base_model(model_name)
 
         try:
-            _activate_transformers_version(_base, _hf_token)
+            if not _audio_cpp_worker:
+                _activate_transformers_version(_base, _hf_token)
         except Exception as exc:
             _send_response(
                 resp_queue,
@@ -2699,9 +2713,9 @@ def run_inference_process(
 
             from core.inference.inference import InferenceBackend
 
-        import transformers
-
-        logger.info("Subprocess loaded transformers %s", transformers.__version__)
+        if not _audio_cpp_worker:
+            import transformers
+            logger.info("Subprocess loaded transformers %s", transformers.__version__)
 
     except Exception as exc:
         _send_response(
