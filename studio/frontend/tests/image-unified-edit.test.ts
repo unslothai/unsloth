@@ -261,7 +261,7 @@ test("restoreSettings reopens Edit and Reference instead of Create", () => {
   const body = src.slice(src.indexOf("const restoreSettings = useCallback"));
   assert.match(
     body,
-    /image\.workflow === "edit" \? "edit" : image\.workflow === "reference" \? "reference" : "create"/,
+    /const reopened = recipeWorkflowTab\(image\.workflow\)/,
   );
   assert.match(body, /setInitImage\(null\)/);
   assert.match(body, /setReferenceImages\(/);

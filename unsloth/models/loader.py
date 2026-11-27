@@ -3104,16 +3104,21 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             elif not (load_in_4bit and _bnb_compatible_quant):
-                # Only upcast MoE biases for MXFP4, not BnB.
+                # Only upcast MoE biases for MXFP4, not BnB. In place: a bias expert parallel loading already cut to
+                # this rank keeps its Parameter and the cut's mark (a new Parameter would leave the block unshardable).
                 register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     "x = 'down_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     ";"
                 )

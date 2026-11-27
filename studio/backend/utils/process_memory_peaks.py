@@ -14,7 +14,14 @@ Every value is in bytes, or None when this host cannot measure it:
 - ``host_peak_commit_bytes``: Windows only, peak committed (pagefile-backed) private memory.
 
 Training runs in its own spawned worker per run, so a process peak is that run's peak. The CUDA
-peak counters are never reset here: the live offload panel reads the same counters.
+peak counters are never reset here: the live offload panel reads the same counters. Code that does
+reset them (the diffusion trainer excludes load and preview rounds from its own figure) calls
+``bank_gpu_peaks`` first, so the process peak still covers the whole run.
+
+On Apple MPS torch keeps no peak counter, so ``current_allocated_memory`` (allocated) and
+``driver_allocated_memory`` (reserved) are sampled on every call and the running max is reported.
+ROCm builds answer through ``torch.cuda``. ``include_children`` adds the resident sets of the
+process's live descendants (the diffusion trainer's multi-GPU ranks) to a sampled tree total.
 """
 
 from __future__ import annotations
@@ -30,21 +37,93 @@ MEMORY_PEAK_FIELDS = (
 )
 
 
-def _gpu_peaks(torch_module: Any = None) -> tuple[Optional[int], Optional[int], Optional[int]]:
+# Running maxima this module keeps itself: CUDA peaks banked before a counter reset, sampled MPS
+# values, and the sampled process-tree RSS. Per process, so per run (one spawned worker per run).
+_banked_cuda: dict[int, tuple[int, int]] = {}
+_mps_peak: list[Optional[int]] = [None, None]
+_tree_rss_peak: list[Optional[int]] = [None]
+
+
+def _max_opt(a: Optional[int], b: Optional[int]) -> Optional[int]:
+    if a is None:
+        return b
+    return a if b is None else max(a, b)
+
+
+def _resolve_torch(torch_module: Any) -> Any:
     # Never import torch just to measure: the MLX worker has no torch, and an import costs seconds.
-    torch = torch_module if torch_module is not None else sys.modules.get("torch")
-    cuda = getattr(torch, "cuda", None)
+    return torch_module if torch_module is not None else sys.modules.get("torch")
+
+
+def _cuda_device_peaks(cuda: Any) -> Optional[list[tuple[int, int]]]:
+    if cuda is None or not cuda.is_available():
+        return None
+    count = int(cuda.device_count())
+    if count <= 0:
+        return None
+    peaks = []
+    for i in range(count):
+        allocated = int(cuda.max_memory_allocated(i))
+        reserved = int(cuda.max_memory_reserved(i))
+        banked = _banked_cuda.get(i)
+        if banked is not None:
+            allocated, reserved = max(allocated, banked[0]), max(reserved, banked[1])
+        peaks.append((allocated, reserved))
+    return peaks
+
+
+def bank_gpu_peaks(torch_module: Any = None) -> None:
+    """Remember the CUDA peaks so far; call before ``reset_peak_memory_stats`` so they survive it."""
     try:
-        if cuda is None or not cuda.is_available():
-            return None, None, None
-        count = int(cuda.device_count())
-        if count <= 0:
-            return None, None, None
-        allocated = sum(int(cuda.max_memory_allocated(i)) for i in range(count))
-        reserved = sum(int(cuda.max_memory_reserved(i)) for i in range(count))
-        return allocated, reserved, count
+        peaks = _cuda_device_peaks(getattr(_resolve_torch(torch_module), "cuda", None))
+    except Exception:
+        return
+    for i, value in enumerate(peaks or ()):
+        _banked_cuda[i] = value
+
+
+def _mps_peaks(torch: Any) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    backend = getattr(getattr(torch, "backends", None), "mps", None)
+    mps = getattr(torch, "mps", None)
+    if backend is None or mps is None or not backend.is_available():
+        return None, None, None
+    allocated = int(mps.current_allocated_memory())
+    reserved = int(mps.driver_allocated_memory())
+    _mps_peak[0] = _max_opt(_mps_peak[0], allocated)
+    _mps_peak[1] = _max_opt(_mps_peak[1], reserved)
+    return _mps_peak[0], _mps_peak[1], 1
+
+
+def _gpu_peaks(torch_module: Any = None) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    torch = _resolve_torch(torch_module)
+    try:
+        peaks = _cuda_device_peaks(getattr(torch, "cuda", None))
+        if peaks is not None:
+            return sum(a for a, _ in peaks), sum(r for _, r in peaks), len(peaks)
     except Exception:
         return None, None, None
+    try:
+        return _mps_peaks(torch)
+    except Exception:
+        return None, None, None
+
+
+def _tree_rss() -> Optional[int]:
+    """Sampled resident set of this process plus its live descendants (running max), or None."""
+    try:
+        import psutil
+
+        me = psutil.Process()
+        total = int(me.memory_info().rss)
+        for child in me.children(recursive = True):
+            try:
+                total += int(child.memory_info().rss)
+            except Exception:  # exited between the listing and the read
+                continue
+    except Exception:
+        return _tree_rss_peak[0]
+    _tree_rss_peak[0] = _max_opt(_tree_rss_peak[0], total)
+    return _tree_rss_peak[0]
 
 
 def _windows_peaks() -> tuple[Optional[int], Optional[int]]:
@@ -112,10 +191,18 @@ def host_peaks() -> tuple[Optional[int], Optional[int]]:
     return _posix_peak_rss(), None
 
 
-def process_memory_peaks(torch_module: Any = None) -> Optional[dict]:
-    """This process's memory peaks so far, or None when nothing could be measured."""
+def process_memory_peaks(
+    torch_module: Any = None, *, include_children: bool = False
+) -> Optional[dict]:
+    """This process's memory peaks so far, or None when nothing could be measured.
+
+    ``include_children``: the host RSS peak covers the process tree, the larger of this process's
+    own peak and the sampled sum over it and its live descendants.
+    """
     allocated, reserved, count = _gpu_peaks(torch_module)
     rss, commit = host_peaks()
+    if include_children:
+        rss = _max_opt(rss, _tree_rss())
     peaks = {
         "gpu_peak_allocated_bytes": allocated,
         "gpu_peak_reserved_bytes": reserved,
@@ -150,24 +237,37 @@ _TERMINAL_EVENT_TYPES = frozenset({"error", "complete"})
 
 
 class PeakStampingQueue:
-    """Wraps the worker's event queue so every terminal event carries a fresh sample.
+    """Wraps the worker's event queue so every terminal event (or every ``event_types`` event)
+    carries a fresh sample.
 
     Error events are emitted from many places (load failures, OOMs, security refusals) and the MLX
     completion path sends its own events, so stamping them here keeps every exit covered. Events that
     already carry ``memory_peaks`` are passed through unchanged.
     """
 
-    def __init__(self, queue: Any):
+    def __init__(
+        self,
+        queue: Any,
+        *,
+        event_types: frozenset = _TERMINAL_EVENT_TYPES,
+        include_children: bool = False,
+    ):
         self._queue = queue
+        self._event_types = event_types
+        self._include_children = include_children
 
     def put(self, event: Any, *args: Any, **kwargs: Any) -> Any:
         if (
             isinstance(event, dict)
-            and event.get("type") in _TERMINAL_EVENT_TYPES
+            and event.get("type") in self._event_types
             and event.get("memory_peaks") is None
         ):
             try:
-                peaks = process_memory_peaks()
+                peaks = (
+                    process_memory_peaks(include_children = True)
+                    if self._include_children
+                    else process_memory_peaks()
+                )
             except Exception:
                 peaks = None
             if peaks is not None:
@@ -175,6 +275,10 @@ class PeakStampingQueue:
         return self._queue.put(event, *args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
-        if name == "_queue":  # not set yet (e.g. while unpickling): avoid recursing
+        if name in (
+            "_queue",
+            "_event_types",
+            "_include_children",
+        ):  # not set yet (e.g. while unpickling): avoid recursing
             raise AttributeError(name)
         return getattr(self._queue, name)
