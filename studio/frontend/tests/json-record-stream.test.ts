@@ -398,3 +398,70 @@ test("a record after the array's closing bracket is refused, not imported", asyn
     assert.deepEqual(await collect('[{"id":1}]  \n\t\n', size), [{ id: 1 }], `chunk size ${size}`);
   }
 });
+
+async function outcome(chunks: string[]) {
+  const records: unknown[] = [];
+  const malformed: string[] = [];
+  let error = "";
+  async function* feed(): AsyncGenerator<TextChunk> {
+    for (const text of chunks) yield { text, bytes: text.length };
+  }
+  try {
+    for await (const record of streamJsonRecords(feed(), {
+      onMalformed: (text) => malformed.push(text),
+    })) {
+      records.push(record);
+    }
+  } catch (caught) {
+    error = String(caught);
+  }
+  return { records, malformed, error };
+}
+
+test("damaged and multi-line files give the same records, damage and errors at every split", async () => {
+  const pretty = (value: unknown) => JSON.stringify(value, null, 2);
+  const corpus = [
+    `${pretty({ threads: [TRICKY[0]], messages: TRICKY.slice(1) })}\n`,
+    `${pretty(TRICKY[0]).slice(0, -2)}\n${pretty(TRICKY[1])}`,
+    `${pretty(TRICKY[0]).slice(0, -2)}\ngarbage line\n${JSON.stringify(TRICKY[1])}`,
+    `${JSON.stringify(TRICKY[0])}\r\nnot json\r\n${JSON.stringify(TRICKY[1])}\r\n{broken`,
+    '{"a": 1   \n \t\n{"b": 2}\n{"c":\n{"d": 3}}\n{"e": [\n[1]\n]}',
+    '{"a": "x" \n\n  \n[1, 2]\n{"b": "}\\n{"}\n{',
+    `${pretty({ a: 1 }).slice(0, -1)}\n${pretty({ b: 2 }).slice(0, -1)}\n${pretty({ c: 3 })}`,
+    pretty(TRICKY).slice(0, -3),
+  ];
+  for (const text of corpus) {
+    const whole = await outcome([text]);
+    for (let i = 0; i <= text.length; i++) {
+      for (const j of [i + 1, i + 2, i + 5, text.length]) {
+        if (j > text.length) continue;
+        const pieces = [text.slice(0, i), text.slice(i, j), text.slice(j)];
+        assert.deepEqual(await outcome(pieces), whole, JSON.stringify(pieces));
+      }
+    }
+  }
+});
+
+test("a backup that is one multi-line record is searched for damage once, not once per chunk", async () => {
+  // The "Export all chats" shape: one top-level object over many indented lines.
+  const messages = Array.from({ length: 4000 }, (_, i) => ({
+    id: `m${i}`,
+    content: [{ type: "text", text: `message ${i} `.repeat(20) }],
+  }));
+  const text = `${JSON.stringify({ version: 1, threads: [{ id: "t" }] }, null, 2).slice(0, -2)},\n  "messages": [\n    ${messages.map((m) => JSON.stringify(m)).join(",\n    ")}\n  ]\n}`;
+  const exec = RegExp.prototype.exec;
+  let searched = 0;
+  RegExp.prototype.exec = function (this: RegExp, input: string) {
+    if (this.source.includes("\\n[[{]")) searched += input.length;
+    return exec.call(this, input);
+  };
+  try {
+    const records = await collect(text, 4096);
+    assert.equal(records.length, 1);
+    assert.equal((records[0] as { messages: unknown[] }).messages.length, 4000);
+  } finally {
+    RegExp.prototype.exec = exec;
+  }
+  // Re-searching everything read so far each time would be ~n^2 / (2 * 4096), here over 100x n.
+  assert.ok(searched < 2 * text.length, `searched ${searched} chars of a ${text.length}-char file`);
+});
