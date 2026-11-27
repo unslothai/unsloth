@@ -318,6 +318,15 @@ class TestAWindowsCarveOutIsCountedAboveHostRam:
     def test_no_carve_out_reading_keeps_the_host_ram_cap(self, monkeypatch):
         assert self._probe(monkeypatch, 44_765, 17_002, None) == [(0, 17_002 - 1024, 0)]
 
+    def test_hip_below_host_ram_never_asks(self, monkeypatch):
+        def _boom():
+            raise AssertionError("read although the RAM cap does not bind")
+
+        monkeypatch.setattr(LlamaCppBackend, "_windows_apu_carve_out_free_mib", staticmethod(_boom))
+        assert TestTheApuBudgetIsCappedByHostRam._probe(
+            monkeypatch, "gfx1151", 78_471, 114_646
+        ) == [(0, 78_471 - 1024, 0)]
+
     def test_a_discrete_card_never_asks(self, monkeypatch):
         def _boom():
             raise AssertionError("read for a discrete card")
