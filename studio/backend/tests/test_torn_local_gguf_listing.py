@@ -133,6 +133,21 @@ def test_a_torn_quant_beside_whole_weights_is_not_offered(sources):
     assert [name for name in torn if resolver.resolve_local_gguf(name) is not None] == []
 
 
+def test_a_whole_quant_folder_beside_torn_safetensors_still_resolves(sources, tmp_path):
+    model = tmp_path / "scan" / "nested"
+    (model / "Q4_K_M").mkdir(parents = True)
+    (model / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (model / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "model-00001-of-00002.safetensors"}})
+    )
+    (model / "model-00001-of-00002.safetensors").write_bytes(b"\0" * 64)
+    _gguf(model / "Q4_K_M" / "Nested-Q4_K_M.gguf")
+    _gguf(tmp_path / "scan" / "torn" / "Q8_0" / "Torn-Q8_0-00001-of-00002.gguf")
+
+    assert resolver.resolve_local_gguf("nested")[1] == "Q4_K_M"
+    assert resolver.resolve_local_gguf("torn") is None
+
+
 def test_a_shard_symlink_is_checked_against_the_set_the_loader_opens(sources, tmp_path):
     hermes = sources.hermes_dirs[0]
     for name in ("Linked-Q4_K_M", "Followed-Q4_K_M"):

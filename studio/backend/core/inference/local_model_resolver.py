@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -767,7 +768,11 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         return _LocalGgufEntry(loader_id, raw_id, (), is_gguf = False)
     # A local row is partial only when none of its quants is whole; an HF repo still serves its complete ones.
     if getattr(info, "partial", False) and getattr(info, "source", None) != "hf_cache":
-        return None
+        # A torn safetensors set can sit beside a whole quant folder; a partial GGUF file is itself torn.
+        path = getattr(info, "path", None)
+        if not isinstance(path, str) or not os.path.isdir(path):
+            return None
+        return _local_gguf_entry(loader_id, info)
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
