@@ -71,7 +71,7 @@ export function NpuModelDetail({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-ui-25 font-semibold leading-ui-31 tracking-normal text-foreground">
+              <h2 className="truncate text-ui-25/ui-31 font-semibold tracking-normal text-foreground">
                 {model.id}
               </h2>
               {repo && (
@@ -81,14 +81,14 @@ export function NpuModelDetail({
                 </div>
               )}
             </div>
-            <div className="mt-0.5 truncate text-ui-15 leading-ui-24 text-muted-foreground">
+            <div className="mt-0.5 truncate text-ui-15/ui-24 text-muted-foreground">
               {repo ?? "FastFlowLM"}
             </div>
           </div>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
+          <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-muted px-2.5 text-ui-11p5 font-medium text-foreground dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]">
             <span
               aria-hidden={true}
               className="size-1.5 rounded-full bg-format-npu"
@@ -119,7 +119,7 @@ export function NpuModelDetail({
         </div>
       </InspectorDownloadSlot>
 
-      <div className="pb-5 pt-5">
+      <div className="py-5">
         <StatGrid>
           <StatRow label="Checkpoint" value={model.checkpoint} icon={ChipIcon} />
           {sizeLabel && (
@@ -149,7 +149,7 @@ export function NpuModelDetail({
         </StatGrid>
       </div>
 
-      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
+      <div className="max-w-(--hub-readme-measure) space-y-4 pt-4">
         {repo ? (
           <>
             {readmeNote && (

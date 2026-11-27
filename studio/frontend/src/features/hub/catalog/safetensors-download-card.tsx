@@ -277,7 +277,7 @@ export function SafetensorsDownloadCard({
             {checkpoint && (
               <select
                 aria-label="Image checkpoint"
-                className="min-w-0 truncate rounded bg-background text-foreground"
+                className="min-w-0 truncate rounded-sm bg-background text-foreground"
                 value={checkpoint.filename}
                 disabled={downloading || Boolean(hubPlan) || assets.checking}
                 onChange={(event) => setPicked({ key: sizeKey, filename: event.target.value })}

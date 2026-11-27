@@ -392,7 +392,7 @@ export function ArtifactHtmlFrame({
             className={NOTICE}
           >
             <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} className="size-4" />
-            <AlertAction className="top-2 end-2">
+            <AlertAction className="top-2 inset-e-2">
               <Button
                 size="icon-xs"
                 variant="ghost"
@@ -466,7 +466,7 @@ export function ArtifactHtmlFrame({
             className={NOTICE}
           >
             <HugeiconsIcon icon={CancelCircleIcon} strokeWidth={2} className="size-4" />
-            <AlertAction className="top-2 end-2">
+            <AlertAction className="top-2 inset-e-2">
               <Button
                 size="icon-xs"
                 variant="ghost"
@@ -483,7 +483,7 @@ export function ArtifactHtmlFrame({
             <AlertTitle role="alert">{errorTitle}</AlertTitle>
             <AlertDescription className={NOTICE_BODY}>
               <p
-                className="line-clamp-2 break-words font-mono text-ui-11p5"
+                className="line-clamp-2 wrap-break-word font-mono text-ui-11p5"
                 title={firstError.text}
               >
                 {firstError.text}
@@ -523,7 +523,7 @@ export function ArtifactHtmlFrame({
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
           dir={RTL_LOCALES.has(locale) ? "rtl" : "ltr"}
-          className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
+          className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur-sm"
         >
           <div
             className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2.5 py-1.5"
@@ -594,7 +594,7 @@ export function ArtifactHtmlFrame({
                       "text-amber-600 dark:text-amber-400",
                   )}
                 >
-                  <p className="whitespace-pre-wrap break-words">
+                  <p className="whitespace-pre-wrap wrap-break-word">
                     {entry.kind === "console" && entry.level !== "log" ? (
                       <span className="mr-1.5 uppercase text-muted-foreground">
                         {entry.level}

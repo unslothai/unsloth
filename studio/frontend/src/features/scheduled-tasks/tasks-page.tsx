@@ -201,7 +201,7 @@ function TaskRow({
   const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale, task.timezone);
 
   return (
-    <div className="group/task-row flex items-center gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]">
+    <div className="group/task-row flex items-center gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255/calc(0.055*var(--contrast-wash-gain,1)))]">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <button
@@ -284,7 +284,7 @@ function TaskRow({
           }}
           className={cn(
             ROW_BUTTON,
-            "opacity-0 group-hover/task-row:opacity-100 group-focus-within/task-row:opacity-100 [@media(pointer:coarse)]:opacity-100",
+            "opacity-0 group-hover/task-row:opacity-100 group-focus-within/task-row:opacity-100 pointer-coarse:opacity-100",
           )}
         >
           <PlayIcon strokeWidth={1.75} className="size-4.5" />
@@ -464,8 +464,8 @@ export function TasksPage() {
           {Array.from({ length: 3 }).map((_, index) => (
             <div key={index} className="flex items-start gap-4 rounded-xl px-5 py-4">
               <div className="flex flex-1 flex-col gap-2">
-                <Skeleton className="h-4 w-48 rounded-[8px]" />
-                <Skeleton className="h-3.5 w-72 rounded-[8px]" />
+                <Skeleton className="h-4 w-48 rounded-sm" />
+                <Skeleton className="h-3.5 w-72 rounded-sm" />
               </div>
             </div>
           ))}
@@ -513,7 +513,7 @@ export function TasksPage() {
                     title={t("scheduledTasks.filter")}
                     className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
                   >
-                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 -translate-y-[0.5px]" />
+                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5 translate-y-[-0.5px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent

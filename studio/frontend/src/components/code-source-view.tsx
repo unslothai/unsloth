@@ -29,7 +29,7 @@ function PlainSource({ code, lines, className }: { code: string; lines: number; 
     [lines],
   );
   return (
-    <div className={cn("h-full overflow-auto font-mono text-xs leading-relaxed", className)}>
+    <div className={cn("h-full overflow-auto font-mono text-ui-12/relaxed", className)}>
       <div className="flex min-w-max">
         <pre aria-hidden="true" className="m-0 select-none pr-4 text-right text-muted-foreground/60">
           {numbers}
@@ -68,7 +68,7 @@ export function CodeSourceView({
   return (
     <div
       className={cn(
-        "h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs",
+        "h-full overflow-auto text-ui-12/relaxed **:data-[streamdown=code-block]:my-0! **:data-[streamdown=code-block]:gap-0! **:data-[streamdown=code-block]:rounded-none! **:data-[streamdown=code-block]:border-0! **:data-[streamdown=code-block]:bg-transparent! **:data-[streamdown=code-block]:p-0! **:data-[streamdown=code-block-body]:border-0! **:data-[streamdown=code-block-body]:bg-transparent! **:data-[streamdown=code-block-body]:p-0! [&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:p-0! [&_pre]:text-ui-12/relaxed [&_code]:text-xs",
         className,
       )}
     >

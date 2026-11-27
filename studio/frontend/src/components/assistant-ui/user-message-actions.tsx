@@ -18,7 +18,7 @@ export const UserMessageActionBar: FC<PropsWithChildren> = ({ children }) => (
     className="aui-user-action-bar-root contents text-chat-icon-fg"
   >
     <UserMessageTime />
-    <div className="aui-user-action-controls flex shrink-0 gap-1 [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover">
+    <div className="aui-user-action-controls flex shrink-0 gap-1 [&_button]:size-8 [&_button]:rounded-full! [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover">
       {children}
     </div>
   </ActionBarPrimitive.Root>

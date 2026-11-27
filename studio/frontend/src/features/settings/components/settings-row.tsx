@@ -76,18 +76,18 @@ export function SettingsRow({
                         app's other small glyphs follow. */}
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-[var(--ui-icon-size-hint)]"
+                      className="size-(--ui-icon-size-hint)"
                     />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11/snug">
                   {hint}
                 </TooltipContent>
               </Tooltip>
             ) : null}
           </span>
           {description ? (
-            <span className="text-xs text-muted-foreground leading-snug">
+            <span className="text-ui-12/snug text-muted-foreground">
               {description}
             </span>
           ) : null}
@@ -101,7 +101,7 @@ export function SettingsRow({
             "flex max-w-full shrink-0",
             !description && "items-center",
             !wideControl &&
-              "max-w-[min(100%,calc(20rem*var(--ui-space-scale,1)))] [&>*]:max-w-full",
+              "max-w-[min(100%,calc(20rem*var(--ui-space-scale,1)))] *:max-w-full",
           )}
         >
           {children}

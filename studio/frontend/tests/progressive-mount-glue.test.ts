@@ -519,7 +519,7 @@ test("the hook is told about every commit, including the ones with nothing to ap
   // Resync bookkeeping even with zero shift: anchoring scroll events would re-attach a parked reader.
   const effect = section(GLUE, "useLayoutEffect(() => {\n    winRef.current = win;", "}, [win, atFirstRow, spacers,");
   assert.match(effect, /let scroll = 0;/);
-  assert.match(effect, /\n    adjustScroll\(scroll\);/, "the call is not inside the captured-anchor branch");
+  assert.match(effect, /\n {4}adjustScroll\(scroll\);/, "the call is not inside the captured-anchor branch");
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.doesNotMatch(
     body,

@@ -213,7 +213,7 @@ export function HighlightedCode({
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       aria-label={label}
-      className="max-h-96 max-w-full hover-scrollbar overflow-auto [mask-image:linear-gradient(to_bottom,transparent,#000_0.75rem)] p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11 leading-relaxed [&_pre]:!m-0 [html:not([data-code-wrap])_&_pre]:!whitespace-pre [html:not([data-code-wrap])_&_pre]:!break-normal [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-11 [&_pre]:!leading-relaxed [&_code]:!text-ui-11 [html:not([data-code-wrap])_&_[data-streamdown=code-block]]:!min-w-max [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-ui-11"
+      className="max-h-96 max-w-full hover-scrollbar overflow-auto mask-[linear-gradient(to_bottom,transparent,#000_0.75rem)] p-3 pr-16 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset text-ui-11/relaxed [&_pre]:m-0! [html:not([data-code-wrap])_&_pre]:whitespace-pre! [html:not([data-code-wrap])_&_pre]:break-normal! [&_pre]:border-0! [&_pre]:bg-transparent! [&_pre]:p-0! [&_pre]:text-ui-11/relaxed! [&_code]:text-ui-11! [html:not([data-code-wrap])_&_[data-streamdown=code-block]]:min-w-max! **:data-[streamdown=code-block]:my-0! **:data-[streamdown=code-block]:border-0! **:data-[streamdown=code-block]:bg-transparent! **:data-[streamdown=code-block]:p-0! **:data-[streamdown=code-block]:text-ui-11!"
       data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
     >
       <Streamdown
@@ -289,7 +289,7 @@ export function ExampleCodeBox({
   };
 
   return (
-    <div className="relative min-w-0 overflow-hidden rounded-xl border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]">
+    <div className="relative min-w-0 overflow-hidden rounded-xl border border-border bg-background/70 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))]">
       {/* Square scroller: this overflow-hidden rounds its scrollbars off at the corners. */}
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1.5">
         {pills}
@@ -306,7 +306,7 @@ export function ExampleCodeBox({
             : ({ "--example-h": `${height}px` } as CSSProperties)
         }
         className={cn(
-          "relative [&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 [&_[data-streamdown=code-block-header]]:hidden",
+          "relative [&>section]:max-h-none [&>section]:min-h-24 [&>section]:pr-8 **:data-[streamdown=code-block-header]:hidden",
           height === null
             ? fitContent
               ? "[&>section]:max-h-[60dvh]"

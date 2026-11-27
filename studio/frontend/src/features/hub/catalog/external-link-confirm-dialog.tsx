@@ -58,7 +58,7 @@ export function ExternalLinkConfirmDialog() {
             <p className="truncate text-ui-13 font-medium text-foreground">
               {hostOf(pendingUrl)}
             </p>
-            <p className="mt-0.5 break-all text-ui-11p5 leading-ui-16 text-muted-foreground">
+            <p className="mt-0.5 break-all text-ui-11p5/ui-16 text-muted-foreground">
               {pendingUrl}
             </p>
           </div>

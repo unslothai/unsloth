@@ -108,8 +108,8 @@ test("a trained adapter deploys under its catalog stem", () => {
 
 test("the video load and Reapply carry the selection; GGUF and single-file loads never do", () => {
   const api = readSrc("features/video/api.ts");
-  assert.match(api, /export interface VideoLoadRequest \{[\s\S]*?\n  loras\?: LoraSpecInput\[\];\n\}/);
-  assert.match(api, /baked_loras\?: string\[\];\n  baked_lora_specs\?: LoraSpecInput\[\];/);
+  assert.match(api, /export interface VideoLoadRequest \{[\s\S]*?\n {2}loras\?: LoraSpecInput\[\];\n\}/);
+  assert.match(api, /baked_loras\?: string\[\];\n {2}baked_lora_specs\?: LoraSpecInput\[\];/);
 
   const page = readSrc("features/video/video-page.tsx");
   assert.match(page, /type VideoLoadOptions = \{[\s\S]*?loras\?: LoraSpecInput\[\];\n\};/);
@@ -122,7 +122,7 @@ test("the video load and Reapply carry the selection; GGUF and single-file loads
   const plan = page.slice(page.indexOf("const plan = await getVideoDownloadPlan({\n          model_path: opts.displayRepoId ?? repoId,"));
   assert.match(
     plan.slice(0, 1400),
-    /\.\.\.\(opts\.kind === "pipeline" && videoLoraSpecs\(opts\.loras\) \? \{ loras: videoLoraSpecs\(opts\.loras\) \} : \{\}\),\n        \}\);/,
+    /\.\.\.\(opts\.kind === "pipeline" && videoLoraSpecs\(opts\.loras\) \? \{ loras: videoLoraSpecs\(opts\.loras\) \} : \{\}\),\n {8}\}\);/,
   );
   const reapply = page.slice(page.indexOf("const handleReapply = useCallback("));
   assert.match(

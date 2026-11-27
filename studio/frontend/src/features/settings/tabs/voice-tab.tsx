@@ -285,7 +285,7 @@ function SttModelPicker({
           type="button"
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
           <HugeiconsIcon
@@ -326,14 +326,14 @@ function SttModelPicker({
         >
           {(isLoading && debouncedQuery && items.length === 0) ||
           validating ? (
-            <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
               {validating
                 ? t("settings.voice.dictation.sttModelValidating")
                 : t("settings.voice.dictation.sttModelSearching")}
             </div>
           ) : items.length === 0 ? (
-            <div className="px-3 py-3 text-xs text-muted-foreground">
+            <div className="p-3 text-xs text-muted-foreground">
               {t("settings.voice.dictation.sttModelNoResults")}
             </div>
           ) : (
@@ -372,7 +372,7 @@ function SttModelPicker({
                       ) : null}
                     </span>
                     {twoLines ? (
-                      <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
+                      <span className="mt-0.5 block truncate font-mono text-ui-9/tight text-muted-foreground">
                         {sttModelSource(model)}
                       </span>
                     ) : null}

@@ -774,7 +774,7 @@ function OsSandboxSections() {
                         </span>
                       ) : null}
                       {setupOutput.length > 0 ? (
-                        <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-ui-11 text-muted-foreground">
+                        <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap wrap-break-word text-right font-mono text-ui-11 text-muted-foreground">
                           {setupOutput.join("\n")}
                         </pre>
                       ) : null}
@@ -861,7 +861,7 @@ function OsSandboxSections() {
                     </p>
                   ) : null}
                   {runtimeOutput.length > 0 ? (
-                    <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
+                    <pre className="whitespace-pre-wrap wrap-break-word font-mono text-ui-11 text-muted-foreground">
                       {runtimeOutput.join("\n")}
                     </pre>
                   ) : null}
@@ -883,7 +883,7 @@ function OsSandboxSections() {
                     </SettingsRow>
                   ) : null}
                   {view.builtinUpdate ? (
-                    <p className="py-2 text-xs text-muted-foreground leading-relaxed">
+                    <p className="py-2 text-ui-12/relaxed text-muted-foreground">
                       {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
                     </p>
                   ) : null}
@@ -911,7 +911,7 @@ function OsSandboxSections() {
                       ) : null}
                     </div>
                   </SettingsRow>
-                  <p className="pb-2 text-xs text-muted-foreground leading-relaxed">
+                  <p className="pb-2 text-ui-12/relaxed text-muted-foreground">
                     {t("settings.sandbox.disclosure")}
                   </p>
                   {restored ? (
@@ -985,7 +985,7 @@ function OsSandboxSections() {
                           </span>
                         ) : null}
                         {outputLines.length > 0 ? (
-                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap break-words text-right font-mono text-ui-11 text-muted-foreground">
+                          <pre className="max-w-[calc(360px*var(--ui-space-scale,1))] whitespace-pre-wrap wrap-break-word text-right font-mono text-ui-11 text-muted-foreground">
                             {outputLines.join("\n")}
                           </pre>
                         ) : null}

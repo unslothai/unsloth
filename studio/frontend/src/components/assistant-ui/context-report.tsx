@@ -106,7 +106,7 @@ const ContextCard: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
     <section
       ref={ref}
       aria-label={t("context.title")}
-      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 rounded-[16px] border border-border/70 bg-muted/20 px-4 py-3 text-sm"
+      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 rounded-lg border border-border/70 bg-muted/20 px-4 py-3 text-sm"
     >
       <header className="flex items-center justify-between gap-3">
         <p aria-live="polite">
@@ -243,7 +243,7 @@ const PromptToggle: FC<{ prompt: string }> = ({ prompt }) => {
         ) : null}
       </div>
       {open ? (
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-[12px] bg-muted px-3 py-2 font-mono">
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted px-3 py-2 font-mono">
           {prompt}
         </pre>
       ) : null}

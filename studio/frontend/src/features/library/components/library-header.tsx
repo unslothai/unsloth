@@ -234,7 +234,7 @@ export function LibraryHeader({
     >
       <div
         ref={controlsRef}
-        className={cn("pointer-events-auto", stacked && "max-w-full [&>*]:flex-wrap [&>*]:gap-y-2")}
+        className={cn("pointer-events-auto", stacked && "max-w-full *:flex-wrap *:gap-y-2")}
       >
         {controls}
       </div>

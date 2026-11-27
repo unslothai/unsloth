@@ -284,7 +284,7 @@ test("a baseline frozen before the request is not softened by a page loaded duri
 test("a page fetch re-reads its offset when the shelf shortens mid request", async () => {
   let shelf = ["e", "d", "c", "b", "a"];
   let loaded = ["e", "d"];
-  let epoch = 0;
+  const epoch = 0;
   const requested: number[] = [];
   const result = await fetchNextPage(
     () => loaded.length,

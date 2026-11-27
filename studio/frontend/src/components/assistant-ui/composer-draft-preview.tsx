@@ -41,7 +41,7 @@ export function ComposerDraftPreview({ text }: { text: string }) {
         controls={false}
         components={components}
         rehypePlugins={REHYPE_PLUGINS}
-        className="min-w-0 space-y-2 [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap"
+        className="min-w-0 space-y-2 wrap-anywhere [&_pre]:whitespace-pre-wrap"
       >
         {draft}
       </Streamdown>

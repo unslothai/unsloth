@@ -203,7 +203,7 @@ function BlockSheetButton({
       disabled={disabled}
       draggable={disabled ? false : draggable}
       onDragStart={disabled ? undefined : onDragStart}
-      className={`flex w-full items-center gap-3 border-l-2 bg-background px-3 py-3 text-left transition ${
+      className={`flex w-full items-center gap-3 border-l-2 bg-background p-3 text-left transition ${
         disabled ? "cursor-not-allowed opacity-60" : "hover:bg-muted/35"
       } ${
         isActive
@@ -218,7 +218,7 @@ function BlockSheetButton({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <p className="break-words text-sm font-semibold text-foreground">
+          <p className="wrap-break-word text-sm font-semibold text-foreground">
             {title}
           </p>
           {badge ? (
@@ -227,7 +227,7 @@ function BlockSheetButton({
             </Badge>
           ) : null}
         </div>
-        <p className="break-words text-ui-11 text-muted-foreground">
+        <p className="wrap-break-word text-ui-11 text-muted-foreground">
           {description}
         </p>
       </div>
@@ -481,7 +481,7 @@ export function BlockSheet({
           <div className="flex-1 min-h-0 overflow-y-auto py-4">
             <div className="mt-4 flex flex-col gap-2">
               {isRootView && !hasSearch && (
-                <div className={`mx-3 mb-2 rounded-xl border px-4 py-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
+                <div className={`mx-3 mb-2 rounded-xl border p-4 ${RECIPE_STUDIO_ONBOARDING_SURFACE_TONE}`}>
                   <div className="flex items-start gap-3">
                     <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md ${RECIPE_STUDIO_ONBOARDING_ICON_TONE}`}>
                       <HugeiconsIcon
@@ -615,7 +615,7 @@ export function BlockSheet({
                 sheetView === "seed" &&
                 !hasSearch &&
                 otherSeedBlocks.length > 0 && (
-                  <div className="px-3 pt-2 pb-2">
+                  <div className="px-3 py-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Other source options
                     </p>
@@ -716,13 +716,13 @@ export function BlockSheet({
                       setSheetOpen(false);
                       onOpenProcessors();
                     }}
-                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-3 text-left transition hover:bg-muted/25"
+                    className="flex w-full items-center justify-between gap-3 rounded-lg border border-border/60 p-3 text-left transition hover:bg-muted/25"
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground">
                         Edit final dataset shape
                       </p>
-                      <p className="break-words text-xs text-muted-foreground">
+                      <p className="wrap-break-word text-xs text-muted-foreground">
                         Rename, reorder, or reshape your final output.
                       </p>
                     </div>

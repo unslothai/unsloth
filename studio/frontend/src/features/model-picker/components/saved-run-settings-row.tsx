@@ -193,7 +193,7 @@ export function RunSettingsPicker({
           <button
             type="button"
             aria-label="Run settings for this model"
-            className="flex h-9 w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-background px-3.5 text-left text-ui-13 font-medium text-foreground outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+            className="flex h-9 w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] bg-background px-3.5 text-left text-ui-13 font-medium text-foreground outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
           >
             <span className="min-w-0 truncate">
               {selected ?? customName ?? "Default settings"}
@@ -208,7 +208,7 @@ export function RunSettingsPicker({
         <DropdownMenuContent
           align="start"
           sideOffset={4}
-          className="menu-soft-surface max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-max min-w-[var(--radix-dropdown-menu-trigger-width)] max-w-[min(36rem,calc(100vw-2rem))] rounded-lg border-0 p-1 ring-0"
+          className="menu-soft-surface max-h-[min(20rem,var(--radix-dropdown-menu-content-available-height))] w-max min-w-(--radix-dropdown-menu-trigger-width) max-w-[min(36rem,calc(100vw-2rem))] rounded-lg border-0 p-1 ring-0"
         >
           <DropdownMenuLabel className={SECTION}>Default</DropdownMenuLabel>
           <DropdownMenuItem className={ITEM} onSelect={() => onPick(null)}>

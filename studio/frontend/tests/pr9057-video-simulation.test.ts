@@ -41,7 +41,7 @@ const liftedJs = ts.transpileModule(liftedTs, {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
+ 
 const findLatestUserVideoBase64 = new Function(liftedJs)() as (
   messages: unknown,
 ) => string | undefined;

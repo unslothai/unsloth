@@ -113,7 +113,7 @@ export function ChatAudioUpload({ audioUpload }: ChatAudioUploadProps) {
             <dt className="text-muted-foreground">
               {t("settings.voice.dictation.sttModelLabel")}
             </dt>
-            <dd className="break-words font-medium">
+            <dd className="wrap-break-word font-medium">
               <bdi>{sttModelName(audioUpload.model)}</bdi>
             </dd>
           </div>
@@ -121,7 +121,7 @@ export function ChatAudioUpload({ audioUpload }: ChatAudioUploadProps) {
             <dt className="text-muted-foreground">
               {t("settings.voice.dictation.languageLabel")}
             </dt>
-            <dd className="break-words font-medium">
+            <dd className="wrap-break-word font-medium">
               <bdi>{languageName}</bdi>
             </dd>
           </div>
@@ -148,7 +148,7 @@ export function ChatAudioUpload({ audioUpload }: ChatAudioUploadProps) {
                 file: audioUpload.failedFileName ?? "",
               })}
             </p>
-            <p className="mt-1 break-words text-muted-foreground">
+            <p className="mt-1 wrap-break-word text-muted-foreground">
               {audioUpload.failureMessage}
             </p>
           </div>

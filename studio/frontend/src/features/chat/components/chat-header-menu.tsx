@@ -329,7 +329,7 @@ function ChatMenuItems({
         <DropdownMenuSubContent
           className={cn(
             MENU,
-            "max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto",
+            "max-h-(--radix-dropdown-menu-content-available-height) w-56 overflow-y-auto",
           )}
         >
           <DropdownMenuLabel className={LABEL}>
@@ -481,7 +481,7 @@ export function ChatTitleMenu({
           <button
             type="button"
             aria-label={`${t("chatMenu.more")}: ${menu.item.title}`}
-            className="chat-title-trigger mr-[calc(6px*var(--ui-space-scale,1))] ml-[calc(6px*var(--ui-space-scale,1))] flex h-[var(--studio-chat-control-height,34px)] min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
+            className="chat-title-trigger mx-[calc(6px*var(--ui-space-scale,1))] flex h-(--studio-chat-control-height,34px) min-w-0 max-w-[min(28rem,45vw)] shrink cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 text-ui-13p5 font-medium text-foreground transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover"
           >
             <span className="min-w-0 truncate">{menu.item.title}</span>
             <HugeiconsIcon

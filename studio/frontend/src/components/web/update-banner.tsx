@@ -82,11 +82,11 @@ export function WebUpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
+              ? "fixed bottom-4 right-4 z-9999 w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
                   // Only rendered notes may shrink; the floor is the surface's own content, not a constant.
-                  "has-[[data-slot=update-release-notes]]:shrink",
+                  "has-data-[slot=update-release-notes]:shrink",
                 ),
           )}
           data-testid="web-update-banner"
@@ -100,7 +100,7 @@ export function WebUpdateBanner({
               yields. That is the floor the constant was approximating, except
               it is measured rather than guessed and it holds at every type
               size. */}
-          <div className="toast-surface relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+          <div className="toast-surface relative flex max-h-[calc(100dvh-2rem)] grow flex-col rounded-2xl bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
 
             <button
               type="button"

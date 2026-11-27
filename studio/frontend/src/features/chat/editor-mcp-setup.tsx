@@ -189,20 +189,20 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
           {!config ? "Loading…" : config.is_enabled ? "Enabled" : !config.available ? "Unavailable" : "Disabled"}
         </span>
       </div>
-      {!config?.is_enabled && <p className="text-sm leading-relaxed text-muted-foreground">
+      {!config?.is_enabled && <p className="text-sm/relaxed text-muted-foreground">
         Unsloth connects to the MCP server that the {copy.name} add-on runs on this computer. Nothing is downloaded.
       </p>}
       {config?.installed === false && !config.is_enabled && (
         <div className="flex flex-wrap items-center gap-2">
-          <p className="text-xs leading-relaxed text-muted-foreground">{copy.name} was not found on this computer.</p>
+          <p className="text-ui-12/relaxed text-muted-foreground">{copy.name} was not found on this computer.</p>
           <Button size="sm" variant="outline" disabled={locked} onClick={() => openInstallGuide(copy.guide, onClose)}>Guide to Install</Button>
         </div>
       )}
-      {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
+      {duplicate && <p className="text-ui-12/relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
           <Checkbox id={`${editorId}-mcp-consent`} className="mt-0.5" checked={consent} disabled={locked} onCheckedChange={(checked) => setConsent(checked === true)} />
-          <Label htmlFor={`${editorId}-mcp-consent`} className="text-xs font-normal leading-relaxed">{copy.consent}</Label>
+          <Label htmlFor={`${editorId}-mcp-consent`} className="text-ui-12/relaxed font-normal">{copy.consent}</Label>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -219,7 +219,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
           <HugeiconsIcon icon={ChevronDownStandardIcon} aria-hidden="true" className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
-        <div className="space-y-4 pt-4 text-sm leading-relaxed text-muted-foreground">
+        <div className="space-y-4 pt-4 text-sm/relaxed text-muted-foreground">
           <p>Run {copy.name} on the Unsloth backend machine.</p>
           <Button size="sm" variant="outline" onClick={() => openLink(copy.link.url)}>{copy.link.label}</Button>
           <ol className="list-decimal space-y-3 pl-5">
@@ -238,7 +238,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
         </CollapsibleTrigger>
         <CollapsibleContent className="[--duration:200ms] motion-reduce:animate-none">
         <div className="space-y-4 pt-4">
-          <p className="text-xs leading-relaxed text-muted-foreground">{copy.noPort ? "" : "Loopback only (127.0.0.1). "}{copy.portHint}</p>
+          <p className="text-ui-12/relaxed text-muted-foreground">{copy.noPort ? "" : "Loopback only (127.0.0.1). "}{copy.portHint}</p>
           {!copy.noPort && <div className="grid gap-3 sm:grid-cols-[100px_1fr]">{portInput}</div>}
           {copy.projectField && (
             <div className="space-y-1">

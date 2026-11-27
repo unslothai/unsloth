@@ -106,7 +106,7 @@ export function LoraAddMenu({
             placeholder="Search LoRAs or paste owner/name"
           />
           {/* Only the catalog scrolls and shrinks, so the footer stays visible in a short window; the flex column runs through cmdk's sizer div. */}
-          <CommandList className="flex max-h-none min-h-0 flex-col overflow-hidden [&>[cmdk-list-sizer]]:flex [&>[cmdk-list-sizer]]:min-h-0 [&>[cmdk-list-sizer]]:flex-col">
+          <CommandList className="flex max-h-none min-h-0 flex-col overflow-hidden *:[[cmdk-list-sizer]]:flex *:[[cmdk-list-sizer]]:min-h-0 *:[[cmdk-list-sizer]]:flex-col">
             {/* Not CommandEmpty: the Hugging Face row below is always an item, so cmdk never counts zero. */}
             {groups.length === 0 && !custom && (
               <p className="px-3 py-4 text-center text-sm text-muted-foreground">
@@ -131,7 +131,7 @@ export function LoraAddMenu({
                       }
                       className="cursor-pointer"
                     >
-                      <span className="line-clamp-2 min-w-0 flex-1 [overflow-wrap:anywhere]">
+                      <span className="line-clamp-2 min-w-0 flex-1 wrap-anywhere">
                         {lora.display_name}
                       </span>
                       {added && (
@@ -154,7 +154,7 @@ export function LoraAddMenu({
                   onSelect={() => add({ id: custom.id, weight: 1 }, false)}
                   className="cursor-pointer"
                 >
-                  <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                  <span className="min-w-0 flex-1 wrap-anywhere">
                     Use <span className="font-mono text-xs">{custom.id}</span>
                   </span>
                   {custom.added && (

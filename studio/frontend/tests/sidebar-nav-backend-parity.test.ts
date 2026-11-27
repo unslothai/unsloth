@@ -45,12 +45,12 @@ test("the backend stores every customization field the frontend sends", () => {
 // navRows is keyed by id, so a rename silently un-gates a capability row.
 test("Train and Video are still the capability-gated rows", async () => {
   const source = await readSrcAsync("components/app-sidebar.tsx");
-  const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n  \};/.exec(
+  const rows = /const navRows: Record<SidebarNavItemId, NavRowDef> = \{([\s\S]*?)\n {2}\};/.exec(
     source,
   );
   assert.ok(rows, "could not find navRows in app-sidebar.tsx");
   const bodies = new Map<string, string>();
-  const keys = [...rows[1].matchAll(/^    ([a-z]+): \{$/gm)];
+  const keys = [...rows[1].matchAll(/^ {4}([a-z]+): \{$/gm)];
   keys.forEach((key, i) => {
     const start = key.index + key[0].length;
     const end = i + 1 < keys.length ? keys[i + 1].index : rows[1].length;

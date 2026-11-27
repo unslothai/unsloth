@@ -38,7 +38,7 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
         {question && script ? (
           <ScriptPreview key={question.id} code={question.detail} onRead={() => setReadId(question.id)} />
         ) : question?.detail ? (
-          <p className="truncate text-ui-11 leading-tight text-muted-foreground" title={question.detail}>
+          <p className="truncate text-ui-11/tight text-muted-foreground" title={question.detail}>
             {question.detail}
           </p>
         ) : null}

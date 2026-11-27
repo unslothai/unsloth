@@ -26,7 +26,7 @@ import { FieldLabel } from "./components/field";
 
 function OptionHint({ text }: { text?: string | null }) {
   return text ? (
-    <p className="text-ui-12 leading-normal text-muted-foreground">{text}</p>
+    <p className="text-ui-12/normal text-muted-foreground">{text}</p>
   ) : null;
 }
 

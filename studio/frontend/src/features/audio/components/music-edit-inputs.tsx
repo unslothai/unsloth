@@ -143,7 +143,7 @@ export function MusicEditInputs({
       {tooLong ? (
         <p
           role="alert"
-          className="-mt-2 text-ui-11p5 leading-snug text-foreground"
+          className="-mt-2 text-ui-11p5/snug text-foreground"
         >
           {tooLong}
         </p>
@@ -177,18 +177,18 @@ export function MusicEditInputs({
             }))}
           />
           {action ? (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {MUSIC_EDIT_ACTION_HINT[action]}
             </p>
           ) : null}
           {usesRanges && rangeProblem ? (
-            <p className="text-ui-11p5 leading-snug text-foreground">
+            <p className="text-ui-11p5/snug text-foreground">
               {draft.ranges.length === 0
                 ? `${rangeProblem} Drag across it, or use Select a part.`
                 : rangeProblem}
             </p>
           ) : extendedBy > 0 ? (
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               Extends the clip by{" "}
               <span className="font-mono tabular-nums">
                 {extendedBy.toFixed(1)}
@@ -198,7 +198,7 @@ export function MusicEditInputs({
           ) : null}
         </div>
       ) : (
-        <p className="text-ui-12 leading-snug text-muted-foreground">
+        <p className="text-ui-12/snug text-muted-foreground">
           This model cannot edit clips. Load ACE-Step or Stable Audio to edit.
         </p>
       )}

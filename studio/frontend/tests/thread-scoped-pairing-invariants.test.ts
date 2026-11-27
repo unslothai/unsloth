@@ -267,7 +267,7 @@ test("a replay entry survives a failed replay", () => {
   assert.match(replay, /if \(res\.ok\) forgetReplayedThreadSettings\(threadId, body\)/);
   assert.doesNotMatch(
     replay,
-    /localStorage\.removeItem\(THREAD_SETTINGS_REPLAY_KEY\);\n    if \(!raw\)/,
+    /localStorage\.removeItem\(THREAD_SETTINGS_REPLAY_KEY\);\n {4}if \(!raw\)/,
     "the whole batch is still dropped before it is known to have landed",
   );
 });

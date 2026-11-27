@@ -80,7 +80,7 @@ export function SettingsSection({
             <SectionHeading title={title} badge={badge} />
           )}
           {description ? (
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-ui-12/relaxed text-muted-foreground">
               {description}
             </p>
           ) : null}

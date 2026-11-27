@@ -369,7 +369,7 @@ function CodeGroup({
           {code.language}
         </div>
       )}
-      <div className="aui-reasoning-code-lines !m-0 min-h-[1lh] whitespace-pre-wrap [overflow-wrap:anywhere] font-mono">
+      <div className="aui-reasoning-code-lines m-0! min-h-lh whitespace-pre-wrap wrap-anywhere font-mono">
         <code>
           {indices.map((index, at) => (
             <CodeRow

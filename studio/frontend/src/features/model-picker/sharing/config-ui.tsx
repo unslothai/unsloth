@@ -147,11 +147,11 @@ export function SharedRunConfigReview({
     <details open={true} className="group mb-5 border-b border-border pb-5">
       <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background [&::-webkit-details-marker]:hidden">
         <span className="flex min-h-8 min-w-0 items-center gap-2">
-          <span className="min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+          <span className="min-w-0 truncate text-ui-13/tight font-medium tracking-nav text-foreground">
             {reviewTitle(keys.length > 0, model, ggufVariant)}
           </span>
           {keys.length > 0 && (
-            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium tabular-nums text-muted-foreground dark:bg-muted">
               {keys.length}
             </span>
           )}
@@ -162,7 +162,7 @@ export function SharedRunConfigReview({
           className="size-3.5 shrink-0 -rotate-90 text-muted-foreground transition-transform duration-200 group-open:rotate-0 group-hover:text-foreground motion-reduce:transition-none"
         />
         {selection && (
-          <span className="col-span-2 -mt-1 min-w-0 text-ui-11 text-muted-foreground [overflow-wrap:anywhere]">
+          <span className="col-span-2 -mt-1 min-w-0 text-ui-11 text-muted-foreground wrap-anywhere">
             {selection}
           </span>
         )}
@@ -178,12 +178,12 @@ export function SharedRunConfigReview({
                 <dt className="text-ui-12 text-muted-foreground">
                   {SHARED_CONFIG_FIELDS[key].label}
                 </dt>
-                <dd className="min-w-0 whitespace-pre-wrap text-right text-ui-12 text-foreground [overflow-wrap:anywhere]">
+                <dd className="min-w-0 whitespace-pre-wrap text-right text-ui-12 text-foreground wrap-anywhere">
                   {formatSharedConfigValue(key, currentConfig)}
                 </dd>
                 {JSON.stringify(config[key]) !==
                   JSON.stringify(currentConfig[key]) && (
-                  <dd className="col-span-2 min-w-0 whitespace-pre-wrap text-ui-11 leading-relaxed text-muted-foreground/80 [overflow-wrap:anywhere]">
+                  <dd className="col-span-2 min-w-0 whitespace-pre-wrap text-ui-11/relaxed text-muted-foreground/80 wrap-anywhere">
                     Requested {formatSharedConfigValue(key, config)}, adjusted
                     for this device or model.
                   </dd>
@@ -192,7 +192,7 @@ export function SharedRunConfigReview({
             ))}
           </dl>
         )}
-        <div className="space-y-1 text-pretty text-ui-12 leading-relaxed text-muted-foreground">
+        <div className="space-y-1 text-pretty text-ui-12/relaxed text-muted-foreground">
           {download && <p>{download}</p>}
           <p>{savedSettingsNote(remember, hasSavedSettings)}</p>
         </div>

@@ -38,7 +38,7 @@ export function DownloadApprovalDialog() {
       <AlertDialogContent onOverlayClick={() => answer(false, false)}>
         <AlertDialogHeader>
           <AlertDialogTitle>{t("browser.downloadPrompt.title")}</AlertDialogTitle>
-          <AlertDialogDescription className="break-words">
+          <AlertDialogDescription className="wrap-break-word">
             {request ? t("browser.downloadPrompt.description", { host: request.label, name: request.name }) : null}
           </AlertDialogDescription>
           {request?.dangerous ? (

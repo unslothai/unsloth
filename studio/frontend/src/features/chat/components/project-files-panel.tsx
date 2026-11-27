@@ -539,9 +539,9 @@ export function ProjectFilesPanel({
   }
 
   return (
-    <div className="mt-8 rounded-2xl bg-muted/30 px-4 py-4">
+    <div className="mt-8 rounded-2xl bg-muted/30 p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex h-9 min-w-0 flex-1 basis-48 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]">
+        <div className="flex h-9 min-w-0 flex-1 basis-48 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]">
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={1.75}

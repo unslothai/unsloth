@@ -256,7 +256,7 @@ export function GuidedTour({
                   <SpotlightOverlay rect={spotlightRect} vw={vw} vh={vh} maskId={maskId} />
                   {spotlightRect && (
                     <motion.div
-                      className="fixed z-[51] pointer-events-none rounded-2xl ring-1 ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+                      className="fixed z-51 pointer-events-none rounded-2xl ring-1 ring-[rgb(255_255_255/calc(0.1*var(--contrast-edge-gain,1)))]"
                       initial={false}
                       animate={{
                         left: spotlightRect.x,
@@ -276,7 +276,7 @@ export function GuidedTour({
                 onPointerDownOutside={(e) => e.preventDefault()}
                 onInteractOutside={(e) => e.preventDefault()}
                 className={cn(
-                  "fixed z-[52] outline-none",
+                  "fixed z-52 outline-none",
                   "w-[min(420px,calc(100vw-1.5rem))]",
                 )}
                 style={{
@@ -295,7 +295,7 @@ export function GuidedTour({
                     // hugs the corner about twice as tightly as the arc, which reads as a
                     // boxed-in card rather than a rounded one.
                     "relative overflow-hidden rounded-3xl",
-                    "bg-white/95 text-foreground ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
+                    "bg-white/95 text-foreground ring-1 ring-[rgb(0_0_0/calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:text-zinc-100 dark:ring-[rgb(255_255_255/calc(0.12*var(--contrast-edge-gain,1)))]",
                     "shadow-[0_30px_120px_rgba(0,0,0,0.35)]",
                   )}
                   style={{
@@ -304,7 +304,7 @@ export function GuidedTour({
                 >
                   <div
                     className={cn(
-                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:ring-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]",
+                      "absolute z-10 size-3 rotate-45 rounded-[3px] bg-white/95 ring-1 ring-[rgb(0_0_0/calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-zinc-900/96 dark:ring-[rgb(255_255_255/calc(0.12*var(--contrast-edge-gain,1)))]",
                       placement === "right" &&
                         "-left-1 top-1/2 -translate-y-1/2",
                       placement === "left" &&
@@ -318,25 +318,25 @@ export function GuidedTour({
                   />
                   {/* Rounded to match the card. A square-cornered rectangle here reads as a
                       second, boxier outline whenever it is not clipped to the card's radius. */}
-                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-3xl bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
+                  <div className="absolute inset-x-0 top-0 h-20 rounded-t-3xl bg-linear-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
                   <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))] dark:text-zinc-200/75 dark:ring-[rgb(255_255_255_/_calc(0.14*var(--contrast-edge-gain,1)))]">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-[rgb(0_0_0/calc(0.04*var(--contrast-wash-gain,1)))] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-[rgb(0_0_0/calc(0.1*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))] dark:text-zinc-200/75 dark:ring-[rgb(255_255_255/calc(0.14*var(--contrast-edge-gain,1)))]">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-control-accent/70" />
                           {t("tour.badge")}
                         </div>
                         <DialogPrimitive.Title
-                          className="mt-2 text-ui-18 leading-tight"
+                          className="mt-2 text-lg/tight"
                           style={{ fontFamily: "var(--font-serif)" }}
                         >
                           {step?.title ?? t("tour.defaultTitle")}
                         </DialogPrimitive.Title>
-                        <DialogPrimitive.Description className="mt-1.5 text-sm leading-relaxed text-foreground/70 dark:text-zinc-200/75">
+                        <DialogPrimitive.Description className="mt-1.5 text-sm/relaxed text-foreground/70 dark:text-zinc-200/75">
                           {step?.body ?? t("tour.defaultBody")}
                         </DialogPrimitive.Description>
                       </div>
@@ -344,7 +344,7 @@ export function GuidedTour({
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
                         aria-label={t("tour.skipTour")}
                       >
@@ -355,7 +355,7 @@ export function GuidedTour({
                     <div className="mt-5 flex items-center justify-between gap-3">
                       <Button
                         variant="ghost"
-                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                        className="text-foreground/60 hover:text-foreground hover:bg-[rgb(0_0_0/calc(0.05*var(--contrast-wash-gain,1)))] dark:text-zinc-300/70 dark:hover:text-zinc-100 dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
                         onClick={() => requestClose("skip")}
                       >
                         {t("tour.skip")}
@@ -394,7 +394,7 @@ export function GuidedTour({
                     </div>
                   </div>
 
-                  <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
+                  <div className="h-px bg-linear-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
                   <div className="px-5 py-3 text-ui-11 text-foreground/55 dark:text-zinc-300/65">
                     {t("tour.tip")}
                   </div>

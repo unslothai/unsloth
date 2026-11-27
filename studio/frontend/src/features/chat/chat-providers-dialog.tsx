@@ -2158,7 +2158,7 @@ export function ChatProvidersSettings({
                   >
                     Connection
                   </Label>
-                  <p className="text-xs leading-snug text-muted-foreground">
+                  <p className="text-ui-12/snug text-muted-foreground">
                     A provider or your own server.
                   </p>
                 </div>
@@ -2168,7 +2168,7 @@ export function ChatProvidersSettings({
                 >
                   <SelectTrigger
                     id="provider-preset"
-                    className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                    className="mt-(--ui-title-cap-inset) h-9 w-full text-sm @max-[520px]:mt-0"
                     disabled={editingProviderId != null}
                   >
                     <SelectValue placeholder="Choose a connection" />
@@ -2176,7 +2176,7 @@ export function ChatProvidersSettings({
                   {/* No scroll chevrons: the list scrolls by wheel, trackpad and keyboard. */}
                   <SelectContent
                     ref={fadeProviderMenuEdges}
-                    className="[&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                    className="**:data-[slot=select-scroll-down-button]:hidden **:data-[slot=select-scroll-up-button]:hidden"
                   >
                     {pickerGroups.map((group, groupIndex) => (
                       <Fragment key={group.id}>
@@ -2222,14 +2222,14 @@ export function ChatProvidersSettings({
                     <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
                       Plan
                     </Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       The same OpenCode key works for both.
                     </p>
                   </div>
                   <Select value={providerType} onValueChange={chooseProviderType}>
                     <SelectTrigger
                       id="provider-opencode-plan"
-                      className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                      className="mt-(--ui-title-cap-inset) h-9 w-full text-sm @max-[520px]:mt-0"
                       disabled={editingProviderId != null}
                     >
                       <SelectValue />
@@ -2254,7 +2254,7 @@ export function ChatProvidersSettings({
                     >
                       API key {keyOptional ? "(optional)" : ""}
                     </Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       {editingProviderHasSavedKey
                         ? "Saved securely. Leave blank to keep it."
                         : "Saved securely."}
@@ -2270,7 +2270,7 @@ export function ChatProvidersSettings({
                       </button>
                     ) : null}
                   </div>
-                  <div className="mt-[var(--ui-title-cap-inset)] min-w-0 @max-[520px]:mt-0">
+                  <div className="mt-(--ui-title-cap-inset) min-w-0 @max-[520px]:mt-0">
                     {/* Own box, so the eye stays centred on the input when messages render below it. */}
                     <div className="relative">
                     <Input
@@ -2366,7 +2366,7 @@ export function ChatProvidersSettings({
                     <Label htmlFor="provider-api-type" className="text-sm font-medium">
                       API type
                     </Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       The endpoint your models support.
                     </p>
                   </div>
@@ -2379,7 +2379,7 @@ export function ChatProvidersSettings({
                   >
                     <SelectTrigger
                       id="provider-api-type"
-                      className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                      className="mt-(--ui-title-cap-inset) h-9 w-full text-sm @max-[520px]:mt-0"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -2401,7 +2401,7 @@ export function ChatProvidersSettings({
                     >
                       Base URL
                     </Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       {decisionsOnly
                         ? "Up to the version, such as /v1. Unsloth adds /systemone."
                         : "OpenAI-compatible endpoint."}
@@ -2413,7 +2413,7 @@ export function ChatProvidersSettings({
                     value={baseUrlDraft}
                     onChange={(event) => setBaseUrlDraft(event.target.value)}
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
-                    className="mt-[var(--ui-title-cap-inset)] h-9 text-sm @max-[520px]:mt-0"
+                    className="mt-(--ui-title-cap-inset) h-9 text-sm @max-[520px]:mt-0"
                   />
                 </div>
               ) : null}
@@ -2438,7 +2438,7 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <Switch
-                    className="mt-[var(--ui-title-cap-inset)]"
+                    className="mt-(--ui-title-cap-inset)"
                     id="provider-shared"
                     checked={sharedDraft}
                     onCheckedChange={setSharedDraft}
@@ -2460,7 +2460,7 @@ export function ChatProvidersSettings({
                 </Label>
                 <p
                   id="provider-auto-compact-tokens-help"
-                  className="text-xs leading-snug text-muted-foreground"
+                  className="text-ui-12/snug text-muted-foreground"
                 >
                   {compactionModeDraft !== "summary"
                     ? "How full the model's context window gets before the oldest messages are dropped."
@@ -2473,7 +2473,7 @@ export function ChatProvidersSettings({
                 </p>
                 <p
                   id="provider-auto-compact-tokens-note"
-                  className="mt-1 text-xs leading-snug text-muted-foreground"
+                  className="mt-1 text-ui-12/snug text-muted-foreground"
                 >
                   {providerType === "anthropic"
                     ? "Never below 50,000 tokens on this provider. "
@@ -2579,7 +2579,7 @@ export function ChatProvidersSettings({
                 </Label>
                 <p
                   id="provider-compaction-mode-help"
-                  className="text-xs leading-snug text-muted-foreground"
+                  className="text-ui-12/snug text-muted-foreground"
                 >
                   {compactionModeDraft === "rolling"
                     ? "Just enough of the oldest turns leave the model's context on each message, with no summary call. Search conversation brings them back word for word."
@@ -2602,7 +2602,7 @@ export function ChatProvidersSettings({
                 <SelectTrigger
                   id="provider-compaction-mode"
                   aria-describedby="provider-compaction-mode-help"
-                  className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                  className="mt-(--ui-title-cap-inset) h-9 w-full text-sm @max-[520px]:mt-0"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -2640,14 +2640,14 @@ export function ChatProvidersSettings({
                     </Label>
                     <p
                       id="provider-max-output-tokens-help"
-                      className="text-xs leading-snug text-muted-foreground"
+                      className="text-ui-12/snug text-muted-foreground"
                     >
                       {externalMaxTokensUnboundedAtMax(providerType, null)
                         ? "Caps Max Tokens for this connection. Blank lets Max use whatever the model's context window leaves after the prompt."
                         : "Caps Max Tokens for this connection. Blank uses the model's published output limit, or 32,768 when it has none."}
                     </p>
                   </div>
-                  <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                  <div className="mt-(--ui-title-cap-inset) flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
                     {/* Text, not type=number: that blanks "131,072" and silently clears the override. */}
                     <Input
                       id="provider-max-output-tokens"
@@ -2665,7 +2665,7 @@ export function ChatProvidersSettings({
                     />
                     <p
                       id="provider-max-output-tokens-warning"
-                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+                      className="text-ui-12/snug text-amber-700 dark:text-amber-400"
                     >
                       Requests may fail if the provider rejects this value.
                     </p>
@@ -2684,7 +2684,7 @@ export function ChatProvidersSettings({
                     </Label>
                     <p
                       id="provider-extra-headers-help"
-                      className="text-xs leading-snug text-muted-foreground"
+                      className="text-ui-12/snug text-muted-foreground"
                     >
                       One per line, as Name: value. {"{{CHAT_SESSION_ID}}"} is the open chat.
                     </p>
@@ -2718,7 +2718,7 @@ export function ChatProvidersSettings({
                     </p>
                   </div>
                   <Switch
-                    className="mt-[var(--ui-title-cap-inset)]"
+                    className="mt-(--ui-title-cap-inset)"
                     id="provider-auto-reload-models"
                     checked={autoReloadModels}
                     onCheckedChange={setAutoReloadModels}
@@ -2753,7 +2753,7 @@ export function ChatProvidersSettings({
                   >
                     <SelectTrigger
                       id="provider-new-model-check"
-                      className="mt-[var(--ui-title-cap-inset)] w-36 shrink-0"
+                      className="mt-(--ui-title-cap-inset) w-36 shrink-0"
                       aria-describedby="provider-new-model-check-help"
                     >
                       <SelectValue />
@@ -2776,7 +2776,7 @@ export function ChatProvidersSettings({
                       <Label htmlFor="provider-reasoning-support" className="text-sm font-medium">
                         Reasoning support
                       </Label>
-                      <p id="provider-reasoning-support-help" className="text-xs leading-snug text-muted-foreground">
+                      <p id="provider-reasoning-support-help" className="text-ui-12/snug text-muted-foreground">
                         Turn on only if this endpoint accepts reasoning controls.
                       </p>
                     </div>
@@ -2799,11 +2799,11 @@ export function ChatProvidersSettings({
                         <Label htmlFor="provider-reasoning-style" className="text-sm font-medium">
                           Reasoning parameter style
                         </Label>
-                        <p className="text-xs leading-snug text-muted-foreground">
+                        <p className="text-ui-12/snug text-muted-foreground">
                           The request format your endpoint supports.
                         </p>
                       </div>
-                      <div className="mt-[var(--ui-title-cap-inset)] flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
+                      <div className="mt-(--ui-title-cap-inset) flex min-w-0 flex-col gap-1.5 @max-[520px]:mt-0">
                         <Select
                           value={reasoningConfig.style}
                           onValueChange={(style) => setReasoningConfig({
@@ -2821,7 +2821,7 @@ export function ChatProvidersSettings({
                             <SelectItem value="chat_template_kwargs.enable_thinking">chat_template_kwargs.enable_thinking</SelectItem>
                           </SelectContent>
                         </Select>
-                        <p id="provider-reasoning-style-help" className="text-xs leading-snug text-muted-foreground">
+                        <p id="provider-reasoning-style-help" className="text-ui-12/snug text-muted-foreground">
                           {reasoningConfig.style === "reasoning_effort"
                             ? 'Thinking off sends reasoning_effort: "none".'
                             : reasoningConfig.style === "reasoning"
@@ -2844,7 +2844,7 @@ export function ChatProvidersSettings({
                     >
                       Unrecognized reasoning model
                     </Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       Known models like Qwen3 and gpt-oss are detected
                       automatically. Turn on to show a Thinking switch for any
                       other model.
@@ -2935,7 +2935,7 @@ export function ChatProvidersSettings({
                 >
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label className="text-sm font-medium">Models</Label>
-                    <p className="text-xs leading-snug text-muted-foreground">
+                    <p className="text-ui-12/snug text-muted-foreground">
                       {modelStatusLabel}
                     </p>
                   </div>
@@ -3018,7 +3018,7 @@ export function ChatProvidersSettings({
                   </div>
                 ) : isCuratedModelList && (availableModels.length > 0 || modelIdsEditable) ? (
                   <div className="space-y-3 py-3">
-                    <p className="text-xs leading-relaxed text-muted-foreground">
+                    <p className="text-ui-12/relaxed text-muted-foreground">
                       Select from suggestions below or enter exact model IDs.
                     </p>
                     {availableModels.length > 0 ? modelChecklist(true) : null}
@@ -3129,7 +3129,7 @@ export function ChatProvidersSettings({
             </div>
           </div>
           {runsStudioToolsLocally ? (
-            <p className="-mb-1 px-1 pt-1.5 text-xs leading-snug text-muted-foreground">
+            <p className="-mb-1 px-1 pt-1.5 text-ui-12/snug text-muted-foreground">
               Search, Tools and MCP run on this machine and send results to the
               provider. Risky calls still ask first.
             </p>
@@ -3211,7 +3211,7 @@ export function ChatProvidersSettings({
                 <span className="text-sm font-medium text-foreground">
                   No connections yet
                 </span>
-                <span className="text-xs leading-snug text-muted-foreground">
+                <span className="text-ui-12/snug text-muted-foreground">
                   {syncingProviders
                     ? "Loading your connections"
                     : "Pick a provider below."}

@@ -535,7 +535,7 @@ const AttachmentTextDialog: FC<
         {language || webPage ? (
           <CodeSourceView code={code} language={language ?? "html"} className="px-6 pb-6" />
         ) : (
-          <pre className="size-full overflow-auto whitespace-pre-wrap break-words px-6 pb-6 font-mono text-sm leading-relaxed select-text">
+          <pre className="size-full overflow-auto whitespace-pre-wrap wrap-break-word px-6 pb-6 font-mono text-sm/relaxed select-text">
             {code}
           </pre>
         )}

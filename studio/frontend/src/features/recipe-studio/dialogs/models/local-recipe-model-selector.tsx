@@ -341,7 +341,7 @@ function LocalModelRow({
         disabled={probing}
         onClick={() => onSelectModel(model)}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2.5 py-2.5 text-left text-sm transition-colors hover:bg-muted/50",
+          "flex w-full items-center gap-2 rounded-md p-2.5 text-left text-sm transition-colors hover:bg-muted/50",
           selected && "bg-muted/70 text-foreground ring-1 ring-border/70",
         )}
       >
@@ -412,7 +412,7 @@ function LocalModelResults({
 }): ReactElement {
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
         <Spinner className="size-3" />
         Scanning local models...
       </div>
@@ -421,7 +421,7 @@ function LocalModelResults({
 
   if (error) {
     return (
-      <div className="space-y-2 px-3 py-3 text-xs">
+      <div className="space-y-2 p-3 text-xs">
         <p className="text-destructive">{error}</p>
         <Button type="button" variant="outline" size="xs" onClick={onRefresh}>
           Try again
@@ -432,7 +432,7 @@ function LocalModelResults({
 
   if (models.length === 0) {
     return (
-      <div className="space-y-2 px-3 py-3 text-xs text-muted-foreground">
+      <div className="space-y-2 p-3 text-xs text-muted-foreground">
         <p className="font-medium text-foreground">No local models found.</p>
         <p>
           Download a model or add a scan folder from Chat, then refresh this

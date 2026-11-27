@@ -207,7 +207,7 @@ export function ABCompare({
         </output>
       )}
       {reason && !current.unavailable ? (
-        <p className={cn(CLIPS_TITLE_INSET, "text-ui-12 leading-normal text-muted-foreground")}>
+        <p className={cn(CLIPS_TITLE_INSET, "text-ui-12/normal text-muted-foreground")}>
           {reason}
         </p>
       ) : null}

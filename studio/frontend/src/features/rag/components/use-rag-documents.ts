@@ -396,14 +396,14 @@ export function useRagDocuments(
       // Keep synchronous so StrictMode's setup/cleanup replay cannot cancel the only refresh.
       setDocuments([]);
       if (scope) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
+         
         void (scope.type === "project"
           ? loadProjectSources(scope.projectId)
           : refresh());
       } else {
         // Left set, the composer reads the list as unknown and holds every send.
         refreshInFlight.current = false;
-        // eslint-disable-next-line react-hooks/set-state-in-effect
+         
         setLoading(false);
       }
     } else if (prev === null && scope && !uploadInFlightRef.current) {

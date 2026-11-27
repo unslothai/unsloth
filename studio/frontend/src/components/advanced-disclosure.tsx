@@ -32,7 +32,7 @@ export function AdvancedDisclosure({
   return (
     <div
       className={cn(
-        "mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4",
+        "mt-2 flex flex-col gap-3 border-t border-border/60 py-4",
         classNames?.root,
       )}
     >
@@ -49,7 +49,7 @@ export function AdvancedDisclosure({
           icon={Settings01Icon}
           className="size-3.5 shrink-0 text-muted-foreground"
         />
-        <span className="min-w-0 flex-1 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
+        <span className="min-w-0 flex-1 text-ui-13/tight font-medium tracking-nav text-foreground">
           Advanced
         </span>
         <HugeiconsIcon
@@ -62,7 +62,7 @@ export function AdvancedDisclosure({
       </button>
       {open && (
         <div className={cn("flex flex-col gap-3", classNames?.body)}>
-          <p className={cn("text-ui-11 leading-snug text-muted-foreground", classNames?.description)}>
+          <p className={cn("text-ui-11/snug text-muted-foreground", classNames?.description)}>
             {description}
           </p>
           {children}

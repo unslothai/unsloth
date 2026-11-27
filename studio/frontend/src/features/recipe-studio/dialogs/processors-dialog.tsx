@@ -83,7 +83,7 @@ export function ProcessorsDialog({
               </p>
             </div>
             <Switch
-              className="mt-[var(--ui-title-cap-inset)]"
+              className="mt-(--ui-title-cap-inset)"
               checked={Boolean(schemaProcessor)}
               onCheckedChange={setSchemaEnabled}
             />

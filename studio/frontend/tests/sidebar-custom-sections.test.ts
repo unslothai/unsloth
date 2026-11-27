@@ -186,7 +186,7 @@ test("no sidebar list sorts by priority", () => {
   assert.doesNotMatch(APP_SIDEBAR, /"priority"|PINNED_SORT_OPTIONS/);
   assert.match(
     APP_SIDEBAR,
-    /\}> = \[\n  \{ value: "updated", key: "shell\.organize\.lastUpdated" \},\n  \{ value: "manual", key: "shell\.organize\.manualOrder" \},\n\];/,
+    /\}> = \[\n {2}\{ value: "updated", key: "shell\.organize\.lastUpdated" \},\n {2}\{ value: "manual", key: "shell\.organize\.manualOrder" \},\n\];/,
   );
   const merged = mergePersistedOrganization(
     {

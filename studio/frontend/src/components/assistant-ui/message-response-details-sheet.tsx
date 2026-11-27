@@ -253,7 +253,7 @@ function DetailRow({
       <span className="text-muted-foreground">{label}</span>
       <span
         className={cn(
-          "min-w-0 break-words text-right text-foreground",
+          "min-w-0 wrap-break-word text-right text-foreground",
           mono && "font-mono tabular-nums",
         )}
       >
@@ -429,11 +429,11 @@ const MessageResponseDetailsSheetContent: FC<{
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
           <div className="min-w-0 rounded-lg border border-border/70 bg-card p-3">
-            <p className="min-w-0 break-words font-heading text-foreground text-sm">
+            <p className="min-w-0 wrap-break-word font-heading text-foreground text-sm">
               {summaryLabel}
             </p>
             {providerLabel ? (
-              <p className="mt-1 min-w-0 break-words text-muted-foreground text-xs">
+              <p className="mt-1 min-w-0 wrap-break-word text-muted-foreground text-xs">
                 {providerLabel}
               </p>
             ) : null}

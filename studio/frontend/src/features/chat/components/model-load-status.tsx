@@ -87,7 +87,7 @@ export function ModelLoadDescription({
             />
           </div>
         ) : message ? (
-          <p className="pt-1 text-xs leading-relaxed text-muted-foreground">{message}</p>
+          <p className="pt-1 text-ui-12/relaxed text-muted-foreground">{message}</p>
         ) : null}
       </div>
     </div>

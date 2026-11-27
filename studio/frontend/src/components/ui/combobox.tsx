@@ -169,6 +169,7 @@ function ComboboxContent({
         anchor={anchor}
         // Base UI's default padding is 5.
         collisionPadding={useWindowChromeCollisionPadding(5)}
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         className="isolate z-[120] modal-pe-live pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
@@ -214,7 +215,7 @@ function ComboboxList({
       ref={listRef}
       data-slot="combobox-list"
       className={cn(
-        "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overflow-y-auto overscroll-contain",
+        "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overscroll-contain",
         className,
       )}
       {...props}
@@ -231,6 +232,7 @@ function ComboboxItem({
     <ComboboxPrimitive.Item
       data-slot="combobox-item"
       className={cn(
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-md py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-9 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
@@ -324,6 +326,7 @@ function ComboboxChips({
     <ComboboxPrimitive.Chips
       data-slot="combobox-chips"
       className={cn(
+        // eslint-disable-next-line better-tailwindcss/enforce-canonical-classes -- nested :has() must search descendants here, so the canonical rewrite would change which elements match
         "bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
         className,
       )}

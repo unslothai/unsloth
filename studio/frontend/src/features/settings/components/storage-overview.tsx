@@ -180,11 +180,11 @@ export function SettingsCardRow({
                   >
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-[var(--ui-icon-size-hint)]"
+                      className="size-(--ui-icon-size-hint)"
                     />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11/snug">
                   {hint}
                 </TooltipContent>
               </Tooltip>

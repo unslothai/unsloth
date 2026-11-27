@@ -189,7 +189,7 @@ export function DatasetMappingCard({
                   </>
                 ) : (
                   <>
-                    <HugeiconsIcon icon={SparklesIcon} className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={SparklesIcon} className="mr-1.5 size-3.5" />
                     AI Assist
                     <Badge
                       variant="outline"
@@ -218,7 +218,7 @@ export function DatasetMappingCard({
                   <span className="font-sans font-medium text-indigo-500 dark:text-indigo-400">
                     System:
                   </span>{" "}
-                  <span className="break-words">{advisorSystemPrompt}</span>
+                  <span className="wrap-break-word">{advisorSystemPrompt}</span>
                 </div>
               )}
             </div>
@@ -249,7 +249,7 @@ export function DatasetMappingFooter({
   return (
     <div className="mt-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-ui-11 text-muted-foreground/70 leading-relaxed">
+        <p className="text-ui-11/relaxed text-muted-foreground/70">
           Tip: use the role dropdowns in the column headers to assign roles.
         </p>
         <div className="flex items-center gap-2">
@@ -277,7 +277,7 @@ export function DatasetMappingFooter({
       </div>
 
       {startError && (
-        <p className="text-xs text-red-500 leading-relaxed text-center">
+        <p className="text-ui-12/relaxed text-red-500 text-center">
           {startError}
         </p>
       )}

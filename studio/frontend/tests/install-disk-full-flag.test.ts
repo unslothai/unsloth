@@ -20,15 +20,15 @@ function lift(pattern: RegExp, what: string): string {
 }
 
 const statusBody = lift(
-  /  function setBackendStatus\([^)]*\) \{[\s\S]*?\n  \}\n/,
+  / {2}function setBackendStatus\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
   "setBackendStatus",
 );
 const errorBody = lift(
-  /  function setBackendError\([\s\S]*?\n  \}\n/,
+  / {2}function setBackendError\([\s\S]*?\n {2}\}\n/,
   "setBackendError",
 );
 const installBody = lift(
-  /  async function startInstall\([^)]*\) \{[\s\S]*?\n  \}\n/,
+  / {2}async function startInstall\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
   "startInstall",
 );
 const listenerBody = lift(

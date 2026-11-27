@@ -97,7 +97,7 @@ function VariationsSlider({
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           {notice}
         </p>
       ) : null}
@@ -180,7 +180,7 @@ function SongInputs({
               }
             />
           </FieldLabel>
-          <p className="text-ui-12 leading-normal text-muted-foreground">
+          <p className="text-ui-12/normal text-muted-foreground">
             {instrumental.reason ?? "No vocals; the lyrics are kept for later."}
           </p>
         </div>
@@ -204,14 +204,14 @@ function SongInputs({
           {lyrics.trim() ? (
             <p
               id="music-lyrics-hint"
-              className="text-ui-12 leading-normal text-muted-foreground"
+              className="text-ui-12/normal text-muted-foreground"
             >
               Section tags shape the song.
             </p>
           ) : (
             <p
               id="music-lyrics-hint"
-              className="text-ui-12 leading-normal text-muted-foreground"
+              className="text-ui-12/normal text-muted-foreground"
             >
               Section tags shape the song.{" "}
               <Button
@@ -338,12 +338,12 @@ export function MusicStudioInputs({
               label: musicModeLabel(mode),
             }))}
           />
-          <p className="text-ui-12 leading-normal text-muted-foreground">
+          <p className="text-ui-12/normal text-muted-foreground">
             {musicModeHint(rule)}
           </p>
         </div>
       ) : rule.id === "song" && rule.instrumental === "always" ? (
-        <p className="text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-ui-12/normal text-muted-foreground">
           {musicModeHint(rule)}
         </p>
       ) : null}

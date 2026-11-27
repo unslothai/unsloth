@@ -500,7 +500,7 @@ function DocumentCard({
       <img
         src={thumbnail.url}
         alt=""
-        className="h-full w-full object-cover"
+        className="size-full object-cover"
       />
     ) : thumbnail?.kind === "file" ? (
       <AttachmentCardPreview
@@ -537,7 +537,7 @@ function DocumentCard({
       onClick={onRemove}
       aria-label={`Remove ${doc.filename}`}
       className={cn(
-        "absolute flex size-5 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-sm ring-1 ring-black/15 dark:bg-black dark:text-white dark:ring-white/20 transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+        "absolute flex size-5 items-center justify-center rounded-full bg-white text-black opacity-0 shadow-sm ring-1 ring-black/15 dark:bg-black dark:text-white dark:ring-white/20 transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 pointer-coarse:opacity-100",
         compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
       )}
     >
@@ -579,7 +579,7 @@ function DocumentCard({
                 className={cn(
                   "truncate",
                   removable &&
-                    "group-hover/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)] group-focus-within/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)]",
+                    "group-hover/attachment-card:mask-[linear-gradient(to_left,transparent_1.25rem,black_2.5rem)] group-focus-within/attachment-card:mask-[linear-gradient(to_left,transparent_1.25rem,black_2.5rem)]",
                 )}
               >
                 {doc.filename}
@@ -794,7 +794,7 @@ function ChatFilesPanel({
                 {count}
               </span>
             </TooltipTrigger>
-            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+            <TooltipContent className="max-w-[calc(300px*var(--ui-space-scale,1))] text-ui-11/snug">
               {info}
             </TooltipContent>
           </Tooltip>
@@ -918,7 +918,7 @@ function AttachmentTargetMenu({
           disabled={disabled}
           aria-label="Choose where attached files go"
           title="Choose where attached files go"
-          className="composer-pill-btn attachment-target-pill shrink-0 gap-1 !text-foreground/70 pl-3 pr-1.5"
+          className="composer-pill-btn attachment-target-pill shrink-0 gap-1 text-foreground/70! pl-3 pr-1.5"
         >
           <span className="text-ui-12">
             {sharesWithProject ? "Project" : "This chat"}
@@ -942,7 +942,7 @@ function AttachmentTargetMenu({
             className="items-start"
           >
             {/* Icon aligns with the title line. */}
-            <span className="flex h-[1lh] shrink-0 items-center">
+            <span className="flex h-lh shrink-0 items-center">
               <HugeiconsIcon
                 icon={target.icon}
                 strokeWidth={1.75}
@@ -951,7 +951,7 @@ function AttachmentTargetMenu({
             </span>
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
               <span>{target.title}</span>
-              <span className="text-ui-12 leading-snug text-muted-foreground">
+              <span className="text-ui-12/snug text-muted-foreground">
                 {target.description}
               </span>
             </span>
@@ -1303,7 +1303,7 @@ export function ThreadDocumentsBar({
   const folderCards = projectGroups.folders.map(([folderId, docs]) => (
     <div
       key={`folder:${folderId}`}
-      className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+      className={cn("contents", ragToolDisabled && "*:opacity-50")}
     >
       <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
     </div>
@@ -1394,7 +1394,7 @@ export function ThreadDocumentsBar({
             {projectGroups.loose.map((doc) => (
               <div
                 key={`inherited:${doc.id}`}
-                className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+                className={cn("contents", ragToolDisabled && "*:opacity-50")}
               >
                 <DocumentCard doc={doc} shared={true} />
               </div>
@@ -1477,7 +1477,7 @@ export function ThreadDocumentsBar({
         {projectGroups.loose.map((doc) => (
           <div
             key={`project:${doc.id}`}
-            className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+            className={cn("contents", ragToolDisabled && "*:opacity-50")}
           >
             <DocumentCard
               doc={doc}
@@ -1507,7 +1507,7 @@ export function ThreadDocumentsBar({
         {documents.map((doc) => (
           <div
             key={doc.id}
-            className={cn("contents", ragToolDisabled && "[&>*]:opacity-50")}
+            className={cn("contents", ragToolDisabled && "*:opacity-50")}
           >
             <DocumentCard
               doc={doc}

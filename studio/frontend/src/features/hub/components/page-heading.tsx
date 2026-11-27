@@ -38,7 +38,7 @@ export function PageHeading({
         <h1 className={TITLE_CLASS}>{title}</h1>
       )}
       {subtitle ? (
-        <p className="mt-2 text-ui-13 leading-ui-19 text-muted-foreground">
+        <p className="mt-2 text-ui-13/ui-19 text-muted-foreground">
           {subtitle}
         </p>
       ) : null}

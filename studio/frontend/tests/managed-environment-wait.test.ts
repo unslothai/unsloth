@@ -22,23 +22,23 @@ function lift(pattern: RegExp, what: string): string {
 }
 
 const checkBody = lift(
-  /  async function checkInstallAndStart\(\) \{[\s\S]*?\n  \}\n/,
+  / {2}async function checkInstallAndStart\(\) \{[\s\S]*?\n {2}\}\n/,
   "checkInstallAndStart",
 );
 const waitBody = lift(
-  /  function waitForManagedEnvironment\([^)]*\) \{[\s\S]*?\n  \}\n/,
+  / {2}function waitForManagedEnvironment\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
   "waitForManagedEnvironment",
 );
 const statusBody = lift(
-  /  function setBackendStatus\([^)]*\) \{[\s\S]*?\n  \}\n/,
+  / {2}function setBackendStatus\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
   "setBackendStatus",
 );
 const errorBody = lift(
-  /  function setBackendError\([\s\S]*?\n  \}\n/,
+  / {2}function setBackendError\([\s\S]*?\n {2}\}\n/,
   "setBackendError",
 );
 const stopBody = lift(
-  /  function stopManagedEnvironmentWait\(\) \{[\s\S]*?\n  \}\n/,
+  / {2}function stopManagedEnvironmentWait\(\) \{[\s\S]*?\n {2}\}\n/,
   "stopManagedEnvironmentWait",
 );
 const POLL_LIMIT = Number(

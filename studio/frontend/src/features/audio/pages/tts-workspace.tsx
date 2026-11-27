@@ -130,7 +130,7 @@ export function BlockerNote({
   const [first, ...rest] = blocker.actions ?? [];
   if (!first) {
     return (
-      <p id={id} className="text-center text-ui-11p5 leading-normal text-muted-foreground">
+      <p id={id} className="text-center text-ui-11p5/normal text-muted-foreground">
         {blocker.reason}
       </p>
     );
@@ -140,7 +140,7 @@ export function BlockerNote({
   return (
     <div
       id={id}
-      className="grid justify-items-center gap-0.5 text-center text-ui-11p5 leading-normal text-muted-foreground"
+      className="grid justify-items-center gap-0.5 text-center text-ui-11p5/normal text-muted-foreground"
     >
       <span>{blocker.reason}</span>
       <span className="flex flex-wrap items-center justify-center gap-x-1.5">
@@ -339,7 +339,7 @@ export function TtsRailFields({
               ]}
             />
             {/* Phrased as the next load: another client may have loaded the model on the other device. */}
-            <p className="text-ui-12 leading-normal text-muted-foreground">
+            <p className="text-ui-12/normal text-muted-foreground">
               {audioDevice === "cpu"
                 ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
                 : "New loads use the GPU when there is one, and the CPU otherwise."}
@@ -477,7 +477,7 @@ export function TtsFooter({
         </>
       ) : null}
       {loadNote && !generationPresentation ? (
-        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
+        <p className="text-center text-ui-12/normal text-muted-foreground">
           {loadNote}
         </p>
       ) : null}
@@ -530,7 +530,7 @@ export function TtsFooter({
         ) : error && !generationPresentation ? (
           <p
             role="alert"
-            className="text-center text-ui-11p5 leading-snug text-destructive"
+            className="text-center text-ui-11p5/snug text-destructive"
           >
             {error.reason}
             <GenerateActions actions={error.actions} />

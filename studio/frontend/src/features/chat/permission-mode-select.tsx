@@ -268,7 +268,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
           <span className="min-w-0">{t("settings.sandbox.levelPickerTitle")}</span>
           <DropdownMenuPrimitive.Item
             // my-0!: drops the menu item margin so it lines up with the question.
-            className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-[highlighted]:text-foreground data-[highlighted]:decoration-foreground/60"
+            className="my-0! shrink-0 cursor-pointer rounded-sm font-normal text-muted-foreground underline decoration-muted-foreground/50 underline-offset-[3px] outline-hidden transition-colors hover:text-foreground hover:decoration-foreground/60 data-highlighted:text-foreground data-highlighted:decoration-foreground/60"
             onSelect={() => openExternalLink(SANDBOX_DOCS_URL)}
           >
             {t("settings.sandbox.learnMore")}
@@ -288,8 +288,8 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
             className={cn("items-start gap-2 py-2", active === option.value && "font-medium")}
           >
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="text-ui-13 leading-tight">{t(option.labelKey)}</span>
-              <span className="text-xs font-normal leading-snug text-muted-foreground">
+              <span className="text-ui-13/tight">{t(option.labelKey)}</span>
+              <span className="text-ui-12/snug font-normal text-muted-foreground">
                 {t(option.descriptionKey)}
               </span>
             </span>
@@ -384,8 +384,8 @@ export function PermissionModeMenuItems({
             strokeWidth={2}
           />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-ui-13 leading-tight">{option.label}</span>
-            <span className="text-xs font-normal leading-snug text-muted-foreground">
+            <span className="text-ui-13/tight">{option.label}</span>
+            <span className="text-ui-12/snug font-normal text-muted-foreground">
               {option.description}
             </span>
           </span>
@@ -477,14 +477,14 @@ export function FullAccessConfirmContent({
             />
             <span className="flex min-w-0 flex-col gap-0.5">
               <span className="text-sm font-medium">{scope.title}</span>
-              <span className="text-xs leading-relaxed text-muted-foreground">
+              <span className="text-ui-12/relaxed text-muted-foreground">
                 {scope.description}
               </span>
             </span>
           </li>
         ))}
       </ul>
-      <p className="text-pretty text-xs leading-relaxed text-muted-foreground">
+      <p className="text-pretty text-ui-12/relaxed text-muted-foreground">
         Risks include data loss or exposure and prompt injection. You can turn this off
         anytime.{" "}
         <button

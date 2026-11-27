@@ -254,7 +254,7 @@ export function WallpaperAdjustDialog({
           aria-label={t("chatBackground.adjustTitle")}
           data-wallpaper-adjust-preview=""
           data-dragging={dragging || undefined}
-          className="relative mx-auto mt-4 touch-none select-none overflow-hidden rounded-xl border border-border bg-background outline-none focus-visible:ring-2 focus-visible:ring-ring data-[dragging]:cursor-grabbing cursor-grab"
+          className="relative mx-auto mt-4 touch-none select-none overflow-hidden rounded-xl border border-border bg-background outline-none focus-visible:ring-2 focus-visible:ring-ring data-dragging:cursor-grabbing cursor-grab"
           style={
             {
               aspectRatio: String(aspect),

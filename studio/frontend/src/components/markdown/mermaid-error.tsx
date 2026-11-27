@@ -15,14 +15,14 @@ export function MermaidError({
   return (
     <div className="my-4 rounded-lg border border-red-300 bg-red-50 p-3 text-red-800">
       <p className="text-sm font-semibold">Mermaid render failed</p>
-      <p className="mt-1 break-words font-mono text-xs">{error}</p>
+      <p className="mt-1 wrap-break-word font-mono text-xs">{error}</p>
       {hasSlashComment(chart) ? (
         <p className="mt-1 text-xs">Hint: Mermaid comments use `%%`, not `//`.</p>
       ) : null}
       <button
         type="button"
         onClick={retry}
-        className="btn-fill mt-2 rounded-full px-2 py-1 text-xs "
+        className="btn-fill mt-2 rounded-full px-2 py-1 text-xs"
       >
         Retry
       </button>

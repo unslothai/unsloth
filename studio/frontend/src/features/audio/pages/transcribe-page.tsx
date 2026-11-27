@@ -118,7 +118,7 @@ function SwitchRow({
         className={
           hintShared
             ? "sr-only"
-            : "text-ui-12 leading-normal text-muted-foreground"
+            : "text-ui-12/normal text-muted-foreground"
         }
       >
         {value.hint}
@@ -258,7 +258,7 @@ export function TranscribeRail({
         {sharedHint ? (
           <p
             id="transcribe-options-hint"
-            className="text-ui-12 leading-normal text-muted-foreground"
+            className="text-ui-12/normal text-muted-foreground"
           >
             {sharedHint}
           </p>
@@ -578,7 +578,7 @@ export function TranscribeFooter({
         ) : notice && !running ? (
           <p
             id="transcribe-notice"
-            className="text-center text-ui-12 leading-normal text-muted-foreground"
+            className="text-center text-ui-12/normal text-muted-foreground"
           >
             {notice}
           </p>

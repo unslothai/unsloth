@@ -25,7 +25,7 @@ export function ExportSummaryCard({
     <aside
       className={cn(
         "elevated-card elevated-card-dark-border flex flex-col gap-7 bg-[color-mix(in_oklab,var(--foreground)_calc(1.2%*var(--contrast-wash-gain,1)),transparent)] p-6",
-        "dark:bg-[rgb(255_255_255_/_calc(0.018*var(--contrast-wash-gain,1)))]",
+        "dark:bg-[rgb(255_255_255/calc(0.018*var(--contrast-wash-gain,1)))]",
       )}
     >
       <header className="flex items-center justify-between gap-3">
@@ -36,8 +36,8 @@ export function ExportSummaryCard({
           className={cn(
             "inline-flex h-5 items-center rounded-full px-2 text-ui-10 font-medium tracking-nav",
             ready
-              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]"
-              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              ? "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground/90 dark:bg-[rgb(255_255_255/calc(0.08*var(--contrast-wash-gain,1)))]"
+              : "bg-[color-mix(in_oklab,var(--foreground)_calc(3%*var(--contrast-wash-gain,1)),transparent)] text-muted-foreground/70 dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]",
           )}
         >
           {ready ? "Ready" : "Not ready"}
@@ -74,7 +74,7 @@ export function ExportSummaryCard({
           {steps.map((step, i) => (
             <li
               key={step}
-              className="flex items-start gap-2.5 text-ui-11p5 leading-ui-15 text-muted-foreground"
+              className="flex items-start gap-2.5 text-ui-11p5/ui-15 text-muted-foreground"
             >
               <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-ui-10 font-semibold text-foreground/80">
                 {i + 1}
@@ -87,7 +87,7 @@ export function ExportSummaryCard({
 
       {cta && (
         <>
-          <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]" />
+          <div className="-mx-6 h-px bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]" />
           <div className="-mt-2">{cta}</div>
         </>
       )}

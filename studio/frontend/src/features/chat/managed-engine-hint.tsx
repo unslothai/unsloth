@@ -27,7 +27,7 @@ export function ManagedEngineHint({
   }
   const name = ENGINE_NAMES[engine];
   return (
-    <p className="pb-3 text-xs leading-snug text-muted-foreground">
+    <p className="pb-3 text-ui-12/snug text-muted-foreground">
       {status.installed
         ? `${name} is already installed in Unsloth. Pick it as the Inference engine in a model's run settings to run models without a separate server.`
         : `Unsloth can directly install ${name} and run models with it, so you do not need a separate server.`}

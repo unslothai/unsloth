@@ -182,7 +182,7 @@ export function ChatModelNotice({
               type="button"
               data-chat-model-notice=""
               aria-label={`Last used model: ${label}`}
-              className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
+              className="flex h-(--studio-chat-control-height,34px) min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
             >
               <HugeiconsIcon
                 icon={ArrowTurnBackwardIcon}
@@ -210,7 +210,7 @@ export function ChatModelNotice({
       >
         <div className="space-y-1 px-3 py-2">
           <p className="text-ui-12 text-muted-foreground">Last used model</p>
-          <p className="break-words text-ui-13 font-medium">{label}</p>
+          <p className="wrap-break-word text-ui-13 font-medium">{label}</p>
         </div>
         <PopoverPrimitive.Close asChild={true}>
           <Button

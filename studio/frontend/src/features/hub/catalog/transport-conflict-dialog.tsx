@@ -59,12 +59,12 @@ export function TransportConflictDialog({
         if (!o) onCancel();
       }}
     >
-      <AlertDialogContent className="sm:!max-w-[calc(22rem*var(--ui-space-scale,1))]">
+      <AlertDialogContent className="sm:max-w-[calc(22rem*var(--ui-space-scale,1))]!">
         <AlertDialogHeader>
           <AlertDialogTitle>Different transport mode</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter className="!flex !flex-col gap-2 sm:!flex-col sm:!justify-stretch">
+        <AlertDialogFooter className="flex! flex-col! gap-2 sm:flex-col! sm:justify-stretch!">
           <AlertDialogAction
             className="w-full"
             onClick={(e) => {
@@ -76,7 +76,7 @@ export function TransportConflictDialog({
           </AlertDialogAction>
           <AlertDialogAction
             variant="outline"
-            className="w-full !bg-transparent hover:!bg-transparent"
+            className="w-full bg-transparent! hover:bg-transparent!"
             onClick={(e) => {
               e.preventDefault();
               onSwitchTransport();
@@ -84,7 +84,7 @@ export function TransportConflictDialog({
           >
             {secondaryLabel}
           </AlertDialogAction>
-          <AlertDialogCancel className="w-full !bg-transparent hover:!bg-transparent">
+          <AlertDialogCancel className="w-full bg-transparent! hover:bg-transparent!">
             Cancel
           </AlertDialogCancel>
         </AlertDialogFooter>

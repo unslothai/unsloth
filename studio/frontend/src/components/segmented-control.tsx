@@ -119,7 +119,7 @@ export function SegmentedControl<T extends string>({
             />
             <span
               className={cn(
-                "inline-flex h-full w-full select-none items-center justify-center rounded-full font-medium transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-ring",
+                "inline-flex size-full select-none items-center justify-center rounded-full font-medium transition-colors peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-inset peer-focus-visible:ring-ring",
                 segmentedSegmentLabel,
                 active
                   ? "text-foreground"

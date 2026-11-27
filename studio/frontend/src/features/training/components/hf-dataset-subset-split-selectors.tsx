@@ -564,7 +564,7 @@ function ManualDatasetOptions({
       className={
         variant === "studio"
           ? "min-w-0 rounded-lg border bg-muted/20 px-3.5 py-3"
-          : "rounded-lg border bg-muted/20 px-3 py-3"
+          : "rounded-lg border bg-muted/20 p-3"
       }
     >
       <p className="text-xs font-medium">

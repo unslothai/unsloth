@@ -500,7 +500,7 @@ export function DatasetPreviewDialog({
           const full =
             typeof value === "string" ? value : JSON.stringify(value);
           return (
-            <p className="text-ui-13 leading-relaxed line-clamp-6" title={full}>
+            <p className="text-ui-13/relaxed line-clamp-6" title={full}>
               {text}
             </p>
           );
@@ -531,7 +531,7 @@ export function DatasetPreviewDialog({
         ),
         cell: () => (
           <p
-            className="text-ui-13 leading-relaxed line-clamp-6 text-muted-foreground italic"
+            className="text-ui-13/relaxed line-clamp-6 text-muted-foreground italic"
             title={datasetSystemPrompt}
           >
             {datasetSystemPrompt}

@@ -81,7 +81,7 @@ export function TranscriptionProgress({
         )}
       </div>
       {running && progress?.text && (
-        <p className="line-clamp-2 text-ui-13 leading-relaxed text-muted-foreground">
+        <p className="line-clamp-2 text-ui-13/relaxed text-muted-foreground">
           {progress.text.split(/\s+/).slice(-35).join(" ")}
         </p>
       )}

@@ -214,7 +214,7 @@ export function PromptQueueList({
               >
                 {isEditing ? (
                   <div className="group/queue-editor has-[textarea:focus-visible]:[--queue-hint-visibility:visible] flex flex-wrap items-center justify-end gap-2 px-1 py-2">
-                    <div className="w-full overflow-hidden rounded-lg border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
+                    <div className="w-full overflow-hidden rounded-lg border-0 bg-muted/40 p-3 has-focus-visible:bg-muted dark:bg-card dark:has-focus-visible:bg-accent">
                       <textarea
                         ref={inputRef}
                         value={draft}

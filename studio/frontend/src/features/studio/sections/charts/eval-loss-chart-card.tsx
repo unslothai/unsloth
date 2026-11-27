@@ -117,7 +117,7 @@ export function EvalLossChartCard({
           <div className="relative">
             <ChartContainer
               config={evalLossConfig}
-              className={`${CHART_CONTAINER_CLASS} blur`}
+              className={`${CHART_CONTAINER_CLASS} blur-sm`}
             >
               <LineChart
                 data={placeholderEvalData}

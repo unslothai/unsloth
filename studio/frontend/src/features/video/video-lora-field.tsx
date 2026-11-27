@@ -118,7 +118,7 @@ export function VideoLoraField({
           </div>
         )}
         {baked.length > 0 && (
-          <p className="text-ui-11 leading-snug text-muted-foreground" data-testid="video-baked-loras">
+          <p className="text-ui-11/snug text-muted-foreground" data-testid="video-baked-loras">
             Baked into the loaded model: {baked.join(", ")}
           </p>
         )}

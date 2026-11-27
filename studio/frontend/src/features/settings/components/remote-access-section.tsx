@@ -123,7 +123,7 @@ function StatusMessage({
   return (
     <p
       className={cn(
-        "border-t border-border/60 px-4 py-2.5 text-xs leading-snug",
+        "border-t border-border/60 px-4 py-2.5 text-ui-12/snug",
         destructive ? "text-destructive" : "text-muted-foreground",
       )}
     >
@@ -144,12 +144,12 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
         <RemoteUrlQrButton url={url} />
       </div>
       <UrlPill url={url} />
-      <span className="text-xs text-muted-foreground leading-snug">
+      <span className="text-ui-12/snug text-muted-foreground">
         {multi
           ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
           : "Anyone with this URL reaches the sign-in page. Signing in gives full control, including running code on this computer through tools. API keys also work here."}
       </span>
-      <span className="text-xs text-muted-foreground leading-snug">
+      <span className="text-ui-12/snug text-muted-foreground">
         While remote access is on, MCP servers that run local commands are
         paused.
       </span>
@@ -340,7 +340,7 @@ export function RemoteAccessSection() {
               </h2>
               <AccessStatus status={status} />
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-ui-12/relaxed text-muted-foreground">
               Use Unsloth and its APIs from other devices over a secure,
               temporary Cloudflare URL.
             </p>
