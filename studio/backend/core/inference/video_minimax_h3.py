@@ -16,8 +16,7 @@ from typing import Any, Callable, Optional
 
 # Must equal the minimax-h3 family gguf_repo, or the family test passes while downloads come from a community repack (pinned in test_video_backend.py).
 H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
-# The VAEs live beside the denoisers, so the native pick is one repo we control end to end. It was the Comfy-Org repack
-# once; a video load never reads from that repack any more, cached or not.
+# Video loads never read the Comfy-Org repack, cached or not; the VAEs live in our own repo.
 H3_COMPONENT_REPO = "unsloth/MiniMax-H3-GGUF"
 # Built from the official MiniMaxAI vae/ and audio_vae/ weights (diffusers layout -> sd.cpp layout; video cast to fp16)
 # and uploaded beside the originals under vae/official/. They are byte-identical to the vae/ copies that came from the
@@ -175,8 +174,7 @@ def h3_native_host_available_bytes() -> int:
 
 
 def h3_process_held_host_bytes() -> int:
-    """Host bytes this process holds that a render reuses: RssAnon + RssShmem (pinned copies are shmem). File-backed
-    pages are left out: MemAvailable already counts them as reclaimable. Off Linux, the whole RSS."""
+    """RssAnon + RssShmem, not file pages (MemAvailable counts those); whole RSS off Linux."""
     import psutil
 
     fields = _proc_status_kb(("RssAnon", "RssShmem"))
@@ -186,8 +184,7 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """Usable host RAM (cgroup-capped) plus what this process already holds and the render reuses,
-    capped at the cgroup limit."""
+    """Usable host RAM plus memory this process and render hold, capped at the cgroup limit."""
     import psutil
     from utils import host_memory
 
@@ -607,8 +604,7 @@ def keep_h3_reference_image_sizes(pipe: Any) -> int:
 
 
 def h3_reference_video_canvas(source_w: float, source_h: float) -> tuple[int, int]:
-    """The reference implementation's reference-video canvas: 768 short edge under the 768x1344 area cap, each axis
-    rounded on its own with Python's round (halves to even), so the area may land a little over the cap."""
+    """768 short edge, 768x1344 cap; per-axis Python round (halves to even) can overshoot it."""
     h3_canvas_for_aspect(source_w, source_h)  # the 1:4 to 4:1 refusal
     ratio = source_w / source_h
     if ratio >= 1.0:
@@ -646,8 +642,7 @@ def h3_float_rgb_to_uint8(pixels: Any) -> Any:
 
 
 def h3_video_frame_rgb(frame: Any) -> Any:
-    """Decoded frame to RGB PIL. YUV goes through float RGB (``gbrpf32le``), smear-padded to the 32 px grid and cropped
-    back so swscale's alignment padding never reaches the picture."""
+    """YUV: float RGB (gbrpf32le), smear-padded to 32 px, cropped so swscale padding stays out."""
     import numpy as np
     from PIL import Image
 
@@ -804,7 +799,6 @@ def conform_h3_reference_audio(waveform: Any, sample_rate: int) -> tuple[Any, in
     if channels.shape[0] > H3_AUDIO_CHANNELS:
         channels = channels[:H3_AUDIO_CHANNELS]
     elif channels.shape[0] < H3_AUDIO_CHANNELS:
-        # mono: the last channel repeated, as a replicate pad does
         pad = channels[-1:].expand(H3_AUDIO_CHANNELS - channels.shape[0], -1)
         channels = torch.cat([channels, pad])
     return np.ascontiguousarray(channels.numpy().T, dtype = np.float32), H3_AUDIO_SAMPLE_RATE
@@ -1580,8 +1574,7 @@ def h3_quant_cublas_env(
     sage: bool,
     environ: Optional[dict] = None,
 ) -> tuple[tuple[str, str], ...]:
-    """sd-cli env for the BF16 cuBLAS route: known sm80+ always, known older never, unknown
-    (``cuda_cc`` None) only with sage. A user-exported value (0 included) always wins."""
+    """sm80+ always, older never, unknown only with sage; a user-exported value (0 incl.) wins"""
     environ = os.environ if environ is None else environ
     if H3_QUANT_CUBLAS_ENV in environ:
         return ()
@@ -1620,8 +1613,7 @@ def h3_native_render_flags(
     need_bytes: Optional[int],
     env: Optional[dict] = None,
 ) -> tuple[list[str], bool]:
-    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
-    the estimate; anything unknown keeps the committed flags."""
+    """Resident only in auto memory and when free VRAM covers need_bytes; else committed flags."""
     flags = list(offload_flags)
     environ = env if env is not None else os.environ
     if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
@@ -1770,8 +1762,7 @@ def h3_native_offloaded_render_flags(
     offloaded_flags: Optional["tuple[str, ...]"],
     offload_refusal: Optional[str],
 ) -> list[str]:
-    """The flags a render runs with once Auto has chosen between resident and offloaded: a resident render keeps
-    its own, an offloaded one takes the GTT-fitted set the load prepared, or is refused when none fits."""
+    """Resident renders keep flags; offloaded ones take the GTT-fitted set or are refused."""
     if render_resident or "--offload-to-cpu" not in render_flags:
         return list(render_flags)
     if offload_refusal:
@@ -1784,7 +1775,6 @@ class H3NativeFit:
     flags: tuple[str, ...]
     # Why the flags changed, for the log and the resolved record; None when they did not.
     note: Optional[str] = None
-    # A user-facing reason to refuse the load, or None.
     refusal: Optional[str] = None
     # The --max-vram value a UMA device needs (its budget less the pinned weights), or None to keep the committed one.
     max_vram: Optional[str] = None
@@ -1995,9 +1985,8 @@ class H3NativeFitInputs:
 
 
 def h3_native_host_budgets() -> "tuple[Optional[int], int]":
-    """(RAM, swap) a native render may still take: RAM cgroup-capped, without Studio's own RSS, and on cgroup v1 no
-    more than the RAM+swap (memsw) headroom; swap bounded by the cgroup against that RAM budget, so the two never
-    sum past what the cgroup can charge. (None, 0) only when RAM cannot be read; unreadable swap is 0 swap."""
+    """RAM is cgroup-capped less Studio's RSS (cgroup v1: at most RAM+swap memsw); swap is bounded
+    so the sum fits the cgroup. (None, 0) only if RAM unreadable; unreadable swap is 0."""
     try:
         ram = h3_native_host_available_bytes()
     except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
@@ -2038,9 +2027,8 @@ def h3_native_live_fit(
         gtt_free, gtt_known = amdgpu_gtt_reading(None)
     spill = 0
     if inputs.check_gtt and inputs.uma and compute_bytes:
-        # What the carve-out cannot hold of the compute buffer comes from GTT. A segment's weights come on top, but
-        # sd.cpp's own capacity check reports that remainder, so only the compute buffer is charged here.
-        # An unreadable or ambiguous carve-out (several cards, no slot) holds none of it, like the tightest GTT.
+        # Compute buffer beyond the carve-out comes from GTT; weights are left to sd.cpp's capacity
+        # check; an unreadable or ambiguous carve-out (several cards, no slot) holds none.
         vram_free = amdgpu_vram_free_bytes(inputs.gtt_pci_slot) or 0
         spill = max(int(compute_bytes) - vram_free, 0)
     return h3_native_memory_fit(
@@ -2397,8 +2385,7 @@ class H3NativeServerSlot:
         return self._release_pending
 
     def restart_for_retry(self, reason: str) -> bool:
-        """Stop for a retry unless a release is pending. One locked step: a release racing a separate check would be
-        cleared by ``_stop_locked`` and the fresh server would outlive the render asked to free its memory."""
+        """Retry stop unless a release is pending; one lock, or a racing release is cleared."""
         with self._lock:
             if self._release_pending is not None:
                 return False
@@ -2503,8 +2490,7 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
                 for frame in packet.decode():
                     if packet.stream.type == "video":
                         if frame.format.name.startswith("yuvj"):
-                            # MJPG decodes to full-range yuvj, which the yuv420p encoder takes as limited range and
-                            # stretches (x1.14, -16). A fresh RGB frame carries no range, so the conversion is exact.
+                            # MJPG yuvj is full range; RGB avoids a limited-range stretch.
                             pts, time_base = frame.pts, frame.time_base
                             frame = av.VideoFrame.from_ndarray(
                                 frame.to_ndarray(format = "rgb24"), format = "rgb24"
@@ -2534,8 +2520,7 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
 
 
 def _unforced_picture_type(frame: Any) -> Any:
-    """A decoded frame keeps its picture type (every MJPG / raw frame is I), which libx264 obeys: clear it so
-    the encoder picks I / P / B frames, as the Diffusers export does."""
+    """Clear the picture type (MJPG/raw are I) so libx264 picks I/P/B, as Diffusers does."""
     try:
         from av.video.frame import PictureType
         frame.pict_type = PictureType.NONE
@@ -2548,8 +2533,7 @@ def _unforced_picture_type(frame: Any) -> Any:
 
 
 def _finite_audio_frame(frame: Any) -> Any:
-    """``frame`` with float samples bounded to [-1, 1] and NaN zeroed: the AAC encoder refuses NaN, which sd.cpp's
-    float PCM (the uncompressed AVI) keeps, and 16-bit PCM clipped the same range."""
+    """Clamp to [-1,1], zero NaN: AAC refuses NaN; sd.cpp float PCM keeps it; 16-bit PCM clips."""
     import av
     import numpy as np
 

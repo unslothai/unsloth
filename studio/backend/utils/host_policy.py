@@ -21,7 +21,6 @@ _lan_connector_active = False
 
 
 def is_external_host(host: str) -> bool:
-    """True when `host` is reachable from beyond loopback."""
     return host.lower() not in _LOOPBACK_HOSTS
 
 
@@ -87,7 +86,6 @@ def wildcard_ip_versions(host: str) -> tuple[int, ...]:
 
 
 def resolved_bind_address_count(host: str) -> int:
-    """Number of distinct socket addresses this host resolves to."""
     if _literal_ip_address(host) is not None:
         return 1
     if not isinstance(host, str) or not host:
@@ -110,7 +108,6 @@ def is_wildcard_host(host: str) -> bool:
 
 
 def normalize_wildcard_bind_host(host: str) -> str:
-    """Return a safe canonical bind for an effective wildcard host."""
     if isinstance(host, str):
         try:
             parsed_literal = ipaddress.ip_address(host)
@@ -159,7 +156,6 @@ def normalize_wildcard_bind_host(host: str) -> str:
 
 
 def wildcard_loopback_host(host: str) -> "str | None":
-    """The loopback address reachable through a wildcard bind."""
     versions = wildcard_ip_versions(host)
     if 4 in versions:
         return "127.0.0.1"
@@ -286,29 +282,24 @@ def loopback_default_active() -> bool:
 
 
 def set_remote_connector_active(active: bool) -> None:
-    """Publish whether a connector may carry requests from beyond loopback."""
     global _remote_connector_active
     _remote_connector_active = bool(active)
 
 
 def set_lan_connector_active(active: bool) -> None:
-    """Publish whether a runtime LAN listener is serving beyond loopback."""
     global _lan_connector_active
     _lan_connector_active = bool(active)
 
 
 def tunnel_connector_active() -> bool:
-    """True while a tunnel is publishing this server past the local network."""
     return _remote_connector_active
 
 
 def lan_connector_active() -> bool:
-    """True while a runtime LAN listener is serving the local network."""
     return _lan_connector_active
 
 
 def remote_connector_active() -> bool:
-    """True while any connector can carry a request from beyond loopback."""
     return _remote_connector_active or _lan_connector_active
 
 

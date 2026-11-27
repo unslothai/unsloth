@@ -54,7 +54,6 @@ def test_binary_body_returns_422_not_500():
 
 def test_response_does_not_echo_the_body():
     resp = _post_multipart_binary(_client())
-    # The response stays small: the payload is summarized, never echoed back.
     assert len(resp.text) < 2000, len(resp.text)
     assert "RIFF" not in resp.text
 

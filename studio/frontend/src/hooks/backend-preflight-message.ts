@@ -45,8 +45,7 @@ export function preflightStaleMessage(
 ): string {
   // The backend appends `reason:NAME` for the setting it could not preserve.
   const [kind, setting] = (reason ?? "").split(":", 2);
-  // The home folder is unreachable (probed on every platform), so the roaming-profile cause is
-  // offered, not asserted.
+  // Home folder unreachable (probed everywhere); roaming-profile cause offered, not asserted.
   if (kind === WORKING_DIRECTORY_UNAVAILABLE) {
     const cause =
       typeof navigator !== "undefined" && /Win/i.test(navigator.platform ?? "")
@@ -54,7 +53,6 @@ export function preflightStaleMessage(
         : "";
     return `Unsloth cannot reach your user folder, so it has nowhere to run from.${cause} Reconnect and try again.`;
   }
-  // One of Unsloth's own path settings is unresolvable; the value is the fix.
   if (kind === PATH_SETTING_UNRESOLVABLE) {
     const which = setting ? `${setting} points` : "One of Unsloth's folder settings points";
     return `${which} somewhere that cannot be resolved, so Unsloth has nowhere safe to run from. Set it to a full path, such as D:\\unsloth-cache, and try again.`;

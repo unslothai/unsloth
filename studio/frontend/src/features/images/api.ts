@@ -37,6 +37,7 @@ export interface DiffusionResolvedControl {
 import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
 
 export interface DiffusionStatus {
+  chat_swap_available?: boolean;
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
   precision_options?: Record<string, string | null> | null;
@@ -121,13 +122,11 @@ export interface DiffusionStatus {
   shift_control?: ShiftControl | null;
   // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
   textual_inversion?: string | null;
-  // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
-  // backend that records it; absent on older backends.
+  // Provenance per Advanced control; set only with a loaded model, absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
-  // Whether the loaded family can run the prompt upsampler (FLUX.3), and whether it is on by default. Absent on
-  // an older backend: no Enhance prompt toggle.
+  // Prompt upsampler (FLUX.3), default-on flag; absent on older backend: no Enhance toggle.
   supports_prompt_upsampler?: boolean;
   prompt_upsampler_default?: boolean;
   // Hires fix the loaded model takes; null/absent = hidden (no img2img path, or an engine without it).
@@ -154,8 +153,7 @@ export interface DiffusionConditioning {
   // null = the build's tier
   edit_output_resolution?: number | null;
   unified_edit: boolean;
-  // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
-  // max_condition_images in total). Absent on older backends.
+  // Extra images after the source, up to max_condition_images total; absent on old backends.
   multi_image_edit?: boolean;
   localized_edit_modes: LocalizedEditMode[];
   notes?: string[];
@@ -169,8 +167,7 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts; "enhance" is the FLUX.3
-  // prompt upsampler writing the caption before the run (with `message`).
+  // Absent (sd.cpp) = denoise; encode precedes denoise; enhance = FLUX.3 prompt upsampler.
   phase?: "enhance" | "encode" | "denoise" | "decode" | null;
   message?: string | null;
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
@@ -200,8 +197,7 @@ export interface DiffusionLoadRequest {
   model_path: string;
   display_repo_id?: string;
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
-  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
+  // Pipelines: unsloth org repos, official bases or local paths only; single_file: any repo.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -289,8 +285,7 @@ export interface DiffusionGenerateRequest {
   base_shift?: number;
   max_shift?: number;
   cfg_interval_end?: number;
-  // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
-  // family that supports it.
+  // Upsampler rewrite; null/absent = family default; sent only for families that support it.
   enhance_prompt?: boolean | null;
   // Hires fix (text to image only); omitted = off.
   hires?: HiresRequest;
@@ -364,9 +359,7 @@ export interface GalleryImage {
   generation_seconds?: number | null;
   generation_count?: number | null;
   model: string | null;
-  // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
-  // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
-  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  // Repo id alone is not enough; recipes need quant, torchao, adapters, engine (seed varies).
   engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
@@ -444,6 +437,21 @@ export async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(await readFastApiError(response));
   }
   return (await response.json()) as T;
+}
+
+export type ChatImageSwapSetting = { enabled: boolean; managed_by_env: boolean };
+
+export async function chatImageSwapSetting(
+  enabled?: boolean,
+  signal?: AbortSignal,
+): Promise<ChatImageSwapSetting> {
+  const options = enabled === undefined ? { signal } : {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    signal,
+  };
+  return parseJson(await authFetch("/api/settings/chat-image-swap", options));
 }
 
 export async function getDiffusionStatus(
@@ -571,8 +579,7 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
-/** `sequence`: this run belongs to a multi-run Generate; while `more` runs follow, the server queue holds its next job
- *  until this sequence's next request arrives. */
+/** `sequence`: while `more` runs follow, the server holds the next job until the next request. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
   sequence?: { id: string; more: boolean },
@@ -600,8 +607,7 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // Only a proxy's HTML or empty reply means the generation may still be running; a JSON
-    // application error is thrown with the backend's reason rather than polled for.
+    // Only proxy HTML/empty replies may mean still running; JSON errors thrown, not polled.
     if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
@@ -812,15 +818,13 @@ export interface DiffusionTrainingStartRequest {
   enable_tf32?: boolean;
   // Omitted: on for a new run; a resume keeps its checkpoint's.
   bucketing?: boolean;
-  // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
-  // stop-and-save always writes one, so Resume stays available either way.
+  // Checkpoint every N steps (0 = none); stop-and-save always writes one, so Resume works.
   save_steps?: number;
   save_total_limit?: number;
   // Plus step 0 and the last step; 0 renders none.
   sample_every?: number;
   sample_prompts?: string[];
-  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it. train_steps then
-  // means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
+  // Resume from output_dir or one checkpoint-<N> dir; train_steps is then the TARGET TOTAL.
   resume_from_checkpoint?: string | null;
   resumed_from_job_id?: string | null;
   hf_token?: string | null;
@@ -878,6 +882,7 @@ export interface DiffusionTrainingStatus {
   catalog_path?: string | null;
   family?: string | null;
   base_model?: string | null;
+  instance_prompt?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
   // What block_swap resolved to once the base loaded; absent when it did not run.
@@ -966,8 +971,13 @@ export async function getDiffusionTrainingRun(
   return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
-export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
-  return parseJson(await authFetch("/api/train/diffusion/status"));
+/** The raw body, so a poller can skip an unchanged reply without parsing it. */
+export async function getDiffusionTrainingStatusText(): Promise<string> {
+  const response = await authFetch("/api/train/diffusion/status");
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return response.text();
 }
 
 export interface DiffusionDatasetSummary {

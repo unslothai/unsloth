@@ -3,8 +3,7 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 
-/** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
- *  distinguish unsupported accelerators. */
+/** Backend reports dense quant; its name alone cannot distinguish unsupported accelerators. */
 /** "cpu-only": a "gguf-only" host with backend cpu; families with a GGUF row offer only GGUF rows. */
 export type HostClass = "unknown" | "gguf-only" | "cpu-only" | "accelerated" | "dense-quant";
 
@@ -120,8 +119,7 @@ export function h3PerfSuffix(
   return null;
 }
 
-/** Video pipelines whose fp8 / int8 load runs a quantized DiT (a hosted pre-quantized checkpoint, else quantized at
- *  load). Other video rows stay bare: the dense-quant row rule is image-only. */
+/** Only these video pipelines run a quantized DiT on fp8/int8; dense-quant rule is image-only. */
 const DENSE_QUANT_VIDEO_PIPELINES = new Set(["lightricks/ltx-2.5-diffusers"]);
 
 /** Speed qualifier for those video rows, from the same host scheme list as the image rows. */

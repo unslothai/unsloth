@@ -137,8 +137,7 @@ def train_once(args, run_index: int) -> dict:
     from unsloth import FastLanguageModel
 
     if args.force_sdpa:
-        # Local reproduction only: forces SDPA where xformers lacks a backward kernel (e.g. Blackwell).
-        # This changes numerics, so it validates the harness, not T4 numerics.
+        # Local-only SDPA forced (xformers lacks backward); validates harness, not T4 numerics.
         from unsloth.utils import attention_dispatch
         attention_dispatch.HAS_XFORMERS = False
         _log("force-sdpa: HAS_XFORMERS pinned False (local repro only)")
@@ -154,8 +153,7 @@ def train_once(args, run_index: int) -> dict:
     # float16 unconditionally: T4 (sm_75) has no bf16.
     load_kwargs: dict = {}
     if getattr(args, "single_device", False):
-        # Both cards stay visible so DEVICE_COUNT > 1 bindings are live, but weights go on one card:
-        # a sharded model fails at step 0 with a cross-device error.
+        # Weights on one card (DEVICE_COUNT > 1 stays live); a sharded model fails at step 0.
         load_kwargs["device_map"] = {"": 0}
     # Splits load time into fetch and weight load.
     with FetchTimer() as fetch_timer:
@@ -274,8 +272,7 @@ def train_once(args, run_index: int) -> dict:
             f"expected {args.max_steps} logged steps, got {len(stats.logs)}: " f"{stats.logs}"
         )
 
-    # Read the saved weights back: save_pretrained can write an empty or all-zero file and inference
-    # still passes on the in-memory model.
+    # Read weights back: save_pretrained can emit empty or all-zero files that inference hides.
     adapter_dir = Path(args.outdir) / f"lora_run{run_index}"
     t0 = time.time()
     model.save_pretrained(str(adapter_dir))
@@ -541,8 +538,7 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
     return result
 
 
-# Models whose batched greedy output is expected to differ from batch-1 (#9708): fp16/bf16
-# rounding varies with batch shape. Strict: a listed model that starts agreeing fails the leg.
+# Listed models may differ from batch-1 (#9708: fp16/bf16 rounding); agreeing ones fail.
 KNOWN_BATCHED_GENERATION_BREAKAGE = {
     "unsloth/gemma-4-E2B-it": "unsloth#9708",
     "unsloth/Qwen3.5-2B": "unsloth#9708",
@@ -918,8 +914,7 @@ def environment_fingerprint() -> dict:
         info["unsloth"] = getattr(unsloth, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         pass
-    # Every watched package, so control vs canary failures are attributable by diff. The keys
-    # above stay as they are: the committed reference carries them and report.py reads them.
+    # Keys above stay fixed (reference, report.py reads them); every watched package is diffed.
     info["resolved"] = flatten_versions(resolved_versions(GOAL_PACKAGES))
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
@@ -949,8 +944,7 @@ _HUB_REPO_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
 
 
 def _is_hub_repo_id(value: Any) -> bool:
-    """``owner/name`` and not a directory here. A local checkpoint path keeps its case:
-    on a case-sensitive filesystem /models/Foo and /models/foo are different weights."""
+    """Hub ids are owner/name, not existing paths; local paths keep case (case-sensitive FS)."""
     return (
         isinstance(value, str)
         and _HUB_REPO_ID_RE.fullmatch(value) is not None
@@ -1164,8 +1158,7 @@ def check_reference(
                 )
                 continue
             new, ref_val = float(cur[field]), float(old[field])
-            # Handle NaN explicitly: the fp16 reference contains NaN grad_norms and NaN > tol is False.
-            # NaN equals NaN; NaN against a number is a deviation.
+            # Reference has NaN grad_norms (fp16) and NaN > tol is False; NaN must match NaN.
             cur_nan, ref_nan = new != new, ref_val != ref_val
             if cur_nan or ref_nan:
                 if cur_nan != ref_nan:
@@ -1180,8 +1173,7 @@ def check_reference(
                         }
                     )
                 continue
-            # Infinities too: any pairing with inf divides to NaN and would pass silently.
-            # Equal signed infinities match; anything else is a deviation.
+            # inf divides to NaN and passes silently; only equal signed infinities match.
             cur_inf = new in (float("inf"), float("-inf"))
             ref_inf = ref_val in (float("inf"), float("-inf"))
             if cur_inf or ref_inf:
@@ -1427,8 +1419,7 @@ def main() -> int:
         try:
             run = train_once(args, args.cycle)
         except BaseException as exc:
-            # Write a partial report on crash so readings taken before it survive; `cycle_error` marks it
-            # as incomplete.
+            # Partial report on crash keeps earlier readings; cycle_error marks it incomplete.
             partial = {
                 "run_index": args.cycle,
                 "cycle_error": f"{type(exc).__name__}: {exc}"[:2000],

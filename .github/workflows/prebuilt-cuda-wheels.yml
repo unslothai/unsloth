@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0: every package on win_amd64, causal-conv1d and mamba-ssm on Linux)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0: every package on win_amd64, causal-conv1d and mamba-ssm on Linux; 2.15.0: causal-conv1d and mamba-ssm on win_arm64)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:
@@ -264,25 +264,30 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
-      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
-      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
-      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+      # The toolkit the cell's torch is built with (13.4.1 for 2.14.0+cu134, 13.5.0 for
+      # 2.15.0+cu135; CUDA 13.4 is the first with a Windows ARM64 nvcc), per torch from
+      # prebuilt_wheels.py's WIN_ARM64_CUDA_REDIST. From the redist archives: the manifest is pinned
+      # by sha256 and lists one for every archive, so nothing unhashed is unpacked. Installed
+      # straight into C:\cuda.
+      - name: Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)
         if: matrix.platform == 'win_arm64'
         timeout-minutes: 25
         shell: pwsh
+        env:
+          CUDA_REDIST_URL: ${{ matrix.cuda_redist_url }}
+          CUDA_REDIST_SHA256: ${{ matrix.cuda_redist_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:CUDA_REDIST_URL -or -not $env:CUDA_REDIST_SHA256) { throw 'the matrix names no CUDA redist manifest for this cell' }
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
-            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
+            $env:CUDA_REDIST_URL `
+            $env:CUDA_REDIST_SHA256 `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
             cuda_cuobjdump cuda_nvdisasm cuda_nvprune
           if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
-          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
-          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          # ARM64 archives ship cudart.lib in lib/arm64; torch links lib/x64, else LNK1181.
           New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
           if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
           'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -329,7 +334,8 @@ jobs:
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
-          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          # windows-11-arm), and 13.5 ships the same CCCL line, so both keep the conforming one;
+          # CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
           if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 
@@ -360,8 +366,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
-      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
+      # windows-2022 has a fixed 2.9 GB page file; NtCreatePagingFile adds one without reboot.
       - name: Add a page file (Windows)
         if: runner.os == 'Windows'
         uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
@@ -381,8 +386,7 @@ jobs:
           Get-CimInstance Win32_PageFileUsage | Format-Table Name, AllocatedBaseSize, CurrentUsage -AutoSize
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n = 'FreeGB'; e = { [math]::Round($_.Free / 1GB, 1) } }, @{n = 'UsedGB'; e = { [math]::Round($_.Used / 1GB, 1) } } -AutoSize
 
-      # 10 GB of swap: nvcc's peak RSS on the sm_100 flash-attn kernels is why MAX_JOBS is 1, and
-      # swap keeps a job briefly over the runner's 16 GB from being OOM-killed hours in.
+      # nvcc peak RSS on sm_100 flash-attn is why MAX_JOBS is 1; 10 GB swap avoids OOM kills.
       - name: Set up swap space
         if: runner.os == 'Linux'
         run: |
@@ -429,8 +433,7 @@ jobs:
           TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
           PY_PLATFORM: ${{ matrix.py_platform }}
 
-      # mamba-ssm builds at -std=c++17 but torch 2.13 headers need C++20. The script asserts
-      # on the text it replaces, so an upstream fix fails loudly.
+      # mamba-ssm builds -std=c++17 but torch 2.13 needs C++20; upstream fixes trip the assert.
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
@@ -665,25 +668,30 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
-      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
-      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
-      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+      # The toolkit the cell's torch is built with (13.4.1 for 2.14.0+cu134, 13.5.0 for
+      # 2.15.0+cu135; CUDA 13.4 is the first with a Windows ARM64 nvcc), per torch from
+      # prebuilt_wheels.py's WIN_ARM64_CUDA_REDIST. From the redist archives: the manifest is pinned
+      # by sha256 and lists one for every archive, so nothing unhashed is unpacked. Installed
+      # straight into C:\cuda.
+      - name: Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)
         if: matrix.platform == 'win_arm64'
         timeout-minutes: 25
         shell: pwsh
+        env:
+          CUDA_REDIST_URL: ${{ matrix.cuda_redist_url }}
+          CUDA_REDIST_SHA256: ${{ matrix.cuda_redist_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:CUDA_REDIST_URL -or -not $env:CUDA_REDIST_SHA256) { throw 'the matrix names no CUDA redist manifest for this cell' }
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
-            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
+            $env:CUDA_REDIST_URL `
+            $env:CUDA_REDIST_SHA256 `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
             cuda_cuobjdump cuda_nvdisasm cuda_nvprune
           if ($LASTEXITCODE -ne 0) { throw "CUDA redist install exited $LASTEXITCODE" }
-          # The ARM64 archives put cudart.lib and friends in lib\arm64; torch's cpp_extension links
-          # from CUDA_HOME\lib\x64 on every Windows (measured: LNK1181 cannot open 'cudart.lib').
+          # ARM64 archives ship cudart.lib in lib/arm64; torch links lib/x64, else LNK1181.
           New-Item -ItemType Junction -Path 'C:\cuda\lib\x64' -Target 'C:\cuda\lib\arm64' | Out-Null
           if (-not (Test-Path 'C:\cuda\lib\x64\cudart.lib')) { throw 'no cudart.lib under C:\cuda\lib\x64' }
           'C:\cuda\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -730,12 +738,12 @@ jobs:
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
-          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          # windows-11-arm), and 13.5 ships the same CCCL line, so both keep the conforming one;
+          # CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
           if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 
-      # compiler_check=content: the default keys on nvcc.exe's mtime, which can differ per runner and
-      # would make every warm slice a miss in the build job.
+      # compiler_check=content: the default keys on nvcc.exe mtime, which differs per runner.
       - name: Install ccache (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
@@ -761,8 +769,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:CCACHE_DIR | Out-Null
           & 'C:\ccache\ccache.exe' --version | Select-Object -First 1
 
-      # The Linux swap file's counterpart: windows-2022 has a fixed 2.9 GB page file (18.9 GB commit
-      # limit on 16 GB RAM). NtCreatePagingFile, so no reboot.
+      # 2.9 GB windows-2022 page file is fixed; NtCreatePagingFile adds one without a reboot.
       - name: Add a page file (Windows)
         if: runner.os == 'Windows'
         uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc  # v1.5
@@ -894,8 +901,7 @@ jobs:
           echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
           if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Git Bash puts /usr/bin first, so its coreutils link.exe (hard links) shadows MSVC's
-            # linker and the final link fails; MSVC's own bin is put back in front for this step.
+            # Git's coreutils link.exe shadows MSVC's linker, so MSVC's bin is put back first.
             host="Hostx64\\x64"
             if [ "$WHEEL_PLATFORM" = "win_arm64" ]; then host="Hostarm64\\arm64"; fi
             PATH="$(cygpath -u "${VCToolsInstallDir}bin\\${host}"):$PATH"
@@ -915,8 +921,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
-      # Upstream's naming: the local version segment stops pip installing into a different torch.
-      # Assert the pre-rename name first so the built version matches the published name.
+      # Local version stops pip installing another torch; assert the pre-rename name first.
       - name: Name the wheel the way upstream names it
         working-directory: src
         env:
@@ -937,8 +942,7 @@ jobs:
           mv "$built" "dist/${WHEEL_NAME}"
           ls -l dist/
 
-      # An uncompressed fatbin still imports, so only its size gives it away (1.49 GB for
-      # flash-attn instead of ~280 MB). Gate it before anything is signed or published.
+      # Uncompressed fatbin still imports; gate on size before signing (1.49 GB, not ~280 MB).
       - name: Check the extension size
         working-directory: src
         env:
@@ -982,8 +986,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             smoke="$(cygpath -u "$RUNNER_TEMP")/smoke"
             py="$smoke/Scripts/python.exe"
-            # A user's machine has no toolkit, so neither does this check: the extension has to
-            # resolve every DLL from torch's own bundled CUDA runtime, not from C:\cuda\bin.
+            # Users lack a toolkit: DLLs must come from torch's bundled CUDA, not the toolkit.
             PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v -i -E '^/c/cuda(/|$)' | paste -sd: -)"
             export PATH
             unset CUDA_HOME CUDA_PATH
@@ -1143,8 +1146,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          # wheel-* so the sign job's download picks it up with the CUDA wheels; no platform in
-          # the name because the wheel has none.
+          # Prefixed wheel-* so the sign job downloads it with CUDA wheels; no platform tag.
           name: wheel-py3-none-any-mamba_ssm
           path: dist/${{ matrix.wheel_name }}
           if-no-files-found: error
@@ -1236,8 +1238,7 @@ jobs:
   sign:
     name: Sign and attest
     needs: [plan, build, pure, pure-windows]
-    # The extension-free wheel is skipped when the run does not build mamba-ssm; when it is
-    # built, both of its jobs must pass, like any other planned wheel.
+    # Extension-free wheel is skipped unless mamba-ssm is built; then both its jobs must pass.
     if: >-
       ${{ !cancelled() && needs.build.result == 'success'
       && (needs.plan.outputs.pure_count == '0'

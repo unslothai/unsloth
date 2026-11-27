@@ -86,8 +86,7 @@ def test_an_attesting_split_is_believed_without_a_single_read():
 
 
 def test_a_split_attesting_a_wider_cap_is_refused():
-    """Truncated to 4096 proves nothing about a 2048 cap, and the refusal must
-    not silently fall through to a scan that would find the same answer."""
+    """A split truncated to 4096 proves nothing about a 2048 cap; refuse it rather than scan."""
     split = _Lazy(8, width = 4096, attest = 4096)
     assert rl.pretokenized_within_cap(split, 2048) is False
     assert split.reads == 0
@@ -111,8 +110,7 @@ def test_an_overlength_unattested_split_is_still_caught():
 
 @pytest.mark.parametrize("claim", [True, False, "2048", 2048.0, None, object()])
 def test_a_non_int_claim_is_not_an_attestation(claim):
-    """`True` is an `int` in Python and would read as a cap of 1. Anything that
-    is not a plain integer falls through to the scan."""
+    """True is an int and would read as cap 1; any non-int claim falls through to the scan."""
     split = _Lazy(4, width = 9000)
     if claim is not None:
         split._unsloth_truncated_to = claim
@@ -182,8 +180,7 @@ def test_the_inlined_copy_gives_the_same_verdict(attest, width, cap, expected, e
 
 
 def test_the_codegen_and_the_module_agree_on_the_attribute_name():
-    """A rename on one side and not the other is a silent no-op, not a failure:
-    the scan would simply never see an attestation again."""
+    """A one-sided rename is a silent no-op: the scan would never see an attestation again."""
     source = RL_PATH.read_text(encoding = "utf-8")
     assert rl._TRUNCATION_ATTESTATION_ATTR == "_unsloth_truncated_to"
     assert (
@@ -192,8 +189,7 @@ def test_the_codegen_and_the_module_agree_on_the_attribute_name():
 
 
 def test_studio_stamps_the_attribute_this_scan_reads():
-    """The producer and the consumer live in different packages; nothing but a
-    test ties the string they share together."""
+    """Producer and consumer live in different packages; only this test ties the shared string."""
     studio = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "online_tokenization.py"
     if not studio.exists():
         pytest.skip("studio backend not present in this checkout")

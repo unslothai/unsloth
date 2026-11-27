@@ -217,13 +217,9 @@ def _is_untouched(
     value,
     mirrored_from = None,
 ):
-    """True if `value` is indistinguishable from `name`'s declared default.
-
-    `mirrored_from` is the class whose `__init__` supplied `value`, which is not
-    `config_class` when a generated config mirrors a base class parameter under a
-    different default. Comparing against the wrong one reads a default Unsloth
-    injected as a value the caller chose, and then refuses to apply the rename.
-    """
+    """True if value equals name's declared default, read from mirrored_from's __init__ when given,
+    since a generated config may mirror a base parameter under another default; the wrong one
+    would read an Unsloth-injected default as a caller choice and block the rename."""
     default = _MISSING
     if mirrored_from is not None:
         default = _init_default(mirrored_from, name)
@@ -255,14 +251,12 @@ def rename_source(key):
 
 
 def removal_source(key):
-    """Which project retired `key`."""
     return "transformers" if key in TRANSFORMERS_REMOVED_FIELD_ADVICE else "TRL"
 
 
 def classify_config_kwarg(config_class, key):
-    """Verdict on key: accepted, rename, retired, unknown or opaque; a trailing **kwargs is not
-    acceptance, since generated Unsloth configs have one and trusting it would swallow retired
-    fields."""
+    """Verdict: accepted, rename, retired, unknown or opaque; a trailing **kwargs is not acceptance
+    since generated Unsloth configs have one, so trusting it would swallow retired fields."""
     accepted, takes_var_keyword = _accepted_parameters(config_class)
     if key in accepted:
         return "accepted", key

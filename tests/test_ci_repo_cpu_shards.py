@@ -13,8 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
-# The multi-rank shards live in their own path-filtered workflow; both matrices together are
-# Repo tests (CPU), so every check below reads both.
+# Multi-rank shards are in a separate path-filtered workflow; checks below read both matrices.
 _DISTRIBUTED_CI = REPO_ROOT / ".github" / "workflows" / "distributed-cpu-ci.yml"
 _SHARD_JOBS = ((_BACKEND_CI, "repo-cpu-tests"), (_DISTRIBUTED_CI, "distributed-cpu-tests"))
 _TESTS_DIR = REPO_ROOT / "tests"
@@ -86,8 +85,7 @@ def _claiming_shards(path: str, shards: dict) -> list:
     """Which shards would collect `path`, by pytest's own root-and-ignore rules."""
     claiming = []
     for name, (roots, ignores) in shards.items():
-        # A file root (the shell expands tests/test_x*.py into file arguments) is collected even when an
-        # --ignore / --ignore-glob matches it: pytest applies those only while recursing into directories.
+        # --ignore only prunes while recursing into dirs, so a file root is collected anyway.
         if any(root.endswith(".py") and _covers(root, path) for root in roots):
             claiming.append(name)
             continue
@@ -136,8 +134,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
         assert not doubled, f"these files are collected by more than one shard: {doubled}"
 
     def test_a_brand_new_top_level_directory_is_claimed(self):
-        """The property the catch-all exists for: a directory nobody has heard of yet still
-        runs, without a workflow edit."""
+        """The catch-all lets a new directory under tests/ run without a workflow edit."""
         claiming = _claiming_shards("tests/a_directory_added_tomorrow/test_new.py", _shards())
         assert claiming == ["rest"], (
             "a new directory under tests/ must land in the catch-all shard, and only there; "
@@ -156,8 +153,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestEveryGlobRootMatchesAFile:
     def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
-        """bash passes an unmatched glob through literally and pytest then fails the whole shard on
-        the missing path, so a split must not empty any glob."""
+        """Unmatched glob reaches pytest as is and fails the shard; no split may empty a glob."""
         files = _test_files()
         empty = [
             (name, root)
@@ -175,8 +171,7 @@ class TestEveryGlobRootMatchesAFile:
 
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_the_deselected_hub_tests_stay_deselected(self):
-        """Both hit huggingface_hub for live model existence checks. The deselect only acts in
-        the shard that collects their file, so it is checked there, not anywhere in the matrix."""
+        """Both hit huggingface_hub live; the deselect acts only in the file's own shard."""
         owners = _claiming_shards("tests/test_model_registry.py", _shards())
         assert len(owners) == 1, f"tests/test_model_registry.py is collected by {owners}"
         selection = _selection_text(owners[0])
@@ -190,8 +185,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
             )
 
     def test_every_shard_keeps_the_marker_filter(self):
-        """`server` needs a studio venv and `e2e` needs the network. The filter is on the
-        shared step rather than per shard, so it is checked there."""
+        """`server` needs studio venv, `e2e` the network; the filter sits on the shared step."""
         step = _shard_pytest_step()
         assert "-m 'not server and not e2e'" in step["run"]
 
@@ -205,8 +199,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
         assert "--timeout-method=thread" in run
 
     def test_the_split_out_shards_run_the_same_step_and_install(self):
-        """The multi-rank shards moved workflows, not behaviour: same pytest step, same
-        install, same environment, so a shard means the same thing in either file."""
+        """Multi-rank shards moved workflows only: same pytest step, install and environment."""
 
         def named(path, job):
             return {

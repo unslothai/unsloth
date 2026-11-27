@@ -47,8 +47,7 @@ def _calls(node):
 
 
 def test_save_pretrained_gguf_calls_the_converter(tree):
-    """The whole purpose of the function. Without this call it is an
-    expensive no-op that reports success."""
+    """Without the save_to_gguf call the function is an expensive no-op that reports success."""
     assert "save_to_gguf" in _calls(_func(tree, "unsloth_save_pretrained_gguf"))
 
 
@@ -59,8 +58,7 @@ def test_push_to_hub_gguf_reaches_a_converter(tree):
 
 
 def test_the_gguf_conversion_is_not_dead_code(tree):
-    """The call must be reachable, not merely present; a grep for it can pass on dead code after a
-    return."""
+    """The call must be reachable, not just present: a grep passes dead code after a return."""
     fn = _func(tree, "unsloth_save_pretrained_gguf")
     assert "save_to_gguf" in _calls(fn)
     for owner in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n is not fn):
@@ -103,16 +101,14 @@ def test_no_function_in_save_py_has_a_stranded_body(tree):
 
 
 def test_the_disk_helper_is_a_module_level_function(tree):
-    """It was nested by accident once; nesting it again would re-break the
-    caller that uses it."""
+    """The helper was nested by accident once; nesting it again would re-break its caller."""
     names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
     assert "_gguf_failure_looks_like_disk" in names
     assert "unsloth_save_pretrained_gguf" in names
 
 
 def test_the_disk_helper_is_actually_used(tree):
-    """It exists to narrow the Kaggle disk claim; if nothing calls it, that
-    claim has silently gone back to being unconditional."""
+    """It narrows the Kaggle disk claim; if unused, the claim silently becomes unconditional."""
     assert "_gguf_failure_looks_like_disk" in _calls(_func(tree, "unsloth_save_pretrained_gguf"))
 
 

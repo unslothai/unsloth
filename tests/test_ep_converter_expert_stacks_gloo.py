@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """expert_parallel_loading of a quantized checkpoint whose routed expert stacks transformers' own converters build
 (gpt-oss native MXFP4, gloo CPU, 2 ranks): each stack is cut to this rank's experts as soon as it is set, so a rank
-never holds every expert. Dequantized to 16 bit (no MXFP4 kernels): bitwise the full load's rows, and one LoRA
+never holds every expert. Dequantized (no MXFP4 kernels; here to the fp32 load dtype): bitwise the full load's rows, and one LoRA
 step after apply_expert_parallel matches the full load's (loss and every gradient). Kept packed (zoo's
 Mxfp4ExpertParam): the codes and scales are the full stack's rows, marked, logical shape whole, and
 apply_expert_parallel shards it."""
@@ -224,8 +224,19 @@ def _case(rank, world, tmp, packed):
                 if hasattr(params[n], "_original_shape")
             }
         )
-        # PEFT and apply_expert_parallel accept the cut packed stacks (no forward: zoo's grouped decode is GPU only).
-        model = _lora(model)
+        # A forward before apply is refused up front; PEFT sizes the expert LoRA as for the full load; PEFT and
+        # apply_expert_parallel accept the cut packed stacks (no training step: zoo's grouped decode is GPU only).
+        try:
+            model(input_ids = torch.zeros(1, 3, dtype = torch.long))
+            out["unapplied_forward"] = "ran"
+        except RuntimeError as exc:
+            out["unapplied_forward"] = str(exc)
+        full, model = _lora(full), _lora(model)
+        lora = lambda m: {k: p.detach().clone() for k, p in m.named_parameters() if "lora_" in k}  # noqa: E731
+        want_lora, got_lora = lora(full), lora(model)
+        out["lora_equal"] = set(want_lora) == set(got_lora) and all(
+            torch.equal(want_lora[k], got_lora[k]) for k in want_lora
+        )
         epn.apply_expert_parallel(model, mesh)
         out["applied"] = sorted(
             {
@@ -344,3 +355,26 @@ def test_ep_mxfp4_packed_stacks_cut_on_load():
     for r in results:
         assert r["logical"] == [E], r["logical"]
         assert r["applied"] == [E // 2], r["applied"]
+        assert "apply_expert_parallel" in r["unapplied_forward"], r["unapplied_forward"]
+        assert r["lora_equal"]
+
+
+def test_converter_cut_setter_is_installed_once_and_skips_offloading_maps():
+    """One permanent set_param_for_module wrapper (overlapping loads never restore it out of order); a device map
+    that offloads keeps the whole stacks for its dispatch."""
+    pytest.importorskip("transformers.core_model_loading")
+    import transformers.core_model_loading as loading
+
+    tpn, _ = _modules()
+    assert tpn._install_converter_cut_setter()
+    first = loading.set_param_for_module
+    assert tpn._install_converter_cut_setter() and loading.set_param_for_module is first
+    assert getattr(first, "_unsloth_ep_converter_cut", False)
+    keeps = tpn._keeps_experts_on_device
+    assert keeps(None) and keeps({"": "cuda:1"}) and keeps({"": 0}) and keeps("cuda:0")
+    assert (
+        not keeps({"": "cpu"})
+        and not keeps({"model.layers.1": "disk", "": 0})
+        and not keeps("auto")
+    )
+    assert not keeps({"": torch.device("cpu")})

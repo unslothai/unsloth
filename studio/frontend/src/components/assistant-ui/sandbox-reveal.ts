@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 
 import { sandboxRoutePrefix } from "./sandbox-files";
 
@@ -28,18 +29,8 @@ export async function revealSandbox(sessionId: string): Promise<void> {
     method: "POST",
   });
   if (!response.ok) {
-    let detail = "";
-    try {
-      const body: unknown = await response.json();
-      if (body && typeof body === "object" && "detail" in body) {
-        const value = (body as { detail?: unknown }).detail;
-        if (typeof value === "string") detail = value;
-      }
-    } catch {
-      // A non-JSON error body leaves the status as the only thing to report.
-    }
     // Status lets callers tell "no folder yet" (404) from a failure.
-    throw Object.assign(new Error(detail || `Request failed (${response.status})`), {
+    throw Object.assign(new Error(await readFastApiError(response)), {
       status: response.status,
     });
   }

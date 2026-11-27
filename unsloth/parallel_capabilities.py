@@ -1305,11 +1305,12 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
-    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process. llama4 / qwen3_vl_moe train expert LoRA factors
+    # swapped against vanilla PEFT's (zoo patches), cut by expert and saved as vanilla's like the others.
     **{
         (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
         + ("eager: no compiled region",)
-        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
+        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss", "llama4", "qwen3_vl_moe")
     },
     ("gpt_oss", "qlora", False, "ep"): (
         "tests/test_ep_expert_lists_gloo.py::test_ep_gpt_oss_linear_lists_match_one_process"

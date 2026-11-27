@@ -18,7 +18,6 @@ H3_FPS = 24
 H3_FRAMES_PER_CHUNK = 17
 H3_LATENTS_PER_CHUNK = 5
 H3_SPATIAL_COMPRESSION = 16
-# The transformer's (t, h, w) patch. Only the spatial half is > 1.
 H3_PATCH_T, H3_PATCH_H, H3_PATCH_W = 1, 2, 2
 # Canvas must be whole 2x2 patches after 16x VAE compression, so the multiple is 16 * patch width.
 H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W

@@ -7,25 +7,6 @@ import type {
   ProjectFileListing,
 } from "../api/chat-api";
 
-export function formatFileSize(bytes: number | null | undefined): string {
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) {
-    return "";
-  }
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const shown =
-    value < 10
-      ? value.toFixed(1).replace(/\.0$/, "")
-      : String(Math.round(value));
-  return `${shown} ${units[unit]}`;
-}
-
 export function joinProjectPath(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name;
 }

@@ -135,8 +135,7 @@ def _load_builtin_profiles():
 
 
 def unwrap_diffusion_model(model):
-    """The module holding config / heads / Unsloth attributes under DDP, FSDP and PEFT wrappers. Forwards
-    still go through the wrapper so gradients synchronise."""
+    """Config/heads module under DDP/FSDP/PEFT; forwards use the wrapper so gradients sync."""
     while hasattr(model, "module") and isinstance(model.module, torch.nn.Module):
         model = model.module
     if hasattr(model, "get_base_model"):
@@ -172,9 +171,8 @@ def sample_noise_level(
 
 
 def restore_rotary_buffers(model):
-    """4.x remote code keeps RoPE frequencies in a non-persistent buffer filled in __init__; transformers 5 builds
-    on the meta device and only re-fills it through `_init_weights`, which these classes override, so `inv_freq`
-    comes back zero (GPU) or uninitialised (CPU) and positions are silently ignored. Recompute it."""
+    """4.x remote code fills RoPE inv_freq in __init__; transformers 5 meta-device init refills it
+    only via overridden _init_weights, so positions are silently ignored; recompute it."""
     repaired = 0
     for module in model.modules():
         init_fn = getattr(module, "rope_init_fn", None)

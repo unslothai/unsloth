@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  diffusionDeployRequest,
+  liveDeployRun,
   resolveDiffusionDeployBase,
   resolveDiffusionTrainingBase,
 } from "../src/features/images/train/diffusion-train-deploy.ts";
@@ -173,11 +175,76 @@ test("a FLUX.3 Klein Base adapter deploys on Klein, and a loaded Klein preselect
 
 // Klein is its own family, so matching the loaded family against the trained one alone dropped the adapter.
 test("Deploy to Create keeps an adapter on every family it was published for", async () => {
-  const panel = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
-  assert.match(panel, /\?\.lora_families \?\? \[famName\]/);
-  assert.equal((panel.match(/families: loraFamiliesFor\(/g) ?? []).length, 2);
+  const run = {
+    base_model: "black-forest-labs/flux-3-image-klein-base",
+    family: "flux.3-klein-base",
+    catalog_path: "/loras/style.safetensors",
+  };
+  assert.deepEqual(diffusionDeployRequest([flux3], run)?.families, flux3.lora_families);
+  assert.deepEqual(diffusionDeployRequest([], run)?.families, ["flux.3-klein-base"]);
   const page = await readSrcAsync("features/images/images-page.tsx");
   assert.match(page, /families: args\.families\?\.length \? args\.families : \[args\.family\]/);
   assert.match(page, /deploy\.families\.includes\(fam\)/);
   assert.doesNotMatch(page, /deploy\.family === fam/);
+});
+
+const finishedRun = {
+  base_model: "black-forest-labs/FLUX.2-klein-base-4B",
+  family: "flux.2-klein",
+  catalog_path: "/loras/mystyle.safetensors",
+};
+const form = { baseModel: "black-forest-labs/FLUX.1-dev", family: "flux.1", trigger: "" };
+
+test("Deploy on a finished run uses the trigger it was trained on, not the form's", () => {
+  const record = { ...finishedRun, instance_prompt: "a photo in mystyle" };
+  for (const trigger of ["", "a photo in otherstyle"]) {
+    const live = liveDeployRun(finishedRun, record, { ...form, trigger });
+    assert.equal(diffusionDeployRequest([klein], live)?.trigger, "a photo in mystyle");
+  }
+  assert.deepEqual(
+    diffusionDeployRequest([klein], liveDeployRun(finishedRun, record, form)),
+    diffusionDeployRequest([klein], record),
+  );
+  const captioned = liveDeployRun(finishedRun, { ...finishedRun, instance_prompt: null }, {
+    ...form,
+    trigger: "a photo in otherstyle",
+  });
+  assert.equal(diffusionDeployRequest([klein], captioned)?.trigger, "");
+});
+
+test("Deploy on a finished run uses the job's trigger before the run record is available", () => {
+  const status = { ...finishedRun, instance_prompt: "trained-style" };
+  for (const trigger of ["", "new-style"]) {
+    const live = liveDeployRun(status, null, { ...form, trigger });
+    assert.equal(diffusionDeployRequest([klein], live)?.trigger, "trained-style");
+  }
+  const captioned = liveDeployRun({ ...finishedRun, instance_prompt: null }, null, {
+    ...form,
+    trigger: "new-style",
+  });
+  assert.equal(diffusionDeployRequest([klein], captioned)?.trigger, "");
+});
+
+test("Deploy on an older backend without the status trigger falls back to the form", () => {
+  const live = liveDeployRun(
+    { catalog_path: finishedRun.catalog_path },
+    null,
+    { ...form, trigger: " a photo in mystyle " },
+  );
+  assert.deepEqual(diffusionDeployRequest([klein], live), {
+    baseRepo: "black-forest-labs/FLUX.1-dev",
+    family: "flux.1",
+    families: ["flux.1"],
+    catalogPath: finishedRun.catalog_path,
+    trigger: "a photo in mystyle",
+  });
+  assert.equal(diffusionDeployRequest([klein], { ...finishedRun, base_model: "" }), null);
+});
+
+test("both Deploy buttons build the request from a run record", async () => {
+  const panel = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
+  assert.match(panel, /liveDeployRun\(status, liveRunSummary, \{/);
+  assert.equal((panel.match(/diffusionDeployRequest\(/g) ?? []).length, 1);
+  assert.doesNotMatch(panel, /trigger: instancePrompt\.trim\(\)/);
+  assert.doesNotMatch(panel, /trigger: viewRun\.instance_prompt/);
 });

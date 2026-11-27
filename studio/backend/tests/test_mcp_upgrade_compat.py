@@ -77,8 +77,7 @@ def test_the_transports_this_code_builds_still_exist():
 
 
 def test_only_stdio_answers_the_liveness_probe():
-    """_transport_dead answers only for stdio; if a future fastmcp probes HTTP too, this test fails
-    so the recheck can get cheaper."""
+    """_transport_dead answers only for stdio; if fastmcp probes HTTP too, this test fails."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     for cls in (StreamableHttpTransport, SSETransport):
         transport = cls(url = "https://x.test/mcp")

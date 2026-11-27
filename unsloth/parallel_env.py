@@ -249,8 +249,7 @@ def _legacy_value(key, environ):
 
 
 def translate(spec, environ = None):
-    """{legacy variable: value} for a parsed spec, after checking the world size and the legacy variables
-    already set (ValueError on a conflict). Pure: the environment is only read."""
+    """Legacy {var: value} map; ValueError on world-size or set-var conflict; env only read."""
     environ = os.environ if environ is None else environ
     world = _world(environ)
     sizes = spec.sizes()
@@ -372,8 +371,7 @@ def refuse_ep_composition(environ = None, source = None):
 
 
 def bind_local_cuda_device(environ = None):
-    """Make cuda:LOCAL_RANK current on a torchrun rank before anything touches CUDA: otherwise the first
-    CUDA call during import opens a context on cuda:0 in every rank (~0.8 GB each on a B200, all on GPU 0)."""
+    """Make cuda:LOCAL_RANK current before CUDA use, else each rank opens a context on cuda:0."""
     environ = os.environ if environ is None else environ
     try:
         world = int(environ.get("WORLD_SIZE", "1") or "1")
@@ -396,8 +394,7 @@ ALLOCATOR_ENV = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_A
 
 
 def _allocator_env_value(torch, environ):
-    """The caching allocator settings this torch reads from the environment (None when unset): the first of its
-    variables that is set wins, an empty one included."""
+    """Value of the first set caching allocator env var, even if empty; None when unset."""
     hip = bool(getattr(torch.version, "hip", None))
     try:
         major, minor = (int(x) for x in torch.__version__.split(".")[:2])
@@ -428,9 +425,8 @@ def cuda_started():
 
 def apply_late_allocator_env(before, environ = None):
     """Ranks > 0 start CUDA via bind_local_cuda_device before unsloth_zoo sets expandable_segments,
-    so they lacked it (2.2 GiB more reserved on rank 1 at sharding); re-apply changed
-    ALLOCATOR_ENV from before after the zoo import; None if nothing changed or CUDA not started
-    (torch reads env)."""
+    so they lacked it; re-apply the ALLOCATOR_ENV vars that changed since before, after the zoo
+    import; None if nothing changed or CUDA not started (torch reads env)."""
     environ = os.environ if environ is None else environ
     if all(environ.get(k) == before.get(k) for k in ALLOCATOR_ENV):
         return None
@@ -704,7 +700,6 @@ class ParallelLayout:
 
     @property
     def dims(self):
-        """[(name, size)] of the root mesh, pp outermost and tp innermost; size-1 axes left out."""
         dp_name = "dp_shard" if self.fsdp2 else "dp_replicate"
         dims = [("pp", self.pp), (dp_name, self.dp), ("cp", self.cp), ("tp", self.tp)]
         return [(name, size) for name, size in dims if size > 1]
@@ -791,8 +786,7 @@ class ParallelLayout:
 
     @property
     def dp_mesh(self):
-        """The mesh data parallel gradients reduce over (FSDP2 sharding / DDP-style averaging): dp, and cp
-        flattened in when context parallel is on (cp peers hold different tokens of the same rows)."""
+        """Mesh gradients reduce over: dp, plus cp when cp > 1 (cp peers hold distinct tokens)."""
         if self.cp == 1:
             return self.data_mesh
         if self.dp == 1:
@@ -903,8 +897,7 @@ def describe_trainer_layout(
     layout = None,
     cp_manager = None,
 ):
-    """One line: the resolved mesh (pp, dp_replicate, dp_shard, cp, tp), schedule and micro-batches, effective
-    batch, context parallel backend, attention backend and gradient checkpointing mode."""
+    """One line: mesh, schedule, micro-batches, effective batch, CP, attention, checkpointing."""
     world = _dist_value("get_world_size", 1)
     cp = cp_manager.size if cp_manager is not None else getattr(layout, "cp", 1)
     pp = getattr(layout, "pp", 1)

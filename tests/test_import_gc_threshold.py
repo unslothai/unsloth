@@ -62,7 +62,6 @@ def test_raise_then_restore_returns_the_callers_thresholds(import_gc):
     assert gc.get_threshold() == _stored(import_gc.IMPORT_THRESHOLD, 11, 12)
     import_gc.restore_gc_threshold()
     assert gc.get_threshold() == _stored(700, 11, 12)
-    # Idempotent: a second restore has nothing to undo.
     import_gc.restore_gc_threshold()
     assert gc.get_threshold() == _stored(700, 11, 12)
 
@@ -120,7 +119,6 @@ def test_a_failed_import_is_restored_by_the_next_import(import_gc):
     gc.set_threshold(700, 11, 12)
     module = _in_flight("_unsloth_gc_probe_pkg")
     import_gc.raise_gc_threshold(module)
-    # Still in flight: imports during it keep the raised threshold.
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("_unsloth_gc_missing_one")
     assert gc.get_threshold()[0] == import_gc.IMPORT_THRESHOLD

@@ -1104,7 +1104,7 @@ function LibraryView({
             role="toolbar"
             aria-label={t("library.selection.countOfTotal", { count: selectedCount, total: orderedKeys.length })}
             tabIndex={-1}
-            className="fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className="glass-card fixed bottom-8 left-1/2 z-30 flex w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] outline-none focus-visible:ring-2 focus-visible:ring-ring dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             <span className="mr-4 flex items-center whitespace-nowrap text-sm font-medium">
               <span aria-live="polite">

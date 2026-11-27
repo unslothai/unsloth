@@ -208,8 +208,7 @@ def _quantized_tiny_gpt_oss():
 
 
 def test_supplied_foreign_packed_bytes_without_quant_state_are_refused(tmp_path):
-    """Packed expert bytes that are not the live parameter's (an EMA snapshot, another checkpoint)
-    must not be saved with the live parameter's absmax."""
+    """Foreign expert bytes (EMA, other checkpoint) must not be saved with the live absmax."""
     pytest.importorskip("bitsandbytes")
     model, experts = _quantized_tiny_gpt_oss()
     supplied = {k: v.clone() for k, v in model.state_dict().items()}
@@ -248,8 +247,7 @@ def test_supplied_quant_state_and_cloned_live_bytes_are_kept(tmp_path):
 
 
 def test_live_bytes_check_compares_in_bounded_chunks(monkeypatch):
-    """Copied (not same-storage) packed bytes are compared slice by slice: no full-size copy of
-    the live tensor is ever moved to the supplied tensor's device, and a difference exits early."""
+    """Copied packed bytes are compared in bounded chunks, never moved whole to the device."""
     from unsloth import save as unsloth_save
 
     monkeypatch.setattr(unsloth_save, "_PARAMS4BIT_COMPARE_CHUNK_BYTES", 1024)
@@ -283,8 +281,7 @@ def test_live_bytes_check_compares_in_bounded_chunks(monkeypatch):
 
 
 def test_live_bytes_check_errors_are_not_reported_as_foreign(monkeypatch):
-    """An error while comparing (an OOM moving a slice) propagates instead of becoming the
-    misleading foreign-weights ValueError."""
+    """Errors while comparing (e.g. an OOM) propagate, never as a foreign-weights ValueError."""
     from unsloth import save as unsloth_save
 
     live = torch.zeros(64, 1, dtype = torch.uint8)

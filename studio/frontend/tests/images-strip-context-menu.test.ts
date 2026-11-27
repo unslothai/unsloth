@@ -20,7 +20,6 @@ test("a right-click on an Images strip tile opens the tile's actions menu", () =
   assert.match(handler, /actions\.get\(\)\.setMenuId\(id\)/);
   assert.match(tile, /open=\{menuOpen\}/);
   assert.match(tile, /onOpenChange=\{\(open\) => actions\.get\(\)\.setMenuId\(open \? id : null\)\}/);
-  // The page owns which tile's menu is open.
   assert.ok(page.includes("menuOpen={tileMenuId === image.id}"));
   assert.ok(page.includes("setMenuId: setTileMenuId,"));
   // A tab switch or a deleted tile drops the request, so it cannot reopen later.

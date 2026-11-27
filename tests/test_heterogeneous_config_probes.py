@@ -155,8 +155,7 @@ def test_a_serialized_per_layer_config_is_read_from_a_namespace():
 
 @pytest.mark.parametrize("per_layer", [None, (), "not-a-sequence"])
 def test_configs_without_per_layer_values_are_unaffected(per_layer):
-    """transformers 4.57.6 has no per-layer concept at all, and a homogeneous
-    5.x config has an empty one. Neither may change behaviour."""
+    """Configs without per-layer values (4.57.6, homogeneous 5.x) must not change behaviour."""
     config = SimpleNamespace(model_type = "llama", attention_dropout = 0, head_dim = 128)
     if per_layer is not None:
         config.per_layer_config = per_layer

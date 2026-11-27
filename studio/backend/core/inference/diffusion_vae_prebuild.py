@@ -291,8 +291,7 @@ def cancel_all(owner: Optional[str] = None) -> int:
 
 
 def yield_to_render(owner: str, logger: Any = None) -> int:
-    """Stop ``owner``'s still-building children on a card too tight for child + render (the render then compiles in
-    the foreground, as without a prebuild). Never raises."""
+    """Stops owner's building children when VRAM is too tight for child + render; never raises."""
     stopped = 0
     try:
         import torch

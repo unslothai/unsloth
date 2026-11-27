@@ -41,6 +41,7 @@ from .float8_training import (
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
+    int8_lora_from_env,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -79,6 +80,7 @@ from .loader_utils import (
     _load_probe_memo_scope,
     _memo_config_probe,
     _resolved_revision,
+    _cached_missing_adapter_error,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -197,6 +199,7 @@ from ._utils import (
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
     block_swap_shaped,
+    snapshot_residual_lora_load,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -1409,8 +1412,8 @@ class FastLanguageModel(FastLlamaModel):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
 
-        require_gguf_package(kwargs.get("gguf_file"))
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
@@ -1747,6 +1750,15 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -2260,6 +2272,7 @@ class FastLanguageModel(FastLlamaModel):
                     lora_config = load_config,
                     loading_adapter = True,
                 ),
+                snapshot_residual_lora_load(load_config),
             ):
                 model = PeftModel.from_pretrained(
                     model,
@@ -2306,6 +2319,8 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        if fp8_lora is None and fp8_request in (None, False):
+            fp8_lora = int8_lora_from_env(model, qat_scheme = qat_scheme)
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
@@ -2421,8 +2436,8 @@ class FastModel(FastBaseModel):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
 
-        require_gguf_package(kwargs.get("gguf_file"))
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
@@ -2736,6 +2751,9 @@ class FastModel(FastBaseModel):
             if float8_training is not None:
                 converted = convert_model_to_float8_training(model, float8_training)
                 print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
+            if qat_scheme is not None:
+                print("Unsloth: Applying QAT to mitigate quantization degradation")
+                model = FastModel._prepare_for_qat(model, qat_scheme)
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2778,6 +2796,15 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if user_config is None and adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -3077,16 +3104,21 @@ class FastModel(FastBaseModel):
                     ";"
                 )
             elif not (load_in_4bit and _bnb_compatible_quant):
-                # Only upcast MoE biases for MXFP4, not BnB.
+                # Only upcast MoE biases for MXFP4, not BnB. In place: a bias expert parallel loading already cut to
+                # this rank keeps its Parameter and the cut's mark (a new Parameter would leave the block unshardable).
                 register_custom_dtype(
                     "all;None;None;"
                     "x = 'gate_up_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     "x = 'down_proj_bias'\n"
-                    "if hasattr(module, x): "
-                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    "if hasattr(module, x) and isinstance(getattr(module, x), torch.nn.Parameter): "
+                    "getattr(module, x).data = getattr(module, x).data.to(torch.float32)\n"
+                    "elif hasattr(module, x): "
+                    "setattr(module, x, getattr(module, x).to(torch.float32))\n"
                     ""
                     ";"
                 )
@@ -3825,6 +3857,7 @@ class FastModel(FastBaseModel):
                         lora_config = load_config,
                         loading_adapter = True,
                     ),
+                    snapshot_residual_lora_load(load_config),
                 ):
                     model = PeftModel.from_pretrained(
                         model,
@@ -3884,6 +3917,10 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if fp8_lora is None and float8_training is None:
+            fp8_lora = int8_lora_from_env(
+                model, full_finetuning = full_finetuning, qat_scheme = qat_scheme
+            )
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 

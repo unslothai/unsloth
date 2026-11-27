@@ -111,7 +111,6 @@ test("a closing dialog gives up focus when its exit animation starts", () => {
   assert.equal(blurInsideClosingDialog(dialog("closed"), active), true);
   assert.equal(blurInsideClosingDialog(dialog("closed", "alertdialog"), active), true);
   assert.equal(blurred, 2);
-  // Opening dialogs, other closing layers, and focus elsewhere are left alone.
   assert.equal(blurInsideClosingDialog(dialog("open"), active), false);
   assert.equal(blurInsideClosingDialog(dialog("closed", "menu"), active), false);
   assert.equal(blurInsideClosingDialog(dialog("closed", "dialog", false), active), false);
@@ -134,8 +133,7 @@ test("the side pane sits under the same modal cover as the thread", () => {
   assert.ok(z > 0 && z < 50, `cover z-index ${z} must sit under the z-50 portaled layers`);
   // The shown pane opts out of the body lock, which is why it needs the cover.
   assert.match(rule(css, '.chat-artifact-pop-surface[data-artifact-surface-visible="true"]'), /pointer-events: auto;/);
-  // Keyed on a static class on the pane roots, which also position the cover: an :is() subject
-  // here made every lock toggle restyle the thread (gate: 120 ms at 200 turns).
+  // Static class on pane roots, which position the cover; a :is() subject restyled the thread.
   assert.match(readSrc("features/browser/browser-panel.tsx"), /"side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden/);
   assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /"relative flex min-h-0 flex-col[\s\S]{0,120}variant === "panel" && "side-pane-lock-cover"/);
 });
@@ -159,11 +157,11 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   const live: Array<[string, RegExp]> = [
     ["components/tauri/window-titlebar.tsx", /"modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-\[70\]/],
     ["components/tauri/startup-screen.tsx", /"pointer-events-auto modal-pe-live fixed inset-0 z-\[9999\]"/],
-    ["components/ui/sonner.tsx", /toast: "cn-toast modal-pe-live pointer-events-auto"/],
+    ["components/ui/sonner.tsx", /toast: "cn-toast modal-pe-live pointer-events-auto glass-card"/],
     ["components/ui/combobox.tsx", /"isolate z-\[120\] modal-pe-live pointer-events-auto"/],
     ["features/interface-zoom/components/interface-zoom.tsx", /"modal-pe-live interface-zoom-position pointer-events-auto/],
     ["app/provider.tsx", /data-tauri-drag-region=\{true\}[\s\S]{0,80}"pointer-events-auto modal-pe-live /],
-    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-fab pointer-events-auto modal-pe-live"/],
+    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-fab pointer-events-auto modal-pe-live glass-card"/],
     ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-panel pointer-events-auto modal-pe-live /],
   ];
   for (const [file, re] of live) assert.match(readSrc(file), re, file);

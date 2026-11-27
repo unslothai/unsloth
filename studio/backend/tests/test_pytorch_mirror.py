@@ -19,7 +19,6 @@ OFFICIAL_URL = "https://download.pytorch.org/whl"
 
 def _reload_whl_base(monkeypatch, mirror_value = None):
     """(Re-)import install_python_stack with a controlled env, return _PYTORCH_WHL_BASE."""
-    # Drop cached module so the module-level assignment re-executes.
     sys.modules.pop("install_python_stack", None)
 
     if mirror_value is None:

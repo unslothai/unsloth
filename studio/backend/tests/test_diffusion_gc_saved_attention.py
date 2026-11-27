@@ -196,8 +196,7 @@ def test_retry_is_armed_before_the_first_kept_attention(monkeypatch):
 
 
 def test_a_rerun_after_the_first_kept_attention_replays_the_recorded_step(monkeypatch):
-    # BudgetedSteps records while attention saving is on, so an out-of-memory error in the step that first keeps an
-    # attention output reruns that step's own inputs.
+    # BudgetedSteps records under attention saving, so an out-of-memory rerun replays the step.
     monkeypatch.delenv(gb.SAVE_ATTENTION_ENV, raising = False)
     if not _supported():
         pytest.skip("this torch has no compile-safe selective checkpointing")

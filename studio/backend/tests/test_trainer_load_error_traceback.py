@@ -93,5 +93,4 @@ def test_model_load_error_is_logged_with_its_traceback(monkeypatch, error):
     assert kwargs.get("exc_info") is True
     # Logged inside the handler, so exc_info=True resolves to the load's own exception.
     assert active is error
-    # The UI still gets the short message, not the traceback.
     assert progress_errors[-1] == str(error)

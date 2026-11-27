@@ -1740,6 +1740,7 @@ def test_health_reports_modelscope_page_links_only_for_modelscope(main_module, m
     pages = main_module._modelscope_page_links()["modelscope_pages"]
     assert pages["base"] == "https://www.modelscope.cn"
     assert pages["aliases"]["dataset"]["openai/gsm8k"] == "AI-ModelScope/gsm8k"
+    assert pages["orgs"]["nvidia"] == "nv-community"
 
 
 def test_every_api_write_route_is_body_capped(main_module):

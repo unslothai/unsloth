@@ -51,8 +51,7 @@ def test_triton_is_split_too(monkeypatch, tmp_path):
 
 
 def test_a_single_process_run_is_left_alone(monkeypatch, tmp_path):
-    """No xdist, no split: one process already has the default to itself, and moving it
-    would drop whatever the environment deliberately pointed it at."""
+    """Without xdist, keep the default cache; moving it would drop what the environment set."""
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising = False)
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
     module = _load()
@@ -73,8 +72,7 @@ def test_an_explicit_location_is_split_underneath_not_replaced(monkeypatch, tmp_
 
 @pytest.mark.parametrize("conftest", CONFTESTS, ids = lambda p: str(p.relative_to(REPO)))
 def test_every_parallel_suite_reaches_the_helper(conftest):
-    """The quiet failure: the helper exists, nothing imports it, and the caches merge
-    again with every test still green."""
+    """Helper unused by a conftest lets caches merge silently while every test stays green."""
     assert conftest.is_file(), f"{conftest} is gone"
     text = conftest.read_text(encoding = "utf-8")
     assert "compile_cache_isolation" in text, (
@@ -84,8 +82,7 @@ def test_every_parallel_suite_reaches_the_helper(conftest):
 
 
 def test_the_suites_this_protects_really_do_run_in_parallel():
-    """If nothing runs with -n any more, this whole mechanism is dead weight and should
-    be deleted rather than left looking load-bearing."""
+    """If nothing runs with -n, the isolation helper is dead weight and should be deleted."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     assert re.search(r"pytest[^\n]*-n\s+\d", text), (
         f"no parallel pytest invocation left in {WORKFLOW.name}; if the suites went back "

@@ -270,8 +270,7 @@ def _store_key(key: Any) -> Any:
 
 
 def _key_peaks(key: Any) -> dict:
-    """This process's peaks for ``key``, merged with the persisted store's (other processes' measurements) at every
-    read; the store's own mtime cache keeps that a stat when nothing changed."""
+    """Process peaks for key, merged with the store's (other processes) on read; mtime-cached."""
     peaks = _PEAKS.setdefault(key, {})
     try:
         from .diffusion_measured_peaks import work_peaks
@@ -305,9 +304,8 @@ def measured_extra_mib(key: Any, work: int) -> Optional[int]:
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
-    """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it.
-    A tagged module reads only the peaks of its calibration key (same load AND request mode), which also carries the
-    peaks it recorded itself; the module's own mode-blind table is the fallback for an untagged one."""
+    """Largest peak among completed requests at least as large as work, or None; a tagged module
+    reads only its calibration key (same load and request mode), else its mode-blind table."""
     key = getattr(module, "_unsloth_video_calibration_key", None)
     if key is not None:
         return _covering(_key_peaks(key), work)
@@ -664,14 +662,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             module._unsloth_video_peaks = peaks
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
-        # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
-        # a load keyed with CUDA graphs whose graphs no longer run (a poisoned wrapper after a failed capture runs
-        # eager without counting a new failure) records an eager peak a graph-capturing load would undershoot
+        # A failed capture absorbed an OOM: keep its peak out of keyed and persisted peaks; poisoned
+        # graphs make a keyed load record an eager peak that capturing loads undershoot.
         if (
             key is not None
             and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
-            # a vocoder that fell back to its stored dtype (out of memory, or short of room) ran a pass this key
-            # does not describe: its peak is not the float32 decode's
+            # Vocoder fell back to stored dtype (OOM, no room); not the float32 decode's peak.
             and getattr(module, "_unsloth_video_vocoder_fallbacks", None)
             in (None, _vocoder_fallbacks())
             and _keyed_graphs_live(pipe, key)

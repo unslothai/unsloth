@@ -55,8 +55,7 @@ _find_win_sdk() {
     return 0
 }
 
-# Best effort: install the Windows 11 SDK on the host via winget (one UAC prompt).
-# Opt out with UNSLOTH_SKIP_WIN_SDK_INSTALL=1.
+# Best effort winget install of the Windows SDK; set UNSLOTH_SKIP_WIN_SDK_INSTALL=1 to opt out.
 _install_windows_sdk_via_winget() {
     [ "${UNSLOTH_SKIP_WIN_SDK_INSTALL:-0}" = "1" ] && { note "Skipping Windows SDK auto-install (UNSLOTH_SKIP_WIN_SDK_INSTALL=1)."; return 0; }
     command -v powershell.exe >/dev/null 2>&1 || return 0
@@ -69,8 +68,7 @@ _install_windows_sdk_via_winget() {
     say "Installing the Windows 11 SDK on the Windows host via winget"
     note "librocdxg needs its headers. Approve the UAC prompt on the Windows desktop."
     note "One-time (~1-3 GB download); opt out with UNSLOTH_SKIP_WIN_SDK_INSTALL=1."
-    # Header presence is the source of truth, not winget's exit code.
-    # </dev/null so winget never consumes the stdin of a piped install.
+    # Header presence, not exit code, decides; </dev/null stops winget reading a piped stdin.
     for _sdk_id in Microsoft.WindowsSDK.10.0.26100 Microsoft.WindowsSDK.10.0.22621; do
         note "winget install ${_sdk_id} ..."
         # Pin the winget source so a broken msstore source cannot abort resolution.
@@ -125,8 +123,7 @@ fi
 
 _real="$(ls -d /opt/rocm-* 2>/dev/null | sort -V | tail -1 || true)"
 if [ -n "$_real" ] && [ ! -L /opt/rocm ] && [ -d /opt/rocm ]; then
-    # Treat /opt/rocm as a stray stub only if it is not a real ROCm install, and then move
-    # it aside, never rm.
+    # Only a stray /opt/rocm stub, not a real ROCm install, is moved aside, never rm.
     if [ -e /opt/rocm/bin/rocminfo ] || [ -e /opt/rocm/bin/hipcc ] || [ -e /opt/rocm/.info/version ]; then
         note "/opt/rocm is a real ROCm install -- leaving it untouched (will install librocdxg into it)."
     else

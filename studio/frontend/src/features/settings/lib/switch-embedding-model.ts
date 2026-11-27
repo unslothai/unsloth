@@ -10,15 +10,13 @@ import {
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
 
 export type EmbeddingSwitchResult =
-  /** `needsDownload`: saved, but indexing needs the files on disk first. Null when the resolve
-   *  failed, so nobody knows. */
+  /** needsDownload: saved, but indexing needs files on disk; null means the resolve failed. */
   | { status: "saved"; needsDownload: boolean | null }
   /** A newer pick from another surface won; say nothing. */
   | { status: "superseded" }
   | { status: "failed"; message: string };
 
-/** Switch the embedding model from outside Settings (the RAG menu). Same order as the
- *  Settings picker: claim save order, resolve, then save what the resolve found. */
+/** From the RAG menu; same order as the Settings picker: claim save order, resolve, then save. */
 export async function switchEmbeddingModel(
   model: string,
   hfToken: string | undefined,

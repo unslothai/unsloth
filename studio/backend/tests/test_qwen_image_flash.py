@@ -53,7 +53,6 @@ def test_flash_resolves_to_itself_despite_its_card_tag(fam, monkeypatch):
         diffusion_mod._resolve_base_repo("someone/qwen-image-anime", None, fam, None)
         == "Qwen/Qwen-Image"
     )
-    # An explicit base from the caller always wins.
     assert (
         diffusion_mod._resolve_base_repo(FLASH, "Qwen/Qwen-Image", fam, None) == "Qwen/Qwen-Image"
     )
@@ -96,5 +95,4 @@ def test_a_named_variant_tagged_as_its_teacher_resolves_to_its_own_weights(
     base = diffusion_mod._resolve_base_repo(repo_id, None, family, None)
     assert base == expected
     assert df.family_prequant_repo(family, "fp8", base_repo = base) == own_fp8
-    # The teacher itself still resolves to itself.
     assert diffusion_mod._resolve_base_repo(family_id, None, family, None) == family_id
