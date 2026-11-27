@@ -756,18 +756,24 @@ def apply_chat_template_to_dataset(
                 turns[0] = message("user", system + "\n\n" + prompt)
                 return _render_messages(tokenizer, turns)
 
-        def _native_alpaca(prompt, answer, system):
+        def _probe_content_parts():
             # A list-only template given strings (an AutoTokenizer on a VLM) renders empty turns.
-            error = None
+            probe = "unsloth-studio-alpaca-probe"
             for parts in (uses_content_parts, not uses_content_parts):
                 try:
-                    text = _render_alpaca(prompt, answer, system, parts)
-                except Exception as e:
-                    error = error or e
-                    continue
-                if isinstance(text, str) and (answer or prompt).strip() in text:
-                    return text
-            raise error or ValueError("The model's chat template did not render the Alpaca example")
+                    if probe in _render_alpaca(probe, probe, None, parts):
+                        return parts
+                except Exception:
+                    pass
+            return uses_content_parts
+
+        alpaca_parts = _probe_content_parts() if native_alpaca else uses_content_parts
+
+        def _native_alpaca(prompt, answer, system):
+            text = _render_alpaca(prompt, answer, system, alpaca_parts)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("The model's chat template did not render the Alpaca example")
+            return text
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
 

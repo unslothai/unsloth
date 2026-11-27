@@ -205,3 +205,21 @@ def test_native_alpaca_keeps_its_template_for_later_splits():
     )
 
     assert getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR) == ("Qwen3ForCausalLM", _QWEN3_TEMPLATE)
+
+
+def test_native_alpaca_accepts_templates_that_rewrite_the_answer():
+    template = (
+        "{%- for m in messages %}{{ m.role }}:"
+        "{{ m.content.split('</think>')[-1].lstrip() if m.role == 'assistant' else m.content }}"
+        "{%- endfor %}"
+    )
+    result = format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Q", "output": "<think>reason</think>\n42"}]),
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = _JinjaTokenizer(template),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["dataset"][0]["text"] == "user:Qassistant:42"
