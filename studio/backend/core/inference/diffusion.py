@@ -5240,8 +5240,11 @@ def _measured_sizes(
         found = diffusion_batch_race.lookup(
             state, width, height, guidance, range(2, batch_max() + 1), steps = steps
         )
+        from .diffusion_batch_quality import gate
+
+        # A win serves only where an offline G2c verdict passes for this family, card and path.
         return {
-            k: diffusion_batch_race.effective_verdict(v, k, state, layout = layout)
+            k: gate(diffusion_batch_race.effective_verdict(v, k, state, layout = layout), state)
             for k, v in found.items()
         }
     except Exception:  # noqa: BLE001 - no verdict: today's rules
@@ -18444,7 +18447,8 @@ class DiffusionBackend:
         policy = _default_request_batching(state)
         if policy["mode"] == "serial" and policy.get("measurable"):
             from . import diffusion_batch_race
-            if diffusion_batch_race.any_promoted(state):
+            from .diffusion_batch_quality import any_quality_ok
+            if diffusion_batch_race.any_promoted(state) and any_quality_ok(state):
                 policy = {
                     "mode": "measured",
                     "reason": "an idle race on this card measured a faster shared call: concurrent requests share "
@@ -18580,7 +18584,7 @@ class DiffusionBackend:
                 layout = keys[0]
         except Exception:  # noqa: BLE001 - unknown layout: a graphed verdict then admits nothing
             layout = None
-        return diffusion_batch_race.run_race(
+        report = diffusion_batch_race.run_race(
             self.generate,
             state,
             idle = idle,
@@ -18594,6 +18598,16 @@ class DiffusionBackend:
             allowed_sizes = allowed,
             layout = layout,
         )
+        from .diffusion_batch_quality import gate
+
+        # The persisted verdict is the speed race's; whether a win serves also needs a passing G2c verdict.
+        for verdict in (report.get("sizes") or {}).values():
+            if isinstance(verdict, dict) and verdict.get("promoted"):
+                gated = gate(verdict, state)
+                verdict["serves"] = bool(gated.get("promoted"))
+                if gated.get("quality_gate"):
+                    verdict["quality_gate"] = gated["quality_gate"]
+        return report
 
     @contextmanager
     def generation_rider(self, cancel: threading.Event):
