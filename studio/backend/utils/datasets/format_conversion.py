@@ -280,6 +280,15 @@ def normalize_chatml_roles(
 _SOURCE_COLUMN = "__unsloth_source_row"
 
 
+def _chat_turn_content(message, primary, fallback):
+    value = message.get(primary)
+    # Keep numeric and boolean cells, including 0 and False. Empty text can still
+    # fall back to the other key in datasets that mix both field names.
+    if value or isinstance(value, (int, float)):
+        return value
+    return message.get(fallback)
+
+
 def convert_chatml_to_alpaca(
     dataset,
     batch_size = 1000,
@@ -303,7 +312,7 @@ def convert_chatml_to_alpaca(
         turns = []
         for msg in convo or []:
             role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
-            content = content_text(msg.get("content") or msg.get("value"))
+            content = content_text(_chat_turn_content(msg, "content", "value"))
             if role is None or not content:
                 continue
             if turns and turns[-1][0] == role:
@@ -1214,6 +1223,10 @@ def convert_video_to_vlm_format(
     return converted
 
 
+def _sharegpt_turn_text(msg):
+    return cell_text(_chat_turn_content(msg, "value", "content"))
+
+
 def convert_sharegpt_with_images_to_vlm_format(
     dataset,
     image_column = "image",
@@ -1326,10 +1339,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         conversation = sample[messages_column]
         is_image_list = isinstance(image_data, list)
         if is_image_list:
-            marker_count = sum(
-                (msg.get("value") or msg.get("content") or "").count("<image>")
-                for msg in conversation
-            )
+            marker_count = sum(_sharegpt_turn_text(msg).count("<image>") for msg in conversation)
             if not image_data or len(image_data) != marker_count:
                 raise ValueError(
                     f"Image list has {len(image_data)} images but conversation has "
@@ -1344,7 +1354,7 @@ def convert_sharegpt_with_images_to_vlm_format(
         for msg in conversation:
             role_raw = msg.get("from") or msg.get("role", "user")
             role = _ROLE_MAP.get(role_raw.lower(), role_raw.lower())
-            text = msg.get("value") or msg.get("content") or ""
+            text = _sharegpt_turn_text(msg)
 
             if "<image>" in text:
                 parts = text.split("<image>")
