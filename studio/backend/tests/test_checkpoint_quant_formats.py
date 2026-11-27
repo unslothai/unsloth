@@ -41,7 +41,12 @@ def _smi(
         ("12.0\n", ["fp8", "nvfp4"]),  # RTX 5090
         ("12.0\n8.9\n", ["fp8"]),  # mixed host answers for the least capable card
         ("12.0\n8.0\n", []),
-        ("12.0\n[N/A]\n", []),  # an unreadable card counts as none
+        # A device with no compute capability (the NPU nvidia-smi lists beside an integrated GPU) is skipped.
+        ("12.1\n[N/A]\n", ["fp8", "nvfp4"]),
+        ("[N/A]\n12.1\n", ["fp8", "nvfp4"]),
+        ("N/A\n8.9\n", ["fp8"]),
+        ("[N/A]\n", []),  # nothing with a capability: none
+        ("12.0\ngarbage\n", []),  # an unparseable row still counts as unreadable
         ("", []),
     ],
 )
@@ -125,6 +130,19 @@ def test_fp8_is_dequant_only_without_a_rowwise_or_tensorwise_gemm(
     monkeypatch.delitem(sys.modules, "core.inference.diffusion_fp8_unit_scale", raising = False)
     _fake_core(tmp_path, monkeypatch, backends)
     assert nvidia.get_checkpoint_quant_dequant_only(["fp8", "nvfp4"]) == expected
+
+
+def test_an_integrated_gpu_beside_an_npu_keeps_fp8_and_its_dequant_marker(monkeypatch, tmp_path):
+    """The device row order a Windows-on-Arm part reports: the GPU, then an NPU with no compute capability."""
+    import sys
+
+    _smi(monkeypatch, "12.1\n[N/A]\n")
+    formats = nvidia.get_checkpoint_quant_formats()
+    assert formats == ["fp8", "nvfp4"]
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delitem(sys.modules, "core.inference.diffusion_fp8_unit_scale", raising = False)
+    _fake_core(tmp_path, monkeypatch, None)
+    assert nvidia.get_checkpoint_quant_dequant_only(formats) == ["fp8_rowwise"]
 
 
 def test_a_probed_rowwise_verdict_beats_the_platform(monkeypatch, tmp_path):

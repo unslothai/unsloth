@@ -598,7 +598,12 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     capabilities: list[tuple[int, int]] = []
     for line in result.stdout.strip().splitlines():
-        major, _, minor = line.strip().partition(".")
+        cap = line.strip()
+        # A device with no compute capability (an NPU nvidia-smi lists beside the GPU) runs no CUDA
+        # kernels, so no load lands there; skip it rather than reading the whole host as unknown.
+        if cap.strip("[]").upper() == "N/A":
+            continue
+        major, _, minor = cap.partition(".")
         if not (major.isdigit() and minor.isdigit()):
             return []
         capabilities.append((int(major), int(minor)))
