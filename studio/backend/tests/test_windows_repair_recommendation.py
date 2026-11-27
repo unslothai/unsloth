@@ -186,6 +186,21 @@ def test_uv_config_precedence_follows_install_ps1(monkeypatch, tmp_path):
     assert wr._managed_route_host({"ProgramData": str(system), "UV_NO_SYSTEM_CONFIG": "1"}) is True
 
 
+@pytest.mark.parametrize("project_file", ["uv.toml", "pyproject.toml"])
+def test_an_explicit_uv_project_config_closes_the_route(monkeypatch, tmp_path, project_file):
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    project = tmp_path / "proj"
+    (project / "sub").mkdir(parents = True)
+    body = "index-url = 'https://mirror.example/simple'\n"
+    if project_file == "pyproject.toml":
+        body = "[tool.uv]\n" + body
+    (project / project_file).write_text(body, encoding = "utf-8")
+    # Found walking up from UV_PROJECT, as install.ps1's discovery does.
+    assert wr._managed_route_host({"UV_PROJECT": str(project / "sub")}) is False
+    # UV_NO_CONFIG skips it, as it skips every discovered file.
+    assert wr._managed_route_host({"UV_PROJECT": str(project / "sub"), "UV_NO_CONFIG": "1"}) is True
+
+
 def test_the_mirror_gate_matches_install_ps1():
     install = (Path(__file__).resolve().parents[3] / "install.ps1").read_text(encoding = "utf-8")
     body = re.search(r"function Test-PypiUnslothAdmitsTorch \{.*?\n    \}", install, re.S).group(0)

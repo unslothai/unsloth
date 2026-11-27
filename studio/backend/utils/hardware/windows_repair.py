@@ -102,7 +102,8 @@ _UV_INDEX_LINE = re.compile(
 def _uv_config_files(environ) -> list[str]:
     """The uv config files install.ps1's Test-MirrorConfigured reads, in its precedence: UV_CONFIG_FILE alone
     (even with UV_NO_CONFIG), else none under UV_NO_CONFIG, else the user file plus the system one unless
-    UV_NO_SYSTEM_CONFIG. Its project discovery walks the installer's working directory, unknown here."""
+    UV_NO_SYSTEM_CONFIG, plus the project UV_PROJECT names. Without UV_PROJECT the installer walks its
+    own working directory, unknown here."""
     if environ.get("UV_CONFIG_FILE"):
         return [environ["UV_CONFIG_FILE"]]
     if str(environ.get("UV_NO_CONFIG", "")).strip().lower() in _UV_TRUE:
@@ -115,6 +116,24 @@ def _uv_config_files(environ) -> list[str]:
         and str(environ.get("UV_NO_SYSTEM_CONFIG", "")).strip().lower() not in _UV_TRUE
     ):
         files.append(os.path.join(environ["ProgramData"], "uv", "uv.toml"))
+    # An explicit UV_PROJECT names the project the installer's discovery walks up from.
+    if environ.get("UV_PROJECT"):
+        base = environ.get("UV_WORKING_DIR") or environ.get("UV_WORKING_DIRECTORY") or os.getcwd()
+        directory = os.path.abspath(os.path.join(base, environ["UV_PROJECT"]))
+        while directory:
+            if os.path.isfile(os.path.join(directory, "uv.toml")):
+                files.append(os.path.join(directory, "uv.toml"))
+                break
+            pyproject = os.path.join(directory, "pyproject.toml")
+            try:
+                with open(pyproject, encoding = "utf-8", errors = "replace") as handle:
+                    if re.search(r"^\s*\[+tool\.uv(\.|\])", handle.read(), re.M):
+                        files.append(pyproject)
+                        break
+            except OSError:
+                pass
+            parent = os.path.dirname(directory)
+            directory = parent if parent != directory else ""
     return files
 
 
