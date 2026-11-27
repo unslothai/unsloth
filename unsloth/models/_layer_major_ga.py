@@ -450,6 +450,10 @@ def _ddp_ineligible(trainer, ddp, layers):
         or not hasattr(ddp, "_check_sync_bufs_pre_fwd")
     ):
         return "a DDP buffer hook, or a torch DDP without the buffer sync this needs"
+    if getattr(ddp, "broadcast_buffers", False) and (
+        sum(b.numel() * b.element_size() for b in ddp.module.buffers()) > _BUFFER_SNAPSHOT_MAX
+    ):
+        return f"over {_BUFFER_SNAPSHOT_MAX >> 20} MiB of DDP-broadcast buffers to snapshot"
     if getattr(ddp.module, "_unsloth_ddp_tower_params", None):
         return "vision / audio towers averaged outside DDP"
     return None
@@ -670,11 +674,23 @@ def _reduce_like_ddp(ddp):
     _DDP_REDUCES[0] += 1
 
 
+# Most DDP-broadcast buffer bytes a window snapshots (rotary tables and the like are KBs).
+_BUFFER_SNAPSHOT_MAX = 256 * 2**20
+
+
 def _ddp_buffers(ddp, layers):
-    """The buffers DDP broadcasts before a forward, with their versions (block swap moves weights, not buffers)."""
+    """The buffers DDP broadcasts before a forward: (buffer, version, copy) (block swap moves weights, not buffers).
+    The copy puts back what an abandoned window's forwards wrote before the standard retry."""
     if not ddp._check_sync_bufs_pre_fwd():
         return []
-    return [(b, b._version) for b in ddp.module.buffers()]
+    return [(b, b._version, b.detach().clone()) for b in ddp.module.buffers()]
+
+
+def _restore_buffers(buffers):
+    with torch.no_grad():
+        for b, version, saved in buffers:
+            if b._version != version:
+                b.copy_(saved)
 
 
 def _plan(trainer, model, ddp, samples, mode):
@@ -786,11 +802,13 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         def agree(ok, stage):
             if stage == "commit" and ok:
                 # A changed buffer (BatchNorm, dynamic RoPE) would be re-broadcast before the next micro-batch under DDP.
-                ok = all(b._version == v for b, v in buffers)
+                ok = all(b._version == v for b, v, _ in buffers)
             return _all_ranks_agree(ok, group, device)
 
-    elif layers is None:
-        return None
+    else:
+        buffers = []
+        if layers is None:
+            return None
     fns = [
         functools.partial(_micro_step, trainer, inner, s, num_items_in_batch, args, kwargs)
         for s in samples
@@ -806,9 +824,11 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         losses, why = run_layer_major(layers, fns, swapper = swapper, model = inner, **vote)
     except BaseException:
         trainer.__dict__.update(counters)  # the engine already put back gradients and RNG
+        _restore_buffers(buffers)
         raise
     if losses is None:
         trainer.__dict__.update(counters)
+        _restore_buffers(buffers)
         if why.startswith("another layer-major window"):
             return None  # transient: another trainer in this process holds the window
         _say_once(

@@ -66,6 +66,8 @@ def reports(tmp_path_factory):
     # Earlier tests' Trainers export ACCELERATE_MIXED_PRECISION; the ranks and the fp32 reference must match.
     for key in [k for k in env if k.startswith("ACCELERATE_")]:
         env.pop(key)
+    # The suite's conftest refuses unsloth_zoo's CPU path; these ranks are CPU by design (gloo).
+    env.pop("UNSLOTH_DISABLE_CPU_FALLBACK", None)
     proc = subprocess.run(
         [
             sys.executable,
@@ -132,7 +134,8 @@ def test_a_forward_that_writes_a_broadcast_buffer_keeps_the_step_standard(report
     for rank, r in reports.items():
         b = r["buffer_written"]
         assert b["windows"] == 0 and b["aborts"] == 1 and b["reduces"] == 0, (rank, b)
-        assert b["bitwise_vs_plain"] and b["close_to_one_process"], (rank, b)
+        # The output reads the buffer: the retry is bitwise plain DDP only if the window's writes were put back.
+        assert b["bitwise_vs_its_plain"], (rank, b)
 
 
 def test_hooks_on_the_ddp_wrapper_keep_the_step_standard(reports):
@@ -141,6 +144,20 @@ def test_hooks_on_the_ddp_wrapper_keep_the_step_standard(reports):
         h = r["ddp_wrapper_hook"]
         assert h["windows"] == 0 and h["reduces"] == 0 and h["wrapper_hook_message"], (rank, h)
         assert h["bitwise_vs_plain"], (rank, h)
+
+
+def test_unsloth_gradient_checkpointing_at_seq_512(reports):
+    """Unsloth's default (use_gradient_checkpointing = "unsloth", max_seq_length >= 512): its checkpoint shim on
+    every layer. An engine that accepts the shim runs windows; one that refuses it aborts on every rank alike."""
+    for rank, r in reports.items():
+        g = r["unsloth_gc"]
+        if g is None:
+            pytest.skip("unsloth_zoo.gradient_checkpointing does not import here")
+        assert g["plain_windows"] == 0 and g["bitwise"], (rank, g)
+        if g["accepted"]:
+            assert g["windows"] == 2 and g["reduces"] == 2 and g["aborts"] == 0, (rank, g)
+        else:
+            assert g["windows"] == 0 and g["reduces"] == 0 and g["aborts"] == 1, (rank, g)
 
 
 def test_sft_trainer_metric_gathers_inside_windows(reports):
