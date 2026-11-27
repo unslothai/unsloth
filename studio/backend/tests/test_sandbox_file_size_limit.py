@@ -23,14 +23,14 @@ from utils.account_context import AccountContext, bind_account, reset_account
 ALICE = AccountContext("a" * 32, "alice")
 MB = 1024 * 1024
 _SIGXFSZ = getattr(signal, "SIGXFSZ", 25)
-_POSIX = pytest.mark.skipif(not hasattr(signal, "SIGXFSZ"), reason="RLIMIT_FSIZE is POSIX-only")
+_POSIX = pytest.mark.skipif(not hasattr(signal, "SIGXFSZ"), reason = "RLIMIT_FSIZE is POSIX-only")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
-    monkeypatch.delenv(limit.FILE_SIZE_LIMIT_ENV, raising=False)
+    monkeypatch.delenv(limit.FILE_SIZE_LIMIT_ENV, raising = False)
 
 
 def test_default_lets_builds_link_past_the_old_fixed_100_mb():
@@ -87,7 +87,7 @@ def test_the_linux_prlimit_flags_carry_the_saved_limit(monkeypatch):
 
 
 def _proc(returncode):
-    return SimpleNamespace(returncode=returncode)
+    return SimpleNamespace(returncode = returncode)
 
 
 @_POSIX
@@ -138,17 +138,17 @@ _WRITE_150_MB = "head -c 157286400 /dev/zero > big.bin && echo SIZE=$(( $(wc -c 
 def workdir(monkeypatch, tmp_path):
     folder = tmp_path / "chat"
     folder.mkdir()
-    monkeypatch.setattr(tools, "_get_workdir", lambda session_id=None: str(folder))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(folder))
     return folder
 
 
 def _sandboxed_terminal(command):
     # Software mode: the rlimits are what is under test, on any POSIX host with or without an OS sandbox.
-    return tools._bash_exec(command, timeout=60, tool_execution_mode="software")
+    return tools._bash_exec(command, timeout = 60, tool_execution_mode = "software")
 
 
 @_POSIX
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal")
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX terminal")
 def test_a_real_terminal_call_past_the_limit_is_stopped_and_told_why(workdir):
     limit.set_file_size_limit_mb(100)
     result = _sandboxed_terminal(_WRITE_150_MB)
@@ -158,7 +158,7 @@ def test_a_real_terminal_call_past_the_limit_is_stopped_and_told_why(workdir):
 
 
 @_POSIX
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal")
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX terminal")
 def test_the_default_lets_the_same_call_finish(workdir):
     result = _sandboxed_terminal(_WRITE_150_MB)
     assert "SIZE=157286400" in result, result
@@ -166,7 +166,7 @@ def test_the_default_lets_the_same_call_finish(workdir):
 
 
 @_POSIX
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX terminal")
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX terminal")
 def test_ulimit_inside_the_sandbox_cannot_raise_it(workdir):
     limit.set_file_size_limit_mb(100)
     result = _sandboxed_terminal("ulimit -f unlimited; echo status=$?; ulimit -Hf; exit 1")
@@ -177,18 +177,18 @@ def test_ulimit_inside_the_sandbox_cannot_raise_it(workdir):
 
 
 @_POSIX
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX python")
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX python")
 def test_a_real_python_call_past_the_limit_is_told_why(workdir):
     limit.set_file_size_limit_mb(100)
     code = "open('big.bin', 'wb').write(b'0' * (150 * 1024 * 1024))\nprint('wrote')\n"
-    result = tools._python_exec(code, timeout=60, tool_execution_mode="software")
+    result = tools._python_exec(code, timeout = 60, tool_execution_mode = "software")
     assert "File too large" in result, result
     assert "Stopped: this call hit the 100 MB sandbox file size limit" in result
     assert "\nwrote\n" not in result
     assert (workdir / "big.bin").stat().st_size <= 100 * MB
 
 
-@pytest.mark.skipif(tools._resource is None, reason="RLIMIT_FSIZE is POSIX-only")
+@pytest.mark.skipif(tools._resource is None, reason = "RLIMIT_FSIZE is POSIX-only")
 def test_an_inherited_hard_limit_below_the_setting_is_what_applies(monkeypatch):
     real = tools._resource.getrlimit
     monkeypatch.setattr(
