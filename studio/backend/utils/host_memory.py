@@ -367,9 +367,7 @@ def host_ram_capacity_mib() -> Optional[int]:
 
 
 def windows_commit_mib() -> Optional[tuple[int, int]]:
-    """(commit available, commit limit) in MiB from GlobalMemoryStatusEx, or None off Windows or on any failure.
-
-    ullAvailPageFile / ullTotalPageFile are system commit (RAM plus page file), not the page file alone."""
+    """(commit available, commit limit) MiB; ullAvailPageFile / ullTotalPageFile are system commit, not the page file."""
     import sys
 
     if sys.platform != "win32":
@@ -399,7 +397,7 @@ def windows_commit_mib() -> Optional[tuple[int, int]]:
         ):
             return None
         avail, limit = int(status.ullAvailPageFile) // _MIB, int(status.ullTotalPageFile) // _MIB
-    except Exception:  # noqa: BLE001 - no reading means the caller keeps its existing answer
+    except Exception:  # noqa: BLE001
         return None
     if limit <= 0 or avail < 0:
         return None

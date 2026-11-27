@@ -1549,8 +1549,7 @@ _WIN_IGPU_COMMIT_CAP_ENV = "UNSLOTH_DIFFUSION_WIN_IGPU_COMMIT_CAP"
 def _windows_integrated_commit_credit_mib(
     free_mib: int, total_mib: int
 ) -> Optional[tuple[int, int]]:
-    """Integrated NVIDIA GPU on Windows (RTX Spark): mem_get_info counts the WDDM carve-out plus shared RAM, all
-    charged to system commit 1:1, so cap free / capacity by commit. No reserve here: the planner already takes it."""
+    """Windows iGPU (RTX Spark): mem_get_info counts carve-out plus shared RAM, charged to commit 1:1; no reserve here."""
     if sys.platform != "win32":
         return None
     if os.environ.get(_WIN_IGPU_COMMIT_CAP_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
@@ -1558,7 +1557,7 @@ def _windows_integrated_commit_credit_mib(
     try:
         from utils import host_memory
         reading = host_memory.windows_commit_mib()
-    except Exception:  # noqa: BLE001 - the default rule still answers
+    except Exception:  # noqa: BLE001
         return None
     if reading is None:
         return None

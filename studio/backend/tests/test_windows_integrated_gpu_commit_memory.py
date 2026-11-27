@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows integrated NVIDIA GPU (RTX Spark): system commit, not mem_get_info or OS available RAM, bounds the credit.
-
-Fixture readings are from a real RTX Spark (Windows ARM64)."""
+"""Windows RTX Spark iGPU: system commit bounds the credit. Fixtures are real RTX Spark readings."""
 
 from __future__ import annotations
 
@@ -51,7 +49,7 @@ def _install(
     total_b = CUDA_TOTAL_B,
     commit = "ok",
 ):
-    # Imported before sys.platform is faked, so the lazy import inside _torch_is_rocm is not re-run under win32.
+    # Import before faking sys.platform so _torch_is_rocm's lazy import is not re-run under win32.
     from core.inference import llama_cpp  # noqa: F401
 
     torch_stub = types.SimpleNamespace(
