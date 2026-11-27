@@ -8655,93 +8655,98 @@ def _unsloth_save_torchao_with_given_config(
     arguments["save_method"] = "merged_16bit"
     del arguments["torchao_config"]
     del arguments["untied_lm_head"]
+    torchao_save_directory = os.fspath(save_directory) + "-torchao"
 
-    if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
-        model.save_pretrained(save_directory)
-        tokenizer.save_pretrained(save_directory)
-    else:
-        unsloth_generic_save(**arguments)
+    # Stage beside the output, not in the caller's directory, and not in TMPDIR: a tmpfs /tmp cannot hold the 16-bit merge.
+    import tempfile
 
-    if untied_lm_head is not None:
-        _untie_merged_checkpoint(save_directory, *untied_lm_head)
-
-    _collect_garbage()
-
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        TorchAoConfig,
-        AutoModelForImageTextToText,
-        AutoProcessor,
+    staging_parent = (
+        os.getcwd() if push_to_hub else os.path.dirname(os.path.abspath(torchao_save_directory))
     )
-    from torchao import quantize_
-
-    if isinstance(torchao_config, TorchAoConfig):
-        quantization_config = torchao_config
-    else:
-        quantization_config = TorchAoConfig(quant_type = torchao_config)
-
-    is_vlm = _is_vlm(model)
-    auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
-    auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-
-    tokenizer = auto_processor.from_pretrained(save_directory)
-    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
-        tokenizer = patch_saving_functions(tokenizer)
-
-    # TorchAO must only use bfloat16 for loading; float16 fails.
-    if HAS_TORCH_DTYPE:
-        kwargs = {"torch_dtype": torch.bfloat16}
-    else:
-        kwargs = {"dtype": torch.bfloat16}
-
-    # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
-    model_restore = _offload_model_for_quantize_subprocess(model)
-    _collect_garbage(after = clean_gpu_cache)
-
-    # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
+    os.makedirs(staging_parent, exist_ok = True)
+    staging = tempfile.mkdtemp(prefix = ".unsloth-torchao-", dir = staging_parent)
     try:
-        with sync_load_when_quantizing(quantization_config, None):
-            quantized_model = auto_model.from_pretrained(
-                save_directory,
-                device_map = "auto",
-                quantization_config = quantization_config,
-                **kwargs,
-            )
-
-        torchao_save_directory = save_directory + "-torchao"
-
-        # TorchAO does not support safe_serialization right now; 0.14.0 seems broken.
-        safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
-        safe_serialization = False
-
-        if push_to_hub:
-            quantized_model.push_to_hub(
-                torchao_save_directory, safe_serialization = safe_serialization, token = token
-            )
-            tokenizer.push_to_hub(torchao_save_directory, token = token)
+        arguments["save_directory"] = staging
+        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
+            model.save_pretrained(staging)
+            tokenizer.save_pretrained(staging)
         else:
-            quantized_model.save_pretrained(
-                torchao_save_directory, safe_serialization = safe_serialization
-            )
-            tokenizer.save_pretrained(torchao_save_directory, token = token)
+            unsloth_generic_save(**arguments)
 
-    finally:
-        # del here, not at the end of the try: if save_pretrained raises, the copy would still be resident while the original is restored.
-        quantized_model = None
-        del quantized_model
-        # A failed save leaves a live traceback whose frames hold the copy, so dropping the local alone does not free its VRAM.
-        _exc = sys.exc_info()[1]
-        if _exc is not None:
-            traceback.clear_frames(_exc.__traceback__)
-        _collect_garbage(after = clean_gpu_cache)
-        _restore_model_after_quantize_subprocess(model, model_restore)
+        if untied_lm_head is not None:
+            _untie_merged_checkpoint(staging, *untied_lm_head)
 
-    if os.path.exists(save_directory):
+        _collect_garbage()
+
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            TorchAoConfig,
+            AutoModelForImageTextToText,
+            AutoProcessor,
+        )
+        from torchao import quantize_
+
+        if isinstance(torchao_config, TorchAoConfig):
+            quantization_config = torchao_config
+        else:
+            quantization_config = TorchAoConfig(quant_type = torchao_config)
+
+        is_vlm = _is_vlm(model)
+        auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
+        auto_processor = AutoProcessor if is_vlm else AutoTokenizer
+
+        tokenizer = auto_processor.from_pretrained(staging)
+        if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+            tokenizer = patch_saving_functions(tokenizer)
+
+        # TorchAO must only use bfloat16 for loading; float16 fails.
+        if HAS_TORCH_DTYPE:
+            kwargs = {"torch_dtype": torch.bfloat16}
+        else:
+            kwargs = {"dtype": torch.bfloat16}
+
+        # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
+        model_restore = _offload_model_for_quantize_subprocess(model)
+
+        # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
         try:
-            shutil.rmtree(save_directory)
-        except:
-            pass
+            _collect_garbage(after = clean_gpu_cache)
+            with sync_load_when_quantizing(quantization_config, None):
+                quantized_model = auto_model.from_pretrained(
+                    staging,
+                    device_map = "auto",
+                    quantization_config = quantization_config,
+                    **kwargs,
+                )
+
+            # TorchAO does not support safe_serialization right now; 0.14.0 seems broken.
+            safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+            safe_serialization = False
+
+            if push_to_hub:
+                quantized_model.push_to_hub(
+                    torchao_save_directory, safe_serialization = safe_serialization, token = token
+                )
+                tokenizer.push_to_hub(torchao_save_directory, token = token)
+            else:
+                quantized_model.save_pretrained(
+                    torchao_save_directory, safe_serialization = safe_serialization
+                )
+                tokenizer.save_pretrained(torchao_save_directory, token = token)
+
+        finally:
+            # del here, not at the end of the try: if save_pretrained raises, the copy would still be resident while the original is restored.
+            quantized_model = None
+            del quantized_model
+            # A failed save leaves a live traceback whose frames hold the copy, so dropping the local alone does not free its VRAM.
+            _exc = sys.exc_info()[1]
+            if _exc is not None:
+                traceback.clear_frames(_exc.__traceback__)
+            _collect_garbage(after = clean_gpu_cache)
+            _restore_model_after_quantize_subprocess(model, model_restore)
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
 
 
 def _scheme_is_available(scheme):
@@ -9032,6 +9037,22 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
         )
 
 
+def _report_lora_quant_survival(model, scheme, ignore_patterns):
+    """Log how much of a LoRA update the quantized export keeps; a diagnostic that never fails the export.
+    `ignore_patterns` are the modules the export leaves 16-bit."""
+    try:
+        from .utils.lora_quant_survival import report_lora_quant_survival
+        report_lora_quant_survival(
+            model,
+            scheme,
+            log = print,
+            warn = logger.warning,
+            skip = lambda name, module: _matches_ignore_pattern(name, module, ignore_patterns),
+        )
+    except Exception:
+        pass
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 def _unsloth_save_compressed_tensors(
     model,
@@ -9125,6 +9146,7 @@ def _unsloth_save_compressed_tensors(
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
+        _report_lora_quant_survival(model, scheme, _compressed_ignore_patterns(model))
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
@@ -9386,6 +9408,9 @@ def _unsloth_save_torchao(
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
+        if kind == "fp8":
+            # torchao quantizes Linear weights only and keeps lm_head 16-bit.
+            _report_lora_quant_survival(model, "torchao_fp8", ["lm_head"])
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(

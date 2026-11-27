@@ -40,6 +40,7 @@ import {
   normalizeEscapedInlineMath,
 } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { mathSafeRemendOptions } from "@/lib/math-safe-remend";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
 import {
@@ -597,6 +598,12 @@ const STREAMDOWN_COMPONENTS = {
   img: MarkdownMedia,
   table: MarkdownTable,
 };
+const DEFAULT_STREAMDOWN_REMEND = mathSafeRemendOptions();
+const FINISHED_TEXT_STREAMDOWN_REMEND =
+  mathSafeRemendOptions(FINISHED_TEXT_REMEND);
+const LITERAL_LINK_STREAMDOWN_REMEND =
+  mathSafeRemendOptions(LITERAL_LINK_REMEND);
+
 const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
@@ -1693,10 +1700,10 @@ function MarkdownTextRenderer({
             parseIncompleteMarkdown={!incrementalRender}
             remend={
               !cut
-                ? FINISHED_TEXT_REMEND
+                ? FINISHED_TEXT_STREAMDOWN_REMEND
                 : hasIncompleteLinkRepair(processedText)
-                  ? LITERAL_LINK_REMEND
-                  : undefined
+                  ? LITERAL_LINK_STREAMDOWN_REMEND
+                  : DEFAULT_STREAMDOWN_REMEND
             }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??

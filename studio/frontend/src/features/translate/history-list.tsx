@@ -39,13 +39,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowDownIcon } from "lucide-react";
 import { memo, useMemo, useState } from "react";
-import { CHAT_HANDOFF_ENTRIES, chatAboutTranslations } from "./chat-handoff";
+import { chatAboutTranslations } from "./chat-handoff";
 import { IconAction } from "./icon-action";
 import { findTranslateLanguage, translateLanguageLabel } from "./languages";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
   type TranslateHistoryEntry,
   exportHistory,
+  recentForChat,
   searchHistory,
 } from "./translate-history";
 import { useTranslateStore } from "./translate-store";
@@ -166,7 +167,7 @@ export const TranslateHistoryList = memo(function TranslateHistoryList() {
               <IconAction
                 icon={Message01Icon}
                 label={t("translate.history.chatRecent")}
-                onClick={() => chat(history.slice(0, CHAT_HANDOFF_ENTRIES))}
+                onClick={() => chat(recentForChat(history))}
               />
               <IconAction
                 icon={Download01Icon}

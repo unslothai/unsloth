@@ -19,7 +19,6 @@ import core.inference.video_gallery as gallery_module
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
-    VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
 )
 import routes.video as video_routes
@@ -745,7 +744,9 @@ def test_generate_value_error_reports_reason(client, monkeypatch):
     assert "not supported" in progress["error"]
 
 
-def test_generate_concurrent_second_returns_409(client, monkeypatch):
+def test_generate_concurrent_second_is_queued_not_refused(client, monkeypatch):
+    import asyncio
+
     backend = video_module.get_video_backend()
     backend.loaded = True
     release = threading.Event()
@@ -756,19 +757,31 @@ def test_generate_concurrent_second_returns_409(client, monkeypatch):
         return real_generate(backend, **kwargs)
 
     monkeypatch.setattr(backend, "generate", _slow)
+    monkeypatch.setattr(video_routes, "_ensure_video_drainer", lambda: None)
     first = client.post("/api/inference/video/generate", json = {"prompt": "a", "seed": 1})
     assert first.status_code == 200 and first.json()["status"] == "started"
+    assert first.json()["video_id"]
 
-    second = client.post("/api/inference/video/generate", json = {"prompt": "b"})
-    assert second.status_code == 409
-    assert second.json()["detail"] == VIDEO_GENERATION_BUSY_MSG
+    second = client.post("/api/inference/video/generate", json = {"prompt": "b", "seed": 3})
+    assert second.status_code == 200, second.json()
+    queued = second.json()
+    assert queued["status"] == "queued" and queued["queue_position"] == 1
+    assert queued["video_id"] and queued["video_id"] != first.json()["video_id"]
+    listed = client.get("/api/inference/video/queue").json()["jobs"]
+    assert [(j["video_id"], j["status"], j["source"]) for j in listed] == [
+        (queued["video_id"], "queued", "page")
+    ]
 
     running = client.get("/api/inference/video/generate-progress").json()
-    assert running["active"] is True
+    assert running["active"] is True and running["video_id"] == first.json()["video_id"]
 
     release.set()
     progress = _wait_terminal(client)
     assert progress["phase"] == "completed" and progress["video"]["seed"] == 1
+    asyncio.run(video_routes._drain_video_queue_once())
+    assert client.get("/api/inference/video/queue").json()["jobs"] == []
+    progress = _wait_terminal(client)
+    assert progress["video"]["seed"] == 3 and progress["video"]["id"] == queued["video_id"]
     assert _generate_and_wait(client, {"prompt": "c", "seed": 2})["seed"] == 2
 
 

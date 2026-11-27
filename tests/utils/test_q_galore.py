@@ -239,6 +239,79 @@ def test_resume_from_weights_only_checkpoint_matches_uninterrupted(quant):
     assert projector.update_proj_gap == optimizer.state[weight]["projector"].update_proj_gap == 4
 
 
+def _projected_optimizer(weight, quant, weight_decay):
+    group = {"params": [weight], "rank": 4, "update_proj_gap": 2, "quant": quant}
+    group.update(queue_size = 2, cos_threshold = 0.0, weight_decay = weight_decay)
+    return _adamw_mod.QGaLoreAdamW8bit([group], lr = 1e-2)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("quant", [True, False])
+def test_projected_step_keeps_the_weight_storage_instead_of_a_copy(quant):
+    """The low-rank swap holds the original weight by reference, not a clone."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    weight = nn.Parameter(torch.randn(128, 64, device = device))
+    optimizer = _projected_optimizer(weight, quant, weight_decay = 0.1)
+    seen = []
+    update_step = optimizer.update_step
+
+    def spy(group, p, gindex, pindex):
+        seen.append((p._saved_data.data_ptr(), p.data.data_ptr()))
+        return update_step(group, p, gindex, pindex)
+
+    optimizer.update_step = spy
+    for i in range(3):
+        torch.manual_seed(i)
+        weight.grad = torch.randn(weight.shape, device = device)
+        before = weight.data.data_ptr()
+        optimizer.step()
+        saved_ptr, zeros_ptr = seen[-1]
+        assert saved_ptr == before != zeros_ptr
+        assert weight.data.data_ptr() == before
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_failed_projected_step_restores_the_untouched_weight_then_retries_exactly():
+    """An OOM in the 8-bit update (auto_find_batch_size) leaves state intact; the retry matches bitwise."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    init = torch.randn(128, 64, device = device)
+    grads = [torch.randn(128, 64, device = device) for _ in range(3)]
+
+    def run(fail_at):
+        weight = nn.Parameter(init.clone())
+        optimizer = _projected_optimizer(weight, False, weight_decay = 0.1)
+        update_step = optimizer.update_step
+        calls = {"n": 0}
+
+        def flaky(group, p, gindex, pindex):
+            calls["n"] += 1
+            if calls["n"] == fail_at:
+                raise torch.OutOfMemoryError("out of memory (simulated)")
+            return update_step(group, p, gindex, pindex)
+
+        optimizer.update_step = flaky
+        for i, grad in enumerate(grads):
+            torch.manual_seed(i)
+            weight.grad = grad.clone()
+            before = weight.detach().clone()
+            try:
+                optimizer.step()
+            except torch.OutOfMemoryError:
+                assert torch.equal(weight, before)
+                assert torch.equal(weight.grad, grad)
+                assert optimizer.param_groups[0]["weight_decay"] == 0.1
+                assert not hasattr(weight, "_saved_data")
+                torch.manual_seed(i)
+                optimizer.step()
+        return weight.detach()
+
+    assert torch.equal(run(fail_at = 2), run(fail_at = 0))
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================

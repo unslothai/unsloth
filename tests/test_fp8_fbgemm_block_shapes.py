@@ -17,6 +17,7 @@ pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = 
 def skip_without_fbgemm():
     # unsloth's probe, not sm_90: new arches enable. Local import keeps collection off unsloth.
     from unsloth.kernels import fp8
+    fp8.resolve_fp8_block_quant_linear()  # the probe is lazy
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
         pytest.skip("needs fbgemm f8f8bf16_blockwise")
 

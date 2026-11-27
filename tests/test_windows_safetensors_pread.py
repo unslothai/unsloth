@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import types
 import warnings
 from pathlib import Path
 
@@ -43,6 +44,8 @@ def _restore(monkeypatch):
     original = modeling_utils.safe_open
     original_layers = getattr(modeling_layers, "safe_open", None)
     monkeypatch.delenv(ws.PREAD_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_UMA", raising = False)
+    monkeypatch.setattr(ws, "_UMA", None)
     yield
     modeling_utils.safe_open = original
     if original_layers is not None:
@@ -62,21 +65,29 @@ def _spy(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "platform, env, version, installed",
+    "platform, machine, env, version, installed",
     [
-        ("win32", None, "5.5.0", True),
-        ("win32", None, "5.16.0", True),
-        ("win32", None, "5.17.0", False),
-        ("win32", None, "4.57.6", False),
-        ("win32", "0", "5.5.0", False),
-        ("linux", None, "5.5.0", False),
-        ("darwin", None, "5.5.0", False),
-        ("linux", "1", "5.17.0", True),
+        ("win32", "AMD64", None, "5.5.0", True),
+        ("win32", "AMD64", None, "5.16.0", True),
+        ("win32", "AMD64", None, "5.17.0", False),
+        ("win32", "AMD64", None, "4.57.6", False),
+        ("win32", "AMD64", "0", "5.5.0", False),
+        ("linux", "x86_64", None, "5.5.0", False),
+        ("darwin", "x86_64", None, "5.5.0", False),
+        ("linux", "x86_64", "1", "5.17.0", True),
+        # ARM hosts may be unified memory (GB10, Jetson): wrapped, decided per open
+        ("linux", "aarch64", None, "4.57.6", True),
+        ("linux", "aarch64", None, "5.17.0", True),
+        ("win32", "ARM64", None, "5.17.0", True),
+        ("linux", "aarch64", "0", "5.5.0", False),
+        # Apple Silicon has no CUDA: nothing to decide per open
+        ("darwin", "arm64", None, "5.5.0", False),
     ],
 )
 @requires_backend
-def test_gating(monkeypatch, platform, env, version, installed):
+def test_gating(monkeypatch, platform, machine, env, version, installed):
     monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(ws.platform, "machine", lambda: machine)
     monkeypatch.setattr(transformers, "__version__", version)
     if env is not None:
         monkeypatch.setenv(ws.PREAD_ENV, env)
@@ -259,3 +270,141 @@ def test_the_mtp_loaders_own_reference_is_wrapped(monkeypatch):
     modeling_layers.safe_open("mtp.safetensors", framework = "pt", device = "cpu")
     assert received[0].get("backend") == "pread"
     assert ws.patch_windows_safetensors_pread() and modeling_layers.safe_open.__wrapped__ is real
+
+
+def _recording_real(monkeypatch):
+    received = []
+
+    def real(
+        filename,
+        framework = None,
+        **kw,
+    ):
+        received.append(kw)
+
+    monkeypatch.setattr(modeling_utils, "safe_open", real)
+    return received
+
+
+@requires_backend
+@pytest.mark.parametrize("uma, expected", [("1", "pread"), ("0", None)])
+def test_unified_memory_is_decided_per_open(monkeypatch, uma, expected):
+    received = _recording_real(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ws.platform, "machine", lambda: "aarch64")
+    assert ws.patch_windows_safetensors_pread()
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", uma)
+    modeling_utils.safe_open("shard.safetensors", framework = "pt", device = "cpu")
+    modeling_utils.safe_open("shard.safetensors", framework = "pt", device = "cpu", backend = "mmap")
+    modeling_utils.safe_open(
+        "shard.safetensors", framework = "pt", device = "cpu", **{ws.KEEP_MMAP_KWARG: True}
+    )
+    assert [r.get("backend") for r in received] == [
+        expected,
+        expected if uma == "1" else "mmap",
+        None,
+    ]
+
+
+def test_unified_memory_check_never_initialises_cuda(monkeypatch):
+    if torch.cuda.is_initialized():
+        pytest.skip("CUDA already initialised in this process")
+    assert ws._unified_memory_now() is False
+    assert not torch.cuda.is_initialized()
+    assert ws._UMA is None  # not cached: re-checked once a context exists
+
+
+@pytest.mark.parametrize(
+    "platform, env, uma, supported, device, expected",
+    [
+        ("linux", None, "0", True, "cpu", {}),
+        ("linux", None, "1", True, "cpu", {"backend": "pread"}),
+        ("linux", None, "1", False, "cpu", {}),
+        ("linux", None, "1", True, "cuda:0", {}),
+        ("linux", "0", "1", True, "cpu", {}),
+        ("linux", "1", "0", True, "cpu", {"backend": "pread"}),
+        # discrete Windows keeps mmap for Unsloth's own loaders (pread is slower there)
+        ("win32", None, "0", True, "cpu", {}),
+        ("win32", None, "1", True, "cpu", {"backend": "pread"}),
+        ("win32", "0", "1", True, "cpu", {}),
+    ],
+)
+def test_pread_backend_kwargs(monkeypatch, platform, env, uma, supported, device, expected):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", uma)
+    if env is not None:
+        monkeypatch.setenv(ws.PREAD_ENV, env)
+    monkeypatch.setattr(ws, "_supports_backend", lambda: supported)
+    assert ws.pread_backend_kwargs(device) == expected
+
+
+# safetensors < 0.8.0's extension class, as far as detection can see
+_OldSafeOpen = types.SimpleNamespace(__text_signature__ = "(filename, framework, device=...)")
+
+
+def test_safetensors_without_backend_keeps_mmap(monkeypatch):
+    """safetensors < 0.8.0: no backend keyword, so nothing is wrapped and the helper adds nothing."""
+    import safetensors._safetensors_rust as rust
+
+    monkeypatch.setattr(rust, "safe_open", _OldSafeOpen)
+    ws._supports_backend.cache_clear()
+    try:
+        assert ws._supports_backend() is False
+        monkeypatch.setenv(ws.PREAD_ENV, "1")
+        assert ws.pread_backend_kwargs() == {}
+        before = modeling_utils.safe_open
+        assert ws.patch_windows_safetensors_pread() is False
+        assert modeling_utils.safe_open is before
+    finally:
+        ws._supports_backend.cache_clear()
+
+
+def test_backend_detection_sees_through_a_wrapped_safe_open(monkeypatch, tmp_path):
+    """Another library wrapping safetensors.safe_open as (*args, **kwargs) must not hide the keyword."""
+    import safetensors
+    from safetensors.torch import save_file
+
+    real = safetensors.safe_open
+    monkeypatch.setattr(safetensors, "safe_open", lambda *a, **k: real(*a, **k))
+    ws._supports_backend.cache_clear()
+    path = str(tmp_path / "x.safetensors")
+    save_file({"w": torch.arange(4, dtype = torch.float32)}, path)
+    try:
+        real(path, framework = "pt", device = "cpu", backend = "pread")
+        accepts = True
+    except TypeError:
+        accepts = False
+    try:
+        assert ws._supports_backend() is accepts
+    finally:
+        ws._supports_backend.cache_clear()
+
+
+@requires_backend
+def test_env_off_after_install_stops_pread(monkeypatch):
+    received = _recording_real(monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ws.platform, "machine", lambda: "aarch64")
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
+    assert ws.patch_windows_safetensors_pread()
+    monkeypatch.setenv(ws.PREAD_ENV, "0")
+    modeling_utils.safe_open("shard.safetensors", framework = "pt", device = "cpu")
+    assert received[0].get("backend") is None
+
+
+@requires_backend
+def test_unified_memory_from_pretrained_reads_with_pread_and_weights_match(monkeypatch, tmp_path):
+    model_cls = _save_llama(tmp_path, torch.bfloat16)
+    expected = model_cls.from_pretrained(tmp_path, dtype = torch.bfloat16).state_dict()
+    seen = _spy(monkeypatch)
+    monkeypatch.setattr(
+        sys, "platform", "linux"
+    )  # an ARM Linux box (GB10), also on macOS / Windows runners
+    monkeypatch.setattr(ws.platform, "machine", lambda: "aarch64")
+    assert ws.patch_windows_safetensors_pread()
+    monkeypatch.setenv("UNSLOTH_FORCE_UMA", "1")
+    loaded = model_cls.from_pretrained(tmp_path, dtype = torch.bfloat16)
+    assert seen and set(seen) == {"pread"}
+    for name, tensor in loaded.state_dict().items():
+        assert tensor.dtype == torch.bfloat16
+        assert torch.equal(tensor.view(torch.uint8), expected[name].view(torch.uint8)), name

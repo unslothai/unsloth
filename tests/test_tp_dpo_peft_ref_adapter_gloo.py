@@ -257,8 +257,8 @@ def test_tp_dpo_ref_copy_guard_matches_every_trl_1_x_spelling(source):
 
     from unsloth.models import rl
 
-    guarded = rl._guard_dpo_ref_adapter_for_tp(textwrap.dedent(source))
-    assert guarded.count("_unsloth_tp_skip_dpo_ref_adapter(model)") == 1
+    guarded = rl._guard_ref_adapter_for_tp(textwrap.dedent(source))
+    assert guarded.count("_unsloth_tp_skip_ref_adapter(model, 'DPOTrainer')") == 1
     added = []
     model = SimpleNamespace(
         peft_config = {"default": object()}, add_adapter = lambda *a: added.append(a[0])
@@ -268,7 +268,7 @@ def test_tp_dpo_ref_copy_guard_matches_every_trl_1_x_spelling(source):
         scope = {
             "is_peft_available": lambda: True,
             "is_peft_model": lambda m: True,
-            "_unsloth_tp_skip_dpo_ref_adapter": lambda m, skip = skip: skip,
+            "_unsloth_tp_skip_ref_adapter": lambda m, t, skip = skip: skip,
         }
         exec(guarded, scope)
         model.named_parameters = lambda: []

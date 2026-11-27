@@ -357,6 +357,25 @@ def test_batch_size_seen_by_the_model(monkeypatch):
     assert memo._STATE["tokens"] == 300  # evaluation batches do not count
 
 
+def test_waits_while_a_checkpoint_skip_plan_is_pending(monkeypatch):
+    from unsloth.kernels import dequant_cache as dc
+
+    monkeypatch.delenv("UNSLOTH_GC_KEEP_LAYERS", raising = False)
+    pending = [True]
+    monkeypatch.setattr(dc, "_checkpoint_skip_pending", lambda: pending[0])
+    model = _model("int8", monkeypatch, arm = False)
+    x = torch.randn(4, DIM)
+    _run(model, x)
+    _arm()
+    _run(model, x)
+    assert _memo_of(model).out is None
+    pending[0] = False
+    _arm()
+    _run(model, x)
+    assert _memo_of(model).out is not None
+    memo._STATE.pop("gc_skip_waits", None)
+
+
 def test_checkpoint_skip_planner_arms_one_step_later(monkeypatch):
     # UNSLOTH_GC_KEEP_LAYERS applies its plan from the second step: the cache waits for a step with it.
     monkeypatch.setenv("UNSLOTH_GC_KEEP_LAYERS", "auto")

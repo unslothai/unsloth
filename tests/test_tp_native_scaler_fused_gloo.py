@@ -18,6 +18,8 @@ import pytest  # noqa: E402
 import torch  # noqa: E402
 from torch.distributed.tensor import Replicate, Shard  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_tp_native_scaler_fused_gloo")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 

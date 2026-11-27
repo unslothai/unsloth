@@ -199,11 +199,23 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(1 for holder in holders if holder != account_id)
     # sys.modules, not an import: no job is in flight before (or while) its module loads.
     video = sys.modules.get("core.inference.video")
-    in_flight = getattr(video, "generation_account_in_flight", None) if video is not None else None
-    reserved = in_flight() if callable(in_flight) else None
-    if reserved is not None and reserved != account_id:
-        total += 1
+    total += sum(1 for holder in _video_holders(video) if holder != account_id)
     return total
+
+
+def _video_holders(video: object) -> set:
+    """Accounts with a clip in the running video job: its own, and those riding its shared denoise."""
+    holders: set = set()
+    if video is None:
+        return holders
+    single = getattr(video, "generation_account_in_flight", None)
+    reserved = single() if callable(single) else None
+    if reserved is not None:
+        holders.add(reserved)
+    several = getattr(video, "generation_accounts_in_flight", None)
+    if callable(several):
+        holders.update(holder for holder in several() if holder is not None)
+    return holders
 
 
 # A failed load leaves the previous model resident, still owned by its account.

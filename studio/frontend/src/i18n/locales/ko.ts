@@ -2406,6 +2406,10 @@ export const ko = {
         confirmDescriptionChatOnly:
           "서버를 중지하고 설치 프로그램을 다시 실행합니다. 이 설치는 채팅 전용이므로 설치 프로그램이 PyTorch를 포함한 전체 설치로도 업그레이드합니다(총 수 GB). 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
         confirmAction: "지금 복구",
+        recommendedTorch:
+          "복구 권장: 이 설치의 PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었습니다.",
+        recommendedDriver:
+          "PyTorch {torch}는 RTX 50 시리즈 GPU가 지원되는 관리형 {managedTorch}보다 오래되었지만, 이 GPU 드라이버는 CUDA 13을 지원하지 않습니다. 먼저 GPU 드라이버를 업데이트한 다음 설치를 복구하세요.",
       },
       resetPreferences: {
         sectionTitle: "위험 구역",
@@ -4116,8 +4120,8 @@ export const ko = {
       summary: {
         single: "GPU 1개로 학습",
         layerSplit: "모델을 레이어 단위로 GPU {count}개에 분할",
-        ddp: "모델이 GPU 1개에 들어갑니다: GPU {count}개에서 데이터 병렬",
-        fsdp2: "모델이 GPU 1개에 비해 너무 큽니다: GPU {count}개에 샤딩",
+        ddp: "각 GPU가 전체 복사본을 학습합니다: GPU {count}개에서 데이터 병렬",
+        fsdp2: "가중치와 옵티마이저 상태를 GPU {count}개에 샤딩",
         tp: "각 레이어를 GPU {count}개에 분할",
         pp: "레이어를 GPU마다 하나씩 {count}단계 파이프라인으로 실행",
         cp: "각 시퀀스를 GPU {count}개에 분할",
@@ -4128,7 +4132,7 @@ export const ko = {
         noGpu: "GPU를 하나 이상 선택하세요.",
         singleNeedsOne: "단일 GPU는 GPU 하나만 사용합니다. 나머지는 선택 해제하세요.",
         needsTwo: "이 모드에는 GPU가 2개 이상 필요합니다.",
-        customSpec: "구성을 입력하세요. 예: dp=2,tp=2",
+        customSpec: "구성을 입력하세요. 예: {example}",
       },
     },
     preview: {
@@ -5057,6 +5061,7 @@ export const ko = {
       showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
     },
     history: {
+      notSaved: "기록에 저장되지 않았습니다: 브라우저 저장 공간이 가득 찼습니다.",
       title: "기록",
       search: "기록 검색",
       empty: "번역이 여기에 표시됩니다.",
@@ -6022,6 +6027,12 @@ export const ko = {
     maximize: "창 최대화",
     restore: "창 복원",
     close: "창 닫기",
+    mediaCodecs: {
+      title: "생성된 동영상이 재생되지 않을 수 있습니다",
+      // {command}: an apt command line, never translated.
+      description: "이 시스템에 GStreamer 동영상 디코더가 없습니다. 다음 명령으로 설치하세요: {command}",
+      copy: "명령 복사",
+    },
   },
   runtimeUpdate: {
     installAudio: "오디오 런타임 설치",
