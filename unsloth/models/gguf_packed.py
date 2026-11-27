@@ -756,6 +756,7 @@ def gguf_packed_load(gguf_path = None):
     quantizer_cls = quantizer_module.GgufHfQuantizer
     saved_read_header = quantizer_cls.read_header
     saved_after = quantizer_cls._process_model_after_weight_loading
+    saved_update_dtype = quantizer_cls.__dict__.get("update_dtype")
     saved_get_kernel = quantizer_module.get_gguf_kernel
     saved_replace = quantizer_module.replace_with_gguf_modules
     saved_kernel_global = kernels_module._gguf_kernel
@@ -780,8 +781,21 @@ def gguf_packed_load(gguf_path = None):
             convert_gguf_packed_model(model, self.dtype)
             return model
 
+        def update_dtype(self, dtype):
+            # transformers advises float32 for a packed load because its own kernels compute in float32; Unsloth's
+            # dequantize into the compute dtype, so that advice does not apply here.
+            config = self.quantization_config
+            dequantize = config.dequantize
+            config.dequantize = True
+            try:
+                return saved_update_dtype(self, dtype)
+            finally:
+                config.dequantize = dequantize
+
         quantizer_cls.read_header = read_header
         quantizer_cls._process_model_after_weight_loading = after_weight_loading
+        if saved_update_dtype is not None:
+            quantizer_cls.update_dtype = update_dtype
         quantizer_module.get_gguf_kernel = _UnslothGgufKernel
         quantizer_module.replace_with_gguf_modules = _replace_with_packed_modules_factory(
             saved_replace
@@ -800,6 +814,8 @@ def gguf_packed_load(gguf_path = None):
         mapping_module.GGUF_ARCHS.update(saved_archs)
         quantizer_cls.read_header = saved_read_header
         quantizer_cls._process_model_after_weight_loading = saved_after
+        if saved_update_dtype is not None:
+            quantizer_cls.update_dtype = saved_update_dtype
         quantizer_module.get_gguf_kernel = saved_get_kernel
         quantizer_module.replace_with_gguf_modules = saved_replace
         kernels_module._gguf_kernel = saved_kernel_global

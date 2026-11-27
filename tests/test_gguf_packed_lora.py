@@ -3,6 +3,7 @@
 """`gguf_packed = True`: quantized Linears keep their GGUF blocks, LoRA trains on top, and everything matches the
 same GGUF dequantized to dense (transformers' own load) bit for bit."""
 
+import logging
 import os
 
 import numpy as np
@@ -362,6 +363,37 @@ def test_dense_base_for_merges_round_trips(tmp_path):
         assert resolver is None
 
 
+def test_bf16_packed_load_has_no_float32_advice(tmp_path):
+    # transformers advises float32 for its own packed kernels; Unsloth's dequantize into the compute dtype.
+    _new_gguf_path()
+    from transformers import AutoModelForCausalLM
+    from transformers.utils import logging as hf_logging
+
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    messages = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+
+    handler = _Collect()
+    hf_logger = hf_logging.get_logger("transformers.quantizers.quantizer_gguf")
+    hf_logger.addHandler(handler)
+    try:
+        with gp.gguf_packed_load():
+            packed = AutoModelForCausalLM.from_pretrained(
+                tmp_path,
+                gguf_file = "tiny.gguf",
+                dtype = torch.bfloat16,
+                quantization_config = gp.gguf_packed_quantization_config(),
+            )
+    finally:
+        hf_logger.removeHandler(handler)
+    assert gp.is_gguf_packed_model(packed)
+    assert not [m for m in messages if "fastest in float32" in m], messages
+    assert packed.model.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
+
+
 def test_unknown_architecture_is_named(tmp_path):
     _new_gguf_path()
     from transformers import AutoModelForCausalLM
@@ -395,9 +427,20 @@ def test_load_context_restores_transformers(tmp_path):
     import transformers.integrations.gguf.gguf_conversion_mapping as mapping
     import transformers.quantizers.quantizer_gguf as quantizer
 
-    before = (dict(dequant.GGML_BLOCK), dict(mapping.GGUF_ARCHS), quantizer.get_gguf_kernel)
+    before = (
+        dict(dequant.GGML_BLOCK),
+        dict(mapping.GGUF_ARCHS),
+        quantizer.get_gguf_kernel,
+        dict(quantizer.GgufHfQuantizer.__dict__),
+    )
     with pytest.raises(RuntimeError, match = "boom"):
         with gp.gguf_packed_load():
             assert "llama" in mapping.GGUF_ARCHS
             raise RuntimeError("boom")
-    assert (dict(dequant.GGML_BLOCK), dict(mapping.GGUF_ARCHS), quantizer.get_gguf_kernel) == before
+    after = (
+        dict(dequant.GGML_BLOCK),
+        dict(mapping.GGUF_ARCHS),
+        quantizer.get_gguf_kernel,
+        dict(quantizer.GgufHfQuantizer.__dict__),
+    )
+    assert after == before
