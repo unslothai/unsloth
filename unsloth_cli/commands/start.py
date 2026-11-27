@@ -7799,7 +7799,11 @@ def _vscode_models_text(
 
 
 def _vscode_capabilities(
-    base: str, key: str, entry: dict, *, allow_diffusion_tools: bool = False
+    base: str,
+    key: str,
+    entry: dict,
+    *,
+    allow_diffusion_tools: bool = False,
 ) -> tuple:
     # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
     try:
