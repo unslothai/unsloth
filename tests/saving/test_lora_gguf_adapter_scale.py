@@ -203,8 +203,9 @@ def test_reloaded_residual_adapter_exports_on_the_original_base(tmp_path, monkey
     adapter = str(tmp_path / "adapter")
     model.save_pretrained(adapter)
     with snapshot_residual_lora_load(PeftConfig.from_pretrained(adapter)):
+        # The base is on CPU; left to infer, PEFT reads the spoofed CUDA probe and loads the adapter onto cuda.
         reloaded = PeftModel.from_pretrained(
-            LlamaForCausalLM.from_pretrained(str(tmp_path / "base")), adapter
+            LlamaForCausalLM.from_pretrained(str(tmp_path / "base")), adapter, torch_device = "cpu"
         )
     _, converter_input = _export(reloaded, tmp_path, monkeypatch)
     config = _config(converter_input)

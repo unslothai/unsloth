@@ -254,7 +254,9 @@ def run_case(
         base16 = AutoModelForCausalLM.from_pretrained(
             model_name, dtype = torch.bfloat16, device_map = "cuda"
         )
-        base16 = PeftModel.from_pretrained(base16, os.path.join(out_dir, f"lora_{mode}_{api}"))
+        base16 = PeftModel.from_pretrained(
+            base16, os.path.join(out_dir, f"lora_{mode}_{api}"), torch_device = "cuda"
+        )
         with torch.no_grad():
             ref16 = base16(input_ids = ids).logits.float()
         report["merged_vs_16bit_base_rel"] = float((got - ref16).norm() / ref16.norm())
