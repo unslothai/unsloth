@@ -6627,8 +6627,10 @@ def _lora_gguf_converter_input(
     ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
     gguf_alpha = alpha or 1.0  # llama.cpp reads alpha = 0 as "no scaling"
     # Saved factors run at the live scale (set_scale / scale_layer move it); converted ones carry it already.
+    # LoRA-GA saves in the converted form on its own (_unsloth_residual_save).
+    converted_save = rewritten_base or getattr(model, "_unsloth_residual_save", False)
     converted = (
-        {n for _, _, n in _residual_lora_rows(model, {"default"})} if rewritten_base else set()
+        {n for _, _, n in _residual_lora_rows(model, {"default"})} if converted_save else set()
     )
     live = {
         n: m.scaling["default"]

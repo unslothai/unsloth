@@ -54,12 +54,12 @@ def _trained_model(
     model = get_peft_model(base, lora)
     if snapshot:
         snapshot_residual_lora_init(model, lora.init_lora_weights if snapshot is True else snapshot)
-    if snapshot == "loftq":
-        # What LoftQ leaves behind: a base Q with W ~= Q + B0 @ A0, unscaled, so s0 = 1 while s = alpha / r.
+    if snapshot in ("loftq", "lora_ga"):
+        # The base these inits leave behind: W - s0 * B0 @ A0 (LoftQ fits B0 @ A0 unscaled, so its s0 is 1).
         with torch.no_grad():
             for module in model.modules():
-                for A0, B0, _ in getattr(module, "_unsloth_initial_lora", {}).values():
-                    module.get_base_layer().weight.sub_(B0 @ A0)
+                for A0, B0, scaling0 in getattr(module, "_unsloth_initial_lora", {}).values():
+                    module.get_base_layer().weight.sub_(scaling0 * (B0 @ A0))
     model.peft_config["default"].base_model_name_or_path = base_dir
     if set_scale is not None:
         # Rescaled after init: the live scale no longer matches the configured one or the initial one.
@@ -207,6 +207,23 @@ def test_reloaded_residual_adapter_exports_on_the_original_base(tmp_path, monkey
             LlamaForCausalLM.from_pretrained(str(tmp_path / "base")), adapter
         )
     _, converter_input = _export(reloaded, tmp_path, monkeypatch)
+    config = _config(converter_input)
+    weights = load_file(f"{converter_input}/adapter_model.safetensors")
+    for target in TARGETS:
+        key = f"model.layers.0.self_attn.{target}"
+        A = weights[f"base_model.model.{key}.lora_A.weight"]
+        B = weights[f"base_model.model.{key}.lora_B.weight"]
+        applied = original[f"{key}.weight"] + config["lora_alpha"] / A.shape[0] * (B @ A)
+        torch.testing.assert_close(applied, trained[f"{key}.weight"], atol = 1e-5, rtol = 1e-4)
+
+
+def test_lora_ga_converted_save_keeps_its_scale(tmp_path, monkeypatch):
+    # LoRA-GA saves relative to the original base on its own; a later set_scale is already in those factors.
+    model, original = _trained_model(
+        tmp_path, init_lora_weights = False, snapshot = "lora_ga", set_scale = 2.0
+    )
+    trained = copy.deepcopy(model).merge_and_unload().state_dict()
+    _, converter_input = _export(model, tmp_path, monkeypatch)
     config = _config(converter_input)
     weights = load_file(f"{converter_input}/adapter_model.safetensors")
     for target in TARGETS:
