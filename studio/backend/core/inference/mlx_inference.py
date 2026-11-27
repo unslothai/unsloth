@@ -5039,7 +5039,7 @@ def _vlm_generate_kwargs(inputs):
 
 @contextmanager
 def _spliced_columns(model):
-    """Yields ``[n]``: columns the widest prompt embedding filled past its ids (FastVLM splicing)."""
+    """Yields ``[n]``: columns the widest prompt embedding filled past its ids (FastVLM)."""
     spliced, widest = [0], [-1]
     embed = getattr(model, "get_input_embeddings", None)
     if embed is None:
