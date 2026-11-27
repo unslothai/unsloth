@@ -82,6 +82,28 @@ def test_packed_linear_forward_backward_match_dense(name):
     assert not module.weight_packed.requires_grad and module.weight_packed.grad is None
 
 
+def test_kernel_shim_defaults_to_the_reference(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("unsloth_zoo.gguf_kernels")
+    fake.dequantize_gguf = lambda packed, t, shape, dtype: ref.dequantize_gguf(
+        packed, t, shape, dtype
+    )
+    fake.gguf_linear = lambda x, packed, t, shape, bias = None: gp._reference_linear(
+        x, packed, t, shape, bias
+    )
+    fake.gguf_linear_backward_input = (
+        lambda g, packed, t, shape: gp._reference_linear_backward_input(g, packed, t, shape)
+    )
+    fake.SUPPORTED_TYPES = frozenset({ref.GGML_TYPE_IDS["Q8_0"]})
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.gguf_kernels", fake)
+    monkeypatch.delenv("UNSLOTH_GGUF_KERNELS", raising = False)
+    assert gp._resolve_ops().name == "reference"
+    monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", "zoo")
+    assert gp._resolve_ops().name == "unsloth_zoo.gguf_kernels"
+
+
 def test_input_permutation_is_the_dense_column_reorder():
     torch.manual_seed(0)
     permutation = torch.randperm(256)

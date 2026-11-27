@@ -54,7 +54,7 @@ _REQUIRED_ZOO_OPS = ("dequantize_gguf", "gguf_linear", "gguf_linear_backward_inp
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Kernel shim: unsloth_zoo.gguf_kernels when it ships the ops, else the pure torch reference.
+# Kernel shim: the pure torch reference, or unsloth_zoo.gguf_kernels when asked for and it ships the ops.
 # ----------------------------------------------------------------------------------------------------------
 
 
@@ -80,7 +80,10 @@ _OPS = []
 
 def gguf_ops():
     """Namespace of (dequantize, linear, linear_backward_input, supports, name), resolved once. A plain global
-    read, so compiled code traces straight into the ops. `UNSLOTH_GGUF_KERNELS=reference` forces the reference."""
+    read, so compiled code traces straight into the ops. Default: the pure torch reference, which Inductor fuses
+    into the compiled block; `UNSLOTH_GGUF_KERNELS=zoo` routes to unsloth_zoo.gguf_kernels (on a 50-step Qwen3.5-4B
+    Q4_K_M LoRA run on an A100 the reference trained at 1.2x the dequantized model's step time, the zoo kernels at
+    2.1x)."""
     if not _OPS:
         _OPS.append(_resolve_ops())
     return _OPS[0]
@@ -94,7 +97,7 @@ def _resolve_ops():
         linear_backward_input = _reference_linear_backward_input,
         supports = _ref.is_supported,
     )
-    if os.environ.get("UNSLOTH_GGUF_KERNELS", "auto").strip().lower() == "reference":
+    if os.environ.get("UNSLOTH_GGUF_KERNELS", "reference").strip().lower() != "zoo":
         return reference
     try:
         import unsloth_zoo.gguf_kernels as zoo_kernels
