@@ -1619,9 +1619,7 @@ if _IS_MLX:
         def _unsloth_mlx_coerce_args(self, args, overrides):
             return _coerce_mlx_training_args(args, overrides)
 
-        def _unsloth_mlx_apply_defaults(
-            self, args, model, max_seq_length_explicit, train_dataset
-        ):
+        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit, train_dataset):
             return _apply_unsloth_trainer_mlx_defaults(
                 args,
                 model = model,
@@ -2057,9 +2055,7 @@ if _IS_MLX:
                 overrides = {**overrides, "max_grad_leaf_norm": 1.0}
             return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
 
-        def _unsloth_mlx_apply_defaults(
-            self, args, model, max_seq_length_explicit, train_dataset
-        ):
+        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit, train_dataset):
             # args may be the caller's config, which another trainer can reuse.
             args = _copy.copy(args)
             if not self._unsloth_mlx_keep_dataset_order:
