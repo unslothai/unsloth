@@ -9,10 +9,10 @@ import { test } from "node:test";
 import {
   ChatSettingsRequestError,
   isTerminalSettingsRejection,
-  isUnderKeepaliveBudget,
   rejectedSettingKeys,
   retryablePatchAfterFailure,
 } from "../src/features/chat/utils/settings-retry.ts";
+import { isUnderKeepaliveBudget } from "../src/lib/keepalive-budget.ts";
 
 const extraForbidden = (...fields: string[]) =>
   new ChatSettingsRequestError(

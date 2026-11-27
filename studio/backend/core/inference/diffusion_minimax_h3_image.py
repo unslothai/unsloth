@@ -120,8 +120,18 @@ H3_IMAGE_DIT_BF16_GB = 66.3
 H3_IMAGE_DIT_TABLE_BF16_GB = 40.3
 H3_IMAGE_DIT_TABLE_INT8_GB = 21.9
 H3_IMAGE_VAE_GB = 2.34
+# The whole released Qwen3-VL-32B; what a stock-class load (or a local folder's files) is priced at.
 H3_IMAGE_TE_BF16_GB = 66.7
 H3_IMAGE_TE_INT8_GB = 27.2
+
+
+def _te_read_layers_gb(stock_gb: float) -> float:
+    from .video_minimax_h3_te import h3_te_read_layers_gb
+    return h3_te_read_layers_gb(stock_gb)
+
+
+# The bf16 encoder this backend loads: only the layers hidden_states[50] reads (no layers 50+, norm or head).
+H3_IMAGE_TE_BF16_READ_GB = _te_read_layers_gb(H3_IMAGE_TE_BF16_GB)
 
 PDD_HEADS_FILE = "pdd_fused_heads.safetensors"
 PDD_CONFIG_FILE = "pdd_config.json"
@@ -1819,7 +1829,8 @@ def dit_gb_for(scheme: Optional[str], table: bool = True) -> float:
 
 
 def te_gb_for(scheme: Optional[str]) -> float:
-    return H3_IMAGE_TE_INT8_GB if scheme == "int8" else H3_IMAGE_TE_BF16_GB
+    # Every bf16 encoder this backend loads itself is the read-layer one (load_h3_image_text_encoder).
+    return H3_IMAGE_TE_INT8_GB if scheme == "int8" else H3_IMAGE_TE_BF16_READ_GB
 
 
 # Device-side pieces that are not in the streamed lists: the DiT's refiner, embedders and heads (bf16 refiner,
@@ -5020,7 +5031,8 @@ def load_h3_image_text_encoder(
     fallback_check: Optional[Callable[[], None]] = None,
 ) -> tuple[Any, Optional[str]]:
     """(encoder on the host, scheme engaged). int8 = Studio's hosted ConvRot conditioner (the video family's file),
-    bf16 = the released encoder; a broken hosted file falls back to bf16 (66.7 GB). ``fallback_check`` runs before
+    bf16 = the released encoder; a broken hosted file falls back to bf16 (the read layers only,
+    ``H3_IMAGE_TE_BF16_READ_GB``). ``fallback_check`` runs before
     that fallback allocates anything and raises when the plan cannot hold it."""
     if scheme == "int8":
         from .video_minimax_h3_te import load_h3_quantized_text_encoder
@@ -5045,11 +5057,11 @@ def load_h3_image_text_encoder(
         logger.warning(
             "diffusion.minimax_h3_image: hosted int8 encoder unusable, loading the bf16 encoder"
         )
-    import transformers
-
     from .diffusion_families import pinned_revision_kwargs
+    from .video_minimax_h3_te import h3_read_layers_text_encoder_class
 
-    encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
+    # Only the 50 layers hidden_states[50] reads, as the hosted int8 one: layers 50+, norm and head are never read.
+    encoder = h3_read_layers_text_encoder_class().from_pretrained(
         text_encoder_repo,
         subfolder = "text_encoder",
         torch_dtype = dtype,
@@ -6259,17 +6271,19 @@ def load_minimax_h3_image_pipeline(
         local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
         if local_gb > plan.te_gb + 1.0:
             _encoder_fits(local_gb, "the text encoder in this model folder")
-        import transformers
+        from .video_minimax_h3_te import h3_read_layers_text_encoder_class
 
-        text_encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
-            str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True
-        ).eval()
+        text_encoder = (
+            h3_read_layers_text_encoder_class()
+            .from_pretrained(str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True)
+            .eval()
+        )
         engaged_te = None
     if text_encoder is None and plan.te_kept_on_host:
 
         def _bf16_fits() -> None:
             _encoder_fits(
-                H3_IMAGE_TE_BF16_GB,
+                H3_IMAGE_TE_BF16_READ_GB,
                 "Studio's hosted int8 text encoder could not be loaded (check the network or the Hugging Face "
                 "cache), and the bf16 encoder it would fall back to",
             )
@@ -6295,7 +6309,8 @@ def load_minimax_h3_image_pipeline(
 
         def _refuse_bf16() -> None:
             raise RuntimeError(
-                "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the 66.7 GB bf16 "
+                "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the "
+                f"{H3_IMAGE_TE_BF16_READ_GB:.1f} GB bf16 "
                 "encoder it would fall back to does not fit this machine's memory plan (it loads the encoder "
                 "for each prompt because host memory is short). Check the network or the Hugging Face cache "
                 "and load the model again."
@@ -6309,7 +6324,8 @@ def load_minimax_h3_image_pipeline(
                 # Placed under this plan, the bf16 fallback would overrun the budget the plan made for the int8 one.
                 free_module_storage(encoder)
                 raise RuntimeError(
-                    "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the 66.7 GB bf16 "
+                    "MiniMax-H3-Image: Studio's hosted int8 text encoder could not be loaded, and the "
+                    f"{H3_IMAGE_TE_BF16_READ_GB:.1f} GB bf16 "
                     "encoder it would fall back to does not fit this machine's memory plan (it loads the encoder "
                     "for each prompt because host memory is short). Check the network or the Hugging Face cache "
                     "and load the model again."

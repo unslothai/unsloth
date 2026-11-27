@@ -58,6 +58,30 @@ test("GPU and RAM probes distinguish zero from missing or invalid readings", () 
   }
 });
 
+test("picker uses measured free bytes for discrete cards and preserves the current PCIe link", () => {
+  snapshot = {
+    status: "ready",
+    device_backend: "cuda",
+    gpu: {
+      devices: [
+        {
+          index: 4,
+          index_kind: "physical",
+          vram_free_gb: 1.25,
+          vram_free_bytes: 0,
+          pcie_link_width: 8,
+          pcie_link_gen: 4,
+        },
+      ],
+    },
+  };
+  const [card] = hooks.useGpuDevices();
+  assert.equal(card.memoryFreeGb, 0);
+  assert.equal(card.memoryFreeKnown, true);
+  assert.equal(card.pcieLinkWidth, 8);
+  assert.equal(card.pcieLinkGen, 4);
+});
+
 test("the dense quant schemes are read off the route, and default to none", () => {
   const withSchemes = (schemes?: unknown) => {
     snapshot = {

@@ -619,3 +619,59 @@ def test_the_connection_stores_its_compaction_mode(tmp_path, monkeypatch):
     assert "compaction_mode" in ProviderUpdate(compaction_mode = None).model_fields_set
     with pytest.raises(ValidationError):
         ProviderCreate(provider_type = "openrouter", display_name = "x", compaction_mode = "evict")
+
+
+@pytest.mark.parametrize("mode", ["rolling", "checkpoint"])
+def test_an_eviction_fit_keeps_the_image_edit_reference(mode):
+    import routes.inference as ri
+    from models.inference import ChatCompletionRequest
+
+    chat = _long_chat()
+    chat[-1] = {"role": "user", "content": "make it blue " + "word " * 3_500}
+    reference = {
+        "role": "assistant",
+        "content": [{"type": "image_generation_call", "id": "ig_1", "response_id": "resp_1"}],
+    }
+    chat.insert(len(chat) - 1, reference)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest"}],
+        provider_type = "openai",
+        model = "gpt-5-nano",
+        compaction_mode = mode,
+        **_SMALL_TRIGGER,
+    )
+    fitted, truncation, _ = ri._fit_external_context(
+        chat, payload, can_reset = mode == "checkpoint", replays_manual = mode == "checkpoint"
+    )
+    assert truncation and truncation.get("dropped_messages")
+    assert fitted[-2:] == [reference, chat[-1]]
+
+
+def test_a_tool_loop_fit_keeps_the_reference_before_its_request():
+    import routes.inference as ri
+    from models.inference import ChatCompletionRequest
+
+    chat = _long_chat()
+    chat[-1] = {"role": "user", "content": "make it blue " + "word " * 3_500}
+    reference = {
+        "role": "assistant",
+        "content": [{"type": "image_generation_call", "id": "ig_1", "response_id": "resp_1"}],
+    }
+    chat.insert(len(chat) - 1, reference)
+    branch = list(chat)
+    call = {"id": "c1", "type": "function", "function": {"name": "fetch", "arguments": "{}"}}
+    chat += [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "fetched"},
+        {"role": "user", "content": [{"type": "text", "text": "Image returned by the tool."}]},
+    ]
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest"}],
+        provider_type = "openai",
+        model = "gpt-5-nano",
+        compaction_mode = "rolling",
+        **_SMALL_TRIGGER,
+    )
+    fitted, truncation, _ = ri._fit_external_context(chat, payload, branch = branch, tool_loop = True)
+    assert truncation and truncation.get("dropped_messages")
+    assert any(m is reference for m in fitted)

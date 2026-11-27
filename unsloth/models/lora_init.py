@@ -188,9 +188,12 @@ def mica_basis(W, r):
 
 
 def _routed(base):
-    # Routed compressed-tensors linears: loader_utils' wrapper (the saved original) densifies them first.
-    return type(base).__name__ == "_UnslothNVFP4Linear" or getattr(
-        base, "_unsloth_compressed_tensors_fp8", False
+    # Routed compressed-tensors linears: loader_utils' wrapper (the saved original) densifies them first. Packed
+    # GGUF linears: gguf_packed's wrapper refuses inits that rewrite the base, which stays in its GGUF blocks.
+    return (
+        type(base).__name__ == "_UnslothNVFP4Linear"
+        or getattr(base, "_unsloth_compressed_tensors_fp8", False)
+        or getattr(base, "_unsloth_gguf_packed_linear", False)
     )
 
 

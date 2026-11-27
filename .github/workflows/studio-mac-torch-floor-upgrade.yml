@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# An existing Apple Silicon home on torch 2.10, re-run with the merge base's install.sh (kept)
+# and with this checkout's (moved to the 2.13 route); then opt-out, a 2.14 home, studio update.
+
+name: Studio macOS torch floor upgrade
+
+# Opt-in: never runs on unslothai/unsloth pull requests (the job is skipped there); runs on
+# staging repos, which take inherited workflows on pull_request, and by dispatch anywhere.
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: 'Branch the A arm installs from (staging repos: upstream-main)'
+        required: false
+        default: 'upstream-main'
+  pull_request:
+    # ready_for_review: the job skips draft PRs, so marking ready must start the run.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'install.sh'
+      - '.github/workflows/studio-mac-torch-floor-upgrade.yml'
+      - '.github/scripts/mac-torch-floor-upgrade.sh'
+      - '.github/actions/uv-cache-restore/**'
+      - '.github/actions/uv-cache-save/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  floor-upgrade:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.repository != 'unslothai/unsloth')
+      && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: "existing torch 2.10 home (py${{ matrix.python }})"
+    runs-on: macos-15
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.13', '3.10']
+    env:
+      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/../studio-home
+      UNSLOTH_PYTHON: ${{ matrix.python }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      HELPER: ${{ github.workspace }}/.github/scripts/mac-torch-floor-upgrade.sh
+      LOGS: ${{ github.workspace }}/logs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
+      - name: Base worktree at the merge base
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          base="${PR_BASE_SHA:-$(git rev-parse "origin/${BASE_REF:-upstream-main}")}"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          echo "base $base head $(git rev-parse HEAD)"
+          mkdir -p "$LOGS"
+
+      - name: Seed a home with the merge base installer, then put it on torch 2.10.0
+        working-directory: ${{ runner.temp }}/base
+        run: |
+          set -o pipefail
+          bash install.sh --local 2>&1 | tee "$LOGS/0_seed_install.log"
+          bash "$HELPER" seed 2.10.0 0.25.0 2.10.0 | tee "$LOGS/0_seed.log"
+          grep -q "^PROBE [0-9.]* 2\.10\.0 " "$LOGS/0_seed.log"
+
+      - name: "A (merge base): a re-run keeps 2.10"
+        working-directory: ${{ runner.temp }}/base
+        run: |
+          set -o pipefail
+          bash install.sh --local 2>&1 | tee "$LOGS/A_base_rerun.log"
+          bash "$HELPER" probe | tee "$LOGS/A_probe.log"
+          grep -q "existing install has torch 2.10.0 -- keeping it" "$LOGS/A_base_rerun.log"
+          grep -q "^PROBE [0-9.]* 2\.10\.0 " "$LOGS/A_probe.log"
+
+      - name: "B (head): a re-run moves 2.10 to the 2.13 route"
+        run: |
+          set -o pipefail
+          bash install.sh --local 2>&1 | tee "$LOGS/B_head_rerun.log"
+          bash "$HELPER" probe | tee "$LOGS/B_probe.log"
+          grep -q "existing install has torch 2.10.0 -- moving to torch>=2.13.0,<2.14.0" "$LOGS/B_head_rerun.log"
+          # Hosted macos-15 runners expose a paravirtual Metal device without MPS: the versions are checked always,
+          # MPS (and the helper's SDPA check) only where it is available.
+          grep -Eq "^PROBE [0-9.]+ 2\.13\.[0-9]+ 0\.28\.[0-9]+ 2\.11\.[0-9]+ mps (True|False)" "$LOGS/B_probe.log"
+
+      - name: "B2 (head): a second re-run and studio update keep 2.13"
+        env:
+          STUDIO_LOCAL_REPO: ${{ github.workspace }}
+        run: |
+          set -o pipefail
+          bash install.sh --local 2>&1 | tee "$LOGS/B2_head_rerun.log"
+          grep -Eq "existing install has torch 2\.13\.[0-9]+ -- keeping it" "$LOGS/B2_head_rerun.log"
+          "$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth" studio update --local 2>&1 | tee "$LOGS/B2_update.log"
+          bash "$HELPER" probe | tee "$LOGS/B2_probe.log"
+          grep -Eq "^PROBE [0-9.]+ 2\.13\.[0-9]+ 0\.28\.[0-9]+ " "$LOGS/B2_probe.log"
+
+      - name: "C (head): UNSLOTH_TORCH_UPGRADE=0 keeps a 2.10 home"
+        run: |
+          set -o pipefail
+          bash "$HELPER" seed 2.10.0 0.25.0 2.10.0 | tee "$LOGS/C_seed.log"
+          UNSLOTH_TORCH_UPGRADE=0 bash install.sh --local 2>&1 | tee "$LOGS/C_optout.log"
+          bash "$HELPER" probe | tee "$LOGS/C_probe.log"
+          grep -q "existing install has torch 2.10.0 -- keeping it" "$LOGS/C_optout.log"
+          grep -q "^PROBE [0-9.]* 2\.10\.0 " "$LOGS/C_probe.log"
+
+      - name: "D (head): a 2.14.1 home is kept"
+        run: |
+          set -o pipefail
+          bash "$HELPER" seed 2.14.1 0.29.2 2.11.1 | tee "$LOGS/D_seed.log"
+          bash install.sh --local 2>&1 | tee "$LOGS/D_rerun.log"
+          bash "$HELPER" probe | tee "$LOGS/D_probe.log"
+          grep -q "existing install has torch 2.14.1 -- keeping it" "$LOGS/D_rerun.log"
+          grep -q "^PROBE [0-9.]* 2\.14\.1 " "$LOGS/D_probe.log"
+
+      - name: Declare this job a uv cache consumer, not a producer
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
+          save: 'false'
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mac-torch-floor-py${{ matrix.python }}
+          path: logs/
+          retention-days: 7

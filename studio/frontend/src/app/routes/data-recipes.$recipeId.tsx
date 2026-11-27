@@ -23,5 +23,6 @@ export const Route = createRoute({
 
 function DataRecipeEditorRoute(): ReactElement {
   const { recipeId } = Route.useParams();
-  return <EditRecipePage recipeId={recipeId} />;
+  // Keyed: a save still pending for the previous recipe must not lend its version to this one.
+  return <EditRecipePage key={recipeId} recipeId={recipeId} />;
 }
