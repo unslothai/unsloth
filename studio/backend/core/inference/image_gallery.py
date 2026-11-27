@@ -161,8 +161,7 @@ def _generator() -> str:
 
 
 def _engine() -> Optional[str]:
-    # Read only when a generation already loaded the router: diffusers and the native engine draw
-    # different pixels from the same seed, so a replay needs to know which one ran.
+    # Read only if loaded; diffusers and native differ per seed, so replays need the engine.
     router = sys.modules.get("core.inference.diffusion_engine_router")
     try:
         return router.active_engine_name() if router is not None else None
@@ -509,8 +508,7 @@ def set_flags(
     pinned: Optional[bool] = None,
     archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
-    """Returns None unless the id is Unsloth-owned, so a hand-dropped foreign PNG cannot become
-    flaggable."""
+    """Returns None unless the id is Unsloth-owned, so a hand-dropped PNG cannot be flagged."""
     # Check and write under one lock so a concurrent clear cannot delete the file between them.
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
@@ -524,8 +522,7 @@ def set_flags(
 
 
 def move(image_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
-    """Moves an owned, active image after after_id (None = front) and returns its record, or None if
-    the id is not owned and active; KeyError if after_id is not on the shelf."""
+    """Moves owned, active image after after_id (None=front); None if not, KeyError if unknown."""
     with gallery_flags.exclusive(gallery_dir()):
         path = owned_image_path(image_id)
         if path is None:

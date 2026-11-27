@@ -5,8 +5,7 @@ import { cn } from "@/lib/utils";
 import type { ComponentProps, ReactNode } from "react";
 
 /**
- * A scrollbar paints outside the element's border-radius clip, so the wrapper's padding insets
- * the scroller instead. Padding belongs on `className`, never on `scrollerClassName`.
+ * Scrollbars paint outside border-radius clips; padding goes on className, never scrollerClassName.
  */
 export function ScrollPane({
   className,

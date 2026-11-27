@@ -12,8 +12,7 @@ an explicit `!python -m pip` line to `!pip`.
 
 import re
 
-# Transformers see the RAW cell text (IPython expands `{sys.executable}` later), so
-# the braced form and quoted/bare interpreter paths must be matched here too.
+# Matches the raw cell (IPython expands {sys.executable} later): braced, quoted, bare paths.
 _PY_M_PIP = re.compile(
     r"""^(\s*)!\s*
     (?:

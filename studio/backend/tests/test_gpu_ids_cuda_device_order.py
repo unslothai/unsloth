@@ -41,7 +41,6 @@ def test_unmasked_worker_pins_pci_order_under_fastest_first():
         hw.apply_gpu_ids([1], backend = DeviceType.CUDA.value)
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
         assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
-    # The default order is unchanged.
     with patch.dict(os.environ, {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"}, clear = True):
         hw.apply_gpu_ids([0], backend = DeviceType.CUDA.value)
         assert os.environ["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"

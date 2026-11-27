@@ -205,8 +205,7 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     sorted_tokens = x[order // top_k]
     token_counts = torch.bincount(flat_idx, minlength = len(experts))
     counts = token_counts.tolist()
-    # Under context parallelism each rank routes a different shard, so an expert unused here may be
-    # used on a peer: run it on no tokens to give it a zero gradient instead of None, or DDP stalls.
+    # Under CP a peer may route an idle expert; run it on no tokens (zero grad) or DDP stalls.
     from ..context_parallel import forget_expert_tokens, get_cp_manager, record_expert_tokens
 
     manager = get_cp_manager()
@@ -385,9 +384,8 @@ def packed_expert_target_parameters(model, target_parameters, requested_leaves):
     return kept or None
 
 
-# Eval routing without a host sync. The remote `moe_infer` reads per-expert token counts back to the host and
-# loops over experts, so each MoE layer syncs and launches one GEMM chain per active expert. The grouped version
-# keeps the counts on the device and runs every expert in three grouped GEMMs; every routed token is computed.
+# Eval routing without a host sync: remote moe_infer reads counts back and loops experts, one GEMM
+# chain per active expert; grouped GEMMs keep counts on device and compute every routed token.
 
 
 _EXPERT_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
@@ -496,8 +494,7 @@ def _grouped_experts_live(
     stacked,
     every = True,
 ):
-    """The experts are still plain linears whose weights alias `stacked`. A LoRA wrap, `model.to(...)` or a
-    reload breaks the alias; `every = False` checks only the first expert (cheap, per forward)."""
+    """Stacked alias breaks on LoRA wrap, model.to() or reload; every = False checks 1st expert."""
     experts = block.experts
     if len(experts) != stacked[0].shape[0]:
         return False
@@ -514,9 +511,8 @@ def _grouped_experts_live(
 
 
 def _grouped_experts(block):
-    """Stack the expert weights once into [E, out, in] buffers and point each expert's weights at its slice,
-    so no weight is held twice. The Parameter objects stay the same (an optimizer built earlier still owns
-    them). None when the experts are not plain bf16 / fp16 linears on a device torch._grouped_mm serves."""
+    """Stacks expert weights into [E, out, in] buffers the experts alias; Parameters kept so an
+    earlier optimizer owns them. None unless bf16 / fp16 linears on a torch._grouped_mm device."""
     cached = block.__dict__.get("_unsloth_grouped_experts", _MISSING)
     if cached is not _MISSING and (
         cached is None or _grouped_experts_live(block, cached, every = False)
@@ -610,8 +606,7 @@ def _is_host_synced_moe_infer(cls) -> bool:
 
 
 def prepare_remote_moe_for_inference(model):
-    """Patch remote MoE blocks whose eval `moe_infer` syncs the host per layer (LLaDA2) to the grouped dispatch.
-    Training, LoRA-wrapped or quantized experts and CPU tensors keep the original path."""
+    """LLaDA2-style eval moe_infer goes grouped; training, LoRA, quantized, CPU keep original."""
     patched = []
     for module in model.modules():
         cls = type(module)
@@ -622,8 +617,7 @@ def prepare_remote_moe_for_inference(model):
         ):
             cls.moe_infer = _grouped_moe_infer(cls.__dict__["moe_infer"])
             patched.append(cls.__name__)
-        # Re-decide stacks that went stale (LoRA added, model moved or reloaded, dtype changed) or were
-        # refused earlier (e.g. first seen on the CPU), so a stale buffer is neither used nor kept alive.
+        # Stale or refused stacks are re-decided; stale buffers are never used or kept alive.
         cached = module.__dict__.get("_unsloth_grouped_experts", _MISSING)
         if cached is not _MISSING and (cached is None or not _grouped_experts_live(module, cached)):
             module.__dict__.pop("_unsloth_grouped_experts")

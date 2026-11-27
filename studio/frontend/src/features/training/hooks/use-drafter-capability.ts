@@ -10,8 +10,7 @@ import { useTrainingConfigStore } from "../stores/training-config-store";
 /** Keep `drafterCapability` current for the selected model while drafter training is on.
  * Mounted with the params section in both modes: the start payload only carries `drafter`
  * once the capability for this exact model says it can train one. */
-// The last probe, shared by every mounted copy of the hook: one request per (model, token), and a
-// failure is retried while the hook stays active, never cached as final.
+// One shared request per (model, token); failures retry while active, never cached as final.
 let lastProbe: { key: string; failed: boolean; done: boolean } | null = null;
 const RETRY_MS = 15_000;
 

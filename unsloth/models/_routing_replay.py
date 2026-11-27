@@ -118,8 +118,7 @@ def _active_adapters(model):
 
 
 def _router_extra_args(module, parent):
-    # Routers taking e_score_correction_bias or expert_bias get the same-named tensor from the
-    # parent MoE block; None when a required argument has none
+    # Routers with e_score_correction_bias or expert_bias take it from the parent; else None.
     try:
         params = list(inspect.signature(module.forward).parameters.values())[1:]
     except (TypeError, ValueError):
@@ -233,9 +232,8 @@ def _remove_hook(module, name, extras, hook_id):
 
 
 def prepare_routing_replay(model, before):
-    """Primes router formulas outside compilation; detaches replay hooks during disable_adapter and
-    non-policy set_adapter (PEFT reference scoring); a router that cannot be primed keeps natural
-    routing and loses its replay hook with a warning"""
+    """Primes router formulas outside compilation; detaches replay hooks in disable_adapter and
+    non-policy set_adapter (PEFT ref scoring); unprimable routers warn, keep natural routing."""
     hooks = _new_hooks(model, before)
     if not hooks:
         return 0

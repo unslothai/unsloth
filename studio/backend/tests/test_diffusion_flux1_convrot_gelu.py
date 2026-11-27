@@ -174,7 +174,6 @@ def test_unmarked_or_unrotated_modules_keep_the_stock_path(env, monkeypatch):
 def test_install_scopes_to_flux1_with_rotated_linears(env, monkeypatch):
     torch, f1, fused, _gemm = env
     model = _tiny(torch, f1)
-    # no ConvRot Linears: nothing installed, nothing marked
     res = fused.install(model)
     assert res["rotated"] == 0 and not fused.is_installed()
     assert not any(fused._F1_MARK in m.__dict__ for m in model.modules())  # noqa: SLF001
@@ -274,8 +273,7 @@ def test_rotq_h16x_gelu_source_contract():
 
 
 def test_gelu_entry_keeps_the_stock_path_below_the_card_min_rows(monkeypatch):
-    """Short activations (FLUX.1's text-stream MLP, small renders) and, on RTX PRO 6000, the prefix-free FF measured
-    slower fused: the caller keeps stock there."""
+    """Short activations and prefix-free FF on RTX PRO 6000 are slower fused, so stock stays."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_convrot_quant as cq
 
@@ -298,8 +296,7 @@ def test_gelu_entry_keeps_the_stock_path_below_the_card_min_rows(monkeypatch):
 
 
 def test_gelu_verdict_is_persisted_and_a_later_load_skips_the_probe(monkeypatch):
-    """The probe's cold compile (4.8 s RTX PRO 6000, 16 s L4) is paid once per card and source: the verdict joins the
-    ConvRot verdict file and a later process adopts it without probing."""
+    """The GELU verdict is persisted per card and source, so later loads skip the probe."""
     pytest.importorskip("torch")
     from core.inference import diffusion_convrot_quant as cq
 
@@ -415,8 +412,7 @@ def test_chroma_after_flux1_keeps_its_stock_projections(env, monkeypatch):
 
 
 def test_unmarked_modules_pay_one_dict_lookup(env):
-    """The FLUX.1 class patches see every FeedForward / single block in the process: an unmarked one is rejected on
-    its instance __dict__, before any nn.Module attribute lookup (no __getattr__ miss per call)."""
+    """Unmarked modules are rejected on instance __dict__ before nn.Module __getattr__ lookup."""
     torch, f1, fused, _gemm = env
     from diffusers.models.attention import FeedForward
 

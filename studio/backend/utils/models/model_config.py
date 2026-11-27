@@ -1140,8 +1140,7 @@ except Exception as exc:
     )
 
 
-# PEP 562 keeps the two script strings and three detection sets reachable under their
-# original module-level names. Memoised so access doesn't rebuild the ~40 KB script.
+# PEP 562 keeps old module-level names reachable; memoised so the ~40 KB script isn't rebuilt.
 _LAZY_MODULE_ATTRS = {
     "_VLM_MODEL_TYPES": lambda: _detection_sets()[0],
     "_VLM_CLASS_NAMES": lambda: _detection_sets()[1],
@@ -1400,8 +1399,7 @@ def _is_vision_model_or_none(
     ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
     file the load will open. ``require_image=False`` asks only for a companion projector,
     which is what an audio request needs: audio input rides the same file."""
-    # Local GGUF models are served by llama-server, so multimodal support comes from a companion
-    # mmproj, not a Transformers config; do not cache, as a projector may be added later.
+    # Local GGUF multimodal support is a companion mmproj; never cache, one may appear later.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
         # Same rule as ModelConfig.from_identifier: variant lookup is directory-only, and
@@ -1557,8 +1555,7 @@ def _is_vision_model_uncached(
     Returns True/False for definitive results, or None on transient errors
     (network, timeout, subprocess failure) so the caller knows not to cache.
     """
-    # Try the raw-config reader FIRST (code-free, version-independent): it classifies repo-code
-    # VLMs like DeepSeek-OCR via declarative vision_config, with no remote code or subprocess.
+    # Raw-config reader first (code-free, version-independent); it classifies repo-code VLMs.
     raw_kwargs = {
         "hf_token": hf_token,
         "local_files_only": local_files_only,
@@ -1839,9 +1836,8 @@ def _detect_audio_from_config(
 
 
 def _read_local_model_config(root: Path, missing_is_absent: bool) -> Optional[dict]:
-    """None when config.json cannot be read. A cache snapshot can hold the tokenizer without
-    it (a tokenizer-only download), so there a missing file is unknown, not absent, unless the
-    snapshot is an adapter repo, which never ships one."""
+    """None when config.json is unreadable; a missing file counts as absent only with
+    missing_is_absent or an adapter repo, since tokenizer-only snapshots lack it."""
     config_file = root / "config.json"
     if not config_file.is_file():
         return {} if missing_is_absent or (root / "adapter_config.json").is_file() else None
@@ -1853,8 +1849,7 @@ def _read_local_model_config(root: Path, missing_is_absent: bool) -> Optional[di
 
 
 def _classify_audio_tokenizer(tok_config: dict, read_model_config) -> Tuple[Optional[str], bool]:
-    """(audio_type, known). A declared audio_token is audio input only with an audio encoder:
-    Gemma 4 26B/31B carry the token and none, so config.json decides, read only for that case."""
+    """Declared audio_token needs an encoder; Gemma 4 26B/31B lack one, so config.json decides."""
     result = _check_token_patterns(tok_config)
     if result or not _declares_audio_token(tok_config):
         return result, True
@@ -2484,8 +2479,7 @@ def detect_mmproj_file(
     if not scored:
         return None
 
-    # Score first, then longest shared prefix, then shorter stem. The prefix is read past
-    # the ``mmproj-`` marker, or every projector in a shared pool ties at zero.
+    # Score, longest shared prefix past mmproj- (else all tie at zero), then shorter stem.
     order = mmproj_order(str(p))
     best = max(
         scored,
@@ -2869,7 +2863,6 @@ def _extract_quant_label(filename: str) -> str:
     import re
 
     basename = filename.rsplit("/", 1)[-1]
-    # Strip .gguf and any shard suffix (-00001-of-00010)
     stem = re.sub(r"-\d{3,}-of-\d{3,}", "", basename.rsplit(".", 1)[0])
     quant_re = (
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
@@ -2965,8 +2958,7 @@ def _gguf_shard_set(filename: str) -> tuple[str, int]:
     return _gguf_variant_family(filename), int(split.group(1)) if split else 0
 
 
-# MIRROR of hub.utils.gguf._GGUF_BPW_SUFFIX_RE. Use match, not search: only a modifier right
-# after the quant qualifies it.
+# Mirrors hub.utils.gguf._GGUF_BPW_SUFFIX_RE; match, not search: a bpw must follow the quant.
 _GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw", re.IGNORECASE)
 
 # MIRROR of hub.utils.gguf._GGUF_BPW_TRAILING_RE, for basenames under a quant directory.
@@ -3410,9 +3402,8 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
 
 
 def _hf_cache_main_gguf_files(repo_id: str, *, every_snapshot: bool = False) -> list[str]:
-    """Main GGUF paths of the first cached snapshot of *repo_id* that holds any, or with
-    *every_snapshot* of all of them (newest first, each path once), remembered caches included
-    as the strict load lookup includes them."""
+    """Main GGUF paths of repo_id's first cached snapshot holding any, or of all snapshots with
+    every_snapshot (newest first, unique), incl. remembered caches as the strict load lookup."""
     found: list[str] = []
     if every_snapshot:
         from core.inference.llama_cpp import _cached_gguf_snapshots
@@ -3669,8 +3660,7 @@ _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
 def _embedding_marker_in_hf_cache(model_name: str) -> bool:
-    """True when model_name's cached snapshot carries a modules.json (the ST marker).
-    Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
+    """True if the cache has modules.json (ST marker); cache-only, used offline or on timeout."""
     from utils.utils import hf_cache_snapshot_dir
 
     snapshot = hf_cache_snapshot_dir(model_name)
@@ -4512,7 +4502,6 @@ class ModelConfig:
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
 
-        # Add unsloth/ prefix for shorthand HF models
         if not is_local and "/" not in identifier:
             identifier = f"unsloth/{identifier}"
             path = identifier
@@ -4740,8 +4729,7 @@ class ModelConfig:
                         identifier, variant, verify_sizes = True, hf_token = hf_token
                     )
                     if verified_file is None:
-                        # Reject before the load unloads the resident model; only a live, complete listing proves
-                        # absence.
+                        # Only a complete live listing proves absence; reject before unloading.
                         try:
                             from huggingface_hub import list_repo_files
                             repo_files = call_with_anonymous_retry(
@@ -5049,7 +5037,6 @@ class ModelConfig:
             # A LoRA's vision capability comes from its base model.
             is_vision = is_vision_model(base_model, hf_token = hf_token)
         else:
-            # Base model: check its own vision status.
             is_vision = is_vision_model(identifier, hf_token = hf_token)
 
         from utils.paths import is_model_cached

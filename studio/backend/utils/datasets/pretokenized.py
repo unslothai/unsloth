@@ -181,8 +181,7 @@ def _check_arrow_table(
     others = [c for c in ("attention_mask", "token_type_ids") if c in table.column_names]
     if labels and "labels" in table.column_names:
         others.append("labels")
-    # Arrow reductions (any, all, min_max) skip nulls, so a mask such as [None, 1] or a label hole would pass every
-    # check below and reach the trainer; refuse null elements first.
+    # Arrow reductions skip nulls, so refuse null elements before the checks below.
     for column in ["input_ids", *masks, *others]:
         if pc.list_flatten(table.column(column)).null_count:
             values = table.column(column).combine_chunks()
@@ -285,8 +284,7 @@ def prepare_pretokenized_dataset(
     names = _column_names(dataset)
     if not mlx:
         completion_only_loss = resolve_completion_only_loss(dataset, completion_only_loss)
-    # Masks are checked even when set_format hides them: TRL 0.22-0.26 re-exposes every column through
-    # with_transform, and 1.7+ reads dataset.column_names and builds labels with map(), which sees them all.
+    # Masks checked even when set_format hides them: TRL 0.22-0.26 and 1.7+ see every column.
     masks = _checked_masks(
         getattr(dataset, "column_names", None) or names, completion_only_loss, mlx = mlx
     )

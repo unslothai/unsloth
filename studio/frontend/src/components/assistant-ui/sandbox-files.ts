@@ -246,10 +246,7 @@ export function sandboxSessionInSrc(src: string): string | null {
   return segment ? decodeSegment(segment) : null;
 }
 
-/**
- * The session the src RECORDS wins: files stay where they were written when a chat moves
- * between projects. Only a path that records nothing falls back to the chat's current scope.
- */
+/** Recorded session wins (files stay put when chats move); unrecorded paths use current scope. */
 export function markdownSandboxImageSrc(
   src: string,
   ctx: { threadId: string | undefined; projectId: string | null | undefined },

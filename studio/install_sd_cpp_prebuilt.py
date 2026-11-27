@@ -48,10 +48,9 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
 DEFAULT_TAG = "master-982-0518b34-u9455ee1"
 
-# Every asset of DEFAULT_TAG on DEFAULT_REPO with its sha256 (the release's GitHub asset digests), so the pin
-# still installs when the releases API refuses an anonymous lookup (60/h per IP: offices, CGNAT, CI runners) or
-# is unreachable: the assets are then fetched from their fixed github.com/.../releases/download/ URLs and still
-# verified against these digests. Refresh together with DEFAULT_TAG (test_sd_cpp_install_ratelimit checks it).
+# Pins each DEFAULT_TAG asset on DEFAULT_REPO with its sha256, so installs survive when the releases
+# API refuses anonymous lookups (60/h per IP) or is unreachable; fixed URLs are still verified
+# against these digests; refresh with DEFAULT_TAG (test_sd_cpp_install_ratelimit checks it).
 PINNED_RELEASE_ASSETS: dict[str, dict[str, str]] = {
     DEFAULT_TAG: {
         "sd-master-982-0518b34-u9455ee1-bin-Darwin-macOS-arm64.zip": "f48ce406308107b2f68e2310b9a7684b537280a2b172798703f8e3c4540a3adc",
@@ -206,8 +205,7 @@ def _cuda_coverage_is_stale(root: Path) -> bool:
             _INSTALLED_CUDA_SMS_MEMO.pop(str(root), None)
     if rec.get("accelerator") != "cuda" or not isinstance(sms, list) or not sms:
         return False
-    # Visible GPUs only: a masked card would reinstall forever; no visible GPU is unknown, not
-    # stale.
+    # Visible GPUs only: masked cards reinstall forever; no visible GPU is unknown, not stale.
     _physical, visible = host_cuda_sms()
     missing = [sm for sm in visible if sm not in {str(v) for v in sms}]
     if missing:
@@ -370,8 +368,7 @@ class CudaBundle(NamedTuple):
 
 
 def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> list[CudaBundle]:
-    """The manifest's CUDA bundles for this OS / arch. Entries without SM coverage (every
-    pre-split asset, and anything malformed) are skipped, never guessed at."""
+    """Entries without SM coverage (pre-split, malformed) are skipped, never guessed at."""
     os_token = _MANIFEST_OS.get(system.lower())
     arch_token = _MANIFEST_ARCH.get(machine.lower())
     assets = manifest.get("assets") if isinstance(manifest, dict) else None
@@ -409,8 +406,7 @@ def cuda_bundles_from_manifest(manifest: Any, *, system: str, machine: str) -> l
 
 
 def _jit_covers(bundle: CudaBundle, host_sms: Sequence[str]) -> bool:
-    """Every host SM either has SASS here or can JIT this bundle's PTX (a PTX target loads on any
-    SM at or above it). Only reached for a host no bundle covers natively, e.g. a newer card."""
+    """Host SM needs SASS or PTX at or below it; only for cards no bundle covers natively."""
     supported = set(bundle.supported_sms)
     return all(
         (sm in supported and bundle.min_sm <= int(sm) <= bundle.max_sm)
@@ -470,8 +466,7 @@ def select_cuda_bundles(
     by_coverage = lambda b: (_core.sm_range(b), b.rank, b.max_sm or 0)  # noqa: E731
     attempts = sorted(native, key = by_coverage)[:1] + sorted(portable, key = lambda b: b.rank)[:1]
     if not attempts and jit:
-        # The family bundle with the newest PTX JITs as well as the portable one at a fraction of the
-        # download; an older family's PTX would lose the newer kernels, so it is not an attempt.
+        # Newest-PTX family and portable only; an older family's PTX would lose newer kernels.
         newest_ptx = lambda b: (-max(map(int, b.ptx_sms), default = 0), by_coverage(b))  # noqa: E731
         # A family whose PTX is older than portable's (a Turing + newer-than-every-bundle mix) is skipped.
         best = min(newest_ptx(b)[0] for b in jit)
@@ -585,8 +580,7 @@ def _resolve_cuda_bundle(
 
 
 def _tar_gz_to_zip(archive: Path, dest: Path) -> None:
-    """Repack tar.gz as stored zip to share the .zip extract, sweep and replace path; only regular
-    files and dirs (bundles hold no links), so links, devices, escaping paths are refused."""
+    """Stored zip repack for shared extract path; links, devices and escaping paths refused."""
     with tarfile.open(archive, "r:gz") as tf, zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as zf:
         for m in tf:
             name = m.name
@@ -695,8 +689,7 @@ def _is_rate_limited(exc: BaseException) -> bool:
 
 
 def _api_unavailable(exc: BaseException) -> bool:
-    """A refused (403), throttled (429) or failing (5xx) API answer, or no answer at all (DNS, refused
-    connection, TLS, timeout). Other HTTP codes (404 and the rest of 4xx) are real answers about the release."""
+    """Unavailable on 403, 429, 5xx or no answer at all; other HTTP codes are real answers."""
     code = getattr(exc, "code", None)
     if isinstance(exc, urllib.error.HTTPError) or isinstance(code, int):
         return code in (403, 429) or (isinstance(code, int) and code >= 500)
@@ -887,8 +880,7 @@ _DOWNLOAD_BACKOFF_S = 2.0
 # PATH_MAX: a larger link payload is a decompression bomb.
 _MAX_LINK_TARGET_BYTES = 4096
 
-# The kernel's ELOOP limit: Linux follows 40 links, macOS (MAXSYMLINKS) 32. A deeper chain
-# installs but the loader cannot open it.
+# ELOOP: 40 links on Linux, 32 on macOS (MAXSYMLINKS); deeper chains install but cannot open.
 _MAX_LINK_DEPTH = 32 if sys.platform == "darwin" else 40
 
 
@@ -1473,8 +1465,7 @@ def install(
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             if not release.get(_SHIPPED_KEY):
                 raise
-            # The shipped URL was never confirmed by the API: walk the rest of the repo ladder instead of
-            # failing (a sha mismatch is raised by _verify_sha256 below, never here, so it stays fatal).
+            # Unconfirmed shipped URL: try other repos; _verify_sha256 keeps mismatches fatal.
             print(
                 f"sd-cli: direct download of {chosen} failed ({exc}); trying the other release sources",
                 file = sys.stderr,

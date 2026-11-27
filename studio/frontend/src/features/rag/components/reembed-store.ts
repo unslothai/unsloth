@@ -31,8 +31,7 @@ let reconciling = false;
 /** Replies to requests sent before this sign-out describe the account that signed out. */
 let signedOutAt = 0;
 
-/** Applies the reply unless it was sent before `freshAfter`, which would roll the job back or
- * announce its end twice. Such a reply returns false, and the caller reads the current state. */
+/** Applies a reply unless sent before freshAfter, which would roll the job back; returns false. */
 async function request<T>(
   send: () => Promise<T>,
   apply: (value: T) => void,

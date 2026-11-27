@@ -149,8 +149,7 @@ def family_render_cudnn_scope(family: Any, device: Any) -> Any:
 
 
 def snapshot_backend_flags() -> Optional[dict]:
-    """Capture the process-wide torch backend flags this layer may mutate, for restore on unload. None
-    without torch. Each flag is read defensively: a build missing one still captures the rest."""
+    """Snapshot process-wide torch flags for restore; None without torch; missing ones skipped."""
     try:
         import torch
     except Exception:  # noqa: BLE001 - no torch -> nothing to snapshot/restore
@@ -342,8 +341,7 @@ def resolve_speed_mode(
 def int8_attention_speed_active(
     speed_mode: Optional[str], effective_speed: str, deferred: bool
 ) -> bool:
-    """Auto INT8 attention races at load when speed is active, or unset with no deferred profile;
-    speed off stays bit-identical."""
+    """INT8 attention races at load: on if speed active or unset-undeferred; off bit-identical."""
     return effective_speed != SPEED_OFF or (speed_mode is None and not deferred)
 
 
@@ -372,9 +370,8 @@ def compile_eligible(
     family: Any,
     probe: bool = True,
 ) -> bool:
-    """Whether the repeated block is regionally compiled: CUDA or ROCm bf16, or fp16 on NVIDIA
-    sm_75+, compile-friendly family with inductor; probe=False never runs the ROCm probe,
-    unprobed counts eligible, a recorded failure does not."""
+    """Regional compile: bf16 CUDA/ROCm or fp16 NVIDIA sm_75+, compile-friendly family with
+    inductor; probe=False skips ROCm probing, unprobed counts eligible, recorded failures don't."""
     del is_gguf
     if not torch_compile_runtime_available():
         return False
@@ -1071,8 +1068,7 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
                 touched.append(module)
             relaid += 1
     if touched:
-        # Relaid because fusion is planned; fusion matched by structure may still be rejected at its first decode,
-        # which restores these weights' layout (diffusion_vae_fused._restore_contiguous_layout).
+        # Relaid for fusion; may be rejected at first decode, undone via diffusion_vae_fused.
         vae.__dict__.setdefault("_unsloth_channels_last_modules", []).extend(touched)
     if logger is not None:
         logger.info(
@@ -2058,8 +2054,7 @@ def _guard_compiled_decode(
 
 
 def _decode_slot_owner(fn: Any) -> Any:
-    """The mutable slot an eager outer wrapper (fp16 non-finite check, ROCm bf16 cast) calls through, found under
-    any layer installed over it since (the OOM scope), or None."""
+    """Mutable slot an eager outer wrapper calls through, found under any later layer, or None."""
     from .decode_layers import next_layer  # noqa: PLC0415
 
     for _ in range(32):
@@ -2257,8 +2252,7 @@ def _enable_fp16_accumulation(
 
 
 def _quantised_projections(pipe: Any) -> bool:
-    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 / W4A8 / W6A8 Linears, whose ``.weight`` is a dense
-    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    """Denoiser keeps native int8/fp8 or packed Linears; fusing would add a dense to_qkv copy."""
     from .diffusion_grouped_int8 import is_grouped_linear
     from .diffusion_native_quant import is_native_linear
     from .diffusion_packed_block import is_packed_block_linear
@@ -2279,8 +2273,7 @@ def _quantised_projections(pipe: Any) -> bool:
 
 
 def _layerwise_cast_projections(pipe: Any) -> bool:
-    """Whether a denoiser Linear carries diffusers' layerwise-casting hook (weights stored in one dtype, cast per call,
-    e.g. a memory-mapped small-host denoiser): a fused ``to_qkv`` is a plain Linear without that hook."""
+    """Denoiser Linear has layerwise-casting hook; fused to_qkv is a plain Linear without it."""
     import torch
 
     for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
@@ -2362,8 +2355,7 @@ _DROPPED_ATTR = "_unsloth_dropped_projections"
 
 
 def _fused_attention_drops(module: Any) -> tuple:
-    """The projections diffusers' fused processor no longer calls: self attention runs ``to_qkv`` (q, k, v unused),
-    cross attention ``to_q`` + ``to_kv`` (k, v unused)."""
+    """Projections the fused processor never calls: to_q/to_k/to_v (self), to_k/to_v (cross)."""
     if not getattr(module, "fused_projections", False):
         return ()
     if getattr(module, "is_cross_attention", False):
@@ -2409,8 +2401,7 @@ def _drop_plan(unet: Any) -> list:
 
 
 def unfused_projections_will_drop(unet: Any) -> bool:
-    """Whether the fuse's unfused copies will be dropped on this (not yet fused) U-Net: drop on, no PEFT adapter, and
-    every projection the fused processor stops calling is a plain hook-free Linear."""
+    """Whether unfused copies drop (drop on, no PEFT adapter, only plain hook-free Linears)."""
     if unet is None or not _drop_unfused_enabled():
         return False
     try:

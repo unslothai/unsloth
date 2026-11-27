@@ -46,7 +46,6 @@ def x264_options() -> dict:
 
 # The reference save's libx264 quality (its default CRF); libx264's own default is 23.
 REFERENCE_X264_CRF = 18
-# Reference save's tags for sRGB frames: BT.709 primaries, sRGB transfer, MPEG range.
 _BT709 = 1
 _TRC_SRGB = 13
 _RANGE_MPEG = 1

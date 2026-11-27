@@ -62,8 +62,7 @@ CAPTURE_SAFE_ENV = "UNSLOTH_DIFFUSION_CAPTURE_SAFE"
 
 _HUNYUANIMAGE_CLS = "HunyuanImageTransformer2DModel"
 
-# The stock merge block, stripped line by line (blank lines dropped). Order of the four pieces is
-# what the permutation reproduces, so the match is exact rather than a needle search.
+# Stock merge block, line-stripped with blanks dropped; its four pieces must keep their order.
 _HUNYUANIMAGE_MERGE_BLOCK: tuple[str, ...] = (
     "# reorder and combine text tokens: combine valid tokens first, then padding",
     "new_encoder_hidden_states = []",

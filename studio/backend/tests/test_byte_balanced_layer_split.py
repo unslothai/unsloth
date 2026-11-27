@@ -67,8 +67,7 @@ def test_an_even_model_keeps_llama_cpp_own_split():
 
 
 def test_uneven_layers_that_overflow_the_smaller_card_are_cut_by_bytes():
-    # #19137's pair with 16384 + 12288 MiB free: by count, layers 15-23 and the output
-    # (11.9 GB) land on the 12 GB card.
+    # 19137's pair: a count split puts layers 15-23 and output (11.9 GB) on the 12 GB card.
     free = {0: 16384.0, 1: 12288.0}
     shares = split([0, 1], free, _usable(free), INKLING_ROWS, *RESERVES)
     assert shares == [19.5, 5.5]
@@ -85,8 +84,7 @@ def test_the_byte_cut_fills_each_card_within_its_room():
 
 
 def test_no_cut_that_fits_asks_for_the_fitter():
-    # 15360 + 11264 MiB: the four large layers and the output need 9042 MiB, the small card's
-    # room is 8688. A count split put 13.4 GB there on capped B200s.
+    # The large layers and output need 9042 MiB, more than the small card's 8688; no cut fits.
     free = {0: 15360.0, 1: 11264.0}
     assert split([0, 1], free, _usable(free), INKLING_ROWS, *RESERVES) == []
 
@@ -98,8 +96,7 @@ def test_one_card_or_no_rows_is_not_a_split():
 
 
 def test_the_cut_is_positional_over_the_pin_order():
-    # Three cards, the large layers last: by count the last card holds 11 GB of its 10.7;
-    # by bytes the two large layers go to different cards.
+    # Count leaves 11 GB on a 10.7 GB card; bytes put the two large layers on different cards.
     free = {0: 12000.0, 1: 12000.0, 2: 12000.0}
     usable = _usable(free)
     rows = [500.0] * 16 + [4500.0, 4500.0]

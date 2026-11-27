@@ -133,6 +133,38 @@ export function cornerInsetScope(
   };
 }
 
+/** cornerInsetScope for the corner rail, which also scrolls only while its cards outgrow it (data-rail-scrolls):
+ * WebKit blurs a card inside a scroll container against that container's empty layer, so glass cards there turn grey. */
+export function overlayRailScope(
+  element: HTMLElement | null,
+): (() => void) | undefined {
+  const release = cornerInsetScope(element);
+  if (!element || typeof ResizeObserver === "undefined") return release;
+  const sync = () =>
+    element.toggleAttribute(
+      "data-rail-scrolls",
+      element.scrollHeight > element.clientHeight + 1,
+    );
+  const resize = new ResizeObserver(sync);
+  const observeCards = () => {
+    resize.disconnect();
+    resize.observe(element);
+    for (const card of element.children) resize.observe(card);
+  };
+  const cards = new MutationObserver(() => {
+    observeCards();
+    sync();
+  });
+  cards.observe(element, { childList: true });
+  observeCards();
+  sync();
+  return () => {
+    cards.disconnect();
+    resize.disconnect();
+    release?.();
+  };
+}
+
 export const COMPOSER_CLEARANCE_VAR = "--studio-composer-clearance";
 // The collapsed download button's column: 16px inset, 44px button, 16px of air.
 const CORNER_RAIL_COLUMN = 76;

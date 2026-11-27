@@ -233,7 +233,6 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
                 break
             except OSError as exc:
                 if exc.errno not in _CONTENTION_ERRNOS:
-                    # Not contention: the filesystem cannot lock at all.
                     logger.debug(f"Compiled-cache locking unavailable ({exc})")
                     with contextlib.suppress(OSError):
                         os.close(fd)

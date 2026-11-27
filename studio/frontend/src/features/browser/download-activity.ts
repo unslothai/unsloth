@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Live state for the toolbar's Downloads button: running downloads and the latest finish.
-// Session only; history-store.ts keeps the lasting record.
+// Live session state for the Downloads button; history-store.ts keeps the lasting record.
 
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -93,8 +92,7 @@ export function mountDownloadsButton(): () => void {
   useDownloadActivity.setState((state) => ({ buttons: state.buttons + 1 }));
   return () => {
     useDownloadActivity.setState((state) => ({ buttons: state.buttons - 1 }));
-    // With the last button its notice and timer go too. A tab change swaps buttons in one commit,
-    // so only once none came back.
+    // Last button gone drops the notice; deferred as a tab change swaps buttons in one commit.
     queueMicrotask(() => {
       const { buttons, dismissFinished } = useDownloadActivity.getState();
       if (buttons === 0) dismissFinished();
@@ -117,8 +115,7 @@ export function abandonDownload(key: string): void {
   });
 }
 
-/** Ends `key` and shows the result on the Downloads button. `historyId`: what recordDownload returned.
- *  False when no button is on screen. */
+/** Ends `key` and shows the result on the Downloads button; false when no button is on screen. */
 export function finishDownload(
   key: string,
   result: Omit<FinishedDownload, "key">,

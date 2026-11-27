@@ -55,11 +55,9 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
     routing_weights = torch_nn_functional_softmax(router_logits, dim = -1, dtype = torch.float32)
     routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
     routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
-    # Cast back to the input dtype.
     routing_weights = routing_weights.to(X.dtype)
     final_X = torch.zeros((bsz * seq_len, hd), dtype = torch.float32, device = X.device)
 
-    # One-hot the selected experts into a mask indexing which expert is used.
     expert_mask = torch.nn.functional.one_hot(
         selected_experts, num_classes = self.num_experts
     ).permute(2, 1, 0)
@@ -68,7 +66,6 @@ def Qwen3MoeSparseMoeBlock_fast_forward(
         expert_layer = self.experts[expert_idx]
         idx, top_x = torch.where(expert_mask[expert_idx])
 
-        # Index hidden states for this expert and scale by routing_weights.
         current_state = X[None, top_x].reshape(-1, hd)
         current_X = (
             expert_layer(current_state) * routing_weights[top_x, idx, None]
@@ -114,7 +111,6 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states, router_logits = Qwen3MoeSparseMoeBlock_fast_forward(self.mlp, hidden_states)
@@ -135,7 +131,6 @@ def Qwen3MoeDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # MoE Router MLP.
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
             self.post_attention_layernorm, hidden_states, reuse_grad = True

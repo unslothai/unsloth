@@ -60,7 +60,6 @@ test("a sparsity Core would refuse is not offered or sent", () => {
 });
 
 test("group-limited routers count like Core: per group, at least 2 left in each", () => {
-  // DeepSeek-V3: 256 experts, 8 groups, top-8 over 4 groups.
   const dsv3 = { num_experts: 256, top_k: 8, n_group: 8, topk_group: 4 };
   assert.deepEqual(reapAllowedSparsities(dsv3), [0.25, 0.5]);
   assert.equal(reapKeptExperts(dsv3, 0.25), 192);

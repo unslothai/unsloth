@@ -185,9 +185,8 @@ def _fp8_to_nf4_armed(explicit_4bit, config):
 
 
 def _budget(held = 0, held_cuda = 0):
-    """(capacity, total) bytes for this rank: what it could use and the device size the margin is a share of.
-    CUDA: free + the allocator's reusable cache (reserved - allocated) + `held_cuda`, the part of the sized model
-    already resident there; other live tensors (a reference model loaded first) are not available."""
+    """Returns (capacity, total) bytes for this rank, total being the margin's device size; on CUDA,
+    capacity is free + reusable cache + held_cuda, not other live tensors."""
     raw = str(os.environ.get(BUDGET, "")).strip()
     if raw:
         value = _parse_budget(raw)
@@ -497,8 +496,7 @@ def _quant_skip_modules(model_types):
 
 
 def _loaded_dtype(dtype, supports_bf16):
-    """The dtype the loaders load float weights in: None / auto picks bfloat16 where supported, else
-    float16; bfloat16 without support drops to float16."""
+    """None/auto: bfloat16 if supported else float16; unsupported bfloat16 becomes float16."""
     text = "" if dtype is None else str(dtype).lower()
     if dtype is None or text == "auto":
         return "bfloat16" if supports_bf16 else "float16"

@@ -33,8 +33,7 @@ function fail(message, code = 1) {
   process.exit(code);
 }
 
-// `bun check` runs a package script named `check` instead of checking, if one exists.
-// An unreadable package.json counts as having one.
+// bun check runs the check script if present; an unreadable package.json counts as present.
 function hasCheckScript() {
   try {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));

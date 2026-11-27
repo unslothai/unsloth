@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Separate from pinned-models.ts: "::" is that store's repoId/quant separator, so external ids
-// would show as phantom pinned quants on On Device.
+// Separate from pinned-models.ts: "::" separator would make external ids show as phantom pins.
 
 import { create } from "zustand";
 

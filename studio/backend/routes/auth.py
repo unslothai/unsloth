@@ -60,8 +60,7 @@ logger = get_logger(__name__)
 
 
 def _account_id_of(username: str) -> "str | None":
-    """Immutable account id for ``username``, or None. Names are reusable, so state must not key
-    on the name: a recreated account would inherit its predecessor's data."""
+    """Immutable account id or None; keyed by id, since reused names would inherit old data."""
     if username == storage.DEFAULT_ADMIN_USERNAME:
         return OWNER_ACCOUNT_ID
     account = storage.get_account(username)
@@ -90,8 +89,7 @@ _CLI_BOOTSTRAP = (
 
 
 def _cli_is_inside(prefix: str) -> bool:
-    """Whether unsloth_cli sits under prefix, so python -I still finds it; located by spec not
-    import, since this runs in a request handler."""
+    """Under prefix so python -I finds it; find_spec, not import, since it runs per request."""
     try:
         spec = importlib.util.find_spec("unsloth_cli")
         origin = getattr(spec, "origin", None)
@@ -130,8 +128,7 @@ def _reset_password_command() -> str:
     return _reset_password_command_on_path()
 
 
-# Per-(ip, user) bucket stops one user's typos blocking others; per-IP stops username spray.
-# Single-process only; multi-worker deployments need a shared store.
+# Per-(ip, user) and per-IP buckets curb typos and spray; multi-worker needs a shared store.
 _LOGIN_BUCKETS: dict[tuple[str, str], deque] = {}
 _LOGIN_IP_BUCKETS: dict[str, deque] = {}
 _LOGIN_BUCKETS_LOCK = threading.Lock()
@@ -153,7 +150,6 @@ def _overflow_shard(ip: str) -> dict:
 
 
 def _overflow_record(ip: str, now: float) -> int:
-    """Record an overflow failure for ``ip`` and return its windowed count."""
     shard = _overflow_shard(ip)
     entry = shard.get(ip)
     if entry is not None:
@@ -164,7 +160,6 @@ def _overflow_record(ip: str, now: float) -> int:
             entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
         return entry[0]
     if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
-        # Make room by dropping the lowest-count entry.
         del shard[min(shard, key = lambda k: shard[k][0])]
     shard[ip] = [1, now]
     return 1
@@ -233,7 +228,6 @@ def _normalize_forwarded_addr(value: str) -> str:
 
 
 def _forwarded_for_from_element(element: str) -> str:
-    """Pick the `for=` token out of a single ``Forwarded`` element."""
     for tok in element.split(";"):
         key, sep, val = tok.strip().partition("=")
         if sep and key.lower() == "for":
@@ -245,8 +239,7 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
-        # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
-        # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
+        # Rightmost XFF only: the rest is caller-forged, so each guess gets a fresh bucket.
         from utils.client_ip import header_fields
 
         xff = header_fields(request.headers, "x-forwarded-for")
@@ -299,8 +292,7 @@ def _prune_stale_buckets(now: float) -> None:
 
 
 def _prune_stale_ip_buckets(now: float) -> None:
-    """Prune empty or expired per-IP buckets to bound memory under spray; only successful logins
-    otherwise reclaim them, so failure-only spray grows the dict without bound."""
+    """Prune stale IP buckets; failure-only spray otherwise grows the dict without bound."""
     stale: list[str] = []
     for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
         _prune_bucket(bucket, now)
@@ -679,8 +671,7 @@ async def set_desktop_initial_password(
     )
 
 
-# Both PBKDF2 runs off the event loop, in a pool of their own so repeated checks cannot hold it,
-# the shared default executor or the sign-in pool.
+# PBKDF2 off-loop in its own pool so checks cannot hold the default executor or sign-in pool.
 _password_change_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "auth-change-password")
 
 
@@ -839,7 +830,6 @@ async def create_api_key(
 
 
 def _api_key_caller_expiry(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
-    """Expiry of the sk-unsloth key on this request; None for UI, keyless or non-expiring."""
     if credentials is None or is_keyless(credentials):
         return None
     raw = credentials.credentials or ""

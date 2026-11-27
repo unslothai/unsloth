@@ -44,8 +44,7 @@ class ModelLayout:
     n_layers: int = 0
     n_attention_layers: int = 0
     blocks: tuple[BlockLayout, ...] = field(default_factory = tuple)
-    # Rides the layer list at index n_layer_all, so it is GPU-resident for any -ngl >= 1 and can only be moved with an
-    # explicit override.
+    # Layer index n_layer_all: GPU-resident for -ngl >= 1; moves only with explicit override.
     lm_head_bytes: int = 0
     # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
@@ -264,8 +263,7 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
 
     nemotron_h = arch in _NEMOTRON_H_ARCHS
     if nemotron_h and isinstance(n_kv_head, (list, tuple)):
-        # Per-layer head_count_kv: 0 marks a layer without an attention cache. The recurrent (Mamba) layers are the ones
-        # with neither attention nor an FFN; the rest are dense or MoE FFN blocks.
+        # head_count_kv 0: no attention cache; recurrent layers have neither attention nor FFN.
         heads = [int(h) for h in list(n_kv_head)[:n_layers]]
         ffn = _field(reader, f"{arch}.feed_forward_length")
         ffn = (

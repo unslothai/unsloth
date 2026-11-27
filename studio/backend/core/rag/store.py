@@ -533,13 +533,17 @@ def replace_document_vectors(
     vectors,
     identity: str,
     model_name: str,
+    known_rowids: dict[str, list[int]] | None = None,
 ) -> bool:
     """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
 
     Writes only while the row is still the one that was encoded: present, still under
     ``stale_model``, with the same chunks, and ``model_name`` still the configured model on the same
     connection server. A delete, a re-upload, another re-embed, a model switch or a connection moved
-    to another server in between wins, and False is returned."""
+    to another server in between wins, and False is returned.
+
+    ``known_rowids`` (vec_rowids_by_document) spares the partition scan when its entry still holds
+    exactly this document's vectors, and takes the new rowids on a swap."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -565,14 +569,22 @@ def replace_document_vectors(
             return False
         scope = row["scope"]
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
-        # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
-        stale_rowids = [
-            r["rowid"]
-            for r in conn.execute(
-                "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
-                (scope, f"{document_id}:", f"{document_id};"),
+        if stale_model and stale_model.startswith(rag_db.VECTORS_DROPPED):
+            # ensure_vec marks only documents whose rows went with the old table.
+            stale_rowids = []
+        else:
+            stale_rowids = _verified_vec_rowids(
+                conn, scope, current, (known_rowids or {}).get(document_id)
             )
-        ]
+        if stale_rowids is None:
+            # One partition scan for the document's rows ('; sorts right after ':').
+            stale_rowids = [
+                r["rowid"]
+                for r in conn.execute(
+                    "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+                    (scope, f"{document_id}:", f"{document_id};"),
+                )
+            ]
         for start in range(0, len(stale_rowids), _ID_BATCH):
             batch = stale_rowids[start : start + _ID_BATCH]
             conn.execute(
@@ -591,7 +603,34 @@ def replace_document_vectors(
         conn.rollback()
         raise
     _remember_vec_rowids(conn, document_id, rowids)
+    if known_rowids is not None:
+        known_rowids[document_id] = rowids
     return True
+
+
+def vec_rowids_by_document(conn: sqlite3.Connection, scope: str) -> dict[str, list[int]]:
+    """Every document's chunks_vec rowids in ``scope``, from one partition scan."""
+    by_document: dict[str, list[int]] = {}
+    if not rag_db.vec_table_exists(conn):
+        return by_document
+    for r in conn.execute("SELECT rowid, chunk_id FROM chunks_vec WHERE scope=?", (scope,)):
+        by_document.setdefault(r["chunk_id"].rpartition(":")[0], []).append(r["rowid"])
+    return by_document
+
+
+def _verified_vec_rowids(conn, scope: str, chunk_ids: list[str], rowids) -> list[int] | None:
+    """``rowids`` if they are exactly the vectors of ``chunk_ids`` in ``scope``, else None."""
+    if not rowids or len(rowids) != len(chunk_ids):
+        return None
+    rows = []
+    for start in range(0, len(rowids), _ID_BATCH):
+        batch = rowids[start : start + _ID_BATCH]
+        rows += conn.execute(
+            f"SELECT scope, chunk_id FROM chunks_vec WHERE rowid IN ({','.join('?' * len(batch))})",
+            batch,
+        ).fetchall()
+    found = sorted(r["chunk_id"] for r in rows if r["scope"] == scope)
+    return list(rowids) if found == sorted(chunk_ids) else None
 
 
 def delete_document(

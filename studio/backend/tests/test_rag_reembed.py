@@ -440,3 +440,69 @@ def test_clip_many_matches_clip_to_limit_per_text():
     for limit in (None, 0, 1, 7, 30, 100):
         expected = [embeddings.clip_to_limit(t, word_count, limit) for t in texts]
         assert embeddings.clip_many_to_limit(texts, word_count, limit) == expected
+
+
+def _count_scans(monkeypatch):
+    calls = {"scan": 0, "one": 0}
+    scan, one = reembed._stale_documents, reembed._stale_document
+
+    def counted_scan(*args):
+        calls["scan"] += 1
+        return scan(*args)
+
+    def counted_one(*args):
+        calls["one"] += 1
+        return one(*args)
+
+    monkeypatch.setattr(reembed, "_stale_documents", counted_scan)
+    monkeypatch.setattr(reembed, "_stale_document", counted_one)
+    return calls
+
+
+def test_a_job_scans_once_and_re_reads_only_the_next_document(models, tmp_path, monkeypatch):
+    monkeypatch.setattr(reembed, "_RESCAN_SECONDS", 3600.0)
+    ids = [_ingest(tmp_path, store.kb_scope("K20"), f"{n}.txt", f"text {n}") for n in "abcdef"]
+    calls = _count_scans(monkeypatch)
+    models["model"] = NEW
+    assert ((job := _run_job())["status"], job["done"], job["remaining"]) == ("completed", 6, 0)
+    # One for start()'s count, one for the job, one more that finds nothing left.
+    assert calls["scan"] == 3 and calls["one"] <= 2 * len(ids)
+    assert [t for m, [t] in models["encoded"] if m == NEW] == [f"text {n}" for n in "fedcba"]
+
+
+@pytest.mark.parametrize("rescan", [0.0, 3600.0], ids = ["scan_per_document", "one_scan"])
+def test_documents_added_or_deleted_mid_job_end_as_with_a_scan_per_document(
+    models, tmp_path, monkeypatch, rescan
+):
+    monkeypatch.setattr(reembed, "_RESCAN_SECONDS", rescan)
+    monkeypatch.setitem(WIDTHS, OLD, WIDTHS[NEW])  # no width change dropping vectors
+    scope = store.kb_scope("K21")
+    ids = [_ingest(tmp_path, scope, f"{n}.txt", f"text {n}") for n in "abc"]
+    late = []
+
+    def delete_b_and_add_d_while_c_encodes(texts):
+        if texts == ["text c"] and not late:
+            with _connect() as c:
+                store.delete_document(c, ids[1])
+            late.append(_ingest(tmp_path, scope, "d.txt", "text d"))
+        return False
+
+    models.update(model = NEW, fail = delete_b_and_add_d_while_c_encodes)
+    job = _run_job()
+    assert (job["status"], job["done"], job["failed"], job["remaining"]) == ("completed", 3, 0, 0)
+    new = embeddings.embedding_identity(NEW)
+    assert [_row(d)[0] for d in (ids[0], ids[2], late[0])] == [new] * 3
+    # Newest first: a document added mid-job waits for the next scan, at the latest the last one.
+    expected = ["text c", "text a", "text d"] if rescan else ["text c", "text d", "text a"]
+    assert [t for m, [t] in models["encoded"] if m == NEW] == expected
+
+
+def test_a_model_switch_mid_job_scans_again(models, tmp_path, monkeypatch):
+    monkeypatch.setattr(reembed, "_RESCAN_SECONDS", 3600.0)
+    ids = [_ingest(tmp_path, store.kb_scope("K22"), f"{n}.txt", f"text {n}") for n in "abc"]
+    calls = _count_scans(monkeypatch)
+    switch_while_c_encodes = lambda texts: texts == ["text c"] and models.update(model = NEWER)
+    models.update(model = NEW, fail = switch_while_c_encodes)
+    assert ((job := _run_job())["status"], job["done"]) == ("completed", 3)
+    assert {_row(d)[0] for d in ids} == {embeddings.embedding_identity(NEWER)}
+    assert calls["scan"] == 4  # start(), the job, the switch, the empty end

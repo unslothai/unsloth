@@ -177,8 +177,7 @@ def test_a_failed_onload_sends_the_whole_encoder_back_to_the_host(monkeypatch):
 
 
 def test_an_image_conditioned_request_keeps_the_encoder_on_the_card_for_the_request(card):
-    """Two-stage image conditioning encodes in both stages: one move in for the request, none per call, and the
-    floor counts the encoder; the next text-only request parks it again."""
+    """One move per request, none per call; floor counts the encoder; text-only re-parks it."""
     vae = AutoencoderKLLTX2Video()
     vae.encoder = torch.nn.Module()
     vae.encoder.register_buffer("w", torch.zeros(3 << 19, dtype = torch.bfloat16))  # 3 MiB

@@ -12,9 +12,8 @@ from .family_profile import profile_table as _profile_table
 
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Untiled decode peak models per family (``FamilyProfile.untiled_vae`` on the video registry, measured on a B200; the
-# reasoning sits next to the data). Per latent pixel (h x w) + the (spatial, temporal) RGB output for a causal decoder
-# (Wan), or per output frame x latent pixel + the temporal scale for a decoder holding every frame (LTX-2 / 2.3 / 2.5).
+# Untiled peak per family: causal Wan costs per latent pixel plus RGB output; LTX-2 / 2.3 / 2.5 hold
+# every frame: per output frame x latent pixel plus temporal scale.
 _UNTILED = _profile_table("untiled_vae")
 _BYTES_PER_LATENT_PIXEL = {
     name: m.bytes_per_latent_pixel
@@ -62,9 +61,8 @@ def untiled_decode_bytes(
     return int(coef * itemsize / 2 * batch * height * width + output)
 
 
-# Wan's untiled decode runs two latent frames per decoder call (after the one-frame first call) when the second frame's
-# activations also fit: fewer, larger convs. Measured on the fused fp16 decode: A100 2.1-2.9% faster, T4 (sm75) 11%
-# slower, so NVIDIA sm80+ only. "0" = one frame per call everywhere; "force" = also off that range (CPU, ROCm, sm < 80).
+# Wan pairs two latent frames per decoder call when they fit, but only on NVIDIA sm80+ (T4 sm75 was
+# 11% slower); "0" disables it, "force" also pairs on CPU, ROCm, sm < 80.
 PAIR_FRAMES_ENV = "UNSLOTH_VIDEO_VAE_WAN_PAIR_FRAMES"
 _PAIR_LAYER = "wan_pair_frames"
 _PAIR_ATTR = "_unsloth_wan_pair_frames"
@@ -96,8 +94,7 @@ def pair_frames_extra_bytes(
     latent_shape: tuple,
     itemsize: int = 2,
 ) -> Optional[int]:
-    """Extra peak of decoding two latent frames per call instead of one: a second frame's decoder activations (the
-    per-latent-pixel term of the causal model). None for a family without one."""
+    """Second frame's extra peak per call: per-latent-pixel term; None if the family has none."""
     coef = _BYTES_PER_LATENT_PIXEL.get(family)
     if coef is None or len(latent_shape) != 5:
         return None

@@ -28,8 +28,7 @@ def path_for(thread_id: str) -> Optional[str]:
 
 
 def write(thread_id: Optional[str], messages: list[dict]) -> Optional[str]:
-    """The branch as plain text; a thought the window cut is labelled and ends with the model's own
-    closing marker. Returns the path, or None."""
+    """Plain text; window-cut thought labelled, closed by the model's marker. Path, or None."""
     if not thread_id:
         return None
     path = path_for(thread_id)

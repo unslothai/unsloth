@@ -26,8 +26,7 @@ done
 
 [ -n "$PORT" ] || { echo "wait-for-health.sh: --port is required" >&2; exit 2; }
 
-# Use a wall-clock deadline plus curl --max-time: a wedged server can hang a probe forever,
-# and counting iterations would stretch 180s to minutes once each probe can take --max-time.
+# Wall-clock deadline and --max-time: a wedged server can hang a probe; counting overruns 180s.
 deadline=$(( SECONDS + TIMEOUT_SECONDS ))
 while [ "$SECONDS" -lt "$deadline" ]; do
   if curl -fs --connect-timeout 3 --max-time 5 \
