@@ -13641,9 +13641,15 @@ class LlamaCppBackend:
 
     @staticmethod
     def _windows_apu_carve_out_free_mib() -> Optional[int]:
-        """Unused BIOS carve-out MiB of the only APU on Windows (registry dedicated less WDDM usage);
-        None off Windows, with a second adapter, or when either reading is missing."""
+        """Unused BIOS carve-out MiB of the only AMD/Intel APU on Windows (registry dedicated less
+        WDDM usage); None off Windows, under managed memory, or when either reading is missing."""
         if sys.platform != "win32":
+            return None
+        # Managed (GGML_CUDA_ENABLE_UNIFIED_MEMORY) allocations are host-backed, not carve-out.
+        if not LlamaCppBackend._unified_memory_opted_out() and (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY" in os.environ
+            or LlamaCppBackend._unified_memory_opted_in()
+        ):
             return None
         from utils import gpu_memory_events
 
@@ -13669,7 +13675,8 @@ class LlamaCppBackend:
                 answer = max(0, int(carve_out) - int(used)) // (1024 * 1024)
         except Exception:
             answer = None
-        LlamaCppBackend._WINDOWS_APU_CARVE_OUT_FREE = (now, generation, answer)
+        # Stamped after the read: it takes ~4 s, close to the TTL.
+        LlamaCppBackend._WINDOWS_APU_CARVE_OUT_FREE = (time.monotonic(), generation, answer)
         return answer
 
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.

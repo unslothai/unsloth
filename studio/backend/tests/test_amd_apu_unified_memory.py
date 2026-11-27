@@ -340,6 +340,15 @@ class TestAWindowsCarveOutIsCountedAboveHostRam:
 class TestTheWindowsCarveOutReader:
     _GIB = 1024**3
 
+    @pytest.fixture(autouse = True)
+    def _no_managed_memory_env(self, monkeypatch):
+        for k in (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+            "UNSLOTH_ENABLE_UNIFIED_MEMORY",
+            "UNSLOTH_DISABLE_UNIFIED_MEMORY",
+        ):
+            monkeypatch.delenv(k, raising = False)
+
     @staticmethod
     def _read(
         monkeypatch,
@@ -390,6 +399,47 @@ class TestTheWindowsCarveOutReader:
         answer, calls = self._read(monkeypatch, 32 * self._GIB, 0.0, platform = platform)
         assert answer is None
         assert calls == {"carve_out": 0, "used": 0}
+
+    @pytest.mark.parametrize(
+        "env",
+        [{"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}],
+    )
+    def test_managed_memory_gets_no_credit(self, monkeypatch, env):
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        answer, calls = self._read(monkeypatch, 32 * self._GIB, 1.0 * self._GIB)
+        assert answer is None
+        assert calls == {"carve_out": 0, "used": 0}
+
+    def test_an_opt_out_keeps_the_credit(self, monkeypatch):
+        monkeypatch.setenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+        monkeypatch.setenv("UNSLOTH_DISABLE_UNIFIED_MEMORY", "1")
+        answer, _calls = self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        assert answer == 30 * 1024
+
+    def test_a_slow_read_is_still_reused(self, monkeypatch):
+        import core.inference.llama_cpp as lc
+
+        clock = [1000.0]
+        monkeypatch.setattr(lc, "time", types.SimpleNamespace(monotonic = lambda: clock[0]))
+
+        def _slow_used():
+            clock[0] += lc._WINDOWS_APU_CARVE_OUT_TTL_S + 1.0
+            return 2.0 * self._GIB
+
+        self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_windows_apu_gpu_used_bytes", staticmethod(_slow_used)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_APU_CARVE_OUT_FREE", None)
+        _REAL_CARVE_OUT_READER()
+        clock[0] += 1.0
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_windows_apu_gpu_used_bytes",
+            staticmethod(lambda: pytest.fail("re-read inside the TTL")),
+        )
+        assert _REAL_CARVE_OUT_READER() == 30 * 1024
 
     def test_a_failing_reader_is_none(self, monkeypatch):
         def _boom(*a, **k):
