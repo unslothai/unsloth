@@ -6744,6 +6744,9 @@ def _unsloth_save_lora_gguf(
         from huggingface_hub import HfApi
 
         api = HfApi(token = token)
+        # create_repo puts a bare name under the token's user, but the calls below need the full id.
+        if "/" not in save_directory:
+            save_directory = f"{api.whoami()['name']}/{save_directory}"
         api.create_repo(
             repo_id = save_directory,
             repo_type = "model",
