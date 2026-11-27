@@ -17,12 +17,23 @@ import pytest
 from hub.modelscope import upstream
 
 HF = "https://huggingface.co"
-# Files nothing loads; a model card or licence may differ or be missing on ModelScope.
-NOT_LOADED = re.compile(
-    r"((^|/)README([_-][^/.]*)?(\.(md|rst|txt|markdown))?|(^|/)(LICENSE|NOTICE|COPYING)[^/]*|(^|/)\.(DS_Store|gitkeep|gitignore|gitattributes|msc|mv|mdl)"
-    r"|(^|/)gitattributes|(^|/)\.cache/huggingface/.*|\.(md|png|jpe?g|gif|svg|webp|pdf|mp4|webm)|^configuration\.json)$",
+# File types Unsloth Studio loads: weights, configs, remote code and tokenizers. Anything else (model cards,
+# licences, logs, media) and hidden files may differ or be missing on ModelScope. ModelScope adds configuration.json.
+LOADED = re.compile(
+    r"\.(safetensors|sft|bin|gguf|pt|pth|ckpt|onnx|nemo|msgpack|h5|json|ya?ml|py|model|tiktoken|jinja|vocab)$"
+    r"|(^|/)(vocab|merges|tokenizer|spiece|sentencepiece)[^/]*\.txt$",
     re.I,
 )
+
+
+def loaded(path: str) -> bool:
+    return (
+        bool(LOADED.search(path))
+        and not re.search(r"(^|/)\.", path)
+        and path != "configuration.json"
+    )
+
+
 INCONCLUSIVE = object()
 
 
@@ -115,7 +126,7 @@ def mismatch(hf: dict, ms: dict) -> list[str]:
     Files outside LFS have no sha256 on Hugging Face, so they compare by size."""
     bad = []
     for path, (size, sha) in hf.items():
-        if NOT_LOADED.search(path):
+        if not loaded(path):
             continue
         if path not in ms:
             bad.append(f"missing {path}")
@@ -123,9 +134,7 @@ def mismatch(hf: dict, ms: dict) -> list[str]:
             not (sha and ms[path][1]) and size != ms[path][0]
         ):
             bad.append(f"differs {path}")
-    bad += [f"extra {path}" for path in ms if path not in hf and not NOT_LOADED.search(path)]
-    if not any(not NOT_LOADED.search(path) for path in hf):
-        bad.append("no loaded file to compare")
+    bad += [f"extra {path}" for path in ms if path not in hf and loaded(path)]
     return bad
 
 
@@ -211,12 +220,22 @@ def test_mismatch_follows_the_file_rule():
         "configuration.json",
         ".cache/huggingface/x.lock",
         "img/a.PNG",
+        "uv.lock",
+        "md5",
+        "ckpt/.zarray",
+        "ckpt/27.0",
+        "train.log",
     ]
     assert mismatch({"a.bin": (1, "")}, dict.fromkeys(["a.bin", *bookkeeping], (1, ""))) == []
     assert mismatch({"a.bin": (1, "")}, {"a.bin": (1, ""), "sub/configuration.json": (1, "")}) == [
         "extra sub/configuration.json"
     ]
-    assert mismatch({"README.md": (1, "")}, {"README.md": (1, "")}) == ["no loaded file to compare"]
+    assert mismatch({"README.md": (1, ""), ".hidden/config.json": (1, "")}, {}) == []
+    assert mismatch({"vae.sft": (1, "a")}, {"vae.sft": (1, "b")}) == ["differs vae.sft"]
+    assert mismatch({"merges.txt": (1, ""), "cfg/model.yaml": (1, "")}, {}) == [
+        "missing merges.txt",
+        "missing cfg/model.yaml",
+    ]
     assert (
         mismatch(
             {"a.bin": (1, ""), "README": (1, ""), "docs/README_CN.rst": (1, "")}, {"a.bin": (1, "")}
