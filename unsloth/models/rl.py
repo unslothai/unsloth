@@ -4559,7 +4559,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
     if trainer_file in ("rloo_trainer", "online_dpo_trainer"):
-        # Both can sample with vLLM (use_vllm) and score those samples with the trainer, as GRPO does.
+        # Both can score vLLM samples with the trainer, as GRPO does.
         try:
             _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
@@ -6703,8 +6703,7 @@ def patch_trl_async_grpo():
 
         @functools.wraps(original_train)
         def train(self, *args, **kwargs):
-            # As the generated trainers' prepare_for_training_mode: drop a stray pre-train compile cache and
-            # leave inference mode (a for_inference() call before train) with the model's own GC setting.
+            # As prepare_for_training_mode: reset a stray compile cache, leave a pre-train for_inference().
             model = getattr(self, "model", None)
             was_training = getattr(model, "training", None)
             use_gc = getattr(model, "_unsloth_gradient_checkpointing", None)
