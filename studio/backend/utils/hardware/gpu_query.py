@@ -112,6 +112,26 @@ def fresh_reads() -> Iterator[None]:
         _fresh_mode.reset(token)
 
 
+_process_vram_mode: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_gpu_query_process_vram", default = False
+)
+
+
+@contextlib.contextmanager
+def process_vram_reads() -> Iterator[None]:
+    """Utilization reads inside also measure the VRAM this backend's process tree holds: the
+    monitor's ask only, so fit and placement probes pay no extra CLI call."""
+    token = _process_vram_mode.set(True)
+    try:
+        yield
+    finally:
+        _process_vram_mode.reset(token)
+
+
+def process_vram_wanted() -> bool:
+    return _process_vram_mode.get()
+
+
 def display_cache_allowed() -> bool:
     """Gate for Studio's other display-only CLI caches (amd-smi, Vulkan probe): same rules as nvidia-smi."""
     return enabled() and _display_mode.get() is not None and not _fresh_mode.get()

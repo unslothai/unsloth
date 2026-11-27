@@ -162,3 +162,13 @@ test("every locale labels the NPU card", () => {
     }
   }
 });
+
+test("the per-process Unsloth VRAM sums across cards, and one card without it leaves it unknown", () => {
+  const both = [{ ...r9700(0, 6), unsloth_used_gb: 5 }, { ...r9700(1, 7), unsloth_used_gb: 6.5 }];
+  assert.equal(vramCards(both, { devices: both }).unslothGb, 11.5);
+  const one = [both[0], r9700(1, 7)];
+  assert.equal(vramCards(one, { devices: one }).unslothGb, null);
+  // An iGPU beside them is not a VRAM card, so its missing figure does not blank the sum.
+  const withIgpu = [...both, igpu];
+  assert.equal(vramCards(withIgpu, { devices: withIgpu }).unslothGb, 11.5);
+});

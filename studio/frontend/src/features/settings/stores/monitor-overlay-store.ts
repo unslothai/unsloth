@@ -28,6 +28,9 @@ interface MonitorOverlayState {
   setShowUnslothShare: (show: boolean) => void;
   showModelBreakdown: boolean;
   setShowModelBreakdown: (show: boolean) => void;
+  /** Off: VRAM measured per process is one Unsloth slice. On: each model plus the engine's rest. */
+  showVramDetail: boolean;
+  setShowVramDetail: (show: boolean) => void;
   setDetailMetric: (metric: MonitorDetailMetric, on: boolean) => void;
   setRefreshMs: (ms: number) => void;
 }
@@ -40,6 +43,7 @@ export const useMonitorOverlayStore = create<MonitorOverlayState>()(
       showDetails: false,
       showUnslothShare: false,
       showModelBreakdown: false,
+      showVramDetail: false,
       detailMetrics: [...MONITOR_DETAIL_METRICS],
       refreshMs: DEFAULT_MONITOR_REFRESH_MS,
       setIsOpen: (isOpen) => set({ isOpen }),
@@ -47,6 +51,7 @@ export const useMonitorOverlayStore = create<MonitorOverlayState>()(
       setShowDetails: (showDetails) => set({ showDetails }),
       setShowUnslothShare: (showUnslothShare) => set({ showUnslothShare }),
       setShowModelBreakdown: (showModelBreakdown) => set({ showModelBreakdown }),
+      setShowVramDetail: (showVramDetail) => set({ showVramDetail }),
       setDetailMetric: (metric, on) =>
         set((state) => {
           const current = selectedDetailMetrics(state.detailMetrics);

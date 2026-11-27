@@ -275,6 +275,7 @@ function FloatingMonitorPanel({
   const showBreakdown = useMonitorOverlayStore(
     (state) => state.showModelBreakdown,
   );
+  const showVramDetail = useMonitorOverlayStore((state) => state.showVramDetail);
   const wantsModels = showShare || showBreakdown;
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
   const [npuStatus] = useNpuStatus();
@@ -297,6 +298,8 @@ function FloatingMonitorPanel({
     ramTotalGb: ramTotal,
     vramUsedGb: vram.usedGb,
     vramTotalGb: vram.totalGb,
+    vramUnslothGb: vram.unslothGb,
+    vramDetail: showVramDetail,
   });
   const ramSegments = split.ram;
   const vramSegments = split.vram;
