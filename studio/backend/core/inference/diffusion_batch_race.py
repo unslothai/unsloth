@@ -542,7 +542,11 @@ def run_race(
                     _neighbour_check(solo, batch, prompts, seeds, eager = best == "batched_eager")
                 )
         except _Aborted:
-            report["sizes"][str(size)] = {"aborted": "a request started waiting for the slot"}
+            # No verdict for this size, so no request can use what its warm-up recorded: drop it before returning.
+            report["sizes"][str(size)] = {
+                "aborted": "a request started waiting for the slot",
+                "batched_graphs_dropped": _drop_batched(handles, size),
+            }
             report["aborted"] = True
             break
         except Exception as exc:  # noqa: BLE001 - only a capacity failure is a verdict; anything else raises
@@ -564,20 +568,25 @@ def run_race(
             # A losing size never runs batched here, and an eager-won size must not replay the graphs the race
             # recorded (dispatch never bypasses them; user calls never record new ones): drop that size's graphs (their
             # own pool returns to the card; under BATCH_POOL_ENV=shared they stay in the one pool).
-            dropped = 0
-            for handle in handles:
-                drop = getattr(handle, "drop_batched", None)
-                if callable(drop):
-                    try:
-                        dropped += int(drop(size) or 0)
-                    except Exception:  # noqa: BLE001
-                        pass
-            verdict["batched_graphs_dropped"] = dropped
+            verdict["batched_graphs_dropped"] = _drop_batched(handles, size)
         if verdict.get("failed"):
             _release_cached()  # after the drop, so the batched pool's blocks go back too
         if persist:
             verdict["persisted"] = record(state, width, height, guidance, size, verdict, steps)
     return report
+
+
+def _drop_batched(handles: Sequence[Any], size: int) -> int:
+    """Drop every handle's batched graphs of ``size``; how many went."""
+    dropped = 0
+    for handle in handles:
+        drop = getattr(handle, "drop_batched", None)
+        if callable(drop):
+            try:
+                dropped += int(drop(size) or 0)
+            except Exception:  # noqa: BLE001
+                pass
+    return dropped
 
 
 def _capacity_failure(exc: BaseException) -> bool:

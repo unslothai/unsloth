@@ -1142,3 +1142,27 @@ def test_a_failure_that_is_not_capacity_still_raises(monkeypatch):
             repeats = 3,
             accuracy = False,
         )
+
+
+def test_an_aborted_size_drops_the_batched_graphs_its_warm_up_recorded(monkeypatch):
+    """A request arriving after the batched warm-up (calls [1, 4]) aborts the size with no verdict: an otherwise serial
+    load can never use the graph that warm-up recorded, so it goes before the aborted report returns."""
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    dropped = []
+    handle = types.SimpleNamespace(
+        set_bypass = lambda on: None, drop_batched = lambda size: dropped.append(size) or 1
+    )
+    generate, clock, calls = _fake_generate(lambda rows: 1.0)
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: len(calls) < 2,
+        width = 512,
+        height = 512,
+        sizes = (4,),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    assert calls == [1, 4] and report["aborted"] is True
+    assert dropped == [4] and report["sizes"]["4"]["batched_graphs_dropped"] == 1
