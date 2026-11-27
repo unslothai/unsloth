@@ -7,8 +7,7 @@ name: Frontend CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # Windows and macOS jobs skip drafts, so marking a PR ready must start the tested run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/frontend/**'
@@ -152,15 +151,12 @@ on:
       - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/workflows/studio-frontend-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
-  # Staging repos dispatch this on `upstream-main` to seed their dependency caches
-  # (scripts/pr_review/staging_ci.py); see .github/actions/pip-cache-save.
+  # Staging repos dispatch on upstream-main to seed caches (scripts/pr_review/staging_ci.py).
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # PRs run latest-only; on main running runs are never killed (see studio-backend-ci.yml).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -183,8 +179,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # FIXME: drop once @assistant-ui/* and assistant-stream leave 0.x; every 0.minor there is
-      # a breaking change.
+      # FIXME: drop once @assistant-ui and assistant-stream leave 0.x (0.minor bumps break).
       - name: '@assistant-ui must be pinned exactly (no caret/tilde)'
         working-directory: ${{ github.workspace }}
         run: |
@@ -234,9 +229,8 @@ jobs:
             exit 1
           fi
 
-      # Runs first in every frontend lane so a long-chat typing regression fails within minutes;
-      # ratio, not timing: selector matching per keystroke, 200-turn over 40-turn chat, plus :has()
-      # budget; slow runners pass.
+      # Runs first to fail typing regressions within minutes; it checks the 200-turn over 40-turn
+      # chat ratio, not timing; slow runners pass.
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash
@@ -280,8 +274,7 @@ jobs:
           set -euo pipefail
           BUN_VERSION="1.4.3"
           BUN_SHA256="3e730528d89775f03f87f05c06787c4df4099d0a37f3f252e7b829cb23816e18"
-          # GitHub release assets 504 in bursts lasting minutes. Without --retry-delay curl backs
-          # off exponentially (1, 2, 4, ... s), so 8 retries wait about four minutes in total.
+          # Release assets 504 in bursts; no --retry-delay, so 8 curl retries last ~4 minutes.
           curl --proto '=https' --tlsv1.2 -fsSL \
             --retry 8 --retry-connrefused --retry-all-errors \
             -o "$RUNNER_TEMP/bun.zip" \
@@ -303,8 +296,7 @@ jobs:
           LANES="$RUNNER_TEMP/lanes"
           rm -rf "$LANES"
           mkdir -p "$LANES"
-          # <name>.rc appears only when the lane has finished (written, then renamed), so the
-          # collector never reads a partial exit code. setsid: a lane outlives this step's shell.
+          # <name>.rc renamed into place (no partial reads); setsid: lanes outlive this shell.
           start_lane() {
             local name=$1
             { echo 'set -eo pipefail'; cat; } > "$LANES/$name.sh"
@@ -313,8 +305,7 @@ jobs:
               _ "$LANES/$name.sh" "$LANES/$name" < /dev/null > /dev/null 2>&1 &
             echo "started $name"
           }
-          # Its own vite cache: the render groups' fixture servers write node_modules/.vite
-          # while this lane may still be running.
+          # Own vite cache: render groups' servers write node_modules/.vite while this runs.
           start_lane unit_tests <<'SH'
           export VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-unit-tests"
           cd studio/frontend
@@ -395,8 +386,7 @@ jobs:
 
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
-        # Two guarded helper calls: 2 x (2 x 420s + 125s lock wait) = 1930s.
-        # test_the_retry_budget_fits_inside_the_step_timeout enforces this.
+        # 2 x (2 x 420s + 125s lock wait) = 1930s; a test checks it fits the step timeout.
         timeout-minutes: 33
         env:
           RETRY_ATTEMPTS: '2'
@@ -449,8 +439,7 @@ jobs:
             probe chromium
           fi
 
-      # Main-only, and NOT under always(): keys are immutable, so a failed install must never
-      # be saved. test_cache_budget_discipline.py enforces this.
+      # Main only; not under always(); immutable keys mean failed installs are never saved.
       - name: Save the Playwright browser cache
         if: (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth')) && steps.pw-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -486,11 +475,9 @@ jobs:
             tests/studio/test_appearance_coverage.py \
             tests/studio/test_has_lint.py -q
 
-      # Render counts, DOM structure and stubbed-IPC flows, not timings: these checks only need the
-      # page to settle, so they run as two groups, one after the other (a port per check), while the
-      # background lanes run. Each keeps its own bound through timeout(1); --kill-after outlasts the harness's
-      # own stop (TERM, 10 s, KILL, 10 s) so its Vite server, in a session of its own, is not
-      # orphaned. The checks that measure frames, stalls or pacing stay serial, after the lanes.
+      # Render/DOM checks need only the page to settle, not timings; two groups run in turn beside
+      # the lanes, each under timeout(1) with --kill-after outlasting the harness stop so Vite is
+      # not orphaned; frame/pacing serial after lanes.
       - name: Browser render and structure checks (two groups, one after the other)
         working-directory: ${{ github.workspace }}
         timeout-minutes: 25
@@ -499,8 +486,7 @@ jobs:
           # For the pinned chat persistence check's in-process API.
           python3 -m pip install fastapi httpx pyjwt argon2-cffi cryptography huggingface_hub python-multipart structlog
           group_pids=()
-          # The groups write to files, so their output reaches the step log only here, on every
-          # exit including a timeout or a cancel (SIGINT, then SIGTERM about 7.5 s later).
+          # Groups write to files, so output is printed here on every exit, including cancel.
           cleanup() {
             trap '' INT TERM
             for pid in "${group_pids[@]}"; do
@@ -541,9 +527,7 @@ jobs:
             trap stop_check EXIT
             trap 'exit 130' INT
             trap 'exit 143' TERM
-            # Vite's default cache dir. The fixture-config checks (paged sidebar, timestamps, stats
-            # card) and the pinned-chat server cannot be pointed elsewhere, so every check that
-            # shares that dir stays in this one sequential group.
+            # Default cache: fixture and pinned-chat servers cannot repoint it; run serially.
             unset VITE_TEST_CACHE_DIR
             # Structure, not timings: a long thread mounts only the rows near the reader, and
             # scrolling, jumping, copying and a streamed reply must not show it.
@@ -555,8 +539,7 @@ jobs:
             run_check library_suggested_order 5m python3 tests/studio/playwright_library_suggested_order.py
             # The `plain` case is the positive control and must keep its controls.
             run_check link_definition_probe 10m python3 tests/studio/playwright_link_definition_probe.py
-            # The node suite runs no effects, so only this browser check covers the observer,
-            # re-arming, and cleanup.
+            # Node suite runs no effects: observer, re-arming, cleanup need this browser check.
             run_check progressive_rows 5m python3 tests/studio/playwright_progressive_rows.py
             run_check user_message_time 5m python3 tests/studio/playwright_user_message_time.py
             run_check pinned_chat_persistence 3m python3 tests/studio/playwright_pinned_chat_persistence.py
@@ -564,8 +547,7 @@ jobs:
           ) > logs/playwright-render-a.log 2>&1 &
           group_pids+=("$!")
           # One browser at a time: both groups at once, beside the background lanes, overloaded the
-          # runner's 4 vCPUs (30 s Playwright goto/click timeouts on staging). The lanes still
-          # overlap this whole step, which is where the saving comes from.
+          # 4 vCPUs (30 s Playwright timeouts); the lanes still overlap, which is the saving.
           a_rc=0
           wait "${group_pids[0]}" || a_rc=$?
           group_pids=()
@@ -578,8 +560,7 @@ jobs:
             run_check chat_query 4m python3 tests/studio/playwright_chat_query.py
             run_check mcp_app_bridge 10m env PW_BROWSER=chromium \
               python3 tests/studio/playwright_mcp_app_bridge_smoke.py
-            # Project create / edit dialogs with stubbed native IPC and HTTP: lost responses, spent
-            # grants and older backends must leave the saved working folder matching the choice.
+            # Lost responses, spent grants, old backends: saved folder must match the choice.
             run_check project_folders 10m python3 tests/studio/playwright_project_folders.py \
               --out "$RUNNER_TEMP/project-folders"
             run_check browser_agent_select 5m python3 tests/studio/playwright_browser_agent_select.py
@@ -653,8 +634,7 @@ jobs:
           done
           exit "$failed"
 
-      # Hover and pointer checks that assert UI state after a fixed wait: they run alone, as
-      # they did before the render groups were parallel, so CPU contention cannot flip them.
+      # Fixed-wait hover and pointer checks run alone so CPU contention cannot flip them.
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}
         timeout-minutes: 3
@@ -670,20 +650,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_nonmodal_menus.py
 
-      # Keep data settings separate from the shorter checks. Each group owns its cache.
-      # The step bound is the smaller one, leaving the job 25 minutes for the steps before it: a
-      # job timeout is a cancellation, which skips the failure-only artifact upload, so a check
-      # hung past it would leave no log anywhere.
+      # Step bound is the smaller one, leaving 25 min for earlier steps; a job timeout cancels and
+      # skips the failure-only upload, so a hung check leaves no log.
       - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
         timeout-minutes: 15
         run: |
           mkdir -p logs
           group_pids=()
-          # The groups write to files, so their output reaches the step log only here, on every
-          # exit including a timeout or a cancel. A cancel is SIGINT, then SIGTERM about 7.5 s
-          # later, then SIGKILL: ignore the second signal so it cannot cut cleanup short, and print
-          # the logs before waiting on the groups' teardown, which may outlast the SIGKILL.
+          # Groups write to files, so logs reach the step only here, on every exit. A cancel is
+          # SIGINT, then SIGTERM ~7.5 s later, then SIGKILL: ignore the second signal so cleanup is
+          # not cut short, then print logs before waiting on teardown, which may outlast SIGKILL.
           cleanup() {
             trap '' INT TERM
             for pid in "${group_pids[@]}"; do
@@ -741,8 +718,7 @@ jobs:
             run_check keyboard_shortcuts python3 tests/studio/playwright_keyboard_shortcuts.py
             run_check strip_ansi env PW_BROWSER=chromium \
               python3 tests/studio/playwright_strip_ansi_smoke.py
-            # --kill-after outlasts the harness's own stop (TERM, 10 s, KILL, 10 s) so its Vite
-            # server, in a session of its own, is not orphaned when the check times out
+            # --kill-after outlasts the harness's 20 s stop so its Vite server is not orphaned.
             run_check composer_icons timeout --kill-after=30s 180s \
               python3 tests/studio/playwright_composer_icons.py chromium
             run_check research_review python3 tests/studio/playwright_research_review.py
@@ -766,21 +742,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      # A gate, not a measurement. The released and streamdown variants are positive controls
-      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
-      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
-      # fallback the index.css override exists for.
+      # A gate, not a measurement: released and streamdown variants are positive controls that MUST
+      # flicker, since neither collapsing means the detector stopped seeing. Chromium only on a PR,
+      # the engine whose content-visibility fallback the index.css override exists for.
       - name: Browser smoke for code block flicker
         working-directory: ${{ github.workspace }}
         env:
           SMOKE_FLICKER_ENGINES: chromium
         run: python3 tests/studio/playwright_code_block_flicker.py
 
-      # Two small sizes and one repetition on Chromium: enough to prove the fixture still
-      # renders every kind of content it claims to and that the curve still rises, which is all
-      # a PR gate can afford. The measurement this harness exists for is the three-engine,
-      # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
-      # asked for it deliberately, not on every frontend PR.
+      # Two small sizes and one Chromium repeat render each content kind; the full run is too slow
+      # for PRs.
       - name: Browser smoke for heavy-thread interaction cost
         working-directory: ${{ github.workspace }}
         env:
@@ -1025,10 +997,8 @@ jobs:
         env:
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # The checkout is the PR merge ref; its first parent is the base tip this run merged onto.
-          # pull_request.base.sha does not move when main advances, so measuring against it charges
-          # the PR with everything main merged since. The raw commit object keeps its parent lines
-          # in a depth-1 clone.
+          # Use the merge ref's first parent; pull_request.base.sha would charge the PR with later
+          # main merges.
           BASE_SHA="$EVENT_BASE_SHA"
           if [ "$(git cat-file -p HEAD | grep -c '^parent ')" = 2 ]; then
             BASE_SHA=$(git cat-file -p HEAD | awk '$1 == "parent" {print $2; exit}')
@@ -1045,8 +1015,7 @@ jobs:
           ab --areas stream_scroll --tall 6 --stream-ms 10
           ab --areas wheel_sweep
 
-  # The suite reads sources and resolves module URLs, so it can break only on Windows.
-  # .gitattributes pins LF for studio/frontend, so exact-substring assertions hold.
+  # Windows-only: reads sources, module URLs. .gitattributes pins LF for substring asserts.
   windows:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend unit tests (Windows)
@@ -1122,7 +1091,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           mkdir -p logs
-          # each driver owns its Vite server, optimizer cache, and report
           PW_ENGINE=chromium PW_PORT=5420 PW_OUT=logs/data_settings_report.json \
             VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-data-chromium" \
             python tests/studio/playwright_data_settings.py > logs/data_settings_chromium.log 2>&1 &

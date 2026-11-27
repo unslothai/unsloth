@@ -19,10 +19,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import {
-  audioCppSizeLabel,
-  isAudioCppFolderId,
-} from "@/features/audio/audio-cpp-catalog";
+import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import { useIsAccountOwner } from "@/features/auth";
 import { audioModelLabel } from "../../audio/audio-workspace-utils";
@@ -49,6 +46,7 @@ import {
 } from "@/features/chat";
 import {
   type GgufVariantsResponse,
+  formatBytes,
   ggufVariantDisplayLabel,
   hfApiToken,
   invalidateGgufVariantsCache,
@@ -185,7 +183,7 @@ function SttModelPicker({
               (row) => row.quant === listing.default_variant,
             ) ?? listing.variants[0];
           if (cancelled || !variant) return;
-          const size = audioCppSizeLabel(
+          const size = formatBytes(
             variant.download_size_bytes ?? variant.size_bytes,
           );
           setFolderSizes((sizes) =>
@@ -1488,7 +1486,7 @@ export function VoiceTab() {
                             {ggufVariantDisplayLabel(variant)}
                           </span>
                           <span className="text-ui-10 tabular-nums whitespace-nowrap text-muted-foreground">
-                            {audioCppSizeLabel(
+                            {formatBytes(
                               variant.download_size_bytes ?? variant.size_bytes,
                             )}
                           </span>

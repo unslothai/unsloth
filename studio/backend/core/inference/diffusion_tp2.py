@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Single-process tensor parallelism of a DiT over two cards (opt-in UNSLOTH_DIFFUSION_TP=1).
+"""Single-process tensor parallelism of a DiT over two cards (opt-in UNSLOTH_DIFFUSION_TP=1; Krea 2 also engages
+it with the env unset when its Automatic plan would stream the denoiser from host memory, ``=0`` turns that off).
 
 Megatron split of every block: q/k/v and the MLP input layers by output rows (each card its heads and its share
 of the hidden width), attention out-proj and MLP out by input channels, one all-reduce after each. One Python
 thread drives both cards. Shards live outside the module tree, so moving / hooking the transformer never touches
-them. Qwen-Image-2.1 only. INT8 row splits quantize per card, so results differ slightly from one card's.
+them. Qwen-Image-2.1 and Krea 2. INT8 row splits quantize per card, so results differ slightly from one card's.
 """
 
 from __future__ import annotations
@@ -32,15 +33,83 @@ COMM_MARGIN = 0.05
 # HostSwap keeps pinned / device buffers for this many (numel, dtype) sizes, least recently used dropped.
 HOSTSWAP_SIZES = 2
 TP_ATTR = "_unsloth_tp2"
-_DITS = frozenset({"QwenImage21Transformer2DModel"})
+_KREA2 = "Krea2Transformer2DModel"
+_DITS = frozenset({"QwenImage21Transformer2DModel", _KREA2})
+# Engaged without the env when the load would otherwise stream the denoiser from host memory (``auto_wanted``)
+_AUTO_DITS = frozenset({_KREA2})
 _COLUMN = ("attn.to_q", "attn.to_k", "attn.to_v", "img_mlp.gate_layer", "img_mlp.proj")
 _ROW = ("attn.to_out.0", "img_mlp.out")
+# Krea 2: GQA q / k / v and the sigmoid output gate by heads, SwiGLU gate / up by width; out-proj / down by input
+_KREA2_COLUMN = ("attn.to_q", "attn.to_k", "attn.to_v", "attn.to_gate", "ff.gate", "ff.up")
+_KREA2_ROW = ("attn.to_out.0", "ff.down")
+_KREA2_PROCESSORS = frozenset({"Krea2AttnProcessor", "Krea2PrefixKVAttnProcessor"})
 _COMMS = ("nccl", "swap", "peer")
 _FUSED_ATTRS = ("_unsloth_q21_fused_qkv", "_unsloth_q21_dense_gate_up")
+_OFF = ("0", "off", "false", "no")
 
 
 def requested() -> bool:
     return (os.environ.get(TP_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _env_auto() -> bool:
+    """The env is unset / ``auto``: neither forced on nor turned off."""
+    v = (os.environ.get(TP_ENV) or "").strip().lower()
+    return v in ("", "auto")
+
+
+def _is_krea2_block(block: Any) -> bool:
+    return type(block).__name__ == "Krea2TransformerBlock"
+
+
+def _paths(block: Any) -> tuple:
+    """(column-parallel paths, row-parallel paths) of one block."""
+    return (_KREA2_COLUMN, _KREA2_ROW) if _is_krea2_block(block) else (_COLUMN, _ROW)
+
+
+# A plan whose resident share is within this of the whole denoiser holds it whole (planner estimate vs storage).
+_WHOLE_SLACK_MIB = 64
+
+
+def _streams_denoiser(plan: Any, denoiser_mib: Optional[int] = None) -> bool:
+    """An Automatic plan that streams part of the denoiser's weights from host memory every step (group or leaf
+    streaming with less than the whole denoiser resident). A streaming / group policy that pins the whole denoiser
+    (``resident_transformer_mib`` covering it) does not stream it; an unknown denoiser size with a resident share
+    set counts as resident."""
+    if (getattr(plan, "requested_mode", None) or "auto") != "auto":
+        return False  # an explicit memory mode is the user's call
+    if getattr(plan, "layer_split", None) is not None:
+        return False
+    policy = getattr(plan, "offload_policy", "none")
+    if policy == "group":
+        if getattr(plan, "stream_transformer", True) is False:
+            return False
+    elif policy != "streaming":
+        return False
+    resident = getattr(plan, "resident_transformer_mib", None)
+    if not resident:
+        return True  # every group streams
+    if not denoiser_mib:
+        return False
+    return int(resident) + _WHOLE_SLACK_MIB < int(denoiser_mib)
+
+
+def _denoiser_mib(transformer: Any) -> Optional[int]:
+    try:
+        return _storage_mib((*transformer.parameters(), *transformer.buffers()))
+    except Exception:  # noqa: BLE001 - unreadable: _streams_denoiser stays conservative
+        return None
+
+
+def auto_wanted(transformer: Any, plan: Any) -> bool:
+    """Unset env: TP for a family in ``_AUTO_DITS`` whose Automatic plan streams the denoiser from host memory. Two
+    cards then each hold half the blocks resident and run half of every block, instead of one card running all of
+    it while the rest streams. A plan that keeps the denoiser on one card (or splits it by layers) is unchanged."""
+    return (
+        _env_auto()
+        and type(transformer).__name__ in _AUTO_DITS
+        and _streams_denoiser(plan, _denoiser_mib(transformer))
+    )
 
 
 def _comm_choice() -> str:
@@ -67,16 +136,37 @@ def _is_native(lin: Any) -> bool:
     return type(lin).__name__ == "NativeWeightOnlyLinear" and hasattr(lin, "weight_q")
 
 
-def _linear_refusal(lin: Any, path: str) -> Optional[str]:
-    """Only layer types this module shards explicitly: plain ``nn.Linear`` with a plain floating weight, or Studio's
-    ``NativeWeightOnlyLinear``. Exact types, not ``isinstance``: a subclass (ConvRotLinear rotates its input in
-    ``forward``) or a tensor-subclass weight (torchao) would lose its behaviour in a plain sliced Linear."""
+def _is_int8w(lin: Any) -> bool:
+    """The small-host load's ``Int8WeightLinear`` (diffusion_small_host): int8 rows, one scale per output row."""
+    if type(lin).__name__ != "Int8WeightLinear":
+        return False
+    q, s = getattr(lin, "qweight", None), getattr(lin, "scale", None)
+    return (
+        q is not None
+        and s is not None
+        and q.dim() == 2
+        and tuple(s.shape) in ((q.shape[0], 1), (q.shape[0],))
+    )
+
+
+def _linear_refusal(
+    lin: Any,
+    path: str,
+    row: Sequence[str] = _ROW,
+    int8w_ok: bool = False,
+) -> Optional[str]:
+    """Only layer types this module shards explicitly: plain ``nn.Linear`` with a plain floating weight, Studio's
+    ``NativeWeightOnlyLinear`` or the small-host ``Int8WeightLinear``. Exact types, not ``isinstance``: a subclass
+    (ConvRotLinear rotates its input in ``forward``) or a tensor-subclass weight (torchao) would lose its behaviour in
+    a plain sliced Linear."""
     import torch
 
     if _is_native(lin):
         g = int(getattr(lin, "rot_group", 0) or 0)
-        if path in _ROW and g and (lin.in_features // 2) % g:
+        if path in row and g and (lin.in_features // 2) % g:
             return f"{path}: half of {lin.in_features} input channels is not whole {g}-channel ConvRot groups"
+        return None
+    if int8w_ok and _is_int8w(lin):
         return None
     if type(lin) is not torch.nn.Linear:
         return f"{path} is a {type(lin).__name__} (only nn.Linear and native int8 / fp8 Linears are sharded)"
@@ -115,18 +205,33 @@ def refusal(transformer: Any, devices: Sequence[Any]) -> Optional[str]:
     if getattr(transformer, "peft_config", None):
         return "LoRA adapters are loaded (not sharded yet)"
     cfg = transformer.config
+    krea2 = name == _KREA2
     heads = int(cfg.num_attention_heads)
-    mlp = int(cfg.num_attention_heads * cfg.attention_head_dim * cfg.mlp_ratio)
-    if heads % 2 or mlp % 2:
-        return f"{heads} heads / {mlp} MLP width do not split in two"
+    if krea2:
+        kv = int(getattr(cfg, "num_key_value_heads", None) or heads)
+        mlp = int(cfg.intermediate_size)
+        if heads % 2 or kv % 2 or mlp % 2 or heads % kv:
+            return f"{heads} query / {kv} key-value heads / {mlp} MLP width do not split in two"
+    else:
+        mlp = int(cfg.num_attention_heads * cfg.attention_head_dim * cfg.mlp_ratio)
+        if heads % 2 or mlp % 2:
+            return f"{heads} heads / {mlp} MLP width do not split in two"
     for blk in transformer.transformer_blocks:
         flex = _flex_name(blk)
         if flex is not None:
             # its BlockMask's mask_mod closes over tensors built on the first card, which no .to() reaches
             return f"{flex} drives flex attention through a BlockMask built on the first card"
-        for path in _COLUMN + _ROW:
+        if krea2:
+            if not _is_krea2_block(blk):
+                return f"a {type(blk).__name__} block (Krea2TransformerBlock expected)"
+            proc = type(getattr(blk.attn, "processor", None)).__name__
+            if proc not in _KREA2_PROCESSORS:
+                # the shard halves num_heads / num_kv_heads; only these processors are known to read them
+                return f"{proc} is not a verified Krea 2 attention processor"
+        column, row = _paths(blk)
+        for path in column + row:
             lin = _get(blk, path)
-            why = _linear_refusal(lin, path)
+            why = _linear_refusal(lin, path, row, int8w_ok = krea2)
             if why is not None:
                 return why
         for sub_name, sub in blk.named_modules():
@@ -239,8 +344,10 @@ def _row_parallel_class():
             cast16 = x.dtype != torch.float16 and _autocast_fp16(x)
             if (x.dtype != torch.float16 and not cast16) or not reduce_fp32():
                 return inner(x)
-            if _is_native(inner):
-                return inner(x.float())
+            if _is_native(inner) or _is_int8w(inner):
+                # autocast stays off for the partial: under fp16 autocast its GEMM would return fp16 again
+                with torch.autocast(device_type = x.device.type, enabled = False):
+                    return inner(x.float())
             x2 = x.reshape(-1, x.shape[-1])
             if cast16:
                 # what autocast would feed the unsplit GEMM (fp16 operands), with a float32 partial out
@@ -298,6 +405,27 @@ def shard_linear(lin: Any, dim: int, index: int, parts: int, device: Any) -> Any
             None if bias is None else nn.Parameter(_own(bias.detach(), device), requires_grad = False)
         )
         return new
+    if _is_int8w(lin):
+        # per-output-row scales: a row split keeps the rows' scales whole, a column split slices them with the rows
+        q, s = lin.qweight.detach(), lin.scale.detach()
+        if dim == 0:
+            k = lin.out_features // parts
+            sl = slice(index * k, (index + 1) * k)
+            qk, sk, ins, outs = q[sl], s[sl], lin.in_features, k
+            bias = lin.bias[sl] if lin.bias is not None else None
+        else:
+            k = lin.in_features // parts
+            qk, sk, ins, outs = q[:, index * k : (index + 1) * k], s, k, lin.out_features
+            bias = lin.bias if (lin.bias is not None and index == 0) else None
+        new = type(lin)(
+            _own(qk, device),
+            _own(sk, device),
+            None if bias is None else _own(bias.detach(), device),
+            ins,
+            outs,
+        )
+        new.act_int8 = bool(getattr(lin, "act_int8", False))
+        return new
     w = lin.weight.detach()
     if dim == 0:
         k = lin.out_features // parts
@@ -322,7 +450,9 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
     """A copy of ``block`` on ``device`` holding card ``index``'s heads and MLP width; big weights are not copied
     whole (the memo shares them, then the split layers are replaced by their slices)."""
     memo: dict = {}
-    for path in _COLUMN + _ROW:
+    column, row = _paths(block)
+    krea2 = _is_krea2_block(block)
+    for path in column + row:
         lin = _get(block, path)
         for t in list(lin.parameters(recurse = False)) + list(lin.buffers(recurse = False)):
             memo[id(t)] = t
@@ -333,7 +463,7 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
     # Fused whole-width projections (diffusion_qwenimage21_dense_fused / _fused) are left behind: they hold all
     # heads; the shard runs the stock per-layer path, which those installers may fuse again per card.
     stripped = []
-    for sub in (block.attn, block.img_mlp):
+    for sub in (block.attn, block.ff if krea2 else block.img_mlp):
         for key in _FUSED_ATTRS + ("forward",):
             if key in sub.__dict__:
                 stripped.append((sub, key, sub.__dict__.pop(key)))
@@ -346,13 +476,20 @@ def shard_block(block: Any, index: int, parts: int, device: Any) -> Any:
         # a regional compile wraps the ORIGINAL module's call; the shard runs eager (per-card compile: follow-up)
         if sub.__dict__.get("_compiled_call_impl") is not None:
             sub._compiled_call_impl = None
-    for path in _COLUMN:
+    for path in column:
         _set(sb, path, shard_linear(_get(block, path), 0, index, parts, device))
     row_cls = _row_parallel_class()
-    for path in _ROW:
+    for path in row:
         _set(sb, path, row_cls(shard_linear(_get(block, path), 1, index, parts, device)))
-    sb.attn.heads = block.attn.heads // parts
-    sb.attn.inner_dim = block.attn.inner_dim // parts
+    if krea2:
+        # GQA: card c holds query heads [c*H/2, (c+1)*H/2), which read exactly key-value heads [c*KV/2, (c+1)*KV/2)
+        sb.attn.num_heads = block.attn.num_heads // parts
+        sb.attn.num_kv_heads = block.attn.num_kv_heads // parts
+        if "heads" in block.attn.__dict__:
+            sb.attn.heads = block.attn.heads // parts
+    else:
+        sb.attn.heads = block.attn.heads // parts
+        sb.attn.inner_dim = block.attn.inner_dim // parts
     return sb.to(device)
 
 
@@ -747,6 +884,90 @@ def _stack_class():
     return TPStack
 
 
+def _krea2_attn_half(blk: Any, h: Any, temb: Any, rope: Any, mask: Any) -> tuple:
+    """``Krea2TransformerBlock.forward`` up to the attention output (a partial sum on a shard), stock arithmetic."""
+    modulation = temb.unflatten(-1, (6, -1)) + blk.scale_shift_table
+    prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
+    a = blk.attn(
+        (1.0 + prescale) * blk.norm1(h) + preshift,
+        attention_mask = mask,
+        image_rotary_emb = rope,
+    )
+    return a, pregate, (postscale, postshift, postgate)
+
+
+def _krea2_mlp_half(blk: Any, h: Any, post: tuple) -> tuple:
+    postscale, postshift, postgate = post
+    return blk.ff((1.0 + postscale) * blk.norm2(h) + postshift), postgate
+
+
+def _move_any(t: Any, device: Any) -> Any:
+    """``_move`` that also reaches into a tuple (Krea 2's rotary embedding is a ``(cos, sin)`` pair)."""
+    if isinstance(t, tuple):
+        return tuple(_move(x, device) for x in t)
+    return _move(t, device)
+
+
+def _krea2_stack_class():
+    base = _stack_class()
+
+    class TPStack(base):
+        """Krea 2's block loop on both cards: ``(hidden_states, temb, image_rotary_emb, attention_mask)`` as the
+        model calls each block. Eager: regional compile (``compile_repeated_blocks``) is a no-op on a TP load (the
+        opt-in per-card stage compile covers Qwen-Image-2.1 only); an outer ``torch.compile`` of the whole model
+        traces it without extra recompiles."""
+
+        def compile(self, *args: Any, **kwargs: Any) -> None:  # noqa: A003 - nn.Module.compile's name
+            return None
+
+        def forward(
+            self,
+            hidden_states: Any,
+            temb: Any,
+            image_rotary_emb: Any = None,
+            attention_mask: Any = None,
+        ) -> Any:
+            import torch
+
+            devs, ar = self._devices, self._all_reduce
+            # a decode that never reached its restore (an exception between lend and restore) left them lent
+            _return_lent(self)
+            home = hidden_states.device
+            hs = [_move(hidden_states, d) for d in devs]
+            tembs = [_move(temb, d) for d in devs]
+            ropes = [_move_any(image_rotary_emb, d) for d in devs]
+            masks = [_move(attention_mask, d) for d in devs]
+            for i in range(len(self._shards[0])):
+                parts, gates, posts = [], [], []
+                for c, d in enumerate(devs):
+                    with _CardContext(d):
+                        a, g1, post = _krea2_attn_half(
+                            self._shards[c][i], hs[c], tembs[c], ropes[c], masks[c]
+                        )
+                    parts.append(a)
+                    gates.append(g1)
+                    posts.append(post)
+                parts = ar(parts)
+                mlps, gates2 = [], []
+                for c, d in enumerate(devs):
+                    with _CardContext(d):
+                        hs[c] = hs[c] + gates[c] * parts[c].to(hs[c].dtype)
+                        m, g2 = _krea2_mlp_half(self._shards[c][i], hs[c], posts[c])
+                    mlps.append(m)
+                    gates2.append(g2)
+                mlps = ar(mlps)
+                for c, d in enumerate(devs):
+                    with _CardContext(d):
+                        hs[c] = hs[c] + gates2[c] * mlps[c].to(hs[c].dtype)
+            if not torch.compiler.is_compiling():
+                # eager only: a module int mutated under an outer Dynamo trace is a guard that fails every call
+                self.calls += 1
+            out = hs[0]
+            return out if out.device == home else out.to(home)
+
+    return TPStack
+
+
 def _kv_compactor() -> Optional[Callable]:
     """Studio's prefix K/V compaction (diffusion_qwenimage21): a compiled extract step stores views of the full K/V,
     which would pin the whole prefill through decode; the per-card caches get the same copy-down."""
@@ -755,6 +976,150 @@ def _kv_compactor() -> Optional[Callable]:
     except Exception:  # noqa: BLE001 - no Studio compaction available: keep the entries as stored
         return None
     return _compact_layer_cache if compact_kv_enabled() else None
+
+
+DECODE_LEND_ENV = (
+    "UNSLOTH_DIFFUSION_TP_DECODE_LEND"  # 0 keeps the first card's shards in place for the decode
+)
+_LENT_ATTR = "_unsloth_tp2_lent"
+# Room the second card keeps free beside the lent shards.
+_LEND_RESERVE_MIB = 1024
+
+
+def _shard_tensors(card: list) -> list:
+    """(module, kind, name) for every own parameter / buffer of one card's block shards."""
+    out = []
+    for blk in card:
+        for m in blk.modules():
+            out += [(m, "p", n) for n, t in m._parameters.items() if t is not None]
+            out += [(m, "b", n) for n, t in m._buffers.items() if t is not None]
+    return out
+
+
+def _move_card(entries: list, device: Any) -> None:
+    for m, kind, name in entries:
+        if kind == "p":
+            p = m._parameters[name]
+            p.data = p.data.to(device, non_blocking = True)
+        else:
+            m._buffers[name] = m._buffers[name].to(device, non_blocking = True)
+
+
+def _return_lent(stack: Any) -> None:
+    """Bring every lent tensor home; the record is dropped only once all of them are back, so a failure here raises
+    and leaves it for the next call (never a silent mixed placement)."""
+    lent = stack.__dict__.get(_LENT_ATTR)
+    if lent is None:
+        return
+    import torch
+
+    entries, home = lent
+    with torch.no_grad():
+        _move_card(entries, home)
+    stack.__dict__.pop(_LENT_ATTR, None)
+
+
+def _lend_card(
+    stack: Any,
+    entries: list,
+    home: Any,
+    dst: Any,
+    logger: Any = None,
+) -> bool:
+    """Move ``entries`` from ``home`` to ``dst``; True when all moved. The lend is recorded BEFORE the first move,
+    so a failure part way is always recoverable: the rollback runs through ``_return_lent``, and if the rollback
+    fails too the record stays and the next denoiser call retries it (raising there if it still cannot)."""
+    import torch
+
+    stack.__dict__[_LENT_ATTR] = (entries, home)
+    try:
+        with torch.no_grad():
+            _move_card(entries, dst)
+        return True
+    except Exception as exc:  # noqa: BLE001 - an OOM or a failed copy: put everything back
+        try:
+            _return_lent(stack)
+        except Exception as back:  # noqa: BLE001 - kept recorded: the next denoiser call retries
+            if logger is not None:
+                logger.warning(
+                    "diffusion.tp2: decode lend failed (%s) and so did returning the shards to %s (%s); the "
+                    "next denoiser call retries the return",
+                    exc,
+                    home,
+                    back,
+                )
+            return False
+        if logger is not None and not isinstance(exc, torch.OutOfMemoryError):
+            logger.warning("diffusion.tp2: decode lend skipped: %s", exc)
+        return False
+
+
+def lend_for_decode(pipe: Any, logger: Any = None) -> Optional[Callable[[], None]]:
+    """Krea 2 under TP: the first card holds its half of the blocks, the prologue and the VAE, and the VAE decode
+    (fp32 on T4, ~6 GiB at 1024 px) does not fit beside them, so its OOM retry moved models off the card or tiled
+    (output then depends on free memory). The second card is idle during the decode: the first card's shards move
+    there for it and come back after (``restore``; also on the next denoiser call). Weights move unchanged, so the
+    images are bit-identical. None when TP is not installed, the denoiser is not Krea 2, or the second card lacks
+    the room."""
+    tr = getattr(pipe, "transformer", None)
+    if type(tr).__name__ != _KREA2 or not is_installed(tr):
+        return None
+    if (os.environ.get(DECODE_LEND_ENV) or "").strip().lower() in _OFF:
+        return None
+    stack = _stack(tr)
+    if stack is None or stack.__dict__.get(_LENT_ATTR) is not None:
+        return None
+    devs = list(getattr(stack, "_devices", ()))
+    if len(devs) != 2 or any(getattr(d, "type", None) != "cuda" for d in devs):
+        return None
+    import torch
+
+    try:
+        entries = _shard_tensors(stack.shards()[0])
+        need = _storage_mib(
+            (m._parameters[n] if k == "p" else m._buffers[n]) for m, k, n in entries
+        )
+        free, _total = _card_free_total_mib(devs[1])
+        cached = (
+            int(torch.cuda.memory_reserved(devs[1])) - int(torch.cuda.memory_allocated(devs[1]))
+        ) >> 20
+        if free + max(0, cached) < need + _LEND_RESERVE_MIB:
+            if logger is not None:
+                logger.info(
+                    "diffusion.tp2: decode keeps the shards on %s (%s has %d MiB of the %d MiB needed)",
+                    devs[0],
+                    devs[1],
+                    free + max(0, cached),
+                    need + _LEND_RESERVE_MIB,
+                )
+            return None
+    except Exception as exc:  # noqa: BLE001 - nothing moved yet: the decode runs with the shards in place
+        if logger is not None:
+            logger.warning("diffusion.tp2: decode lend skipped: %s", exc)
+        return None
+    if not _lend_card(stack, entries, devs[0], devs[1], logger):
+        return None
+    stack.lends = int(getattr(stack, "lends", 0)) + 1
+    rec = getattr(tr, TP_ATTR, None)
+    if isinstance(rec, dict):
+        rec["decode_lends"] = stack.lends
+    if stack.lends == 1 and logger is not None:
+        logger.info(
+            "diffusion.tp2: the VAE decode borrows %s: its %d MiB of shards wait on %s and return after",
+            devs[0],
+            need,
+            devs[1],
+        )
+    torch.cuda.synchronize(
+        devs[0]
+    )  # the copies read the first card's storage before the decode reuses it
+    with torch.cuda.device(devs[0]):
+        torch.cuda.empty_cache()
+
+    def restore() -> None:
+        _return_lent(stack)
+
+    return restore
 
 
 def _free_cards(devices: Sequence[Any]) -> None:
@@ -837,7 +1202,8 @@ def install(
             for blk in blocks:
                 for c, d in enumerate(devices):
                     shards[c].append(shard_block(blk, c, len(devices), d))
-        stack = _stack_class()(shards, devices, fn, name)
+        stack_cls = _krea2_stack_class() if type(transformer).__name__ == _KREA2 else _stack_class()
+        stack = stack_cls(shards, devices, fn, name)
         if was_compiled:
             stack.compile(**dict(compile_kw or {}))
         transformer.transformer_blocks = nn.ModuleList([stack])
@@ -1002,6 +1368,7 @@ def status(transformer: Any) -> Optional[dict]:
     out = dict(rec)
     stack = transformer.transformer_blocks[0]
     out["calls"] = int(getattr(stack, "calls", 0))
+    out["decode_lends"] = int(getattr(stack, "lends", 0))
     out["stage_compiled"] = bool(getattr(stack, "compiled", False))
     return out
 
@@ -1081,10 +1448,11 @@ def engage_for_plan(
     logger: Any = None,
     loras: Any = None,
 ) -> Any:
-    """Opt-in (``UNSLOTH_DIFFUSION_TP=1``) step after the multi-GPU plan refinement: shard the denoiser over the
-    selection's primary and the secondary with the most headroom that fits, and return the plan with the denoiser
-    resident and no split (``_tp_plan``). Any refusal or failure keeps ``plan``."""
-    if not requested():
+    """Opt-in (``UNSLOTH_DIFFUSION_TP=1``, or ``auto_wanted`` with the env unset) step after the multi-GPU plan
+    refinement: shard the denoiser over the selection's primary and the secondary with the most headroom that fits,
+    and return the plan with the denoiser resident and no split (``_tp_plan``). Any refusal or failure keeps
+    ``plan``."""
+    if not (requested() or auto_wanted(getattr(pipe, "transformer", None), plan)):
         return plan
     import torch
 
@@ -1158,7 +1526,7 @@ def lora_block_reason(pipe: Any) -> Optional[str]:
         return None
     return (
         "LoRA is not available on this load: the denoiser runs tensor parallel across two cards "
-        f"({TP_ENV}=1), which cannot carry adapters yet. Reload without {TP_ENV}, or name the LoRA in the load "
+        f"({TP_ENV}), which cannot carry adapters yet. Reload with {TP_ENV}=0, or name the LoRA in the load "
         "request (Unsloth then keeps the normal placement)."
     )
 

@@ -264,8 +264,7 @@ def has_site_cookies(subject: str, url: str) -> bool:
 
 
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
-    """What ``document.cookie`` may see on ``url``'s site, at any path, in the frame's own form
-    (browser.py): ``"<name>=<path>"`` to ``"<deadline ms>|<value>"``. HttpOnly ones stay here."""
+    """document.cookie on url's site, any path: name=path to deadline ms|value; not HttpOnly."""
     return _page_entries(_site_cookies(subject, url))
 
 
@@ -291,9 +290,8 @@ def set_page_cookie(
     stored: Optional[str],
     same_site: Optional[str] = None,
 ) -> None:
-    """A page's ``document.cookie`` write in the frame's form (``stored`` None removes): host-only,
-    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7).
-    ``same_site`` is the write's SameSite; an unknown value leaves the default (Lax)."""
+    """Frame-form document.cookie write (stored None removes): host-only; Secure over https; never
+    over an HttpOnly or http-set Secure cookie (rfc6265bis 5.7); unknown same_site is Lax."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return

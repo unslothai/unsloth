@@ -38,9 +38,7 @@ REPOS = {
 
 
 def _built_config(kind):
-    """Configs with no tiny hub repo: written out (random weights). DeepSeek-V2: multi-head latent attention,
-    query / key head dim 24 (nope 16 + rope 8) against value head dim 16, YaRN scaling, MoE after one dense layer.
-    MiniMax-M2: grouped query attention (4 heads / 2 kv heads) with q / k norms over all heads, MoE layers."""
+    """Random weights (no tiny hub repo): DeepSeek-V2 q/k 24 vs v 16, MiniMax-M2 4 heads/2 kv."""
     if kind == "deepseek_v2":
         from transformers import DeepseekV2Config
         return DeepseekV2Config(
@@ -293,8 +291,7 @@ def _parity_worker(
 
 
 def _spawn(fn, world, *args):
-    # Fork keeps the conftest CUDA spoof (CPU-only CI). On a GPU host the parent's autograd threads make fork
-    # unsafe, so spawn CPU-only ranks there.
+    # Fork keeps the CUDA spoof; a GPU parent's autograd threads make fork unsafe, so spawn.
     spawn = torch.cuda.is_available() or os.environ.get("UNSLOTH_TEST_GLOO_START") == "spawn"
     if not spawn and "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
@@ -355,8 +352,7 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     if kind in BUILT and int(transformers.__version__.split(".")[0]) < 5:
         model = _model(kind, implementation)
         if not cp._supports_context_parallel(model, "ulysses"):
-            # A refusal before training, not a wrong gradient: transformers 4.x builds DeepSeek-V2's experts as
-            # per-expert modules, which the support check declines (_hybrid_config_blocker).
+            # Declined, not a wrong gradient: transformers 4.x per-expert DeepSeek-V2 modules.
             pytest.skip(
                 f"{kind}: generic Ulysses is declined on transformers {transformers.__version__}: "
                 f"{cp._hybrid_config_blocker(model)}"
@@ -504,8 +500,7 @@ def test_compiled_layers_follow_each_packed_row(kind, implementation):
     [("gemma3", "window_dropped"), ("gemma2", "softcap_dropped"), ("gpt_oss", "sinks_unsliced")],
 )
 def test_each_feature_is_load_bearing(kind, control):
-    """Negative controls: dropping the window or the softcap after the exchange, or handing every head's sinks
-    to a head shard, breaks parity, so the cases above prove the features are passed through."""
+    """Negative controls (window or softcap dropped, sinks unsliced) must break parity."""
     _config(kind)
     with pytest.raises(Exception, match = "AssertionError|IndexError|RuntimeError|Mismatch"):
         _spawn(_parity_worker, 2, kind, "eager", False, "", control)

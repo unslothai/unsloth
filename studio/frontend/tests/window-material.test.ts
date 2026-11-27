@@ -436,8 +436,8 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 test("glass sheen runs at 90% except on the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.047\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.053\)/);
-	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer, \.toast-surface, \.glass-card\) \{\n  --glass-sheen: linear-gradient\(170deg, rgb\(255 255 255 \/ \.053\)/);
+	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer, \.toast-surface, \.glass-card\) \{\n  --glass-edge:/);
 });
 
 test("grouped glass cards get more blur and a lighter fill than single controls", () => {
@@ -508,7 +508,7 @@ test("light glass draws no grey outlines outside the composer", () => {
 	}
 	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
-	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
+	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer, \.toast-surface, \.glass-card\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });
 
 test("glass decoration has no blurred inset shadows or radial sheens", () => {
@@ -589,8 +589,8 @@ test("macOS glass and a plain background image leave the resting page headers cl
 
 test("the update cards that float like toasts take the glass toast surface", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{[^}]*backdrop-filter: blur\(max\(var\(--glass-blur\), calc\(18px \* var\(--glass-strength, 1\)\)\)\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface\) \{/);
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface, \.glass-card\) \{[^}]*backdrop-filter: blur\(var\(--glass-blur\)\) saturate\(var\(--glass-saturate\)\) !important;/);
+	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\] :is\(\[data-sonner-toast\]\[data-styled="true"\], \.toast-surface, \.glass-card\) \{/);
 	// Transparent keeps toasts opaque; the cards re-resolve the palette at full alpha like the toaster.
 	assert.match(css, /html\[data-glass-clear\] #root :is\(\[data-sonner-toaster\], \.toast-surface\) \{\n\s*--clear-alpha: 100%;/);
 	for (const file of ["components/llama-update-banner.tsx", "components/tauri/update-banner.tsx", "components/web/update-banner.tsx"]) {

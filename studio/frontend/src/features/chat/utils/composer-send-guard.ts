@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Refuses stale writes that put a just-sent message back in the composer (IME, autocorrect,
- *  draft autosave). Retired by user input, never by a clock: queue latency is unbounded. */
+/** Refuses stale restores of a just-sent message until user input: queue latency is unbounded. */
 export type SentTextGuard = {
   readonly texts: readonly string[];
   /** Draft key the send cleared, so another thread's identical draft still restores. */
   readonly draftKey: string | null;
   readonly userInputSince: boolean;
-  /** An IME composition was open at the send; if not, a composition write is typing (WebKitGTK
-   *  on Wayland commits every keystroke as one, #10012). */
+  /** IME composition was open at send; WebKitGTK on Wayland commits each key as one (#10012). */
   readonly compositionOpen: boolean;
 };
 
@@ -80,8 +78,7 @@ export function applySentTextGuard(
   if (write.isComposition && !guard.compositionOpen) {
     return { accept: true, guard: null };
   }
-  // Re-typing the whole prompt is only one write when it is one character, so equality alone
-  // would swallow every retry of a "?" or a single emoji.
+  // Equality alone would swallow every retry of a one-character prompt like "?" or an emoji.
   if (guard.texts.includes(write.value)) {
     if (guard.userInputSince) return { accept: true, guard: null };
     return { accept: false, guard };

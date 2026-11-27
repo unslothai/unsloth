@@ -3002,7 +3002,7 @@ class ExternalProviderClient:
             "max_tokens": max_tokens or await self._anthropic_output_cap(model) or 1024,
             "stream": True,
         }
-        if not sampling_removed:
+        if temperature is not None and not sampling_removed:
             body["temperature"] = temperature
         if top_k is not None and top_k > 0 and not sampling_removed:
             body["top_k"] = top_k

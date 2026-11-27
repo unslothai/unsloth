@@ -213,8 +213,7 @@ def test_an_attached_resume_is_not_refused_for_having_no_commit(studio):
 
 
 def test_a_fresh_run_onto_a_moved_branch_is_not_refused(studio):
-    """And the last one: this is a `--resume` rule. Without it the payload is archived and a new
-    one is started, which was always the right answer for a different build."""
+    """Refusing a moved commit is a --resume rule only; a fresh run archives the old payload."""
 
     assert sb.run(_args(studio, "--branch", "main")) == 0
 

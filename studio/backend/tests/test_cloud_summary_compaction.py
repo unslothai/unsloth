@@ -1547,7 +1547,15 @@ class _ToolSteps(_SummarisingHandler):
     def do_POST(self) -> None:  # noqa: N802
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"
         body = json.loads(raw)
-        done = sum(1 for m in body["messages"] if m.get("role") == "tool")
+        # The newest call id, not the tool turns sent: a refit may evict older exchanges.
+        done = max(
+            (
+                int(call["id"].rsplit("_", 1)[1])
+                for m in body["messages"]
+                for call in m.get("tool_calls") or ()
+            ),
+            default = 0,
+        )
         fits = len(json.dumps(body["messages"])) <= self.overflow_chars
         if _is_summary_call(body) or not fits or done >= self.steps:
             self.rfile = __import__("io").BytesIO(raw)
@@ -1602,8 +1610,9 @@ def test_an_overflow_mid_tool_loop_recovers_by_shortening_the_turns_results(thre
     )
     assert not [c for c in chunks if "error" in c]
     final = chats[-1]["messages"]
-    results = [m["content"] for m in final if m["role"] == "tool"]
-    assert len(results) == 6 and all(f"STEP {n}" in r for n, r in enumerate(results, 1))
+    calls = [c["id"] for m in final for c in m.get("tool_calls") or ()]
+    assert calls[-1] == "call_6" and len(set(calls)) == len(calls)
+    assert "harbor " * 500 in final[-1]["content"]
     assert any(m["role"] == "user" and m["content"] == "Run the six steps." for m in final)
     assert any(c.get("choices") and c["choices"][0]["delta"].get("content") == "ok" for c in chunks)
 

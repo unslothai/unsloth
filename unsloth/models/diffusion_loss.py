@@ -273,9 +273,6 @@ def fusable_head(model, base):
     if is_distributed_wrapper(model):
         return None
     head = base.get_output_embeddings() if hasattr(base, "get_output_embeddings") else None
-    cached = base.__dict__.get("_unsloth_diffusion_fused_head")
-    if cached is not None and cached[0] is head:
-        return cached[1]
     config = getattr(base, "config", None)
     ok = (
         is_plain_linear(head)
@@ -285,7 +282,6 @@ def fusable_head(model, base):
         and not getattr(config, "scale_logits", False)
         and head.weight.device.type != "meta"
     )
-    base.__dict__["_unsloth_diffusion_fused_head"] = (head, head if ok else None)
     return head if ok else None
 
 

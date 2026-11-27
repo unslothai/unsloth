@@ -414,8 +414,7 @@ def finalize(
     speed_optims: Any,
     resolved: Optional[dict] = None,
 ) -> Optional[list]:
-    """Reconcile the audit with the final ``speed_optims`` (post-placement arming may engage or drop a step) and attach
-    it to ``resolved["speed_mode"]["steps"]``. Returns the step list; never raises."""
+    """Reconcile the audit with final speed_optims, which placement can change; never raises."""
     if audit is None:
         return None
     try:

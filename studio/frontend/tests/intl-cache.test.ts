@@ -103,12 +103,12 @@ test("cached sizes match Number.toLocaleString", () => {
   for (const locale of LOCALES) {
     for (let bytes = 0; bytes < 2 ** 44; bytes = bytes * 3 + 7) {
       const value =
-        bytes < 1024
+        bytes < 1000
           ? bytes
-          : bytes / 1024 ** Math.min(4, Math.floor(Math.log2(bytes) / 10));
+          : bytes / 1000 ** Math.min(4, Math.floor(Math.log10(bytes) / 3));
       const digits = value >= 10 ? 0 : 1;
       const expected =
-        bytes < 1024
+        bytes < 1000
           ? bytes.toLocaleString(locale, { useGrouping: false })
           : value.toLocaleString(locale, {
               minimumFractionDigits: digits,

@@ -31,9 +31,8 @@ def mask_is_empty(mask: Any) -> bool:
 
 
 def overlay_with_mask(image: Any, source: Any, mask: Any) -> Any:
-    """Paste image over source through the blurred mask as A1111's apply_overlay does; inpaint
-    pipelines binarize the mask, so without this a blur only moves the hard edge; non-PIL output
-    is returned unchanged."""
+    """Pastes image over source through the blurred mask as A1111 does; inpaint pipelines binarize
+    the mask, so a blur would only move the hard edge; non-PIL output is returned unchanged."""
     from PIL import Image
 
     if not isinstance(image, Image.Image):

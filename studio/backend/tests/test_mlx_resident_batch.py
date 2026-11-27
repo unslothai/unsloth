@@ -55,6 +55,7 @@ class _Session:
         self.rows, self.ending, self.refusals = [], [], []
         self.settled, self.script, self.stats_at_retire = {}, {}, {}
         self.will_not_take, self.closed, self.admitted = set(), False, []
+        self.watched = {}
 
     @property
     def rows_in_flight(self):
@@ -66,6 +67,10 @@ class _Session:
 
     def take_stats(self, handle):
         return self.settled.pop(handle, None)
+
+    def watch_progress(self, handle, sink):
+        assert handle not in self.rows  # a row may prefill while it is admitted
+        self.watched[handle] = sink
 
     def admit(self, request, handle):
         if handle[0] in self.will_not_take or handle in self.will_not_take:
@@ -207,6 +212,20 @@ def test_a_failed_reply_whose_siblings_cannot_be_withdrawn_is_still_answered():
     batch.step()
     errors = {m["request_id"]: m["error"] for m in resp.sent if m["type"] == "gen_error"}
     assert errors == {"r1": "schema", "r2": "schema"} and batch.session is None
+
+
+def test_only_a_single_reply_that_asked_has_its_progress_sent():
+    batch, resp = _batch()
+    batch.admit(_cmd("r1", generation_progress = True), None)
+    batch.admit(_cmd("r2"), None)
+    batch.admit(_cmd("r3", generation_progress = True, rows = [{"seed": 1}, {"seed": 2}]), None)
+    assert list(batch.session.watched) == [("r1", None)]
+    asked = [h for h, request in batch.session.admitted if request.get("generation_progress")]
+    assert asked == [("r1", None)]
+    batch.session.watched[("r1", None)]({"predicted_n": 2})
+    sent = resp.sent[-1]
+    assert (sent["type"], sent["request_id"]) == ("generation_progress", "r1")
+    assert sent["sample"] == {"predicted_n": 2}
 
 
 def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():

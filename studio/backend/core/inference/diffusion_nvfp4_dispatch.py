@@ -47,6 +47,9 @@ def _probe() -> tuple:
     if env == "0":
         return False, f"{NVFP4_FAST_DISPATCH_ENV}=0"
     try:
+        from .flashinfer_import import import_flashinfer
+
+        import_flashinfer()
         import flashinfer
 
         version = str(getattr(flashinfer, "__version__", "unknown"))
@@ -103,7 +106,11 @@ def verify(device: Any) -> tuple:
 def _run_verify(device: Any) -> tuple:
     import torch
     try:
+        from .flashinfer_import import import_flashinfer
+
+        import_flashinfer()
         import flashinfer
+
         with torch.cuda.device(device):
             # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
             # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
@@ -186,6 +193,9 @@ def quant_fn(device: Any, *, force: bool = False):
 def _build_quant_fn(device: Any, index: int):
     import torch
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     from flashinfer.fp4_quantization import get_fp4_quantization_module
     from flashinfer.utils import device_support_pdl, get_compute_capability
 
@@ -294,6 +304,9 @@ def _runner(device: Any, index: int) -> tuple:
         return got
     import torch
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     from flashinfer.gemm.gemm_base import (
         DEFAULT_WORKSPACE_SIZE,
         _get_cache_buf,
@@ -386,6 +399,9 @@ def _tune_bucket(device: Any, runner: Any, workspace: Any, operands: list, bucke
     """FlashInfer's own profiler (its timing, failure handling and blocklist), at M = ``bucket`` only."""
     import time
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
     import torch
 
@@ -421,6 +437,9 @@ def _build_plan(
 ):
     import torch
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     from flashinfer.autotuner import AutoTuner
     from flashinfer.gemm.gemm_base import (
         DEFAULT_WORKSPACE_SIZE,

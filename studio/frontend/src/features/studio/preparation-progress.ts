@@ -81,8 +81,7 @@ function mentionsResource(haystack: string, name?: string): boolean {
   }
 }
 
-// No bare `token`: `tokenizing` is dataset work, `tokenizer` is model loading. Audio codecs only
-// preprocess the dataset.
+// No bare token: tokenizing is dataset work, tokenizer is model loading. Codecs: dataset only.
 const DATASET_PREPARATION_RE =
   /tokenizing|dataset|standardiz|\bmap\b|\bfilter\b|generating|resolving data|casting|formatting|\bsamples\b|local files|encoding audio|preprocessing|\brows\b|slic|snac|bicodec|outetts|whisper|codec|audio|eval split|chat template|\bconverting\b/i;
 

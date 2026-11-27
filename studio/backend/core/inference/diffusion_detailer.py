@@ -524,14 +524,18 @@ def _take_generation_slot(stop: Optional[Callable[[], bool]] = None) -> Any:
     """Acquire the active engine's generation lock (None if it has none); cancellable while waiting."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-        lock = getattr(get_active_diffusion_engine(), "_generate_lock", None)
+        engine = get_active_diffusion_engine()
+        lock = getattr(engine, "_generate_lock", None)
     except Exception:  # noqa: BLE001 -- no engine: no render to collide with
         return None
     if lock is None or not hasattr(lock, "acquire"):
         return None
-    while not lock.acquire(timeout = 0.1):
-        if stop is not None and stop():
-            raise DetailerCancelled("cancelled")
+    # A follow-up pass: goes before requests waiting in line.
+    jump = getattr(engine, "jump_slot_queue", None)
+    with jump() if callable(jump) else contextlib.nullcontext():
+        while not lock.acquire(timeout = 0.1):
+            if stop is not None and stop():
+                raise DetailerCancelled("cancelled")
     return lock
 
 

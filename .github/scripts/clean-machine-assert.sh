@@ -34,7 +34,6 @@ _decode_trace_arg() {
   printf -v "$2" '%s' "$_decoded"
 }
 
-# Allowed git+ remotes from the requirement files in $UNSLOTH_ALLOW_GIT_FROM.
 _allowed_git_remotes() {
   for _req in ${UNSLOTH_ALLOW_GIT_FROM:-}; do
     [ -f "$_req" ] || { echo "::error::UNSLOTH_ALLOW_GIT_FROM names a missing file: $_req" >&2; continue; }
@@ -91,9 +90,8 @@ _in_checkout_of() {
   done < "$TRACE.git-cwd"
 }
 
-# A git line naming no remote is allowed only in the exact shapes uv's git source uses to
-# check out a pinned commit from its own cache: nothing that can reach the network (a bare
-# `fetch origin` reads its URL from config) and nothing outside $UV_CACHE_DIR.
+# A git line with no remote is allowed only in uv's exact cache-checkout shapes: a bare fetch origin
+# reads its URL from config, so nothing may reach the network or leave $UV_CACHE_DIR.
 _is_uv_git_cache_op() { # the traced argument string
   _cache="${UV_CACHE_DIR%/}/git-v1"
   _is_uv_git_cache_op_in "$1" && return 0
@@ -128,8 +126,7 @@ _is_allowed_git_remote() {
   [ -n "$1" ] && printf '%s\n' "$2" | grep -qxF -- "${1%.git}"
 }
 
-# A git line naming a remote must match uv's exact fetch or submodule argv shapes against
-# an allowed remote, parsed as git would read it.
+# Match uv's exact fetch or submodule argv against an allowed remote, parsed as git reads it.
 _is_allowed_remote_git_line() {
   _line=$1
   _allowed=$2
@@ -379,8 +376,7 @@ for check in "$@"; do
       ;;
 
     macho)
-      # Rosetta 2 hides x86_64-only payloads on runners. Scan all of $MACHO_ROOT; any exclusion
-      # must be a named path rule, never a narrowed find.
+      # Rosetta 2 hides x86_64-only payloads; scan all of $MACHO_ROOT; exclude named paths only
       root="${MACHO_ROOT:-${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth}}"
       want="$(uname -m)"
       [ "$want" = "aarch64" ] && want=arm64
@@ -449,8 +445,7 @@ $f
         elif [ "$nbase" = "0" ]; then
           fail "no */bin/python under $root was classified as Mach-O, so the venv's base interpreter went unchecked (found: ${base_py:-none})"
         elif [ "$nuv" = "0" ]; then
-          # uv is in $HOME/.local/bin, on PATH, or under $root for a custom home: none
-          # classified means uv's arch went unproven.
+          # uv is in $HOME/.local/bin, PATH or $root; no Mach-O match leaves its arch unproven.
           fail "no uv was classified as Mach-O, so uv's arch went unproven"
         elif [ -n "$bad_arch" ]; then
           fail "Mach-O is not $want, so it runs here only under Rosetta 2, which a fresh Mac does not have:$bad_arch"

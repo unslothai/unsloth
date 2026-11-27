@@ -122,6 +122,7 @@ import {
   nativeAudioCheckpointIsLoadable,
   paramsFromId,
   pickerOrderedGgufVariants,
+  pinCoversId,
   pinDropAnchor,
   searchRowFitsDevice,
   taskForMediaPick,
@@ -254,7 +255,6 @@ import {
   pickerSide,
   expandQuantFavorites,
   favoritePinKey,
-  pinCoversId,
   readBounded,
   repoSection,
   sectionsHaveRows,
@@ -1637,6 +1637,7 @@ export function ComposerModelPicker({
   const pinned = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
+  const toggleRepoPinned = usePinnedModelsStore((s) => s.toggleRepoPinned);
   const pinnedConnected = usePinnedConnectedModelsStore((s) => s.pinned);
   const togglePinnedConnected = usePinnedConnectedModelsStore(
     (s) => s.togglePinnedConnected,
@@ -3621,13 +3622,10 @@ export function ComposerModelPicker({
       togglePinned(pinnedKey.slice(0, at), pinnedKey.slice(at + 2));
       return;
     }
-    if (isFavorite(row)) {
-      unpinRepo(row.id);
-      return;
-    }
-    const target = row.kind === "gguf" ? quantTarget(row) : null;
+    const target =
+      row.kind === "gguf" && !isFavorite(row) ? quantTarget(row) : null;
     if (!target || variantCount(row) > 1) {
-      togglePinned(row.id);
+      toggleRepoPinned(row.id);
       return;
     }
     const quant =

@@ -3,6 +3,7 @@
 
 import type { InterpolationValues, Locale, TranslationKey } from "@/i18n";
 import { formatRelativeTime } from "../../i18n/relative-time.ts";
+import { scaleBytes } from "../hub/lib/format.ts";
 import { formatDate, formatNumber } from "../../lib/intl-cache.ts";
 import { withTimeFormat } from "../../lib/time-format.ts";
 
@@ -61,6 +62,7 @@ export function formatActivityTime(ts: number, locale: Locale, t: Translate): st
 }
 
 const SIZE_UNITS = [
+  "library.size.bytes",
   "library.size.kilobytes",
   "library.size.megabytes",
   "library.size.gigabytes",
@@ -69,22 +71,13 @@ const SIZE_UNITS = [
 
 export function formatSize(bytes: number | null, locale: Locale, t: Translate): string | null {
   if (bytes === null) return null;
-  if (bytes < 1024) {
-    return t("library.size.bytes", { value: formatNumber(bytes, locale, { useGrouping: false }) });
-  }
-  let value = bytes / 1024;
-  let unit: (typeof SIZE_UNITS)[number] = SIZE_UNITS[0];
-  for (const next of SIZE_UNITS.slice(1)) {
-    if (value < 1024) break;
-    value /= 1024;
-    unit = next;
-  }
-  const digits = value >= 10 ? 0 : 1;
+  const { value, unit, decimals } = scaleBytes(bytes);
   const formatted = formatNumber(value, locale, {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+    useGrouping: false,
   });
-  return t(unit, { value: formatted });
+  return t(SIZE_UNITS[unit], { value: formatted });
 }
 
 export function formatItemCount(count: number, t: Translate): string {

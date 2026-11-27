@@ -10,6 +10,7 @@ import {
 } from "./helpers/module-stubs.ts";
 import * as transition from "../src/lib/account-transition.ts";
 import * as deadline from "../src/features/auth/bootstrap-deadline.ts";
+import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import type * as LoginClient from "../src/features/auth/login-client.ts";
 import type * as AccountSession from "../src/features/auth/account-session.ts";
 import { en } from "../src/i18n/locales/en.ts";
@@ -105,6 +106,7 @@ function mountForm(
     },
     "@/components/app-readiness": { useAppShellReadySignal: () => () => {} },
     "@/lib/api-base": desktop ? { ...base, isTauri: true } : base,
+    "@/lib/format-fastapi-error": formatFastApiError,
     "../tauri-auto-auth": {
       clearDesktopSignedOut: async () => {
         desktop?.calls.push("clear");
@@ -209,6 +211,7 @@ function client() {
   return loadWithStubs<typeof LoginClient>(clientUrl, {
     "@/lib/api-base": base,
     "@/lib/account-transition": transition,
+    "@/lib/format-fastapi-error": formatFastApiError,
   });
 }
 function environment(t: TestContext) {

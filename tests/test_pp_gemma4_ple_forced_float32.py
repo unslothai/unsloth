@@ -29,8 +29,7 @@ WIDTH = 8
 
 
 def _forced_float32_decoder():
-    """Tiny Gemma 4 E2B text decoder in float16 whose per-layer table returns float32, as Unsloth Zoo's
-    forced float32 patch (gemma4_float32.patch_Gemma4TextScaledWordEmbedding) makes it."""
+    """float16 Gemma 4 E2B decoder; per-layer table is float32 under the forced float32 patch."""
     model = tiny.build("gemma4_e2b", layers = LAYERS, lora = False, causal_lm = True).to(torch.float16)
     decoder = model.model
     table = decoder.embed_tokens_per_layer

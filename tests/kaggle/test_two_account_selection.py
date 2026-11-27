@@ -52,8 +52,7 @@ def test_no_workflow_names_a_secret_that_does_not_exist(path):
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_every_step_that_runs_a_kaggle_script_is_given_a_token(path):
-    """Derived from the workflow, not from a list, so a step added later cannot
-    quietly run credential-less and report the skip as a normal outcome."""
+    """Steps come from the workflow, not a list, so a new one cannot run without a token."""
     missing = []
     for job_name, step_name, step in _steps(_wf(path)):
         body = step.get("run") or ""
@@ -104,8 +103,7 @@ def test_the_chosen_token_is_INDEXED_and_never_a_ternary(path):
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_no_token_is_ever_a_job_output(path):
-    """The matrix carries a secret NAME. A token in an output is a credential in
-    a place GitHub redacts by pattern rather than by promise."""
+    """Job outputs must never hold a token: GitHub redacts secrets by pattern, not by promise."""
     for job_name, job in _wf(path)["jobs"].items():
         for key, value in (job.get("outputs") or {}).items():
             assert "secrets." not in str(value) and "secrets[" not in str(
@@ -177,8 +175,7 @@ def test_the_recheck_can_actually_stop_the_push(path):
 
 
 def test_the_split_follows_the_weekly_hours():
-    """60 and 30 must come out 2:1, and the weights are the accounts' own
-    totals rather than a number written here."""
+    """60 and 30 must split 2:1; weights come from the accounts' own totals, not literals."""
     counts = collections.Counter(
         gate.weighted_pick(str(i), {"1": 60.0, "2": 30.0})[0] for i in range(60000)
     )
@@ -210,9 +207,8 @@ def test_the_account_draw_is_salted_apart_from_the_sampling_draw():
 
 
 def test_every_run_of_one_commit_lands_on_the_same_account():
-    """A label or a forced dispatch starts a second run of the SAME commit with
-    a new run id. Keyed on the run id the draw could pick the other account,
-    which cannot see the first's kernel, and dispatch a duplicate."""
+    """A label or forced dispatch reruns the SAME commit with a new run id; keying the draw on run
+    id could pick the other account, which cannot see the first kernel."""
     weights = {"1": 60.0, "2": 30.0}
     sha = "0123456789abcdef0123456789abcdef01234567"
     assert len({gate.weighted_pick(sha, weights)[0] for _ in range(5)}) == 1
@@ -232,8 +228,7 @@ def test_every_run_of_one_commit_lands_on_the_same_account():
 
 
 def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():
-    """An account with unknown quota gets no weight, since a share comes from its plan, but it is
-    not disqualified and keeps its place as a fallback."""
+    """Unknown quota means no weight, not disqualification: the account stays as a fallback."""
     chosen, _ = gate.weighted_pick("5", {"1": 60.0})
     assert chosen == "1"
     chosen, _ = gate.weighted_pick("5", {})
@@ -241,17 +236,15 @@ def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():
 
 
 def test_the_reserve_is_a_fraction_of_the_plan_not_a_flat_number():
-    """20h held out of a 30h account is two thirds of it against one third of a
-    60h one, which silently makes the SMALLER account the stricter one -- on top
-    of it already taking less traffic by weight."""
+    """A flat 20h reserve would hold two thirds of a 30h account against one third of a 60h one,
+    making the smaller account stricter, on top of already taking less traffic by weight."""
     assert gate.scaled_reserve(20.0, 60.0, 60.0) == 20.0
     assert gate.scaled_reserve(20.0, 30.0, 60.0) == 10.0
     assert gate.scaled_reserve(10.0, 30.0, 60.0) == 5.0
 
 
 def test_an_unknown_plan_size_leaves_the_reserve_alone():
-    """Scaling by a total nobody could read would invent a number. The flat
-    value is the conservative answer and is what is kept."""
+    """Unknown plan total: keep the flat reserve, since scaling by it would invent a number."""
     assert gate.scaled_reserve(20.0, 0.0, 60.0) == 20.0
     assert gate.scaled_reserve(20.0, 30.0, 0.0) == 20.0
 
@@ -340,8 +333,7 @@ def _run_launcher(monkeypatch, tmp_path, username, *, user_arg):
 
 
 def test_the_launcher_refuses_a_username_the_token_does_not_own(tmp_path, monkeypatch):
-    """Launcher must refuse a username its token does not own, since cleanup could not delete the
-    kernels."""
+    """Refuse a username the token does not own, since cleanup could not delete its kernels."""
     code, result, pushed = _run_launcher(monkeypatch, tmp_path, "alice", user_arg = "bob")
     assert pushed == [], "a kernel was pushed under a name the token does not own"
     assert result["verdict"] == "infra"
@@ -371,8 +363,7 @@ def test_a_filed_slug_records_the_account_that_owns_it(tmp_path, monkeypatch):
 
 
 def test_neither_token_name_can_reach_the_kernel():
-    """The built notebook is what Kaggle receives. Both account env vars belong
-    in the forbidden list, not just the first one."""
+    """Kaggle gets the built notebook, so both account env vars must be on the forbidden list."""
     source = (REPO_ROOT / "tests" / "kaggle" / "test_t4_smoke_harness.py").read_text(
         encoding = "utf-8"
     )
@@ -383,8 +374,7 @@ def test_neither_token_name_can_reach_the_kernel():
 
 
 def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down():
-    """A handover lands a retry on another account whose GPU job sees only its own kernels, so the
-    gate surveys every account before picking one."""
+    """A retry may land on an account that sees only its own kernels, so survey all first."""
     sha = "abcdef0123456789" + "0" * 24
     own = [
         "danielhanchen/unsloth-t4-ci-sabcdef012345-1111 (RUNNING)",  # studio, this commit
@@ -430,9 +420,8 @@ def _drive_gate(
     clock = None,
     holder_slot = "1",
 ):
-    """Run gate.main() with two stub accounts. `holder` is the account whose
-    survey shows a notebook kernel of the commit under test; `outcomes` maps an
-    account to a probe outcome other than ok, the client still handed back."""
+    """Runs gate.main() with two stub accounts; holder's survey shows a notebook kernel of this
+    commit; outcomes maps an account to a non-ok probe, whose client is still handed back."""
     sha = "abcdef0123456789" + "0" * 24
     outcomes = outcomes or {}
     apis = {"1": object(), "2": object()}
@@ -521,8 +510,7 @@ def _other(sha: str) -> tuple[str, str]:
 def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The sampled account is free but the other holds a kernel for this commit, as on a retry after
-    a handover; checking only the sampled account would dispatch a duplicate."""
+    """The other holds this commit; checking only the sampled one would dispatch a duplicate."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other)
     assert code == 0
@@ -535,8 +523,7 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
 def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The dispatching account is likely short of quota now; skipping it in the sweep hands the
-    retry to the other account, which dispatches the same commit again."""
+    """Skipping a quota-short account hands the retry to the other, which dispatches again."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     for outcome in ("insufficient_quota", "quota_unreadable"):
         code, outputs, asked, _sha = _drive_gate(
@@ -548,15 +535,12 @@ def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commi
 
 
 def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tmp_path):
-    """A slot-2 session on the same ref is not a duplicate of a slot-1 kernel, but a retry of the
-    slot-2 run is; the slot in the kernel slug tells the two apart."""
+    """Slot 2 is no duplicate of slot 1, but its retry is; the slug's slot tells them apart."""
     sampled, _unused = _other("abcdef0123456789" + "0" * 24)
-    # Slot 1 kernel up, slot 2 asked for: runs.
     _c, outputs, _a, _s = _drive_gate(
         monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "1"
     )
     assert outputs["should_run"] == "true", outputs["reason"]
-    # Slot 2 kernel up, slot 2 asked for again: stands down.
     _c, outputs, _a, _s = _drive_gate(
         monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2"), holder_slot = "2"
     )
@@ -582,8 +566,7 @@ def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tm
 
 
 def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
-    """Two surveys each bounded by SURVEY_BUDGET_SEC outlive the gate job back
-    to back. The second gets whatever the first left of ONE budget."""
+    """Surveys share one SURVEY_BUDGET_SEC budget: the second gets what the first left."""
     clock = [1000.0]
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     _code, _outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other, clock = clock)
@@ -594,8 +577,7 @@ def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
 
 
 def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
-    """A dispatch naming unsloth_ref tests that ref, not github.sha; keyed on github.sha the gate
-    finds the wrong kernel, and after the default branch moves one ref can split across accounts."""
+    """Use unsloth_ref, not github.sha, or a moved branch can split one ref across accounts."""
     for path in (NOTEBOOK_WF, STUDIO_WF):
         gate_job = _wf(path)["jobs"]["gate"]
         steps = {s.get("id"): s for s in gate_job["steps"] if s.get("id")}

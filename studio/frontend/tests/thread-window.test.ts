@@ -121,7 +121,6 @@ test("the estimate learns what a line takes in each role from the rows measured 
 });
 
 test("three alike rows at the tail are enough to size the rest", () => {
-  // What a thread opens with: the last few rows measured, every other row a guess.
   const heights = new RowHeights();
   for (const index of [395, 397, 399]) heights.measure(meta(index, 60), 1700);
   const guess = heights.heightOf(meta(1, 60));
@@ -265,7 +264,6 @@ test("the thread is laid out as rows and the spacers standing in for the rest", 
     "gap[0,2)", 2, "gap[3,6)", 6, "top[7,10)", 10, 11, "bottom[12,15)", 15, "gap[16,19)", 19,
     "gap[20,20)",
   ]);
-  // Every row of the thread is in exactly one slot, in order.
   const covered: number[] = [];
   for (const slot of threadSlots({ start: 10, end: 12, pins: [2, 6, 15, 19] }, 20)) {
     if (slot.kind === "row") covered.push(slot.index);

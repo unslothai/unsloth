@@ -127,8 +127,7 @@ class _AudioModel(torch.nn.Module):
 
 
 class _AudioText(torch.nn.Module):
-    """PeAudioVideoModel-like: `audio_model` (with its own forward taking input_values) runs only
-    when audio is given; the text path otherwise."""
+    """PeAudioVideoModel-like: audio_model runs only when audio is given; else the text path."""
 
     def __init__(self):
         super().__init__()

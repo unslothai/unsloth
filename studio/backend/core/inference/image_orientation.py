@@ -15,8 +15,7 @@ def exif_upright(image: Any) -> Any:
             exif.load(image.info["exif"])
     except Exception:  # noqa: BLE001 - a malformed block leaves it unrotated, as the preview
         return image
-    # Chromium ignores WebP orientation but WebKit applies it: known macOS desktop divergence.
-    # TIFF needs no branch: its plugin applies orientation during load().
+    # WebP orientation: Chromium ignores it, WebKit applies it; TIFF applies it on load.
     method = {
         2: Image.Transpose.FLIP_LEFT_RIGHT,
         3: Image.Transpose.ROTATE_180,

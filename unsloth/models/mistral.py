@@ -246,7 +246,6 @@ def MistralForCausalLM_fast_forward(
         sliding_window = getattr(self.config, "sliding_window", None)
 
         if HAS_XFORMERS:
-            # Always create a causal mask for xformers.
             if sliding_window is None or sliding_window == "null" or sliding_window <= 0:
                 causal_mask = xformers.attn_bias.LowerTriangularMask()
             elif q_len <= sliding_window:
@@ -271,13 +270,11 @@ def MistralForCausalLM_fast_forward(
                 or sliding_window <= 0
                 or q_len <= sliding_window
             ):
-                # Fully causal mask.
                 causal_mask_values = torch.triu(
                     torch.full((q_len, q_len), -torch.inf, device = input_ids.device),
                     diagonal = 1,
                 )
             else:
-                # Sliding window attention.
                 q_indices = torch.arange(q_len, device = input_ids.device).view(-1, 1)
                 k_indices = torch.arange(q_len, device = input_ids.device).view(1, -1)
 
@@ -293,7 +290,6 @@ def MistralForCausalLM_fast_forward(
                 attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
             else:
                 if attention_mask.dim() == 2:
-                    # Convert the 0/1 padding mask to additive form: 1 -> 0 (keep), 0 -> -inf (mask).
                     padding_mask = torch.where(
                         attention_mask[:, None, None, :].bool(),
                         0.0,
@@ -353,7 +349,6 @@ def MistralForCausalLM_fast_forward(
     lm_head = self.lm_head.weight
     lm_head_device = lm_head.device
 
-    # Move items to same device as lm_head
     hidden_states = hidden_states.to(lm_head_device)
     if labels is not None:
         labels = labels.to(lm_head_device)
@@ -543,7 +538,6 @@ class FastMistralModel(FastLlamaModel):
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
             attention_module = MistralAttention,
         )
-        # Just for Mistral Nemo models.
         if function is not None and init_name is not None:
             function = patch_mistral_nemo_attention(function)
             exec(function, globals())
