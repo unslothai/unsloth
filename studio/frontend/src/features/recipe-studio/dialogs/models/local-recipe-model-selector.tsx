@@ -512,7 +512,6 @@ export function LocalRecipeModelSelector({
         if (cancelled) {
           return;
         }
-        // partial = missing or empty shard, or an interrupted download: loading it fails.
         setModels(response.models.filter((model) => !model.partial));
       })
       .catch((err) => {
