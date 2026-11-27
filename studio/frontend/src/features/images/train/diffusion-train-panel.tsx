@@ -996,17 +996,21 @@ export function DiffusionTrainPanel({
 
   // Re-armed in onStart too, so a run notifies even if "running" is never observed.
   const notifiedComplete = useRef(false);
+  // Keyed by job too: a hidden tab skips idle polls, so a run started elsewhere may finish unseen.
+  const notifiedJobId = useRef<string | null>(null);
   useEffect(() => {
     const producedAdapter =
       status?.status === "completed" ||
       (status?.status === "stopped" && Boolean(status?.lora_path));
-    if (producedAdapter && !notifiedComplete.current) {
+    const jobId = status?.job_id ?? null;
+    if (producedAdapter && (!notifiedComplete.current || notifiedJobId.current !== jobId)) {
       notifiedComplete.current = true;
+      notifiedJobId.current = jobId;
       onTrainingComplete?.();
     } else if (status?.status === "running" && notifiedComplete.current) {
       notifiedComplete.current = false;
     }
-  }, [status?.status, status?.lora_path, onTrainingComplete]);
+  }, [status?.status, status?.lora_path, status?.job_id, onTrainingComplete]);
 
   const selectedDataset =
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
@@ -1076,7 +1080,8 @@ export function DiffusionTrainPanel({
       cancelled = true;
       if (delayed !== undefined) clearTimeout(delayed);
     };
-  }, [active, status?.status]);
+    // job_id: a run that finished while a hidden tab skipped polls is never seen "running".
+  }, [active, status?.status, status?.job_id]);
 
   const openPrevRun = useCallback(async (jobId: string) => {
     try {
