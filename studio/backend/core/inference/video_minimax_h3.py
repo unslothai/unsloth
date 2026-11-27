@@ -1036,14 +1036,20 @@ def _decode_h3_video_by_timestamp(
                 raise ValueError(too_long)
             if last_relative is not None and relative < last_relative:
                 raise _H3MediaTimestampsUnavailable
+            time_base = getattr(frame, "time_base", None)
             if candidate is not None:
-                _fill_until(relative)
+                # At the target rate, a rounded timestamp can fall just after its output slot.
+                tolerance = (
+                    min(float(time_base), 1 / H3_FPS) / 2
+                    if whole_clip and source_fps == H3_FPS and time_base
+                    else 0.0
+                )
+                _fill_until(relative - tolerance)
                 if not whole_clip and len(frames) >= target_count:
                     return frames, timeline_start, end - start
             candidate = frame
             last_relative = relative
             duration = getattr(frame, "duration", None)
-            time_base = getattr(frame, "time_base", None)
             last_duration = (
                 float(duration * time_base)
                 if duration is not None and time_base is not None and duration > 0

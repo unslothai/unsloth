@@ -7922,16 +7922,16 @@ def _offset_audio_reference_video_data_url():
     buf = io.BytesIO()
     with av.open(buf, mode = "w", format = "matroska") as out:
         video = out.add_stream("ffv1", rate = 24)
-        video.width, video.height = (64, 64)
+        video.width, video.height = (128, 64)
         video.pix_fmt = "yuv444p"
         video.time_base = Fraction(1, 1000)
         audio = out.add_stream("pcm_s16le", rate = 44_100)
         audio.layout = "stereo"
         audio.time_base = Fraction(1, 44_100)
         for index in range(4 * 24):
-            frame = av.VideoFrame.from_ndarray(
-                np.zeros((64, 64, 3), dtype = np.uint8), format = "rgb24"
-            )
+            plane = np.zeros((64, 128, 3), dtype = np.uint8)
+            plane[:, index : index + 4] = 255
+            frame = av.VideoFrame.from_ndarray(plane, format = "rgb24")
             frame.pts = 5_000 + round(index * 1_000 / 24)
             frame.time_base = Fraction(1, 1000)
             for packet in video.encode(frame):
@@ -8048,7 +8048,7 @@ def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     assert np.mean(np.abs(waveform[sample_rate // 2 :])) > 0.25
 
     whole_frames, whole_audio, whole_rate = decode_h3_reference_video(blob)
-    assert len(whole_frames) == 96
+    assert [_decoded_frame_index(frame, width = 128) for frame in whole_frames] == list(range(96))
     assert whole_rate == 44_100
     assert whole_audio.shape == (4 * whole_rate, 2)
     assert np.max(np.abs(whole_audio[:whole_rate])) == 0
