@@ -216,12 +216,24 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._where = None
         if isinstance(self.optimizer, torch.optim.SGD) and isinstance(state_dict, dict):
             # A checkpoint of another optimizer (AdamW): SGD without momentum keeps no state, so do not load
-            # its moments onto the GPU.
+            # its moments onto the GPU, and keep SGD's own group options (momentum, dampening, ...), taking only
+            # the saved learning rate and weight decay.
             keep = {"momentum_buffer"}
             state = {
                 k: {n: v for n, v in s.items() if n in keep}
                 for k, s in (state_dict.get("state") or {}).items()
             }
+            saved = state_dict.get("param_groups") or []
+            groups = []
+            for current, group in zip(self.optimizer.param_groups, saved):
+                merged = {k: v for k, v in current.items() if k != "params"}
+                merged.update(
+                    {k: group[k] for k in ("lr", "weight_decay", "initial_lr") if k in group}
+                )
+                merged["params"] = group["params"]
+                groups.append(merged)
+            if len(groups) == len(saved):
+                state_dict = dict(state_dict, param_groups = groups)
             state_dict = dict(state_dict, state = {k: s for k, s in state.items() if s})
         return self.optimizer.load_state_dict(state_dict)
 
@@ -507,6 +519,48 @@ def _activation_bytes(model, seq, batch):
     return tokens * hidden * int(per_token) + min(tokens, 2048) * vocab * 4
 
 
+def _loop_layer_ids(model):
+    """Decoder layers a looped model (a text config with loop_config.num_passes > 1, as Inkling-2) runs again."""
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    loop = getattr(text, "loop_config", None)
+    if isinstance(loop, dict):
+        passes, start, end = loop.get("num_passes", 1), loop.get("core_start"), loop.get("core_end")
+    else:
+        passes = getattr(loop, "num_passes", 1)
+        start, end = getattr(loop, "core_start", None), getattr(loop, "core_end", None)
+    try:
+        if int(passes or 1) <= 1 or start is None or end is None:
+            return set()
+        return set(range(int(start), int(end)))
+    except (TypeError, ValueError):
+        return set()
+
+
+def _reused_bytes(model, params):
+    """Gradients the in-backward step keeps until optimizer.step() that the model's structure shows: weights shared
+    by several modules or several paths (tied embeddings, shared blocks) and a looped model's loop layers. Reuse
+    that only the forward shows is deferred as well, but is not budgeted here."""
+    mine = {id(p): p for p in params}
+    reused = {}
+    seen = {}
+    for name, module in model.named_modules(remove_duplicate = False):
+        for p in module.parameters(recurse = False):
+            if id(p) in mine:
+                seen.setdefault(id(p), set()).add(name)
+    for pid, names in seen.items():
+        if len(names) > 1:
+            reused[pid] = mine[pid]
+    loops = _loop_layer_ids(model)
+    if loops:
+        import re
+        for name, p in model.named_parameters():
+            m = re.search(r"(?:^|\.)layers\.(\d+)\.", name)
+            if m and int(m.group(1)) in loops and id(p) in mine:
+                reused[id(p)] = p
+    return sum(p.numel() * p.element_size() for p in reused.values())
+
+
 def _trainable(model):
     seen, out = set(), []
     for p in model.parameters():
@@ -552,9 +606,13 @@ def plan_auto_fit(
     seq, batch = _seq_and_batch(trainer, model)
     activations = _activation_bytes(model, seq, batch)
     margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
+    # Reused weights (tied, shared, looped) keep their gradient until the step in both in-backward tiers.
+    deferred = _reused_bytes(model, params)
+    if deferred:
+        live -= largest_bytes  # the tied head gradient is part of the deferred bytes
     standard = grads + states + max(activations, step_temp) + margin
-    in_backward = states + max(activations, live) + margin
-    lomo = max(activations, live_lomo) + margin
+    in_backward = states + deferred + max(activations, live) + margin
+    lomo = deferred + max(activations, live_lomo) + margin
     if usable_bytes is None:
         usable_bytes = _usable_bytes(params)
     return dict(
@@ -564,6 +622,7 @@ def plan_auto_fit(
         lomo = lomo,
         grads = grads,
         states = states,
+        deferred = deferred,
         params = sum(p.numel() for p in params),
         seq = seq,
         batch = batch,

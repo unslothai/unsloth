@@ -362,7 +362,12 @@ def test_sgd_tier_does_not_load_adamw_moments(af):
     wrapper = af.InBackwardOptimizer(af._sgd_from(adamw))
     wrapper.load_state_dict(adamw.state_dict())  # resuming an AdamW checkpoint with the SGD tier
     assert len(wrapper.optimizer.state) == 0
-    assert wrapper.param_groups[0]["lr"] == 1e-2
+    assert wrapper.param_groups[0]["lr"] == 1e-2 and wrapper.param_groups[0]["momentum"] == 0.0
+    before = model.weight.detach().clone()
+    with wrapper.armed():
+        model(torch.randn(2, 4)).sum().backward()
+    wrapper.step()  # SGD's own group options survived the load
+    assert not torch.equal(before, model.weight)
 
 
 def test_token_budget_and_layer_major_see_the_in_backward_step(af):
@@ -601,3 +606,17 @@ def test_a_functionally_read_weight_in_a_looped_block_is_stepped_at_the_end(af):
         wrapper.step()
     assert _weights_equal(standard, head)
     assert wrapper.deferred_steps == 3 * 2
+
+
+def test_planner_budgets_tied_and_looped_gradients(af):
+    model = _tiny_model()  # tied embedding and head
+    params = af._trainable(model)
+    tied = model.get_input_embeddings().weight
+    assert af._reused_bytes(model, params) == tied.numel() * tied.element_size()
+    model.config.loop_config = {
+        "num_passes": 3,
+        "core_start": 1,
+        "core_end": 2,
+    }  # layer 1 runs three times
+    layer = sum(p.numel() * p.element_size() for p in model.model.layers[1].parameters())
+    assert af._reused_bytes(model, params) == tied.numel() * tied.element_size() + layer
