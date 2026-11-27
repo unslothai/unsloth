@@ -636,6 +636,11 @@ class _Float32Step:
                     p.detach(), stepped, _reseed(self.optimizer, p, self.seed)
                 )
             if _is_dtensor(p):
+                # The rounding wrote the local shard: bump the DTensor's own version counter too, so a graph
+                # saved before the step refuses to backpropagate, as for a plain weight.
+                increment = getattr(torch.autograd.graph, "increment_version", None)
+                if increment is not None:
+                    increment(p)
                 _count(self.optimizer, "_unsloth_sr_dtensor_rounds")
         return False
 

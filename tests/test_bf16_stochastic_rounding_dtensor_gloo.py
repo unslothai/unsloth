@@ -124,6 +124,8 @@ def _dtensor_worker(rank, world, port, out, root, device, fused, sr_env):
         exact_opt = torch.optim.AdamW(list(exact.values()), lr = LR, weight_decay = 0.0)
 
         result = {"covered": covered, "rank": rank}
+        # A graph saved before the step must refuse to backpropagate through the stepped weight.
+        stale = (params["row"] * params["row"]).sum()
         for step in range(STEPS):
             for k in params:
                 params[k].grad = grads[k]
@@ -133,6 +135,11 @@ def _dtensor_worker(rank, world, port, out, root, device, fused, sr_env):
             single_opt.step()
             exact_opt.step()
             if step == 0:
+                try:
+                    stale.backward()
+                    result["stale_graph_refused"] = False
+                except RuntimeError as exc:
+                    result["stale_graph_refused"] = "modified by an inplace operation" in str(exc)
                 first = {}
                 for k, p in params.items():
                     full = p.full_tensor().float()
@@ -279,6 +286,7 @@ def test_dtensor_shards_round_stochastically(device, fused):
         if device == "cuda" and fused == "1":
             assert r["fused_steps"] == 3 * STEPS, r
         assert r["dtype_kept"] and r["state_dtensor"], r
+        assert r["stale_graph_refused"], r
         for k, f in r["first"].items():
             if isinstance(f, dict):
                 # Each element is one of the two bfloat16 neighbours of the exact float32 AdamW result.
@@ -308,6 +316,7 @@ def test_opt_out_keeps_round_to_nearest_on_dtensors():
     ranks = _run(_dtensor_worker, "cpu", "1", "0")
     for r in ranks:
         assert r["covered"] == 0 and r["dtensor_rounds"] == 0, r
+        assert r["stale_graph_refused"], r
         assert all(f["moved"] == 0.0 for f in r["first"].values() if isinstance(f, dict)), r
         assert all(change == 0.0 for change in r["mean_change"].values()), r
         assert all(change > 0.5 * STEPS * LR for change in r["exact_mean_change"].values()), r
