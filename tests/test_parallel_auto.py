@@ -1048,3 +1048,36 @@ def test_fp8_and_int8_checkpoints_count_their_stored_bytes(clean):
     assert w8 == n + 4 * 4096
     assert lora8 == 16 * (4096 + 4096)
     assert auto.checkpoint_estimate(int8, full_finetuning = True)[1] == n + 4096
+
+
+@pytest.mark.parametrize(
+    "kept, extra, want",
+    [
+        (True, {}, "ddp"),  # FP8 compute: 16 MiB of FP8 weights fit 25 MiB
+        (False, {}, "fsdp2"),  # below sm89 / CPU: transformers dequantizes to 32 MiB of 16-bit
+        (True, {"load_in_16bit": True}, "fsdp2"),  # an explicit 16-bit load dequantizes
+    ],
+    ids = ["fp8_device", "dequantizing_device", "load_in_16bit"],
+)
+def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
+    mp, _, auto = clean
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(
+        auto,
+        "_checkpoint_tensors",
+        lambda name, **kwargs: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 4096))],
+    )
+    mp.setattr(auto, "_fp8_kept_on_load", lambda: kept, raising = False)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(
+        from_pretrained, ("org/model-fp8",), {"load_in_4bit": False, **extra}
+    )
+    assert got == want, auto._STATE["reason"]

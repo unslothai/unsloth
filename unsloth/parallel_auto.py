@@ -138,6 +138,23 @@ def _local_cuda_device(torch):
     return torch.cuda.current_device()
 
 
+def _fp8_kept_on_load():
+    """Whether this rank's device keeps FP8 checkpoint weights FP8. A CUDA GPU below compute capability 8.9
+    (and CPU) has transformers dequantize them to 16-bit on load (verify_fp8_support_if_applicable)."""
+    try:
+        import torch
+        if getattr(torch.version, "hip", None) or (
+            hasattr(torch, "xpu") and torch.xpu.is_available()
+        ):
+            return True
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability(_local_cuda_device(torch))
+            return major * 10 + minor >= 89
+    except Exception:
+        pass
+    return False
+
+
 def _budget(held = 0, held_cuda = 0):
     """(capacity, total) bytes for this rank: what it could use and the device size the margin is a share of.
     CUDA: free + the allocator's reusable cache (reserved - allocated) + `held_cuda`, the part of the sized model
@@ -553,7 +570,9 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
             hidden_size = _hidden_size(name, call, revision),
-            dequantize_fp8 = load_in_16bit or full,
+            dequantize_fp8 = load_in_16bit
+            or full
+            or (any(dt.startswith("F8") for _, dt, _ in tensors) and not _fp8_kept_on_load()),
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
