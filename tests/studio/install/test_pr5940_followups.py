@@ -241,7 +241,6 @@ def test_amd_smi_allowed_on_linux_regardless(module):
 @pytest.mark.parametrize("hipinfo_present", [False, True], ids = ["no-hip-sdk", "hip-sdk"])
 @pytest.mark.parametrize("flag", [None, "1", "0"], ids = ["unset", "opt-in", "opt-out"])
 def test_amd_smi_never_runs_on_windows(module, hipinfo_present, flag):
-    # A HIP SDK used to open the gate, which popped DiskPart prompts during every update.
     env = {} if flag is None else {"UNSLOTH_ENABLE_AMD_SMI": flag}
     assert _amd_smi_allowed_under(module, "Windows", hipinfo_present, env) is False
 

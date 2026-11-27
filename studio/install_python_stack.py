@@ -12071,7 +12071,6 @@ def install_python_stack() -> int:
         _ensure_xpu_triton()
 
     if IS_WINDOWS and not NO_TORCH and not _has_usable_nvidia_gpu():
-        # hipinfo only: Windows amd-smi pops a UAC/DiskPart prompt (_amd_smi_allowed).
         _win_amd_gpu = False
         _hipinfo = shutil.which("hipinfo")
         if _hipinfo:

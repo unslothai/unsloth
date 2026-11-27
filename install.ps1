@@ -8865,8 +8865,7 @@ main()
     function Test-OtherVendorAdapterPresent {
         param($Scan = $null)
         if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-        # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK)
-        # vetoes too.
+        # AMD evidence found without WMI (override, forwarded arch, HIP SDK) vetoes too.
         if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
         try {
             if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
