@@ -126,8 +126,8 @@ class ModelDetails(BaseModel):
     model_size_bytes: Optional[int] = Field(
         None, description = "Total size of model weight files in bytes"
     )
-    cached_bnb_4bit: bool = Field(
-        False, description = "Whether the selected cache snapshot contains bitsandbytes 4-bit weights"
+    bnb_4bit: bool = Field(
+        False, description = "Whether the checkpoint the worker loads is bitsandbytes 4-bit"
     )
 
 

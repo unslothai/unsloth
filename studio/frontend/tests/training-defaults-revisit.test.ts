@@ -41,7 +41,7 @@ let requests: string[] = [];
 let failNext = false;
 let audioTypeKnown = true;
 let modelSize: number | null = null;
-let cachedBnb4Bit = false;
+let bnb4Bit = false;
 let deviceBackend = "cuda";
 
 function details(): Record<string, unknown> {
@@ -55,7 +55,7 @@ function details(): Record<string, unknown> {
     is_lora: false,
     model_type: "text",
     model_size_bytes: modelSize,
-    cached_bnb_4bit: cachedBnb4Bit,
+    bnb_4bit: bnb4Bit,
     max_position_embeddings: 40960,
   };
 }
@@ -85,7 +85,7 @@ beforeEach(() => {
   failNext = false;
   audioTypeKnown = true;
   modelSize = null;
-  cachedBnb4Bit = false;
+  bnb4Bit = false;
   deviceBackend = "cuda";
   useHfTokenStore.setState({ token: "" });
   useTrainingConfigStore.getState().reset();
@@ -235,7 +235,7 @@ test("a cached bitsandbytes checkpoint defaults to QLoRA on CUDA", async () => {
   const model = "unsloth/Qwen3-8B-unsloth-bnb-4bit";
   // The actual two Hub shard sizes are smaller than the corresponding 16-bit weights.
   modelSize = 4_975_369_365 + 2_504_973_894;
-  cachedBnb4Bit = true;
+  bnb4Bit = true;
   useTrainingConfigStore.getState().selectTrainingModel(model, "text", {
     knownCached: true,
     localPath: "/cache/models--unsloth--Qwen3-8B-unsloth-bnb-4bit/snapshots/abc",
@@ -261,8 +261,16 @@ test("the ordinary hardware choice still selects LoRA for 16-bit weights that fi
 
 test("the cached CUDA recommendation does not change the non-CUDA policy", async () => {
   modelSize = 3 * 1024 ** 3;
-  cachedBnb4Bit = true;
+  bnb4Bit = true;
   deviceBackend = "rocm";
   await pickModel();
   assert.equal(useTrainingConfigStore.getState().trainingMethod, "lora");
+});
+
+test("a bitsandbytes repo picked from the Hub also defaults to QLoRA on CUDA", async () => {
+  modelSize = 4_975_369_365 + 2_504_973_894;
+  bnb4Bit = true;
+  await pickModel();
+  assert.doesNotMatch(requests[0], /prefer_local_cache=true/);
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "qlora");
 });

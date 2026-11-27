@@ -23,8 +23,20 @@ import routes.models as models_route
 import utils.models.model_config as model_config_module
 
 
-def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
+@pytest.mark.parametrize(
+    "quantization,expected_4bit",
+    [({}, False), ({"quant_method": "bitsandbytes", "load_in_4bit": True}, True)],
+)
+def test_get_model_config_resolves_cached_case_before_model_checks(
+    quantization, expected_4bit, monkeypatch
+):
+    import utils.transformers_version as transformers_version
+
     calls: dict[str, str] = {}
+
+    def _record_config_json(model_name, hf_token = None):
+        calls["config_json"] = model_name
+        return {"quantization_config": quantization}
 
     class _DummyModelConfig:
         is_lora = False
@@ -79,6 +91,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     )
     monkeypatch.setattr(models_route, "_get_max_position_embeddings", lambda _: 4096)
     monkeypatch.setattr(models_route, "_get_model_size_bytes", _record_remote_size)
+    monkeypatch.setattr(transformers_version, "_load_config_json", _record_config_json)
 
     result = asyncio.run(
         models_route.get_model_config(
@@ -95,8 +108,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     assert calls["detect_audio_type"] == "Org/Model"
     assert calls["from_identifier"] == "Org/Model"
     assert calls["model_size"] == "Org/Model"
+    assert calls["config_json"] == "Org/Model"
     assert result.model_size_bytes == 123
-    assert result.cached_bnb_4bit is False
+    assert result.bnb_4bit is expected_4bit
 
 
 @pytest.mark.parametrize(
@@ -250,7 +264,7 @@ def test_get_model_config_inspects_selected_cache_snapshot(
     assert result.is_audio is True
     assert result.audio_type == "bicodec"
     assert result.model_size_bytes == expected_model_size
-    assert result.cached_bnb_4bit is expected_4bit
+    assert result.bnb_4bit is expected_4bit
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "mismatched"])

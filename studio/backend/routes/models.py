@@ -2596,31 +2596,30 @@ async def get_model_config(
                 pass
 
             selected_snapshot = prefer_local_cache and inspection_target != model_name
-            cached_bnb_4bit = False
-            # Read declarative fields from the same snapshot the worker will use. Never run a repo's auto_map.
-            if selected_snapshot or max_position_embeddings is None:
-                try:
-                    from utils.transformers_version import _load_config_json
-                    from types import SimpleNamespace
+            bnb_4bit = False
+            # Raw config.json of the target the worker loads: declarative fields only, never a repo's auto_map.
+            try:
+                from utils.transformers_version import _load_config_json
+                from types import SimpleNamespace
 
-                    _cfg = _load_config_json(inspection_target, hf_token = hf_token)
-                    if selected_snapshot and isinstance(_cfg, dict):
-                        quant = _cfg.get("quantization_config")
-                        cached_bnb_4bit = (
-                            isinstance(quant, dict)
-                            and quant.get("quant_method") == "bitsandbytes"
-                            and quant.get("load_in_4bit", quant.get("_load_in_4bit")) is True
-                        )
-                    if max_position_embeddings is None and _cfg is not None:
+                _cfg = _load_config_json(inspection_target, hf_token = hf_token)
+                if isinstance(_cfg, dict):
+                    quant = _cfg.get("quantization_config")
+                    bnb_4bit = (
+                        isinstance(quant, dict)
+                        and quant.get("quant_method") == "bitsandbytes"
+                        and quant.get("load_in_4bit", quant.get("_load_in_4bit")) is True
+                    )
+                if max_position_embeddings is None and _cfg is not None:
 
-                        def _to_ns(d):
-                            if isinstance(d, dict):
-                                return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
-                            return d
+                    def _to_ns(d):
+                        if isinstance(d, dict):
+                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                        return d
 
-                        max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
-                except Exception:
-                    pass
+                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+            except Exception:
+                pass
 
             if (
                 as_decision
@@ -2666,7 +2665,7 @@ async def get_model_config(
                     if selected_snapshot
                     else _get_model_size_bytes(model_name, hf_token)
                 ),
-                cached_bnb_4bit = cached_bnb_4bit,
+                bnb_4bit = bnb_4bit,
             )
 
     try:

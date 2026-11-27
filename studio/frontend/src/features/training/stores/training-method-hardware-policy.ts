@@ -8,7 +8,7 @@ export async function selectTrainingMethodForHardware(
   modelSizeBytes: number,
   contextLength: number,
   signal: AbortSignal,
-  cachedBnb4Bit = false,
+  bnb4Bit = false,
 ): Promise<TrainingMethod | null> {
   try {
     const response = await authFetch("/api/system/hardware", { signal });
@@ -20,7 +20,7 @@ export async function selectTrainingMethodForHardware(
     if (freeVramGb == null) {
       return null;
     }
-    if (cachedBnb4Bit && hardware?.device_backend === "cuda") {
+    if (bnb4Bit && hardware?.device_backend === "cuda") {
       return "qlora";
     }
 
