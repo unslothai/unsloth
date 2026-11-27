@@ -210,10 +210,10 @@ if triton is not None:
         K,
         stride_d,
         HAS_D: tl.constexpr,  # add the LoRA term / running input gradient in the epilogue
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        GROUP_M: tl.constexpr,
+        BLOCK_M: tl.constexpr,  # rows of c per program
+        BLOCK_N: tl.constexpr,  # columns of c per program
+        BLOCK_K: tl.constexpr,  # reduction step; K % BLOCK_K == 0, so the K loop loads unmasked
+        GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the b tiles
     ):
         # c[m, n] = as[m] * bs[n] * sum_k a[m, k] b[n, k] (+ d[m, n]); a, b int8 with K contiguous, K % BLOCK_K == 0.
         pid = tl.program_id(0)
@@ -261,12 +261,12 @@ if triton is not None:
         N,
         K,
         stride_d,
-        HAS_D: tl.constexpr,
-        INV_SQRT_G: tl.constexpr,
+        HAS_D: tl.constexpr,  # add d (the running input gradient) in the epilogue
+        INV_SQRT_G: tl.constexpr,  # 1 / sqrt(G), the Hadamard normalisation
         G: tl.constexpr,  # output columns per program = the Hadamard block, fixed 128
-        BLOCK_M: tl.constexpr,
+        BLOCK_M: tl.constexpr,  # rows of c per program
         BLOCK_R: tl.constexpr,  # reduction (N) step
-        GROUP_M: tl.constexpr,
+        GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the bt tiles
     ):
         # c[m, kblock] = (as[m] * sum_n a[m, n] bt[kblock, n]) @ H / sqrt(G) (+ d): a [M, N] int8 codes of dY * s,
         # bt [K, N] the transposed forward int8 codes of W @ H (int8 MMA operands are K-major); the epilogue undoes
