@@ -1730,8 +1730,7 @@ def discover_image_caption_pairs(
             try:
                 caption = sidecar.read_text(encoding = "utf-8").strip()
             except (OSError, UnicodeError):
-                # An unreadable sidecar reads as the empty tombstone, so the instance_prompt fallback applies
-                # instead of a 500.
+                # Unreadable reads as the empty tombstone: instance_prompt fallback, not a 500.
                 caption = ""
         # Metadata keyed by basename or as_posix path (Windows-safe); a sidecar, even empty, wins.
         if not sidecar_present:
