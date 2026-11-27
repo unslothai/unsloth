@@ -523,10 +523,10 @@ test("text and reasoning parts are continuable, empty text is not", () => {
 });
 
 test("providers that reject a trailing assistant turn get the instruction path", () => {
-  // Anthropic, Gemini and Mistral each reject or cannot express a trailing assistant prefill.
   assert.equal(rejectsAssistantPrefill("anthropic"), true);
   assert.equal(rejectsAssistantPrefill("gemini"), true);
   assert.equal(rejectsAssistantPrefill("mistral"), true);
+  assert.equal(rejectsAssistantPrefill("github_copilot"), true);
   assert.equal(rejectsAssistantPrefill("openai"), false);
   assert.equal(rejectsAssistantPrefill(undefined), false);
 });
