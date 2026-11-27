@@ -7952,13 +7952,11 @@ html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is([data-slot$=
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .665), inset 0 -1px 0 color-mix(in srgb, var(--foreground) 8%, transparent), var(--glass-lift, 0 0 #0000) !important;
 }
 }
-/* Toasts and the floating cards (.toast-surface: update cards; .glass-card: downloads, loaded models, monitors) take the
-   composer's glass and no drop shadow. !important: Sonner injects its base rules at runtime. */
+/* Toasts and floating cards take the composer's glass, no drop shadow. !important: Sonner injects its base rules at runtime. */
 html[data-glass][data-glass-menus] :is([data-sonner-toast][data-styled="true"], .toast-surface, .glass-card) {
   --accent: var(--glass-hover);
   --muted: var(--glass-hover);
   --secondary: var(--glass-field);
-  /* The composer draws its edge with --composer-shadow, never a border. */
   border-color: transparent !important;
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + var(--glass-composer-boost, 0%)) * var(--glass-opacity, 1))), transparent) !important;
