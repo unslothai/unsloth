@@ -8,10 +8,10 @@ import { readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { deltaReasoningText } = await import(
+const { deltaReasoningText, parseAssistantContent } = await import(
   "../src/features/chat/utils/parse-assistant-content.ts"
 );
-const { generationChunkHasSubstantiveDelta } = await import(
+const { appendRecoveredDelta, generationChunkHasSubstantiveDelta } = await import(
   "../src/features/chat/utils/chat-generation-recovery.ts"
 );
 
@@ -55,16 +55,23 @@ test("an OpenRouter thought is read from reasoning_details once", () => {
   assert.equal(generationChunkHasSubstantiveDelta(openRouterChunks[1]), false);
 });
 
-const recoveryReader = (source: string): string => {
+test("a recovered OpenRouter reply keeps its Reasoning block", () => {
+  let reply = { raw: "", reasoningOpen: false, parseThink: false, splitReasoningSeen: false };
+  for (const chunk of openRouterChunks) {
+    reply = appendRecoveredDelta(reply, chunk.choices[0].delta);
+  }
+  assert.equal(reply.raw, "<think>Let me think. </think>The answer is 4.");
+  assert.deepEqual(
+    parseAssistantContent(reply.raw, { parseThink: reply.parseThink }).map((part) => part.type),
+    ["reasoning", "text"],
+  );
+});
+
+test("the recovery follow replays chunks through appendRecoveredDelta", () => {
+  const source = readText("../src/features/chat/runtime-provider.tsx");
   const start = source.indexOf("function scheduleGenerationRecovery");
   assert.ok(start > 0, "scheduleGenerationRecovery is gone");
-  return source.slice(start, source.indexOf("\nfunction ", start + 1));
-};
-
-test("a recovered reply reads its thought the way the live stream does", () => {
-  const recovery = recoveryReader(readText("../src/features/chat/runtime-provider.tsx"));
-  const live = readText("../src/features/chat/api/chat-adapter.ts");
-  assert.match(recovery, /deltaReasoningText\(deltaRecord\)/);
-  assert.doesNotMatch(recovery, /deltaRecord\?\.reasoning_content/);
-  assert.match(live, /deltaReasoningText\(chunk\.choices\?\.\[0\]\?\.delta\)/);
+  const recovery = source.slice(start, source.indexOf("\nfunction ", start + 1));
+  assert.match(recovery, /appendRecoveredDelta\(/);
+  assert.doesNotMatch(recovery, /reasoning_content/);
 });

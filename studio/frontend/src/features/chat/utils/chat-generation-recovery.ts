@@ -36,6 +36,41 @@ export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
   );
 }
 
+export type RecoveredReply = {
+  raw: string;
+  reasoningOpen: boolean;
+  parseThink: boolean;
+  splitReasoningSeen: boolean;
+};
+
+// Marked as the live stream marks them, so a recovered reply parses the same way.
+export function appendRecoveredDelta(
+  reply: RecoveredReply,
+  deltaRecord: unknown,
+): RecoveredReply {
+  let { raw, reasoningOpen, parseThink, splitReasoningSeen } = reply;
+  const content = (deltaRecord as { content?: unknown } | null | undefined)
+    ?.content;
+  const reasoning = deltaReasoningText(deltaRecord);
+  const { text: delta, hasStructuredReasoning } = extractDeltaText(content);
+  if (reasoning || hasStructuredReasoning) parseThink = true;
+  if (reasoning) {
+    if (!reasoningOpen) raw += "<think>";
+    raw += markLiteralThinkTags(reasoning);
+    reasoningOpen = true;
+    splitReasoningSeen = true;
+  }
+  if (delta) {
+    if (reasoningOpen) raw += "</think>";
+    raw +=
+      splitReasoningSeen && typeof content === "string"
+        ? markLiteralThinkTags(delta)
+        : delta;
+    reasoningOpen = false;
+  }
+  return { raw, reasoningOpen, parseThink, splitReasoningSeen };
+}
+
 export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
