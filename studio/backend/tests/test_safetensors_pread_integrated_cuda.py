@@ -192,7 +192,7 @@ def test_integrated_cuda_reads_every_shard_through_pread(monkeypatch, tmp_path, 
     [
         ("linux", (False,), False, None),  # discrete NVIDIA
         ("win32", (False,), False, None),
-        ("linux", (True,), True, None),  # ROCm APU: left to its pending timing rerun
+        ("linux", (True,), True, None),  # ROCm APU with plenty of memory: its gate keeps mmap
         ("linux", (True,), False, "0"),  # explicit off wins
         ("win32", (True,), False, "0"),
     ],
@@ -203,6 +203,7 @@ def test_other_targets_keep_their_backend(monkeypatch, tmp_path, platform, integ
     if env is not None:
         monkeypatch.setenv(sp.PREAD_ENV, env)
     _stub_cuda(monkeypatch, integrated, rocm)
+    monkeypatch.setattr(sp, "host_memory", lambda: (100 * sp.GiB, 128 * sp.GiB))
     seen = _spy_backends(monkeypatch)
     with _image_scope("cuda"):
         _load_both(shards)

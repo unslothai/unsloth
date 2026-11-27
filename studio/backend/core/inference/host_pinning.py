@@ -92,6 +92,20 @@ def cuda_is_integrated(device: Any = None) -> bool:
         return False
 
 
+def rocm_is_integrated(device: Any = None) -> bool:
+    """ROCm integrated GPU (Strix Halo / gfx1151 and other APUs: VRAM is host RAM); False on CUDA and on any error."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch):
+            return False
+        return device_integrated_status(device) is True
+    except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
+        return False
+
+
 def host_pinning_allowed(device: Any = None) -> bool:
     return not device_is_integrated(device)
 

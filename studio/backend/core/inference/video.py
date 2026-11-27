@@ -8216,7 +8216,7 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
-            from .host_pinning import cuda_is_integrated
+            from .host_pinning import cuda_is_integrated, rocm_is_integrated
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
@@ -8229,8 +8229,9 @@ class VideoBackend:
                     else resolve_diffusion_device_target(ordinal = _ordinal)
                 )
                 integrated_cuda = cuda_is_integrated(_target.torch_device)
+                integrated_rocm = rocm_is_integrated(_target.torch_device)
             except Exception:  # noqa: BLE001 - unresolvable target: the platform default
-                integrated_cuda = False
+                integrated_cuda = integrated_rocm = False
 
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
@@ -8247,7 +8248,9 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors(integrated_cuda = integrated_cuda):
+                with pread_safetensors(
+                    integrated_cuda = integrated_cuda, integrated_rocm = integrated_rocm
+                ):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):

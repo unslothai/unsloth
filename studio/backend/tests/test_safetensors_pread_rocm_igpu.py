@@ -1,20 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux ROCm integrated GPUs (unified memory) read every safetensors shard through ``pread``, transformers' and
-diffusers' readers alike; CUDA, discrete ROCm and Windows keep their behaviour. CPU only."""
+"""Reader decision table: integrated NVIDIA always pread (#19905), a ROCm integrated GPU pread only under host-memory
+pressure, discrete GPUs mmap, UNSLOTH_SAFETENSORS_PREAD=auto|pread|mmap wins. Checksums unchanged. CPU only."""
 
 from __future__ import annotations
+
+import functools
+import sys
 
 import pytest
 import torch
 
 import core.inference.safetensors_pread as sp
+from core.inference import host_pinning
 
 transformers = pytest.importorskip("transformers")
-import safetensors.torch as st_torch  # noqa: E402
 import transformers.modeling_utils as modeling_utils  # noqa: E402
+
+mlu = pytest.importorskip("diffusers.models.model_loading_utils")
+import safetensors  # noqa: E402
+import safetensors.torch  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
+
+from core.inference import diffusion  # noqa: E402
+
+GiB = sp.GiB
+MMAP = {None, "mmap"}
+PLENTY = (100 * GiB, 128 * GiB)  # Strix Halo 128 GB, idle
+TIGHT = (20 * GiB, 128 * GiB)  # 20 GiB free < 32 GiB headroom before the load
 
 requires_backend = pytest.mark.skipif(
     not sp._supports_backend(modeling_utils.safe_open),
@@ -25,183 +39,232 @@ requires_backend = pytest.mark.skipif(
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(sp.PREAD_ENV, raising = False)
-    original_load_file = st_torch.load_file
+    monkeypatch.delenv(sp.FADVISE_ENV, raising = False)
+    host_pinning.reset_cache()
     yield
+    host_pinning.reset_cache()
     assert sp._depth == 0 and sp._original is None and not sp._active_rules()
-    assert st_torch.load_file is original_load_file
+    assert not sp._diffusers_original
 
 
-def _platform(monkeypatch, platform, rocm, integrated):
-    monkeypatch.setattr(sp.sys, "platform", platform)
-    monkeypatch.setattr(torch.version, "hip", "7.13" if rocm else None, raising = False)
-    if not rocm:
-        monkeypatch.setattr(torch, "__version__", "2.11.0+cu128", raising = False)
+def _gpu(
+    monkeypatch,
+    vendor,
+    integrated,
+    memory = PLENTY,
+    platform = "linux",
+):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(torch.version, "hip", "7.13" if vendor == "rocm" else None, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    import core.inference.host_pinning as hp
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(host_pinning, "device_integrated_status", lambda device = None: integrated)
+    monkeypatch.setattr(sp, "host_memory", lambda: memory)
 
-    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: integrated)
+
+def _spy(monkeypatch):
+    seen = []
+    real_tf = modeling_utils.safe_open
+
+    @functools.wraps(real_tf)
+    def tf_spy(*args, **kwargs):
+        seen.append(("transformers", kwargs.get("backend")))
+        return real_tf(*args, **kwargs)
+
+    real_st = safetensors.safe_open
+
+    @functools.wraps(real_st)
+    def st_spy(*args, **kwargs):
+        seen.append(("diffusers", kwargs.get("backend")))
+        return real_st(*args, **kwargs)
+
+    monkeypatch.setattr(modeling_utils, "safe_open", tf_spy)
+    monkeypatch.setattr(safetensors, "safe_open", st_spy)
+    monkeypatch.setattr(safetensors.torch, "safe_open", st_spy)
+    return seen
+
+
+def _expected(name):
+    base = torch.arange(96 * 80, dtype = torch.float32).reshape(96, 80)
+    return (base * (2 if name == "b" else 1)).to(torch.bfloat16)
+
+
+def _snapshot(tmp_path):
+    (tmp_path / "model_index.json").write_text("{}")
+    out = {}
+    for comp in ("text_encoder", "transformer"):
+        d = tmp_path / comp
+        d.mkdir()
+        path = d / "model.safetensors"
+        save_file({"a": _expected("a"), "b": _expected("b")}, str(path))
+        out[comp] = path
+    return out
+
+
+def _load(shards):
+    with modeling_utils.safe_open(
+        str(shards["text_encoder"]), framework = "pt", device = "cpu"
+    ) as handle:
+        te = {k: handle.get_tensor(k) for k in handle.keys()}
+    return te, mlu.load_state_dict(str(shards["transformer"]))
+
+
+def _run(monkeypatch, tmp_path):
+    shards = _snapshot(tmp_path)
+    seen = _spy(monkeypatch)
+    with diffusion._converted_shards_pread(torch.bfloat16, None, "cuda"):
+        te, dit = _load(shards)
+    for got in (te, dit):
+        assert set(got) == {"a", "b"}
+        assert all(torch.equal(got[k], _expected(k)) for k in got)  # checksums unchanged
+    return {backend for _, backend in seen}
 
 
 @pytest.mark.parametrize(
-    "platform, rocm, integrated, expected",
+    "vendor, integrated, memory, env, reader",
     [
-        ("linux", True, True, True),  # Strix Halo and other APUs
-        ("linux", True, False, False),  # discrete Radeon / Instinct
-        ("linux", False, True, False),  # CUDA (Jetson / GB10 keep their own route)
-        ("linux", False, False, False),  # CUDA discrete: untouched
-        ("darwin", True, True, False),
+        (
+            "cuda",
+            True,
+            PLENTY,
+            None,
+            "pread",
+        ),  # integrated NVIDIA (#19905): unchanged, memory never read
+        ("cuda", True, TIGHT, None, "pread"),
+        ("cuda", True, PLENTY, "0", "mmap"),
+        ("rocm", True, PLENTY, None, "mmap"),  # ROCm APU, memory free: speed unchanged
+        ("rocm", True, TIGHT, None, "pread"),  # ROCm APU under pressure
+        ("rocm", True, None, None, "mmap"),  # memory unreadable: keep mmap
+        ("rocm", True, PLENTY, "pread", "pread"),  # override forces
+        ("rocm", True, PLENTY, "1", "pread"),
+        ("rocm", True, TIGHT, "mmap", "mmap"),  # override vetoes
+        ("rocm", True, TIGHT, "0", "mmap"),
+        ("rocm", True, TIGHT, "auto", "pread"),
+        ("rocm", False, TIGHT, None, "mmap"),  # discrete Radeon / Instinct
+        ("cuda", False, TIGHT, None, "mmap"),  # discrete NVIDIA
+        ("rocm", None, TIGHT, None, "mmap"),  # unclassifiable
     ],
 )
-def test_rocm_integrated_and_default(monkeypatch, platform, rocm, integrated, expected):
-    _platform(monkeypatch, platform, rocm, integrated)
-    assert sp.rocm_integrated() is expected
-    assert sp.pread_wanted() is expected
-
-
-def test_kill_switch_wins_on_rocm_integrated(monkeypatch):
-    _platform(monkeypatch, "linux", True, True)
-    monkeypatch.setenv(sp.PREAD_ENV, "0")
-    assert not sp.pread_wanted()
-    with sp.pread_safetensors(every_shard = True) as on:
-        assert not on
-    assert not getattr(st_torch.load_file, "_unsloth_pread", False)
-
-
-def test_rocm_integrated_never_raises(monkeypatch):
-    monkeypatch.setattr(sp.sys, "platform", "linux")
-
-    def boom():
-        raise RuntimeError("no driver")
-
-    monkeypatch.setattr(torch.cuda, "is_available", boom)
-    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
-    assert sp.rocm_integrated() is False
+@requires_backend
+def test_reader_decision_table(monkeypatch, tmp_path, vendor, integrated, memory, env, reader):
+    _gpu(monkeypatch, vendor, integrated, memory)
+    if env is not None:
+        monkeypatch.setenv(sp.PREAD_ENV, env)
+    backends = _run(monkeypatch, tmp_path)
+    if reader == "pread":
+        assert backends == {"pread"}, backends
+    else:
+        assert backends <= MMAP, backends
 
 
 @requires_backend
-def test_diffusers_reader_goes_through_pread_in_scope(monkeypatch, tmp_path):
-    _platform(monkeypatch, "linux", True, True)
-    shard = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
-    shard.parent.mkdir()
-    tensors = {
-        "a": torch.randn(4, 3, dtype = torch.bfloat16),
-        "b": torch.arange(6, dtype = torch.int64),
-    }
-    save_file(tensors, str(shard))
-    seen = []
-    from safetensors import safe_open as real_safe_open
-
-    import functools
-
-    @functools.wraps(real_safe_open)
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("backend"))
-        return real_safe_open(*args, **kwargs)
-
-    monkeypatch.setattr("safetensors.safe_open", spy)
-    plain = st_torch.load_file(str(shard))
-    with sp.pread_safetensors(every_shard = True) as on:
-        assert on
-        assert getattr(st_torch.load_file, "_unsloth_pread", False)
-        got = st_torch.load_file(str(shard))
-    assert seen == ["pread"]
-    assert set(got) == set(plain) and all(torch.equal(got[k], plain[k]) for k in plain)
+def test_rocm_pressure_logs_reason_and_drops_pages(monkeypatch, tmp_path):
+    _gpu(monkeypatch, "rocm", True, TIGHT)
+    before = sp.fadvise_calls
+    sp.last_reader_decision = None
+    assert _run(monkeypatch, tmp_path) == {"pread"}
+    decision = sp.last_reader_decision
+    assert decision["reader"] == "pread" and decision["mode"] == "auto"
+    assert "< headroom 32.0 GiB" in decision["reason"]
+    assert sp.fadvise_calls - before == 2  # the diffusers shard's two tensors
 
 
 @requires_backend
-def test_cuda_discrete_keeps_the_diffusers_reader(monkeypatch, tmp_path):
-    _platform(monkeypatch, "linux", False, False)
-    monkeypatch.setenv(
-        sp.PREAD_ENV, "1"
-    )  # even forced on, diffusers' reader is only routed on a ROCm APU
-    with sp.pread_safetensors(every_shard = True) as on:
-        assert on
-        assert not getattr(st_torch.load_file, "_unsloth_pread", False)
+def test_rocm_plenty_logs_mmap_without_drops(monkeypatch, tmp_path):
+    _gpu(monkeypatch, "rocm", True, PLENTY)
+    before = sp.fadvise_calls
+    sp.last_reader_decision = None
+    _run(monkeypatch, tmp_path)
+    assert sp.last_reader_decision["reader"] == "mmap"
+    assert ">= headroom" in sp.last_reader_decision["reason"]
+    assert sp.fadvise_calls == before
 
 
 @requires_backend
-def test_reader_outside_a_scope_is_the_original(monkeypatch, tmp_path):
-    _platform(monkeypatch, "linux", True, True)
-    shard = tmp_path / "model.safetensors"
-    save_file({"x": torch.ones(2)}, str(shard))
-    with sp.pread_safetensors(every_shard = True):
-        wrapped = st_torch.load_file
-    # another thread (no rules) calling the wrapper while a scope is open elsewhere gets the original path
-    out = sp._with_pread_load_file(st_torch.load_file, None)(str(shard))
-    assert torch.equal(out["x"], torch.ones(2))
-    assert wrapped is not st_torch.load_file
-
-
-def _fadvise_spy(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        sp.os,
-        "posix_fadvise",
-        lambda fd, off, ln, advice: calls.append((off, ln, advice)),
-        raising = False,
-    )
-    monkeypatch.setattr(sp.os, "POSIX_FADV_DONTNEED", 4, raising = False)
-    return calls
-
-
-def _spans_of(path):
-    import json
-    import struct
-
-    raw = path.read_bytes()
-    (size,) = struct.unpack("<Q", raw[:8])
-    header = json.loads(raw[8 : 8 + size])
-    return {
-        k: (8 + size + v["data_offsets"][0], v["data_offsets"][1] - v["data_offsets"][0])
-        for k, v in header.items()
-        if k != "__metadata__"
-    }
+def test_fadvise_kill_switch(monkeypatch, tmp_path):
+    _gpu(monkeypatch, "rocm", True, TIGHT)
+    monkeypatch.setenv(sp.FADVISE_ENV, "0")
+    before = sp.fadvise_calls
+    assert _run(monkeypatch, tmp_path) == {"pread"}
+    assert sp.fadvise_calls == before
 
 
 @requires_backend
-def test_diffusers_reader_drops_each_tensors_pages(monkeypatch, tmp_path):
-    _platform(monkeypatch, "linux", True, True)
-    calls = _fadvise_spy(monkeypatch)
-    shard = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
-    shard.parent.mkdir()
-    tensors = {
-        "a": torch.randn(64, 3, dtype = torch.bfloat16),
-        "b": torch.arange(6, dtype = torch.int64),
-    }
-    save_file(tensors, str(shard), metadata = {"format": "pt"})
-    with sp.pread_safetensors(every_shard = True):
-        got = st_torch.load_file(str(shard))
-    assert all(torch.equal(got[k], tensors[k]) for k in tensors)
-    assert sorted(calls) == sorted((off, ln, 4) for off, ln in _spans_of(shard).values())
-
-
-@requires_backend
-@pytest.mark.parametrize("env", ["0", "off"])
-def test_fadvise_kill_switch_keeps_pages(monkeypatch, tmp_path, env):
-    _platform(monkeypatch, "linux", True, True)
-    monkeypatch.setenv(sp.FADVISE_ENV, env)
-    calls = _fadvise_spy(monkeypatch)
-    shard = tmp_path / "model.safetensors"
-    save_file({"x": torch.ones(8)}, str(shard))
-    with sp.pread_safetensors(every_shard = True):
-        got = st_torch.load_file(str(shard))
-    assert torch.equal(got["x"], torch.ones(8)) and calls == []
+def test_integrated_nvidia_never_drops_pages(monkeypatch, tmp_path):
+    _gpu(monkeypatch, "cuda", True, TIGHT)
+    before = sp.fadvise_calls
+    assert _run(monkeypatch, tmp_path) == {"pread"}
+    assert sp.fadvise_calls == before
 
 
 @pytest.mark.parametrize(
-    "platform, rocm, integrated",
-    [("linux", False, False), ("linux", True, False), ("win32", True, True)],
+    "available, total, load, pread",
+    [
+        (100, 128, 24.3, False),  # 75.7 left >= 32 (25% of 128)
+        (56, 128, 24.3, True),  # 31.7 left < 32
+        (57, 128, 24.3, False),
+        (40, 64, 24.3, True),  # 15.7 < 16 (floor beats 25% of 64)
+        (41, 64, 24.3, False),
+        (30, 32, 4, False),  # small load on a small box: 26 >= 16
+    ],
 )
-def test_fadvise_only_on_rocm_integrated(monkeypatch, platform, rocm, integrated):
-    _platform(monkeypatch, platform, rocm, integrated)
-    assert not sp.fadvise_wanted()
+def test_pressure_rule(available, total, load, pread):
+    use, reason = sp.pressure_decision(int(load * GiB), (int(available * GiB), int(total * GiB)))
+    assert use is pread, reason
 
 
-def test_page_dropper_never_raises_on_a_bad_header(monkeypatch, tmp_path):
-    _platform(monkeypatch, "linux", True, True)
-    calls = _fadvise_spy(monkeypatch)
-    bad = tmp_path / "bad.safetensors"
-    bad.write_bytes(b"\x01")
-    with sp._page_dropper(str(bad)) as drop:
-        drop("x")
-    assert calls == []
+def test_pressure_unreadable_memory_keeps_mmap(monkeypatch):
+    monkeypatch.setattr(sp, "host_memory", lambda: None)
+    assert sp.pressure_decision(GiB) == (False, "host memory unreadable")
+
+
+@pytest.mark.parametrize(
+    "value, mode",
+    [
+        (None, "auto"),
+        ("", "auto"),
+        ("auto", "auto"),
+        ("pread", "pread"),
+        ("1", "pread"),
+        ("on", "pread"),
+        ("mmap", "mmap"),
+        ("0", "mmap"),
+        ("off", "mmap"),
+        ("bogus", "auto"),
+    ],
+)
+def test_reader_mode(monkeypatch, value, mode):
+    if value is not None:
+        monkeypatch.setenv(sp.PREAD_ENV, value)
+    assert sp.reader_mode() == mode
+
+
+def test_checkpoint_bytes_counts_the_snapshot(tmp_path):
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    shards = _snapshot(snap)
+    total = sum(p.stat().st_size for p in shards.values())
+    assert sp.checkpoint_bytes(shards["transformer"]) == total
+    lone = tmp_path / "plain" / "lone"
+    lone.mkdir(parents = True)
+    save_file({"a": _expected("a")}, str(lone / "m.safetensors"))
+    assert sp.checkpoint_bytes(lone / "m.safetensors") == (lone / "m.safetensors").stat().st_size
+
+
+def test_host_memory_reads_meminfo():
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux /proc/meminfo")
+    available, total = sp.host_memory()
+    assert 0 < available <= total
+
+
+@pytest.mark.parametrize(
+    "hip, status, expected",
+    [("7.13", True, True), ("7.13", False, False), ("7.13", None, False), (None, True, False)],
+)
+def test_rocm_is_integrated(monkeypatch, hip, status, expected):
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(host_pinning, "device_integrated_status", lambda device = None: status)
+    assert host_pinning.rocm_is_integrated("cuda") is expected
+    if hip:
+        assert host_pinning.cuda_is_integrated("cuda") is False  # NVIDIA rule never sees a ROCm APU
