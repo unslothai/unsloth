@@ -6,7 +6,7 @@
 The out-of-tree index ships torch 2.15.0+cu135 beside torchvision 0.29.2+cu135, whose METADATA says
 ``Requires-Dist: torch>=2.14.0``. The offset rule (torchvision 0.(M+15) for torch 2.M) rejected that pair
 and the installer walked back to torch 2.14.0+cu134. The listings under fixtures/woa_torch_index are
-recorded pages of that index; every wheel read is served from a zip built here, so nothing reaches
+recorded pages of that index; every wheel download is served from a zip built here, so nothing reaches
 the network."""
 
 from __future__ import annotations
@@ -69,23 +69,21 @@ def _pages(indexes: dict) -> str:
 
 
 def _http(wheels: dict, *, fail: bool = False) -> str:
-    """Invoke-WoaHttpBytes serving byte ranges of local files, by wheel (or .metadata) file name."""
+    """Invoke-WebRequest -OutFile serving local files, by wheel (or .metadata) file name."""
     rows = "; ".join(f"{_ps_str(name)} = {_ps_str(str(path))}" for name, path in wheels.items())
     return _script(
         "$script:HttpCalls = @()",
+        "$script:OutFiles = @()",
         f"$script:HttpFails = ${str(fail).lower()}",
         "$script:Wheels = @{ " + rows + " }",
-        "function Invoke-WoaHttpBytes {",
-        "  param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)",
-        "  $script:HttpCalls += $Uri",
-        "  if ($script:HttpFails) { return $null }",
-        "  $path = $script:Wheels[[System.Uri]::UnescapeDataString(($Uri -split '/')[-1])]",
-        "  if (-not $path) { return $null }",
-        "  $all = [System.IO.File]::ReadAllBytes($path); $n = [long]$all.Length",
-        "  if ($Suffix -gt 0) { $s = [Math]::Max(0, $n - $Suffix); $e = $n - 1 }",
-        "  elseif ($Offset -ge 0) { $s = $Offset; $e = [Math]::Min($n - 1, $Offset + $Length - 1) }",
-        "  else { $s = 0; $e = $n - 1 }",
-        "  return @{ Bytes = [byte[]]$all[$s..$e]; Total = $n } }",
+        "function Invoke-WebRequest {",
+        "  param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec, $ErrorAction)",
+        "  $script:HttpCalls += [string]$Uri",
+        "  $script:OutFiles += [string]$OutFile",
+        "  if ($script:HttpFails) { throw 'refused' }",
+        "  $path = $script:Wheels[[System.Uri]::UnescapeDataString(([string]$Uri -split '/')[-1])]",
+        "  if (-not $path) { throw ('not served: ' + $Uri) }",
+        "  [System.IO.File]::Copy($path, $OutFile, $true) }",
     )
 
 
@@ -235,24 +233,36 @@ class TestTheMetadataRead:
             f" -HasCoreMetadata ${'true' if anchor_attrs else 'false'}",
             "Write-Output ('REQ=' + $r)",
             "Write-Output ('HTTP=' + $script:HttpCalls.Count)",
+            "Write-Output ('LEFT=' + @($script:OutFiles | Where-Object { Test-Path -LiteralPath $_ }).Count)",
         )
         out = _ps_kv(script)
+        assert out["LEFT"] == "0", "the temp file was not deleted"
         return out["REQ"], int(out["HTTP"])
 
-    def test_the_central_directory_inside_the_tail(self, tmp_path):
+    def test_the_wheel_is_downloaded_and_its_metadata_read(self, tmp_path):
         name = STABLE_VISION[0]
         req, calls = self._requirement({name: _wheel(tmp_path, name, _recorded(name))})
-        assert req == ">=2.14.0"
-        assert calls == 3, "tail, local header, METADATA: never the whole wheel"
+        assert (req, calls) == (">=2.14.0", 1)
 
-    def test_a_directory_larger_than_the_tail_is_fetched_by_range(self, tmp_path):
+    def test_a_wheel_without_metadata_reads_as_unknown(self, tmp_path):
         name = STABLE_VISION[0]
-        wheel = _wheel(tmp_path, name, _recorded(name), entries = 1200)
-        with zipfile.ZipFile(wheel) as zf:
-            assert sum(46 + len(i.filename) for i in zf.infolist()) > 65558
-        req, calls = self._requirement({name: wheel})
-        assert req == ">=2.14.0"
-        assert calls == 4
+        path = tmp_path / name
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("torchvision/__init__.py", "")
+        assert self._requirement({name: path}) == ("", 1)
+
+    def test_a_file_that_is_not_a_zip_reads_as_unknown(self, tmp_path):
+        name = STABLE_VISION[0]
+        path = tmp_path / name
+        path.write_bytes(b"<html>not a wheel</html>")
+        assert self._requirement({name: path}) == ("", 1)
+
+    def test_an_advertised_but_missing_metadata_file_falls_back_to_the_wheel(self, tmp_path):
+        name = STABLE_VISION[0]
+        req, calls = self._requirement(
+            {name: _wheel(tmp_path, name, _recorded(name))}, anchor_attrs = "core"
+        )
+        assert (req, calls) == (">=2.14.0", 2)
 
     def test_pep_658_metadata_is_used_when_the_index_serves_it(self, tmp_path):
         name = STABLE_VISION[0]
@@ -335,7 +345,6 @@ def _body(text: str) -> list:
 @pytest.mark.parametrize(
     "install_fn, setup_fn",
     [
-        ("Invoke-WoaHttpBytes", "Invoke-WoaHttpBytesParity"),
         ("Get-WoaMetadataTorchRequirement", "Get-WoaMetadataTorchRequirementParity"),
         ("Test-WoaWheelPairsWithTorch", "Test-WoaPairsWithTorchParity"),
     ],
@@ -358,9 +367,9 @@ def test_the_usable_tag_parity_copy_differs_only_in_its_callee():
 def test_the_wheel_reader_parity_copy_differs_only_in_its_callees():
     install = _body(_function_source(INSTALL_SRC, "Get-WoaWheelTorchRequirement"))
     setup = [
-        l.replace("Invoke-WoaHttpBytesParity", "Invoke-WoaHttpBytes")
-        .replace("Get-WoaMetadataTorchRequirementParity", "Get-WoaMetadataTorchRequirement")
-        .replace("WoaWheelTorchRequirementCacheParity", "WoaWheelTorchRequirementCache")
+        l.replace(
+            "Get-WoaMetadataTorchRequirementParity", "Get-WoaMetadataTorchRequirement"
+        ).replace("WoaWheelTorchRequirementCacheParity", "WoaWheelTorchRequirementCache")
         for l in _body(_function_source(SETUP_SRC, "Get-WoaWheelTorchRequirementParity"))
     ]
     assert install == setup
@@ -385,9 +394,6 @@ def test_the_repair_probe_in_setup_pairs_the_same_way(tmp_path, folder, expected
             "Get-WoaWheelTorchRequirementParity",
             "Get-WoaCudaWheelVersionParity",
         ),
-        "function Invoke-WoaHttpBytesParity { param([string]$Uri, [long]$Offset = -1, [long]$Length = 0,"
-        " [long]$Suffix = 0, [long]$MaxBytes = 1048576) Invoke-WoaHttpBytes -Uri $Uri -Offset $Offset"
-        " -Length $Length -Suffix $Suffix -MaxBytes $MaxBytes }",
         f"$t = Get-WoaCudaWheelVersionParity -IndexUrl '{index}' -PyTag 'cp313' -AbiTag 'cp313' -MaxCuda '13.5'",
         f"$v = Get-WoaCudaWheelVersionParity -IndexUrl '{index}' -PyTag 'cp313' -AbiTag 'cp313'"
         " -Project 'torchvision' -PairWith $t",

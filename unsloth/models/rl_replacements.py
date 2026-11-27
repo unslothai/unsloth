@@ -281,6 +281,21 @@ RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
 RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
 
 
+def distillation_trainer_teacher_tokenizer(call_args, extra_args):
+    # TRL checks only vocab_size: Qwen2.5 and Qwen3 share 151936 rows but Qwen3 adds <think> / </think>.
+    if "teacher_model" not in call_args or "processing_class" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import check_teacher_tokenizer as _unsloth_check_teacher_tokenizer\n"
+        # The superclass gets `tokenizer` when the caller used that alias (rl.py), so check the same object.
+        "_unsloth_check_teacher_tokenizer(teacher_model, locals().get('tokenizer') if locals().get('tokenizer') is not None else processing_class, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_teacher_tokenizer)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_teacher_tokenizer)
+
+
 def grpo_trainer_distillation_teacher(call_args, extra_args):
     # GRPOTrainer(..., teacher_model = model) for unsloth_distillation_coef; TRL's GRPOTrainer has no such argument.
     return "_unsloth_grpo_teacher_model = kwargs.pop('teacher_model', None)\n"

@@ -9,6 +9,9 @@
 - GRPO ``unsloth_distillation_coef``: adds ``A_t = -coef * (log q(x_t) - log p_teacher(x_t))`` (no discount) to the
   environment advantages, where ``q`` is the sampler that drew the tokens. The teacher is the adapter-off base
   (``unsloth_distillation_teacher = "base"``) or a model passed as ``GRPOTrainer(..., teacher_model = ...)``.
+  Opt-in ``unsloth_distillation_terminal_tokens`` (e.g. ``"<|im_end|>,<|endoftext|>"``): a sampled token in that set is
+  scored as the set's summed probability under both student and teacher, so a teacher that ends turns with another
+  stop token (an adapter-off Base under a chat template) does not penalise the student's stop.
 - AsyncGRPO ``unsloth_sampler_kl_coef``: Tinker's StableReinforce KL to the sampler, ``coef * sum_t k(q, p)``."""
 
 import contextlib
@@ -23,6 +26,7 @@ __all__ = [
     "AdapterOffTeacher",
     "is_adapter_off_teacher",
     "resolve_teacher_model",
+    "check_teacher_tokenizer",
     "on_policy_distillation_advantages",
     "score_completion_logps",
     "forwards_are_collective",
@@ -200,6 +204,144 @@ def resolve_teacher_model(
     return AdapterOffTeacher(model)
 
 
+_SKIP_TOKENIZER_CHECK = "UNSLOTH_DISTILLATION_SKIP_TOKENIZER_CHECK"
+
+
+def _text_tokenizer(processing_class):
+    """A processor's text tokenizer, or the tokenizer itself."""
+    inner = getattr(processing_class, "tokenizer", None)
+    if inner is not None and callable(getattr(inner, "get_vocab", None)):
+        return inner
+    return processing_class
+
+
+def _teacher_tokenizer_source(teacher):
+    """The hub id / folder a teacher was loaded from (``config._name_or_path``), or None."""
+    if isinstance(teacher, str):
+        return teacher or None
+    teacher = _unwrap(teacher)
+    config = getattr(teacher, "config", None)
+    if config is None:
+        config = getattr(
+            getattr(getattr(teacher, "base_model", None), "model", None), "config", None
+        )
+    source = getattr(config, "_name_or_path", None) or getattr(config, "name_or_path", None)
+    return source if isinstance(source, str) and source else None
+
+
+def _added_tokens(tokenizer):
+    try:
+        return {
+            int(i): str(getattr(t, "content", t)) for i, t in tokenizer.added_tokens_decoder.items()
+        }
+    except Exception:
+        return {}
+
+
+def _token_diffs(
+    student,
+    teacher,
+    ignore = (),
+):
+    """Sorted ``(id, student token, teacher token)`` for every id the two mappings disagree on."""
+    s_by_id = {i: t for t, i in student.items() if t not in ignore}
+    t_by_id = {i: t for t, i in teacher.items()}
+    return [
+        (i, s_by_id.get(i), t_by_id.get(i))
+        for i in sorted(set(s_by_id) | set(t_by_id))
+        if s_by_id.get(i) != t_by_id.get(i)
+    ]
+
+
+def tokenizer_mismatches(student_tokenizer, teacher_tokenizer):
+    """``(errors, warnings)`` comparing token -> id maps, added tokens and the bos / eos / pad ids.
+
+    Errors: any token mapped to a different id (``get_vocab()`` includes added tokens), so the teacher's log-prob of
+    an id is about another string. A token only the student has that is its own pad token is ignored (Unsloth may add
+    one). Warnings: added-token registrations or bos / eos / pad ids that differ over the same vocabulary (a Base student of an Instruct teacher ends
+    turns with another token); the scored ids still mean the same strings."""
+    student = _text_tokenizer(student_tokenizer)
+    teacher = _text_tokenizer(teacher_tokenizer)
+    errors, notes = [], []
+    pad = getattr(student, "pad_token", None)
+    ignore = (pad,) if isinstance(pad, str) and pad not in teacher.get_vocab() else ()
+    diffs = _token_diffs(student.get_vocab(), teacher.get_vocab(), ignore)
+    if diffs:
+        shown = ", ".join(f"id {i}: student {s!r} vs teacher {t!r}" for i, s, t in diffs[:5])
+        more = f" (+{len(diffs) - 5} more)" if len(diffs) > 5 else ""
+        errors.append(f"{len(diffs)} token ids map to different tokens: {shown}{more}")
+    s_added, t_added = _added_tokens(student), _added_tokens(teacher)
+    added = sorted(
+        i
+        for i in set(s_added) | set(t_added)
+        if s_added.get(i) != t_added.get(i) and s_added.get(i) not in ignore
+    )
+    if added and not diffs:
+        # Same token -> id map, only the added / special registration differs: the scored ids mean the same strings.
+        shown = ", ".join(
+            f"id {i}: student {s_added.get(i)!r} vs teacher {t_added.get(i)!r}" for i in added[:5]
+        )
+        notes.append(f"added token registrations differ: {shown}")
+    for role in ("bos", "eos", "pad"):
+        s_id = getattr(student, f"{role}_token_id", None)
+        t_id = getattr(teacher, f"{role}_token_id", None)
+        if s_id is not None and t_id is not None and s_id != t_id:
+            notes.append(f"{role}_token_id student {s_id} vs teacher {t_id}")
+    return errors, notes
+
+
+def check_teacher_tokenizer(
+    teacher,
+    student_tokenizer,
+    who = "GRPOTrainer",
+):
+    """Refuse a separate teacher whose tokenizer maps ids to other tokens than the student's.
+
+    A vocab_size check alone passes Qwen2.5 vs Qwen3 (both 151936 rows; Qwen3 adds <think> / </think> and tool
+    tokens). Loads only the teacher's tokenizer files, from the folder / hub id its config was loaded from; when that
+    cannot be read the check is skipped with a warning. ``UNSLOTH_DISTILLATION_SKIP_TOKENIZER_CHECK=1`` skips it."""
+    if isinstance(teacher, dict):
+        for value in teacher.values():
+            check_teacher_tokenizer(value, student_tokenizer, who)
+        return
+    if teacher is None or isinstance(teacher, AdapterOffTeacher) or student_tokenizer is None:
+        return
+    if os.environ.get(_SKIP_TOKENIZER_CHECK, "0").strip().lower() in ("1", "true", "yes", "on"):
+        return
+    student = _text_tokenizer(student_tokenizer)
+    if not callable(getattr(student, "get_vocab", None)):
+        return
+    source = _teacher_tokenizer_source(teacher)
+    if source is None or source == getattr(student, "name_or_path", None):
+        return
+    import warnings
+
+    try:
+        from transformers import AutoTokenizer
+        teacher_tokenizer = AutoTokenizer.from_pretrained(source)
+    except Exception as error:
+        warnings.warn(
+            f"Unsloth: {who} could not load the teacher's tokenizer from {source!r} ({type(error).__name__}), so only "
+            "vocab_size was checked. Token ids must mean the same tokens to the student and the teacher.",
+            stacklevel = 2,
+        )
+        return
+    errors, notes = tokenizer_mismatches(student, teacher_tokenizer)
+    if errors:
+        raise ValueError(
+            f"Unsloth: {who} distillation needs the teacher to share the student's tokenizer, but the teacher "
+            f"tokenizer from {source!r} differs: {'; '.join(errors)}. The teacher's log-probs would score other "
+            "tokens than the student sampled. Use a teacher from the same tokenizer family, or set "
+            f"{_SKIP_TOKENIZER_CHECK}=1 to skip this check."
+        )
+    if notes:
+        warnings.warn(
+            f"Unsloth: {who} teacher tokenizer from {source!r} shares the student's vocabulary but its special "
+            f"tokens differ ({'; '.join(notes)}).",
+            stacklevel = 2,
+        )
+
+
 def on_policy_distillation_advantages(
     student_logps,
     teacher_logps,
@@ -310,6 +452,8 @@ def score_completion_logps(
     rows_per_chunk = None,
     sync_chunks = False,
     columns_per_chunk = None,
+    terminal_ids = None,
+    terminal_gap = False,
 ):
     """Per-token log-probs of ``completion_ids`` under ``model`` in the completion layout ``[B, C]``.
 
@@ -317,7 +461,10 @@ def score_completion_logps(
     (#11885), and with right padding the causal mask alone already keeps pads out of every real token's context.
 
     ``sync_chunks``: every rank runs the largest chunk count of any rank, padding with one-token forwards, for models
-    whose forwards are collectives (``forwards_are_collective``). The chunk count follows the rank's own length."""
+    whose forwards are collectives (``forwards_are_collective``). The chunk count follows the rank's own length.
+
+    ``terminal_ids``: where the target is one of these ids, the log of their summed probability replaces the token's.
+    With ``terminal_gap`` the result is that value minus the token's own log-prob there and 0 everywhere else."""
     input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
     attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1).to(torch.long)
     B, L = input_ids.shape
@@ -411,10 +558,17 @@ def score_completion_logps(
                     picked = picked / temperature
                 logps = torch.log_softmax(picked, dim = -1)
                 del picked
-                out[rows, cols] = (
-                    logps.gather(-1, targets[:, cols].unsqueeze(-1)).squeeze(-1).to(out.device)
-                )
-                del logps
+                token = logps.gather(-1, targets[:, cols].unsqueeze(-1)).squeeze(-1)
+                if terminal_ids is not None:
+                    ids_t = terminal_ids.to(logps.device)
+                    merged = torch.logsumexp(logps.index_select(-1, ids_t), dim = -1)
+                    is_terminal = torch.isin(targets[:, cols], ids_t)
+                    if terminal_gap:
+                        token = torch.where(is_terminal, merged - token, torch.zeros_like(token))
+                    else:
+                        token = torch.where(is_terminal, merged, token)
+                out[rows, cols] = token.to(out.device)
+                del logps, token
             del logits
     finally:
         if prior_hidden_states is None:
@@ -565,10 +719,16 @@ def grpo_setup_distillation(trainer, teacher_model = None):
         )
     trainer._unsloth_distillation_coef = coef
     trainer._unsloth_distillation_teacher = None
+    trainer._unsloth_distillation_terminal_ids = None
+    terminal = getattr(args, "unsloth_distillation_terminal_tokens", None)
     if coef == 0.0:
         if teacher_model is not None:
             raise ValueError(
                 "Unsloth: GRPOTrainer got a teacher_model but unsloth_distillation_coef is 0."
+            )
+        if terminal:
+            raise ValueError(
+                "Unsloth: unsloth_distillation_terminal_tokens is set but unsloth_distillation_coef is 0."
             )
         return coef
     # Per-token advantages must be realigned to the zoo's left-packed loss layout.
@@ -600,8 +760,96 @@ def grpo_setup_distillation(trainer, teacher_model = None):
                 f"Unsloth: the student has vocab_size {s_vocab} but the teacher has {t_vocab}. On-policy distillation "
                 "compares per-token log-probs, so the teacher needs the student's tokenizer."
             )
+        student_tokenizer = getattr(trainer, "processing_class", None)
+        if student_tokenizer is None:
+            student_tokenizer = getattr(trainer, "tokenizer", None)
+        check_teacher_tokenizer(teacher, student_tokenizer, "GRPOTrainer")
     trainer._unsloth_distillation_teacher = teacher
+    if terminal:
+        trainer._unsloth_distillation_terminal_ids = _resolve_terminal_ids(trainer, terminal)
+        # The student's own mass on the other terminal tokens is rescored at args.temperature.
+        _refuse_unreconstructable_sampler(trainer, rescoring = True)
+        _refuse_terminal_sampler_edits(trainer)
     return coef
+
+
+def _refuse_terminal_sampler_edits(trainer):
+    # vLLM edits that change the relative odds of the terminal tokens (by output history or by id) are not in the
+    # student rescoring, so log q(token) + log p(set) - log p(token) would not be the sampler's log q(set).
+    args = getattr(trainer, "args", None)
+    used = set()
+    for source in (
+        args,
+        getattr(args, "vllm_sampling_params", None),
+        getattr(args, "generation_kwargs", None),
+    ):
+        if source is None:
+            continue
+        read = (
+            source.get
+            if isinstance(source, dict)
+            else (lambda k, d = None, src = source: getattr(src, k, d))
+        )
+        for key in ("presence_penalty", "frequency_penalty"):
+            if float(read(key, 0.0) or 0.0) != 0.0:
+                used.add(key)
+        for key in ("logit_bias", "allowed_token_ids", "bad_words"):
+            if read(key, None):
+                used.add(key)
+    if used:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_terminal_tokens rescores the student's terminal mass without "
+            f"{', '.join(sorted(used))}, so it would not match the sampler. Leave those unset or drop the terminal set."
+        )
+
+
+def _resolve_terminal_ids(trainer, terminal):
+    """``unsloth_distillation_terminal_tokens`` (comma separated string, or a list of tokens / ids) -> LongTensor."""
+    items = terminal.split(",") if isinstance(terminal, str) else list(terminal)
+    tokenizer = getattr(trainer, "processing_class", None)
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    vocab = _vocab_size(_unwrap(trainer.model))
+    ids = []
+    for item in items:
+        if isinstance(item, str):
+            item = item.strip()
+            if not item:
+                continue
+            convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if convert is None:
+                raise ValueError(
+                    f"Unsloth: unsloth_distillation_terminal_tokens got {item!r} but the trainer has no tokenizer to "
+                    "map it; pass token ids instead."
+                )
+            token_id = convert(item)
+            unk = getattr(tokenizer, "unk_token_id", None)
+            if not isinstance(token_id, int) or (
+                unk is not None
+                and token_id == unk
+                and item != getattr(tokenizer, "unk_token", None)
+            ):
+                raise ValueError(
+                    f"Unsloth: unsloth_distillation_terminal_tokens: {item!r} is not a single token of this tokenizer."
+                )
+        else:
+            token_id = item
+        if (
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
+            or token_id < 0
+            or (vocab is not None and token_id >= vocab)
+        ):
+            raise ValueError(
+                f"Unsloth: unsloth_distillation_terminal_tokens: {item!r} is not a token id of this model."
+            )
+        if token_id not in ids:
+            ids.append(token_id)
+    if len(ids) < 2:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_terminal_tokens needs at least two distinct tokens, for example "
+            "'<|im_end|>,<|endoftext|>'."
+        )
+    return torch.tensor(ids, dtype = torch.long)
 
 
 def grpo_add_distillation_advantages(trainer, output):
@@ -625,11 +873,15 @@ def grpo_add_distillation_advantages(trainer, output):
     if rescore:
         # No sampling logprobs: the policy sampled the tokens itself, at the trainer's temperature.
         _refuse_unreconstructable_sampler(trainer, rescoring = True)
+    terminal = getattr(trainer, "_unsloth_distillation_terminal_ids", None)
+    # Sampling logprobs under a terminal set: one student pass adds its mass on the set's other tokens at the stops.
+    gap = terminal is not None and not rescore
+    student_pass = rescore or gap
     # Every rank joins this all_reduce, rescoring or not.
-    any_rescore = _max_over_ranks(int(rescore), completion_ids.device) if sync else rescore
-    if any_rescore:
+    any_pass = _max_over_ranks(int(student_pass), completion_ids.device) if sync else student_pass
+    if any_pass:
         # A rank that has its sampling logprobs while another rescores runs padding forwards only (zero rows).
-        rows = slice(None) if rescore else slice(0, 0)
+        rows = slice(None) if student_pass else slice(0, 0)
         scored = score_completion_logps(
             student,
             prompt_ids[rows],
@@ -639,8 +891,13 @@ def grpo_add_distillation_advantages(trainer, output):
             temperature = getattr(trainer.args, "temperature", 1.0),
             autocast_dtype = dtype,
             sync_chunks = sync,
+            terminal_ids = terminal,
+            terminal_gap = gap,
         )
-        student_logps = scored if rescore else student_logps
+        if rescore:
+            student_logps = scored
+        elif gap:
+            student_logps = student_logps.to(torch.float32) + scored.to(student_logps.device)
     # The teacher is scored untempered: the advantage is then the reverse KL of the sampler against the teacher.
     teacher_logps = score_completion_logps(
         teacher,
@@ -651,6 +908,7 @@ def grpo_add_distillation_advantages(trainer, output):
         temperature = 1.0,
         autocast_dtype = dtype,
         sync_chunks = sync,
+        terminal_ids = terminal,
     )
     mask = completion_mask
     tool_mask = output.get("tool_mask", None)

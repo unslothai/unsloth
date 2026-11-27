@@ -1407,7 +1407,7 @@ def resolve_dataset_path(path_value: str) -> Path:
                 continue
         raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
 
-    parts = [part for part in Path(path_value).parts if part not in ("", ".")]
+    parts = [part for part in Path(raw).parts if part not in ("", ".")]
     if parts[:2] == ["assets", "datasets"]:
         parts = parts[2:]
     if parts and parts[0] == "uploads":

@@ -50,6 +50,13 @@ if str(backend_path) not in sys.path:
 
 try:
     from core.training import get_training_backend
+    from core.training.diffusion_caption_files import (
+        caption_sidecar_index,
+        caption_sidecars,
+        canonical_caption_file_name,
+        find_caption_sidecar,
+        metadata_caption_files,
+    )
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
     from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
@@ -76,6 +83,13 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
+    from core.training.diffusion_caption_files import (
+        caption_sidecar_index,
+        caption_sidecars,
+        canonical_caption_file_name,
+        find_caption_sidecar,
+        metadata_caption_files,
+    )
     from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
     from core.training.eval_dataset import evaluation_enabled
     from core.training.training import (
@@ -4348,21 +4362,22 @@ def _reserved_diffusion_dataset_names() -> frozenset[str]:
 
 
 def _resolve_dataset_caption(
-    folder: Path, image_path: Path, meta_captions: dict[str, str]
+    folder: Path,
+    image_path: Path,
+    meta_captions: dict[str, str],
+    sidecars: Optional[dict[tuple[str, str], list[str]]] = None,
 ) -> Optional[str]:
     """An empty sidecar still shadows metadata and yields no caption, so it must not count as captioned."""
     caption: Optional[str] = None
     sidecar_present = False
-    for ext in (".txt", ".caption"):
-        sidecar = image_path.with_suffix(ext)
-        if sidecar.is_file():
-            sidecar_present = True
-            try:
-                caption = sidecar.read_text(encoding = "utf-8").strip()
-            except (OSError, UnicodeError):
-                # Unreadable sidecar is the EMPTY TOMBSTONE, not absent: reading it as absent shows a stale caption.
-                caption = ""
-            break
+    sidecar = find_caption_sidecar(image_path, sidecars)
+    if sidecar is not None:
+        sidecar_present = True
+        try:
+            caption = sidecar.read_text(encoding = "utf-8").strip()
+        except (OSError, UnicodeError):
+            # Unreadable sidecar is the EMPTY TOMBSTONE, not absent: reading it as absent shows a stale caption.
+            caption = ""
     if not sidecar_present:
         try:
             rel = image_path.relative_to(folder).as_posix()
@@ -4408,6 +4423,7 @@ def _import_response(
 def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     # Captioned only when it resolves to a NON-EMPTY caption (sidecar over metadata), as the trainer.
     meta_captions = _load_metadata_captions(folder)
+    sidecars = caption_sidecar_index(folder)
     images = clips = captions = 0
     for f in drop_appledouble_metadata(list(folder.iterdir())):
         if not f.is_file():
@@ -4419,7 +4435,7 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
             clips += 1
         else:
             continue
-        if _resolve_dataset_caption(folder, f, meta_captions):
+        if _resolve_dataset_caption(folder, f, meta_captions, sidecars):
             captions += 1
     return DiffusionDatasetSummary(
         name = folder.name,
@@ -4760,7 +4776,9 @@ def _store_diffusion_dataset_upload(
         existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
-            filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
+            filename = canonical_caption_file_name(
+                Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
+            )
             ext = Path(filename).suffix.lower()
             if not filename or ".." in filename or ext not in allowed:
                 exts = ", ".join(sorted(allowed))
@@ -5026,10 +5044,7 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
     import json
 
     out: dict[str, str] = {}
-    for meta_name in ("metadata.jsonl", "captions.jsonl"):
-        meta_path = folder / meta_name
-        if not meta_path.is_file():
-            continue
+    for meta_path in metadata_caption_files(folder):
         # Tolerate a bad upload (invalid UTF-8, or non-object JSON): skip the record so these endpoints do not 500.
         # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
@@ -5088,24 +5103,25 @@ def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tup
 
 
 def _image_record(
-    folder: Path, image_path: Path, meta_captions: dict[str, str]
+    folder: Path,
+    image_path: Path,
+    meta_captions: dict[str, str],
+    sidecars: Optional[dict[tuple[str, str], list[str]]] = None,
 ) -> DiffusionDatasetImageRecord:
     """A sidecar beats metadata or captions rows: it is the user's explicit edit from the labeling grid."""
     caption: Optional[str] = None
     source = "none"
     sidecar_present = False
-    for ext in (".txt", ".caption"):
-        sidecar = image_path.with_suffix(ext)
-        if sidecar.is_file():
-            sidecar_present = True
-            try:
-                caption = sidecar.read_text(encoding = "utf-8").strip()
-                source = "sidecar"
-            except (OSError, UnicodeError):
-                # UnicodeDecodeError is a ValueError, not OSError; the trainer treats any sidecar as a tombstone.
-                caption = None
-                source = "sidecar"
-            break
+    sidecar = find_caption_sidecar(image_path, sidecars)
+    if sidecar is not None:
+        sidecar_present = True
+        try:
+            caption = sidecar.read_text(encoding = "utf-8").strip()
+            source = "sidecar"
+        except (OSError, UnicodeError):
+            # UnicodeDecodeError is a ValueError, not OSError; the trainer treats any sidecar as a tombstone.
+            caption = None
+            source = "sidecar"
     if caption is None and not sidecar_present:
         # Basename first, then the relative posix path: discover_image_caption_pairs order.
         meta = meta_captions.get(image_path.name)
@@ -5152,10 +5168,11 @@ async def list_diffusion_dataset_images(
 
     def scan() -> DiffusionDatasetImagesResponse:
         meta = _load_metadata_captions(folder)
+        sidecars = caption_sidecar_index(folder)
         records: list[DiffusionDatasetImageRecord] = []
         for p in drop_appledouble_metadata(sorted(folder.iterdir())):
             if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
-                records.append(_image_record(folder, p, meta))
+                records.append(_image_record(folder, p, meta, sidecars))
         return DiffusionDatasetImagesResponse(name = folder.name, path = str(folder), images = records)
 
     return await asyncio.to_thread(scan)
@@ -5234,9 +5251,11 @@ async def set_diffusion_dataset_caption(
 
     def write() -> DiffusionDatasetImageRecord:
         sidecar = image_path.with_suffix(".txt")
+        stale = [p for p in caption_sidecars(image_path) if p != sidecar]
         if caption:
             sidecar.write_text(caption, encoding = "utf-8")
-            image_path.with_suffix(".caption").unlink(missing_ok = True)
+            for p in stale:
+                p.unlink(missing_ok = True)
             return _image_record(folder, image_path, _load_metadata_captions(folder))
         # Write an EMPTY sidecar (tombstone): unlinking would resurface the metadata caption.
         meta = _load_metadata_captions(folder)
@@ -5248,7 +5267,8 @@ async def set_diffusion_dataset_caption(
             sidecar.write_text("", encoding = "utf-8")
         else:
             sidecar.unlink(missing_ok = True)
-        image_path.with_suffix(".caption").unlink(missing_ok = True)
+        for p in stale:
+            p.unlink(missing_ok = True)
         return _image_record(folder, image_path, meta)
 
     return await asyncio.to_thread(write)
@@ -5291,8 +5311,8 @@ async def delete_diffusion_dataset_image(
             for p in folder.iterdir()
         )
         if not stem_still_used:
-            for ext in (".txt", ".caption"):
-                image_path.with_suffix(ext).unlink(missing_ok = True)
+            for sidecar in caption_sidecars(image_path):
+                sidecar.unlink(missing_ok = True)
         thumbs_dir = folder / _THUMBS_DIRNAME
         if thumbs_dir.is_dir():
             # Thumbs keyed on full filename; escape it so glob metacharacters cannot match siblings.
