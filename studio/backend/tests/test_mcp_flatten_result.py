@@ -459,6 +459,22 @@ def test_json_boolean_and_number_are_distinct_results():
     assert _flatten_result(_result(_text(text), structured = {"ok": 1})) == f"{{'ok': 1}}\n{text}"
 
 
+def test_wrapped_list_mirrored_as_separate_blocks_is_not_duplicated():
+    rows = '{"id": 1}\n{"id": 2}'
+    structured = {"result": [{"id": 1}, {"id": 2}]}
+    flat = _flatten_result(_result(*map(_text, rows.splitlines()), structured = structured))
+    assert flat == rows
+
+
+def test_a_partial_text_list_keeps_its_structured_result():
+    first_row = '{"id": 1}'
+    structured = {"result": [{"id": 1}, {"id": 2}]}
+    assert (
+        _flatten_result(_result(_text(first_row), structured = structured))
+        == f"{structured}\n{first_row}"
+    )
+
+
 def test_fastmcp_file_format_png_is_rendered():
     # fastmcp File(format='png') labels the blob application/png.
     flat = _flatten_result(_result(_blob_resource(mime = "application/png")))

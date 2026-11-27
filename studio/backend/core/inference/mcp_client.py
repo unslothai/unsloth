@@ -2211,28 +2211,36 @@ def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
     return json.dumps(lifted, ensure_ascii = False), found
 
 
-def _mirrors_structured_result(text: str, structured: Any) -> bool:
-    # FastMCP wraps non-object results while keeping the original value in text content.
-    wrapped = (
-        structured.get("result", _MIRRORED)
-        if isinstance(structured, dict) and len(structured) == 1
-        else _MIRRORED
+def _same_json_value(decoded: Any, value: Any) -> bool:
+    # Python equality alone treats JSON booleans as numbers, even inside lists.
+    return decoded == value and json.dumps(decoded, sort_keys = True, allow_nan = False) == json.dumps(
+        value, sort_keys = True, allow_nan = False
     )
+
+
+def _mirrors_structured_result(text: str, structured: Any, wrapped: Any) -> bool:
     if text == wrapped:
         return True
     if wrapped is _MIRRORED and not text.lstrip().startswith("{"):
         return False
     try:
         decoded = json.loads(text)
-        for value in (structured, wrapped):
-            # Python equality alone treats JSON booleans as numbers, even inside lists.
-            if decoded == value and json.dumps(
-                decoded, sort_keys = True, allow_nan = False
-            ) == json.dumps(value, sort_keys = True, allow_nan = False):
-                return True
+        return _same_json_value(decoded, structured) or _same_json_value(decoded, wrapped)
     except (TypeError, ValueError, RecursionError):
-        pass
-    return False
+        return False
+
+
+def _mirrors_split_list(blocks: list[Any], values: list[Any]) -> bool:
+    texts = [text for block in blocks if (text := _block_text(block)) is not None]
+    if not values or len(texts) != len(values):
+        return False
+    try:
+        return all(
+            text == value or _same_json_value(json.loads(text), value)
+            for text, value in zip(texts, values)
+        )
+    except (TypeError, ValueError, RecursionError):
+        return False
 
 
 def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
@@ -2243,12 +2251,19 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     payloads = set()
     omitted = 0
     structured = getattr(result, "structured_content", None)
+    # FastMCP wraps non-object results while keeping the original value in text content.
+    wrapped = (
+        structured.get("result", _MIRRORED)
+        if isinstance(structured, dict) and len(structured) == 1
+        else _MIRRORED
+    )
     budget = MAX_IMAGE_PAYLOAD_CHARS
     lifted = []
-    for block in getattr(result, "content", None) or []:
+    blocks = getattr(result, "content", None) or []
+    for block in blocks:
         text = _block_text(block)
         if text:
-            if structured is not None and _mirrors_structured_result(text, structured):
+            if structured is not None and _mirrors_structured_result(text, structured, wrapped):
                 structured = None
             text, inline_images = _lift_inline_images(text)
             lifted.extend(inline_images)
@@ -2287,6 +2302,12 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
         budget -= len(data)
         images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
+    if (
+        structured is not None
+        and isinstance(wrapped, list)
+        and _mirrors_split_list(blocks, wrapped)
+    ):
+        structured = None
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
