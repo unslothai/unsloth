@@ -170,7 +170,7 @@ test("chat-page refreshes readiness on route activation and media lifecycle even
 
 test("direct streams and reconnected chat runs announce completion of the image tool", () => {
   assert.ok(
-    readSrc("features/chat/api/chat-api.ts").includes("notifyChatImageToolSettled(parsed)"),
+    readSrc("features/chat/api/chat-adapter.ts").includes("notifyChatImageToolSettled(toolEvent)"),
   );
   assert.ok(
     readSrc("features/chat/api/chat-generation-api.ts").includes(

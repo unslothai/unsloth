@@ -7,7 +7,6 @@ import {
   type InFlightThreadRead,
 } from "./thread-read-cache.ts";
 import { skillLoadCardEvent } from "./skill-load-event";
-import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -2298,7 +2297,6 @@ export async function* streamChatCompletions(
             parsed.type === "tool_model_note" ||
             parsed.type === "tool_approved")
         ) {
-          notifyChatImageToolSettled(parsed);
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           continue;
         }
