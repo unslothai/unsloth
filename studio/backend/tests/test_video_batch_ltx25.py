@@ -497,9 +497,9 @@ def _state(**fields):
     return types.SimpleNamespace(**base)
 
 
-def test_ltx25_batches_only_when_forced_until_measured(monkeypatch):
+def test_ltx25_batches_only_when_forced(monkeypatch):
     monkeypatch.delenv(video_batch.ENV, raising = False)
-    assert "not measured" in video_batch.load_decline_reason(_state())
+    assert "only when forced" in video_batch.load_decline_reason(_state())
     monkeypatch.setenv(video_batch.ENV, "force")
     assert video_batch.load_decline_reason(_state()) is None
     assert (

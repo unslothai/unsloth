@@ -41,7 +41,11 @@ WAN_FAMILIES = frozenset(
 # video and audio latents are per row, and the upsampler runs one clip at a time.
 LTX25_FAMILY = "ltx-2.5"
 BATCH_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
-# Families Auto may batch: measured faster batched on the placement ``auto_batch_placement`` names.
+# Families Auto may batch (on the Low VRAM placement, ``streamed_load``); the rest batch only under
+# UNSLOTH_VIDEO_BATCH=force. LTX-2.5 under Low VRAM is far faster batched (A100-80, 768x512x49, two stages:
+# 39.6 s per clip one at a time, 21.7 batched by 2, 12.7 by 4; 27.8 s compiled one at a time against 10.1 by 4
+# eager), and a batch of 4 passes the paired quality gate against its solo renders, but a batch of 2 does not
+# yet (LPIPS mean difference 0.000, 95% upper bound 0.012 over 24 clips against the 0.01 margin): forced only.
 AUTO_FAMILIES = WAN_FAMILIES
 
 _OFF = frozenset({"0", "off", "false", "no", "disable", "disabled"})
@@ -105,8 +109,8 @@ def load_decline_reason(state: Any) -> Optional[str]:
         # Unmeasured: the dev DiT runs CFG plus STG over 30+ steps, a different cost and guidance path.
         return "the LTX-2.5 dev DiT renders one clip per denoise"
     if chosen == "auto" and fam.name not in AUTO_FAMILIES:
-        # Not measured faster batched on any placement yet: serial unless forced.
-        return "this family is not measured faster batched (UNSLOTH_VIDEO_BATCH=force batches it)"
+        # Not yet shown to batch at no quality cost on a measured-faster placement: serial unless forced.
+        return "this family batches only when forced (UNSLOTH_VIDEO_BATCH=force)"
     if getattr(state, "transformer_cache", None):
         # A step cache decides on the whole batch's residual, so one clip could change another's skips.
         return "a step cache is on"
