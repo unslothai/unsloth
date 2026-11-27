@@ -187,8 +187,7 @@ def test_the_token_is_replaced_before_it_expires_not_after_it_fails(studio, monk
 
 
 def test_a_401_that_arrives_anyway_is_recovered(studio):
-    """Reactive half: a token believed fresh can still be refused (clock offset, or Unsloth
-    restarted under the run); one retry, then the refusal is real and raised."""
+    """Token believed fresh may be refused (clock offset, restart); one retry, then it raises."""
     base_url, state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     auth.expires_at = time.time() + 10_000
@@ -242,8 +241,7 @@ def test_a_clock_that_makes_every_token_look_stale_stops_the_proactive_half(stud
 
 
 def test_a_failing_rotation_hook_does_not_fail_the_request(studio):
-    """`on_rotate` re-seeds a Playwright context and can throw for reasons unrelated to
-    authentication; the token is already replaced, so the request must go out."""
+    """A throwing on_rotate hook does not fail the request: the token is already replaced."""
     monkeypatch_error = RuntimeError("Target page, context or browser has been closed")
     base_url, _state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
@@ -268,8 +266,7 @@ def test_the_margin_outlasts_the_longest_authenticated_request():
 
 
 def test_rotating_notifies_whoever_seeded_the_browser(studio):
-    """The page's localStorage is seeded from a SNAPSHOT of these values, and an init script
-    re-runs on every navigation, so the owner of that context is told when they go stale."""
+    """localStorage is seeded from a snapshot, so the seeder is told when the token rotates."""
     base_url, _state = studio
     auth = authenticate(base_url, "bench", PASSWORD, new_password = PASSWORD)
     seen: list[str] = []

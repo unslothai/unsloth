@@ -83,8 +83,7 @@ class FramesInstrument(_PageInstrument):
         self._arm_screencast()
 
     def _arm_screencast(self) -> None:
-        """CDP frames, the only clock not the page's opinion; a wedged thread reports nothing via
-        rAF/timers."""
+        """CDP frames: the only clock the page cannot skew; wedged threads silence rAF/timers."""
         ctx = self.ctx
         if ctx is None or ctx.cdp is None:
             return
@@ -203,8 +202,7 @@ def _input():
 
 
 class InputInstrument(_PageInstrument):
-    """Armed and drained by the keystroke action rather than per window: a window that contained
-    no typing has nothing to report, and reporting a zero for it would be a bare zero."""
+    """Armed and drained per keystroke, not per window; an untyped window reports nothing."""
 
     name = "input"
     level = 0
@@ -217,8 +215,7 @@ class InputInstrument(_PageInstrument):
         }
 
     def settled(self) -> dict:
-        """Whether a keystroke's paint is still in flight. `None` when the page cannot answer, so
-        a caller polling on it stops rather than looping to its bound."""
+        """Keystroke paint in flight; None when the page cannot answer, so pollers stop."""
         return self._eval("() => window.__sb.input.settled()")
 
     def collect(self, expected: int) -> dict:
@@ -238,8 +235,7 @@ def _glass():
 
 
 class GlassInstrument(_PageInstrument):
-    """Level 1: it wraps hot accessors on Element.prototype and perturbs what it measures. The
-    headline numbers come from level 0, where it is not installed at all."""
+    """Level 1 perturbs timing via Element.prototype hooks; headline numbers come from level 0."""
 
     name = "glass"
     level = 1

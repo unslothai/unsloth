@@ -35,8 +35,7 @@ function Get-FunctionText {
     return $fn[0].Extent.Text
 }
 
-# Every installer function the extracted ones call must be in the harness, or a path dies
-# with CommandNotFound and the check passes for the wrong reason.
+# Harness must hold every installer call, or CommandNotFound makes the check pass wrongly.
 function Assert-HarnessComplete {
     param([string] $Extracted, [string[]] $Provided, [string] $Label)
     $installerFunctions = @([regex]::Matches(
@@ -407,7 +406,6 @@ $rsText = Get-Content -Raw $processRs
 $studioPy = Join-Path $repo "unsloth_cli/commands/studio.py"
 # Join adjacent Python string literals so a rewrap does not fail the compare.
 $pyText = (Get-Content -Raw $studioPy) -replace '"\s*\r?\n\s*"', ''
-# All three spellings are checked against the literal at the top of this file.
 Check "install.ps1 carries the trampoline" ($installText.Contains('$script:UnslothCliTrampoline = "' + $Trampoline + '"'))
 Check "process.rs agrees"                  ($rsText.Contains($Trampoline))
 Check "studio.py agrees"                   ($pyText.Contains($Trampoline))

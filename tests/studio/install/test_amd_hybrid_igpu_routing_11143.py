@@ -39,8 +39,7 @@ def unmasked(monkeypatch):
 
 
 def test_a_leading_igpu_does_not_strand_the_discrete_card(unmasked):
-    """The reported host: Raphael gfx1036 driving the display enumerates ahead of the
-    RX 9060 XT. One arch picks the bundle, so the discrete card must win."""
+    """Leading iGPU gfx1036 must not strand the discrete RX 9060 XT; one arch picks the bundle."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx1200")) == "gfx1200"
 
 
@@ -51,15 +50,13 @@ def test_every_shadowing_arch_defers_to_a_discrete_card(unmasked):
 
 
 def test_a_non_shadowing_first_arch_is_untouched(unmasked):
-    """A discrete card that enumerates first already decided; the preference must not
-    reorder a host it has no business reordering."""
+    """A discrete card that enumerates first needs no reordering; the rule must leave it alone."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1100", "gfx1036")) == "gfx1100"
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1200")) == "gfx1200"
 
 
 def test_an_all_integrated_host_keeps_its_own_arch(unmasked):
-    """Nothing to prefer. The old code returned the first token here and still must:
-    returning None would drop a host that has a perfectly good APU bundle."""
+    """All-integrated host keeps its first arch; None would drop a host with an APU bundle."""
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx1103")) == "gfx1036"
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036")) == "gfx1036"
 
@@ -125,8 +122,7 @@ def test_a_mask_selecting_no_device_still_means_no_gpu(unmasked, value):
 
 @pytest.mark.parametrize("value", ["GPU-abc123", "7"])
 def test_a_mask_this_resolver_cannot_read_is_still_an_explicit_choice(unmasked, value):
-    """UUID-style and out-of-range masks fell through to device 0 before, and must keep
-    doing so: the user selected a device, so this is not the place to second-guess it."""
+    """UUID-style and out-of-range masks must pick device 0, since the user selected a device."""
     unmasked.setenv("HIP_VISIBLE_DEVICES", value)
     assert ILP._pick_rocm_gfx_target(_rocminfo("gfx1036", "gfx1200")) == "gfx1036"
 
@@ -165,8 +161,7 @@ def test_detection_is_never_flagged_unsatisfied(request_backend):
 
 
 def test_an_old_marker_without_the_field_reads_as_satisfied():
-    """Back-compat is the whole reason the flag is absent-means-satisfied: every marker
-    ever written lacks it, and each one described an install that honoured its request."""
+    """Old markers lack the flag and each honoured its request, so absent means satisfied."""
     assert ILP.marker_records_unsatisfied_backend_request(None) is False
     assert ILP.marker_records_unsatisfied_backend_request({}) is False
     assert (
@@ -202,8 +197,7 @@ def _linux_host() -> "ILP.HostInfo":
 
 
 def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
-    """_marker_backend_fits_host reads the pair as self-consistency evidence: a flagged disagreement
-    is deliberate, while an unflagged one is a marker not written here and takes the full path."""
+    """Only a flagged marker may disagree with its backend; unflagged ones take the full path."""
     host = _linux_host()
     honest = {"backend_request": "vulkan", "backend": "vulkan"}
     unflagged = {"backend_request": "vulkan", "backend": "rocm"}
@@ -240,8 +234,7 @@ def test_the_fast_path_keeps_the_callers_forwarded_rocm_detection():
 
 
 def test_an_explicit_false_flag_is_canonicalised_away_on_reuse():
-    """Absent is the only spelling of satisfied. A marker already carrying an explicit
-    false has to lose the key, or readers get two spellings of one state."""
+    """Absent is the only spelling of satisfied; an explicit false key is dropped on reuse."""
     marker = {
         "backend_request": "vulkan",
         "backend": "vulkan",

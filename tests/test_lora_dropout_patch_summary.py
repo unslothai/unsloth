@@ -111,8 +111,7 @@ def test_the_summary_call_carries_the_reason():
     assert "MLP layers.{unfused_reason}" in source
 
 
-# has_real_accelerator(), not torch.cuda.is_available(): the zoo CUDA spoof patches the
-# latter True process-wide before skipif runs.
+# Zoo CUDA spoof makes torch.cuda.is_available() True process-wide; use has_real_accelerator().
 @pytest.mark.gpu
 @pytest.mark.skipif(
     not has_real_accelerator(),

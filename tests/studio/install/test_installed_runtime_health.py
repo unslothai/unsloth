@@ -61,24 +61,21 @@ def test_an_empty_runtime_directory_is_broken_not_healthy(tmp_path):
 
 
 def test_the_verdict_is_delegated_to_the_payload_tables(tmp_path, monkeypatch):
-    """One payload decider: duplicating the required-file list would let the launch probe
-    and the keep-install path drift apart."""
+    """One payload decider, so the launch probe and keep-install path cannot drift apart."""
     root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     assert ILP.installed_runtime_health(root) == (True, "")
 
 
 def test_the_default_root_is_the_managed_install_dir(tmp_path, monkeypatch):
-    """The CLI calls this with no argument, so the UNSLOTH_LLAMA_CPP_PATH override has to
-    keep working through it."""
+    """The CLI passes no argument, so UNSLOTH_LLAMA_CPP_PATH must still override the default."""
     root = _installed(tmp_path)
     monkeypatch.setattr(ILP, "default_managed_llama_dir", lambda: root)
     assert ILP.installed_runtime_health() == (False, "llama_runtime_payload_incomplete")
 
 
 def test_platform_only_host_agrees_with_a_detected_host_on_the_platform_facts():
-    """It stands in for detect_host() in the payload checks, which read these booleans and
-    nothing else. Disagreement would grade the tree for the wrong operating system."""
+    """Stands in for detect_host() in payload checks; a mismatch would grade the wrong OS."""
     cheap = ILP.platform_only_host()
     detected = ILP.detect_host()
     for field in ("system", "is_windows", "is_linux", "is_macos", "is_x86_64", "is_arm64"):
@@ -87,8 +84,7 @@ def test_platform_only_host_agrees_with_a_detected_host_on_the_platform_facts():
 
 
 def test_platform_only_host_does_not_probe_for_gpus(monkeypatch):
-    """detect_host() shells out to nvidia-smi and costs over a second; a probe that only
-    looks for missing files must not."""
+    """detect_host() runs nvidia-smi (over a second); a missing-files probe must not call it."""
 
     def refuse(*args, **kwargs):
         raise AssertionError("platform_only_host must not run a subprocess")
@@ -103,8 +99,7 @@ def test_platform_only_host_does_not_probe_for_gpus(monkeypatch):
 
 @pytest.mark.parametrize("broken", [OSError("denied"), RuntimeError("boom")])
 def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken):
-    """The best-effort handling lives in the CLI command, which turns a failure into a null
-    capability. Swallowing it here too would hide a real payload-table bug."""
+    """The CLI is best-effort; swallowing a raising probe here would hide a payload-table bug."""
     root = _installed(tmp_path)
 
     def raise_it(*_):
@@ -116,8 +111,7 @@ def test_a_probe_that_raises_is_not_swallowed_here(tmp_path, monkeypatch, broken
 
 
 def test_a_quarantined_llama_server_is_caught_even_with_a_complete_payload(tmp_path, monkeypatch):
-    """The payload groups name libraries only, so a missing server binary needs its own
-    check on Linux and macOS."""
+    """Payload groups name libraries only; Linux and macOS need their own server binary check."""
     root = _installed(tmp_path, binaries = True)
     monkeypatch.setattr(ILP, "_kept_install_payload_is_healthy", lambda *_: True)
     host = ILP.platform_only_host()
@@ -293,8 +287,7 @@ def test_the_hip_backend_module_is_required_by_name_not_by_anything_hip_shaped(t
 
 
 def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
-    """Dangling symlinks must not count: a quarantined versioned target left its links satisfying
-    the glob."""
+    """Quarantined versioned targets leave dangling links that must not satisfy the glob."""
     if os.name == "nt":
         pytest.skip("the shipped Windows payload has no symlink chains")
     root = _installed(tmp_path, binaries = True)
@@ -312,15 +305,13 @@ def test_a_dangling_library_symlink_does_not_count_as_present(tmp_path):
         real.append(target)
     assert ILP._runtime_payload_has(root, host, groups) is True
 
-    # Quarantine takes the versioned target and leaves both links behind.
     real[0].unlink()
     assert (runtime_dir / groups[0][0].replace("*", "")).is_symlink()
     assert ILP._runtime_payload_has(root, host, groups) is False
 
 
 def test_a_directory_matching_a_payload_pattern_is_not_a_library(tmp_path):
-    """The same is_file() guard rejects a directory that happens to match, which a bare glob
-    would have accepted."""
+    """is_file() rejects a directory that matches a pattern; a bare glob would accept it."""
     root = _installed(tmp_path, binaries = True)
     host = ILP.platform_only_host()
     groups = [["libllama.so*"]]
@@ -347,8 +338,7 @@ def test_a_library_renamed_in_place_no_longer_satisfies_its_group(tmp_path, suff
 
 
 def test_a_renamed_library_does_not_stand_in_for_its_own_soname(tmp_path):
-    """The end-to-end verdict, not only the group test, and the entrypoints stay untouched so
-    the reason has to come from the payload rather than from the binaries check."""
+    """End-to-end verdict with entrypoints untouched; the reason must come from the payload."""
     if os.name == "nt":
         pytest.skip("the Windows groups name the extension, so a suffix misses them already")
     root = _installed(tmp_path, binaries = True)
@@ -392,8 +382,7 @@ def test_a_zero_length_file_is_not_a_payload_or_an_entrypoint(tmp_path, name):
 
 
 def test_a_truncated_llama_server_is_broken_not_healthy(tmp_path):
-    """The end-to-end verdict for the same damage, with the payload left complete so the
-    reason has to come from the entrypoint check."""
+    """End-to-end verdict, payload complete: the reason must come from the entrypoint check."""
     if os.name == "nt":
         host = _windows_host()
         root = _windows_tree(
@@ -501,9 +490,8 @@ def test_a_complete_macos_payload_is_healthy(tmp_path):
     ["libllama-common", "libllama", "libggml", "libggml-base", "libggml-cpu", "libmtmd"],
 )
 def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
-    """Each essential macOS dylib is required on its own: a broad libggml glob stayed satisfied by
-    sibling libraries after the loader's one was quarantined, so llama-server died in dyld while
-    the tree reported healthy; the dot keeps each pattern off its siblings."""
+    """Each essential macOS dylib is required alone: a broad libggml glob stayed satisfied by
+    siblings after the loader's one was quarantined; the dot keeps patterns off siblings."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == stem]:
@@ -516,8 +504,7 @@ def test_each_essential_macos_dylib_is_required_on_its_own(tmp_path, stem):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
 def test_losing_only_the_macos_chain_target_is_caught(tmp_path):
-    """The links survive quarantine of the versioned file they point at, and a name-only
-    match would still satisfy the pattern."""
+    """Links outlive quarantine of their versioned target; a name-only match would still pass."""
     root = _macos_tree(tmp_path)
     (root / "build" / "bin" / "libggml.0.23.0.dylib").unlink()
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (
@@ -528,9 +515,7 @@ def test_losing_only_the_macos_chain_target_is_caught(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
 def test_the_macos_accelerator_backends_are_not_required(tmp_path):
-    """Over-strictness is the repair-loop direction. metal, blas and rpc are the accelerator
-    and transport backends, the way libggml-cuda is on Linux, so demanding one a bundle does
-    not carry would reinstall every install that lacks it."""
+    """Over-strictness drives repair loops: metal, blas, rpc are backends a bundle may lack."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [
@@ -563,8 +548,7 @@ def test_losing_the_macos_install_name_link_is_caught(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fixture needs POSIX symlinks")
 def test_a_bare_versionless_macos_dylib_still_satisfies_its_group(tmp_path):
-    """A bare versionless libfoo.dylib with no symlink chain is a name the loader can resolve, so it
-    must stay healthy or it would become a reinstall loop."""
+    """A bare versionless dylib with no symlink chain must stay healthy, else reinstall loops."""
     root = _macos_tree(tmp_path)
     runtime_dir = root / "build" / "bin"
     for path in [p for p in runtime_dir.iterdir() if p.name.split(".")[0] == "libggml"]:
@@ -706,9 +690,7 @@ def test_the_selection_rule_matches_the_resolver_the_backend_uses(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the root wrapper is written on POSIX only")
 def test_a_root_entrypoint_that_is_not_there_is_not_a_pin(tmp_path):
-    """An absent root copy, and a link whose target went with it, both read as absent to the
-    finder, which then falls through to build/bin. Calling either one broken would fail
-    health on every install that never got a root entrypoint at all."""
+    """Missing or dangling root entrypoint falls through to build/bin, never failing health."""
     root = _macos_tree(tmp_path)
     assert ILP.installed_runtime_health(root, host = _macos_host()) == (True, "")
 
