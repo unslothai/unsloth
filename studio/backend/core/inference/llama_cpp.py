@@ -26175,7 +26175,17 @@ class LlamaCppBackend:
                     and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                 ):
                     try:
-                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                        from utils.models.gguf_metadata import (
+                            read_gguf_architecture,
+                            read_gguf_nextn_predict_layers,
+                        )
+
+                        # This build already refused tensor mode for the architecture, so the
+                        # load below runs a layer split: pick the drafter that split would get.
+                        if self._tensor_split_arch_unsupported(
+                            binary, read_gguf_architecture(model_path)
+                        ):
+                            return False
                         return bool(
                             _launch_caps(binary).get("mtp_token")
                             and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
