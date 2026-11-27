@@ -609,7 +609,7 @@ def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
     assert not getattr(block, "_unsloth_vae_fused_failed", False)
 
 
-def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
+def test_fused_install_can_leave_an_encoder_stock(monkeypatch):
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
 
@@ -618,8 +618,12 @@ def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
 
     def tiny():
         torch.manual_seed(0)
-        return diffusers.AutoencoderKLWan(
-            base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1
+        return diffusers.AutoencoderKL(
+            block_out_channels = (32, 32),
+            down_block_types = ("DownEncoderBlock2D",) * 2,
+            up_block_types = ("UpDecoderBlock2D",) * 2,
+            latent_channels = 4,
+            norm_num_groups = 8,
         ).eval()
 
     both, decoder_only = tiny(), tiny()
@@ -638,6 +642,20 @@ def test_fused_install_leaves_the_qwen_image_encoder_stock(monkeypatch):
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
     vae = diffusers.AutoencoderKLQwenImage(base_dim = 32, z_dim = 4, num_res_blocks = 1).eval()
+    assert F.install(vae) > 0
+    assert sorted(n for n, m in vae.encoder.named_modules() if "forward" in m.__dict__) == []
+    assert any("forward" in m.__dict__ for m in vae.decoder.modules())
+
+
+def test_fused_install_leaves_the_wan_encoder_stock(monkeypatch):
+    """Wan 2.2 TI2V first-frame I2V follows the encoded frame: the fused encoder moved renders by 0.016 mean LPIPS
+    (0.025 max) against a bit-identical rerun, so only the decoder is fused, whatever the caller asks."""
+    diffusers = pytest.importorskip("diffusers")
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKLWan(
+        base_dim = 32, z_dim = 4, dim_mult = [1, 2, 2, 2], num_res_blocks = 1
+    ).eval()
     assert F.install(vae) > 0
     assert sorted(n for n, m in vae.encoder.named_modules() if "forward" in m.__dict__) == []
     assert any("forward" in m.__dict__ for m in vae.decoder.modules())
