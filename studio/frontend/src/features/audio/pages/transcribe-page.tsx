@@ -55,7 +55,10 @@ import {
 import { transcribeLanguageFor } from "../transcribe-languages";
 import type { TranscriptExportFormat } from "../transcript-export";
 import { formatTimestamp } from "../transcript-model";
-import type { TranscriptProgress } from "../transcript-stream";
+import {
+  transcriptProgressPercent,
+  type TranscriptProgress,
+} from "../transcript-stream";
 import {
   AUDIO_ACTION_BUTTON,
   AUDIO_GO_BUTTON,
@@ -520,6 +523,7 @@ export function TranscribeFooter({
         : stopping
           ? "Stopping…"
           : "Transcribing…";
+  const progressPercent = transcriptProgressPercent(progress);
   return (
     <div className="flex w-full flex-col gap-2.5">
       {working ? (
@@ -530,12 +534,14 @@ export function TranscribeFooter({
             className="text-center text-ui-12 text-muted-foreground"
           >
             {status}
+            {progressPercent !== null && ` · ${progressPercent}%`}
             <span className="ml-1.5 font-mono tabular-nums">
               {formatClipDuration(elapsed)}
             </span>
           </output>
           <Progress
-            indeterminate
+            value={progressPercent ?? undefined}
+            indeterminate={progressPercent === null}
             aria-label="Transcription in progress"
             className="h-1.5"
           />
