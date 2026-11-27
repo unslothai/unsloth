@@ -1296,6 +1296,76 @@ def online_dpo_trainer__forward(function_name, function):
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
 
 
+def _unsloth_online_dpo_mm_types(self, model, prompt_ids, completion_ids, vision_inputs):
+    """mm_token_type_ids for Online DPO's forward, or None. Transformers 5.x M-RoPE models (Qwen2-VL, Qwen2.5-VL,
+    ...) refuse image_grid_thw without them, and TRL < 1.17 never puts them in vision_inputs. Prompt image / video
+    tokens are rebuilt from prompt_ids; completion tokens are text. Models whose forward has no such argument
+    (transformers 4.x) get nothing."""
+    if not isinstance(vision_inputs, dict) or "mm_token_type_ids" in vision_inputs:
+        return None
+    if vision_inputs.get("image_grid_thw") is None and vision_inputs.get("video_grid_thw") is None:
+        return None
+    base = model
+    try:
+        base = self.accelerator.unwrap_model(model)
+    except Exception:
+        pass
+    get_base_model = getattr(base, "get_base_model", None)
+    if callable(get_base_model):
+        try:
+            base = get_base_model()
+        except Exception:
+            pass
+    try:
+        if "mm_token_type_ids" not in inspect.signature(type(base).forward).parameters:
+            return None
+    except (TypeError, ValueError):
+        return None
+    prompt_types = _unsloth_fix_mm_token_type_ids(
+        getattr(self, "processing_class", None), prompt_ids, None
+    )
+    if not isinstance(prompt_types, torch.Tensor) or prompt_types.shape != prompt_ids.shape:
+        return None
+    return torch.cat([prompt_types, prompt_types.new_zeros(completion_ids.shape)], dim = 1)
+
+
+_ONLINE_DPO_VISION_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, \*\*model_kwargs\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward_mm_token_type_ids(function_name, function):
+    """TRL 0.2x - 1.16 Online DPO ``_forward`` passes image_grid_thw but not mm_token_type_ids, which transformers
+    5.x M-RoPE models require. TRL 1.17+ passes them itself, so the runtime check leaves its kwargs alone."""
+    if function_name != "_forward" or "_unsloth_online_dpo_mm_types" in function:
+        return function
+    if "vision_inputs" not in function:
+        return function  # TRL without vision Online DPO
+    calls = list(_ONLINE_DPO_VISION_CALL.finditer(function))
+    if len(calls) != 1:
+        return function
+    i = calls[0].group("indent")
+    block = (
+        f'{i}if vision_inputs is not None and "mm_token_type_ids" not in model_kwargs:\n'
+        f"{i}    _unsloth_mm_token_type_ids = _unsloth_online_dpo_mm_types(\n"
+        f"{i}        self, model, prompt_ids, completion_ids, vision_inputs\n"
+        f"{i}    )\n"
+        f"{i}    if _unsloth_mm_token_type_ids is not None:\n"
+        f'{i}        model_kwargs["mm_token_type_ids"] = _unsloth_mm_token_type_ids\n'
+    )
+    return function[: calls[0].start()] + block + function[calls[0].start() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward_mm_token_type_ids)
+for _online_dpo_mm_item in (
+    _unsloth_get_mm_token_id,
+    _unsloth_fix_mm_token_type_ids,
+    _unsloth_online_dpo_mm_types,
+):
+    RL_PRE_ITEMS["online_dpo_trainer"].append(inspect.getsource(_online_dpo_mm_item))
+
+
 _WRAPPED_PACKING_SETUP = (
     "    import inspect as _inspect\n"
     "    try:\n"
