@@ -181,33 +181,85 @@ def test_a_volume_without_hard_links_still_never_replaces_unless_asked(
     assert (workdir / "report.xlsx").read_bytes() == b"upload"
 
 
-def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, monkeypatch):
+def _mint_download_token(session, name):
     import json
-    from types import SimpleNamespace
 
     from routes import inference
 
-    session = "legacy/download/thread"
-    name = "résumé.txt"
-    tools.save_sandbox_upload(session, name, [b"test"])
-    monkeypatch.setattr(inference.time, "time", lambda: 1000)
     link = asyncio.run(inference.create_sandbox_download_link(session, name, "u"))
     assert link.headers["cache-control"] == "no-store"
-    token = json.loads(link.body)["token"]
-    assert inference._sandbox_download_account(token, session, "other.txt") is None
-    assert inference._sandbox_download_account(token, "other-thread", name) is None
+    return json.loads(link.body)["token"]
+
+
+def _download_with_token(session, name, token):
+    from types import SimpleNamespace
+
+    from routes import inference
 
     async def download():
         response = await inference.serve_sandbox_file(
             "_", name, SimpleNamespace(method = "GET"), session = session, download_token = token
         )
-        assert response.status_code == 200
-        assert response.headers["content-length"] == "4"
-        return b"".join([chunk async for chunk in response.body_iterator])
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        assert response.headers["content-length"] == str(len(body))
+        return body
 
-    assert asyncio.run(download()) == b"test"
+    return asyncio.run(download())
+
+
+def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, monkeypatch):
+    from routes import inference
+
+    session = "legacy/download/thread"
+    name = "résumé.txt"
+    for owner, filename in ((session, name), (session, "other.txt"), ("other-thread", name)):
+        tools.save_sandbox_upload(owner, filename, [b"test"])
+    monkeypatch.setattr(inference.time, "time", lambda: 1000)
+    token = _mint_download_token(session, name)
+    target, expiry, signature = token.rsplit(".", 2)
+    forged = (
+        f"{target}.{expiry}.{'0' * len(signature)}",
+        f"{target}.{int(expiry) + 1}.{signature}",
+    )
+    attempts = [(session, "other.txt", token), ("other-thread", name, token)]
+    for other_session, other_name, other_token in attempts + [(session, name, t) for t in forged]:
+        with pytest.raises(HTTPException) as refused:
+            _download_with_token(other_session, other_name, other_token)
+        assert refused.value.status_code == 401
+
+    assert _download_with_token(session, name, token) == b"test"
     monkeypatch.setattr(inference.time, "time", lambda: 1000 + inference._SANDBOX_DOWNLOAD_TTL)
-    assert inference._sandbox_download_account(token, session, name) is None
+    with pytest.raises(HTTPException) as expired:
+        _download_with_token(session, name, token)
+    assert expired.value.status_code == 401
+    with pytest.raises(HTTPException) as missing:
+        _mint_download_token(session, "missing.txt")
+    assert missing.value.status_code == 404
+    (mint,) = [r for r in inference.router.routes if r.path == "/sandbox-download-link"]
+    assert inference.get_current_subject in [d.call for d in mint.dependant.dependencies]
+
+
+def test_sandbox_download_link_serves_the_minting_accounts_file(tools, tmp_path, monkeypatch):
+    import secrets
+
+    from auth import policy, storage
+    from utils.account_context import OWNER, run_as
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(storage, "_bootstrap_password", None)
+    policy.invalidate_account_cache()
+    storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+    storage.issue_account_setup_code(username = "alice")
+    alice = storage.get_account("alice")
+    try:
+        for account, body in ((OWNER, b"owner"), (alice, b"alice")):
+            run_as(account, tools.save_sandbox_upload, "thread", "report.txt", [body])
+        for account, body in ((alice, b"alice"), (OWNER, b"owner")):
+            token = run_as(account, _mint_download_token, "thread", "report.txt")
+            assert _download_with_token("thread", "report.txt", token) == body
+    finally:
+        policy.invalidate_account_cache()
 
 
 def test_sandbox_download_link_follows_a_concurrent_legacy_move(monkeypatch, tmp_path):

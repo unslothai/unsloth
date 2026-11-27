@@ -196,6 +196,17 @@ test("a native short-lived URL is minted after the save chooser", async () => {
   assert.equal(result, "renamed.csv");
 });
 
+test("a cancelled save chooser mints no short-lived URL", async () => {
+  const files = loadNativeFiles(true, async (command) => {
+    assert.equal(command, "begin_native_file_save");
+    return null;
+  });
+  await assert.rejects(
+    files.downloadShortLivedUrl("file.csv", async () => assert.fail("minted a URL")),
+    (error: unknown) => files.isDownloadCancelled(error),
+  );
+});
+
 test("a failed link request releases the native save destination", async () => {
   const calls: string[] = [];
   const files = loadNativeFiles(true, async (command, args) => {

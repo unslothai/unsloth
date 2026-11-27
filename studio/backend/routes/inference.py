@@ -39286,7 +39286,7 @@ async def serve_sandbox_file(
     """
     from starlette.concurrency import run_in_threadpool
 
-    # ── Authentication (header or query param) ──────────────────
+    # ── Authentication (header, query param, or download link) ──
     account = None
     if download_token is None:
         await _authenticate_header_or_query(request, token)
