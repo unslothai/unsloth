@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """ROCm gfx11xx: store denoiser 16-bit ``nn.Linear`` weights as a view of an [N, K + P] buffer so hipBLASLt avoids
-power-of-two strides that alias on Strix Halo memory channels (bit-exact; gfx1151 1.1-1.3x block GEMMs, +P / K memory).
+power-of-two strides that alias on Strix Halo memory channels (gfx1151 1.1-1.3x block GEMMs, +P / K memory). Weights
+whose (N, K) has a table row keep lda = K and the tuned row; padded shapes gave byte-identical outputs on the measured
+gfx1151 shapes and renders (not proven for every shape / kernel choice).
 
 TunableOp rows are keyed on the leading dimension, so a padded weight misses the shipped table (0.90-0.94x). Env unset:
 weights whose (N, K) has a loaded table row stay contiguous (byte-identical to main). ``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``:
@@ -25,7 +27,7 @@ TABLE_STEM_TOKENS = {
     "flux3klein": ("flux.3-klein", "flux.3-klein-base"),
     "flux2klein4b": ("flux.2-klein",),
 }
-STATS = {"padded": 0, "bytes": 0, "skipped_table": 0, "skipped_other": 0, "calls": 0}
+STATS = {"padded": 0, "bytes": 0, "skipped_table": 0, "skipped_other": 0, "calls": 0, "oom": 0}
 _HOOK_ATTR = "_unsloth_weight_pitch_hook"
 _DEVICE_TYPES = ("cuda",)
 
@@ -127,18 +129,34 @@ def install(
         return 0
 
     def hook(mod, args):
+        try:
+            import torch
+            if _must_defer(torch):
+                return  # stay armed: pad on the next eager, non-captured forward
+        except Exception:  # noqa: BLE001 - fall through to a single pad attempt
+            pass
         handle = mod.__dict__.get(_HOOK_ATTR)
         if handle:
             handle.remove()
         mod.__dict__[_HOOK_ATTR] = False
         try:
             pad_weights(mod, logger, family = family)
-        except Exception as exc:  # noqa: BLE001 - contiguous weights stay
+        except Exception as exc:  # noqa: BLE001 - every weight is still a valid (padded or contiguous) tensor
             if logger is not None:
                 logger.warning("diffusion.rocm_weight_pitch: skipped: %s", exc)
 
     module.__dict__[_HOOK_ATTR] = module.register_forward_pre_hook(hook)
     return 1
+
+
+def _must_defer(torch: Any) -> bool:
+    """Re-storing weights is illegal while tracing (compile) or capturing a CUDA / HIP graph."""
+    if torch.compiler.is_compiling():
+        return True
+    try:
+        return bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _release_old_storage(torch: Any) -> None:
@@ -159,7 +177,7 @@ def pad_weights(
         return 0
     import torch
 
-    if torch.compiler.is_compiling():
+    if _must_defer(torch):
         return 0
     STATS["calls"] += 1
     shapes = table_shapes()
@@ -167,47 +185,66 @@ def pad_weights(
     n = skipped_table = skipped_other = 0
     arch_by_dev: dict = {}
     p = 0
+    oom: Optional[BaseException] = None
     # Not inference tensors: later LoRA / training must save these weights for backward.
-    with torch.inference_mode(False), torch.no_grad():
-        for m in module.modules():
-            if type(m) is not torch.nn.Linear:
-                continue
-            w = m.weight
-            if (
-                not isinstance(w, torch.nn.Parameter)
-                or type(w.data) is not torch.Tensor
-                or w.dim() != 2
-                or w.device.type not in _DEVICE_TYPES
-                or w.dtype not in (torch.bfloat16, torch.float16)
-                or not w.is_contiguous()
-                or w.shape[1] < MIN_IN_FEATURES
-            ):
-                skipped_other += 1
-                continue
-            idx = w.device.index or 0
-            if idx not in arch_by_dev:
-                arch = _arch(w.device)
-                arch_by_dev[idx] = (arch, pitch(arch))
-            arch, p = arch_by_dev[idx]
-            if p <= 0:
-                skipped_other += 1
-                continue
-            if guard is None:
-                guard = shapes is not None and (not _env() or _table_family(family, arch))
-            N, K = w.shape
-            if guard and ("*" in shapes or (int(N), int(K)) in shapes):
-                skipped_table += 1
-                continue
-            buf = torch.empty((N, K + p), dtype = w.dtype, device = w.device)
-            buf[:, :K].copy_(w.data)
-            m.weight.data = buf[:, :K]
-            n += 1
-            STATS["bytes"] += N * p * w.element_size()
-    if n:
-        _release_old_storage(torch)
-    STATS["padded"] += n
-    STATS["skipped_table"] += skipped_table
-    STATS["skipped_other"] += skipped_other
+    try:
+        with torch.inference_mode(False), torch.no_grad():
+            for m in module.modules():
+                if type(m) is not torch.nn.Linear:
+                    continue
+                w = m.weight
+                if (
+                    not isinstance(w, torch.nn.Parameter)
+                    or type(w.data) is not torch.Tensor
+                    or w.dim() != 2
+                    or w.device.type not in _DEVICE_TYPES
+                    or w.dtype not in (torch.bfloat16, torch.float16)
+                    or not w.is_contiguous()
+                    or w.shape[1] < MIN_IN_FEATURES
+                ):
+                    skipped_other += 1
+                    continue
+                idx = w.device.index or 0
+                if idx not in arch_by_dev:
+                    arch = _arch(w.device)
+                    arch_by_dev[idx] = (arch, pitch(arch))
+                arch, p = arch_by_dev[idx]
+                if p <= 0:
+                    skipped_other += 1
+                    continue
+                if guard is None:
+                    guard = shapes is not None and (not _env() or _table_family(family, arch))
+                N, K = w.shape
+                if guard and ("*" in shapes or (int(N), int(K)) in shapes):
+                    skipped_table += 1
+                    continue
+                # The weight is swapped only after the full copy, so a failure here leaves it untouched.
+                try:
+                    buf = torch.empty((N, K + p), dtype = w.dtype, device = w.device)
+                    buf[:, :K].copy_(w.data)
+                except torch.cuda.OutOfMemoryError as exc:  # torch.OutOfMemoryError on 2.5+
+                    oom = exc
+                    break
+                m.weight.data = buf[:, :K]
+                n += 1
+                STATS["bytes"] += N * p * w.element_size()
+    finally:
+        # Also on error / OOM: replaced blocks stay reserved otherwise (system RAM on an APU).
+        if n or oom is not None:
+            _release_old_storage(torch)
+        STATS["padded"] += n
+        STATS["skipped_table"] += skipped_table
+        STATS["skipped_other"] += skipped_other
+    if oom is not None:
+        # Padding is optional: stop, keep every weight valid (padded or original) and let the render go on.
+        STATS["oom"] += 1
+        if logger is not None:
+            logger.warning(
+                "diffusion.rocm_weight_pitch: out of memory after re-storing %d Linear weights; the rest stay "
+                "contiguous: %s",
+                n,
+                oom,
+            )
     if logger is not None and (n or skipped_table):
         logger.info(
             "diffusion.rocm_weight_pitch: %d Linear weights re-stored with row pitch K + %d; %d kept for the "

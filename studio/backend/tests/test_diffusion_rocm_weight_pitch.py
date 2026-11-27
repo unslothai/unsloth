@@ -274,3 +274,85 @@ def test_speed_optims_installs_only_on_rocm():
         n for n in ast.walk(fn) if isinstance(n, ast.If) and "rocm_weight_pitch" in ast.unparse(n)
     ]
     assert hits and any("'rocm'" in ast.unparse(h.test) for h in hits)
+
+
+def test_hook_stays_armed_under_graph_capture(gfx, monkeypatch):
+    dit = Dit()
+    assert wp.install(dit, family = "wan2.2-ti2v-5b") == 1
+    capturing = {"on": True}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: capturing["on"])
+    monkeypatch.setattr(wp, "_release_old_storage", lambda _t: None)
+    dit(torch.randn(2, 3072, dtype = torch.bfloat16))
+    assert dit.attn.weight.is_contiguous() and wp.STATS["calls"] == 0
+    assert dit.__dict__[wp._HOOK_ATTR]  # still armed
+    assert wp.pad_weights(dit) == 0  # direct callers are gated too
+    capturing["on"] = False
+    dit(torch.randn(2, 3072, dtype = torch.bfloat16))
+    assert _padded(dit.attn) and wp.STATS["calls"] == 1
+    assert dit.__dict__[wp._HOOK_ATTR] is False
+
+
+def test_hook_stays_armed_while_compiling(gfx, monkeypatch):
+    dit = Dit()
+    assert wp.install(dit) == 1
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    dit(torch.randn(2, 3072, dtype = torch.bfloat16))
+    assert dit.__dict__[wp._HOOK_ATTR] and wp.STATS["calls"] == 0
+
+
+def _fail_on_second_empty(monkeypatch, exc_type):
+    real = torch.empty
+    seen = {"n": 0}
+
+    def empty(*a, **k):
+        if isinstance(a[0], tuple) and len(a[0]) == 2 and a[0][1] == 3072 + 64:
+            seen["n"] += 1
+            if seen["n"] == 2:
+                raise exc_type("boom")
+        return real(*a, **k)
+
+    monkeypatch.setattr(torch, "empty", empty)
+
+
+def test_oom_stops_padding_releases_and_logs(gfx, monkeypatch):
+    calls, warns = [], []
+    monkeypatch.setattr(wp, "_release_old_storage", lambda _t: calls.append(1))
+    _fail_on_second_empty(monkeypatch, torch.cuda.OutOfMemoryError)
+    log = type(
+        "L", (), {"warning": lambda self, *a: warns.append(a), "info": lambda self, *a: None}
+    )()
+    dit = Dit()
+    x = torch.randn(2, 3072, dtype = torch.bfloat16)
+    ref = dit(x)
+    assert wp.pad_weights(dit, log) == 1
+    assert _padded(dit.attn) and dit.ffn.weight.is_contiguous()  # first padded, second untouched
+    assert calls == [1] and wp.STATS["oom"] == 1 and wp.STATS["padded"] == 1
+    assert warns and "out of memory" in warns[0][0]
+    torch.testing.assert_close(dit(x), ref, rtol = 0, atol = 0)
+
+
+def test_other_error_releases_storage_and_hook_logs(gfx, monkeypatch):
+    calls, warns = [], []
+    monkeypatch.setattr(wp, "_release_old_storage", lambda _t: calls.append(1))
+    _fail_on_second_empty(monkeypatch, RuntimeError)
+    log = type(
+        "L", (), {"warning": lambda self, *a: warns.append(a), "info": lambda self, *a: None}
+    )()
+    dit = Dit()
+    assert wp.install(dit, log) == 1
+    dit(torch.randn(2, 3072, dtype = torch.bfloat16))  # render goes on
+    assert _padded(dit.attn) and dit.ffn.weight.is_contiguous()
+    assert calls == [1] and wp.STATS["padded"] == 1
+    assert warns and "skipped" in warns[0][0]
+    assert dit.__dict__[wp._HOOK_ATTR] is False  # a real attempt disarms
+
+
+def test_arch_accepts_amd_sdk_wheel_without_version_hip(monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.1.0")
+    props = type("P", (), {"gcnArchName": "gfx1151:sramecc-:xnack-"})()
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda _d: props)
+    assert wp._arch(0) == "gfx1151"
+    monkeypatch.setattr(torch, "__version__", "2.9.0+cu130")
+    assert wp._arch(0) is None
