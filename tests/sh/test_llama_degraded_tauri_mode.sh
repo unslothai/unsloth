@@ -43,16 +43,14 @@ run_case() {
 echo "=== llama.cpp degraded verdict ==="
 run_case "tauri mode reports instead of aborting" true 1 1 0 "[TAURI:PROGRESS]"
 run_case "tauri mode names the recovery command" true 1 true 0 "unsloth studio update"
-# Progress detail is discarded when the install screen closes, so the verdict must also
-# reach the support report.
+# Install progress is discarded on close, so the verdict must also reach the support report.
 run_case "tauri mode records the verdict"        true 1 1 0 "[TAURI:DIAG] llama_cpp=unavailable"
 run_case "shell install still fails"             true 1 0 1 "SETUP_FAIL"
 run_case "unset tauri mode still fails"          true 1 "" 1 "SETUP_FAIL"
 run_case "direct 'studio update' stays silent"   true 0 1 0 ""
 run_case "a healthy llama.cpp says nothing"      false 1 1 0 ""
 
-# [TAURI:STEP] would be counted against the seven-entry INSTALL_STEPS list ("Step 8 of 7"),
-# so the notice rides the progress-detail channel.
+# Notice rides progress detail: a [TAURI:STEP] line would be counted against INSTALL_STEPS.
 _step_out=$(
     _LLAMA_CPP_DEGRADED=true SKIP_STUDIO_BASE=1 UNSLOTH_TAURI_MODE=1 \
     bash -c 'setup_fail() { exit "$1"; }; . "$1"' _ "$_BLOCK" 2>&1
@@ -106,8 +104,7 @@ else
     echo "  PASS: the repair block is marker-only"; PASS=$((PASS + 1))
 fi
 
-# install.ps1 turns any non-zero setup.ps1 status into a failed install, so setup.ps1 must
-# degrade the same way.
+# install.ps1 fails on any non-zero setup.ps1 status, so setup.ps1 must degrade the same way.
 SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 _PS_BLOCK=$(sed -n '/^if (\$script:LlamaCppDegraded -and \$env:SKIP_STUDIO_BASE -eq "1") {/,/^}$/p' "$SETUP_PS1")
 if [ -z "$_PS_BLOCK" ]; then

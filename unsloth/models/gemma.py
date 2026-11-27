@@ -263,8 +263,7 @@ def GemmaModel_fast_forward_inference(
     )
 
 
-# Follows google-deepmind/gemma positional_embeddings.py#L45 line by line, which formulates cos and
-# sin differently from Llama.
+# Follows google-deepmind/gemma positional_embeddings.py:45; differs from Llama in cos/sin.
 class GemmaFixedRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
@@ -322,7 +321,6 @@ class GemmaFixedRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         # Built on the target device in FP32 like the original Llama code; the one change is t/x division instead of t * (1/x).
         self.current_rope_size = seq_len
 
-        # The difference is we do division explicitly instead of t * (1/x) ie we do t/x.
         freq_exponents = (2.0 / self.dim) * (
             torch.arange(self.dim // 2, dtype = torch.int64, device = "cpu").float()
         )
@@ -397,7 +395,6 @@ class FastGemmaModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # Gemma does not downcast RoPE.
         model, tokenizer = patch_model_and_tokenizer(
             model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
@@ -412,7 +409,6 @@ class FastGemmaModel(FastLlamaModel):
             else:
                 param.requires_grad_(False)
 
-        # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
                 # Must be float32; the Triton kernel applies the +1 itself.

@@ -129,8 +129,7 @@ def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
 
 
 def digest_file(path) -> Optional[str]:
-    """sha256 of one file, or None when absent or unreadable; None never equals a recorded digest,
-    so an unreadable input forces the consuming step to run."""
+    """sha256 of a file, or None if absent or unreadable; None never matches, forcing a rerun."""
     try:
         return _sha256(Path(path))
     except (TypeError, ValueError):
@@ -155,8 +154,7 @@ def _canonical(name: str) -> str:
 
 def _metadata_scan_paths() -> List[str]:
     """Site-packages roots minus inherited sys.path entries, deduplicated by real path: purelib
-    hardcodes lib while platlib follows sys.platlibdir, so lib64 builds would list one directory
-    twice."""
+    hardcodes lib while platlib follows sys.platlibdir, so lib64 builds would list a dir twice."""
     import sysconfig
 
     paths: List[str] = []
@@ -354,8 +352,7 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
 
 def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = None) -> bool:
     """Flags duplicated, unreadable or pip-ignored metadata; a sole ~ backup is invisible to a
-    version count yet pip refuses it, and unflagged the fast path would skip the reinstall that
-    repairs it."""
+    version count yet pip refuses it, so the fast path must not skip the repairing reinstall."""
     if versions is None:
         versions = installed_versions(dist_name)
     return bool(metadata_conflict(versions) or pip_backup_metadata_paths(dist_name))
@@ -431,9 +428,7 @@ def _publish_json(
 
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
-    """Holds an exclusive lock on LOCK_NAME, best effort and never raising: a filesystem that cannot
-    lock (network mount, read-only prefix, no fcntl or msvcrt) runs unserialised rather than
-    failing; the deadline bounds retries, not one stalled syscall."""
+    """Non-raising lock on LOCK_NAME: no-lock mounts run unserialised; deadline bounds retries."""
     handle = None
     locked = False
     try:
@@ -684,8 +679,7 @@ def write_manifest(
     woa_torch_index: Optional[str] = None,
     extra: Optional[Dict[str, object]] = None,
 ) -> Optional[Path]:
-    """Record a completed install. Never raises: no manifest reads as incomplete,
-    which is the safe answer."""
+    """Record a completed install; never raises, and a missing manifest reads as incomplete."""
     payload = {
         "schema": MANIFEST_SCHEMA,
         "completed_at_ms": int(time.time() * 1000),
@@ -798,9 +792,8 @@ def no_torch_marker_path(root: Optional[Path] = None) -> Path:
 
 
 def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
-    """Records the no-torch mode outside the completion manifest before the dependency pass, so an
-    interrupted install still knows its mode; removed when torch is wanted so no stale marker
-    remains. Never raises."""
+    """Records no-torch mode outside the completion manifest before the dependency pass so an
+    interrupted install keeps it; removed when torch is wanted. Never raises."""
     path = no_torch_marker_path(root)
     try:
         if no_torch:
@@ -812,9 +805,7 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
 
 
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
-    """Recorded no-torch mode, or None when no manifest key or marker exists; callers must detect
-    for themselves on None and never assume False, so older installs are not silently switched
-    out of no-torch mode."""
+    """Recorded no-torch mode, None if unknown; never read None as False (old installs flip)."""
     manifest = read_manifest(root)
     if manifest is not None:
         value = manifest.get("no_torch")
@@ -831,9 +822,8 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
 
 
 def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
-    """Torch flavor recorded by the previous install, or None when unknown; never read None as cpu,
-    or a repair reinstalls over a deliberate build; no marker companion, as the manifest is
-    dropped each pass; a run whose setup script exported the flavor never reaches this."""
+    """Torch flavor, or None when unknown: never read None as cpu, or repairs clobber deliberate
+    builds; no marker, as the manifest drops each pass; setup-exported runs never reach this."""
     manifest = read_manifest(root)
     if manifest is None:
         return None
@@ -846,8 +836,7 @@ def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
 
 def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
     """Whether the recorded flavor was named rather than auto-selected; False when unrecorded, since
-    an unproven CPU record read as deliberate would leave a host that later gained a GPU with no
-    repair offered."""
+    an unproven CPU record would look deliberate and block GPU repair."""
     manifest = read_manifest(root)
     if manifest is None:
         return False
@@ -856,8 +845,7 @@ def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
-    """Returns (distribution name, marker, specifier) for a requirement line, or None for blanks and
-    pip flags; covers the names, specifiers, inline comments and markers that studio.txt uses."""
+    """Parses a requirement line to (name, marker, specifier); None for blanks and pip flags."""
     text = line.split("#", 1)[0].strip()
     if not text or text.startswith("-"):
         return None
@@ -911,9 +899,8 @@ def _version_satisfies(version: str, specifier: str) -> bool:
 def missing_requirements(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
-    """Distribution names missing or outside their required versions, checked via importlib.metadata
-    since import names (jwt, docx, fitz) differ; the installed mapping checks another venv, which
-    importlib.metadata cannot see."""
+    """Lists missing or out-of-range distributions via importlib.metadata, since import names (jwt,
+    docx, fitz) differ; an installed mapping covers another venv it cannot see."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     path = req_file or (requirements_root() / BOOT_REQUIREMENT_FILE)
@@ -1196,8 +1183,7 @@ def _staged_beside(target) -> bool:
 
 
 def _within(target: Path, anchor: Path) -> bool:
-    """Whether a parent-relative row lands inside the environment; one outside it belongs to
-    something else, which reinstalling ours cannot fix."""
+    """True if a parent-relative row lands inside the env; outside rows are not ours to fix."""
     try:
         resolved = target.resolve()
     except OSError:
@@ -1556,9 +1542,8 @@ def _sidecar_damaged_files(
     budget_seconds: float = SIDECAR_SCAN_BUDGET_SECONDS,
     required: Sequence[str] = (),
 ) -> List[str]:
-    """Finds RECORD rows under a sidecar that are gone, truncated or built for another CPython;
-    fails open since a finding triggers a large delete, and is bounded by budget_seconds since a
-    stalled mount would wedge setup."""
+    """Finds sidecar RECORD rows that are gone, truncated or built for another CPython; fails open
+    as findings trigger large deletes; time-bounded as stalled mounts wedge setup."""
     import csv
     import io
     import stat

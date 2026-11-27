@@ -186,8 +186,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
         "model_id_allowlist": re.compile(r"^kimi-k\d"),
         "model_id_denylist": re.compile(r"-preview$|^kimi-k2-thinking"),
-        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
-        # is allowed"). Strip both so the server uses its required defaults.
+        # Reasoning models reject custom temperature/top_p; strip both for server defaults.
         "body_omit": ("temperature", "top_p"),
     },
     "mistral": {
@@ -568,7 +567,6 @@ def provider_default_models(
 
 
 def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
-    """Return a user-configurable provider, excluding Studio-managed runtimes."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return None if info is None or info.get("managed") else info
 
@@ -747,7 +745,6 @@ def _canonical_host(hostname: str) -> str:
 
 
 def _metadata_host(hostname: str) -> bool:
-    """True when ``hostname`` names a cloud metadata service."""
     # Strip the IPv6 scope id: it dials the same host but compares unequal.
     hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
     hostname = _canonical_host(hostname)
@@ -764,8 +761,7 @@ def _metadata_host(hostname: str) -> bool:
     return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
-# Resolve names to catch DNS aliases of metadata IPs. Short: sync validator in async handlers
-# blocks the event loop; a timeout counts as unknown (allowed on the default path).
+# Metadata IP DNS aliases; short timeout (sync blocks async); timeout allowed on default path.
 _DNS_TIMEOUT_SECONDS = 0.5
 _DNS_CACHE_TTL_SECONDS = 300.0
 _DNS_CACHE_MAX_ENTRIES = 512
@@ -898,7 +894,6 @@ def _resolve_host(hostname: str, port: int | None, scheme: str) -> tuple[str, ..
 
 
 def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
-    """True when ``hostname`` resolves to a cloud metadata address."""
     hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
     if not hostname or hostname in _REGISTRY_HOSTNAMES:
         return False
@@ -914,7 +909,6 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
 
 
 def _managed_account_caller() -> bool:
-    """True when this validation runs for a managed (non-owner) account."""
     from utils.account_context import is_owner_context
     return not is_owner_context()
 
@@ -939,7 +933,6 @@ def _is_public(ip) -> bool:
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
-    """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
         addresses = [ipaddress.ip_address(hostname)]
     except ValueError:

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Keeps studiobench working. Gates on STRUCTURE, never timing (a shared runner cannot
-# resolve the effects): selftests, plus a real session with --assert-liveness, since
-# actions that never fire still exit 0.
+# Gates on STRUCTURE, never timing (a shared runner cannot resolve the effects): selftests, plus a
+# real session with --assert-liveness, since actions that never fire still exit 0.
 
 name: studiobench CI
 
@@ -227,9 +226,8 @@ jobs:
       - name: Wait for health
         run: bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT" --log logs/studio.log
 
-      # Pass the bootstrap password explicitly: an attached studiobench cannot find the home.
-      # 100K is the smallest rung where every action except image_upload runs.
-      # --windowed-arm: the thread mounts only the rows near the reader (thread-window.ts).
+      # Pass the bootstrap password: attached studiobench cannot find the home. 100K is the smallest
+      # rung where all but image_upload run. --windowed-arm mounts only rows near the reader.
       - name: Run a real-path session
         run: |
           python -m tests.studio.studiobench \
@@ -240,9 +238,8 @@ jobs:
             --engine chromium \
             --out outputs/studiobench-ci
 
-      # THE GATE: every scheduled action must have ran=true and expect_ok, and an empty payload
-      # fails. image_upload is excused (the fixture loads no model, so the control is not
-      # mounted). --allow-slot-misses 2: a slow runner misses slots by design; keep it small.
+      # Gate: scheduled actions need ran=true and expect_ok; an empty payload fails. image_upload is
+      # excused (no model; its control is unmounted). --allow-slot-misses 2 for slow runners.
       - name: Every scheduled action ran
         run: |
           python -m tests.studio.studiobench \

@@ -33,8 +33,7 @@ IDLE_ADAPTERS = [
 
 
 def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkeypatch):
-    """On a 45/7.98 GiB pair, 0.22 and 0.14 GiB are not capacity-forced, so per device stays Unknown
-    but the 0.36 GiB total must still show (#7452)."""
+    """On 45/7.98 GiB, per-device stays Unknown but the 0.36 GiB total still shows (#7452)."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
@@ -62,8 +61,7 @@ def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
 
 
 def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
-    """The #7072 case, a model resident on the W7900: 40 GiB exceeds the smaller card, so both rows
-    get a value and the aggregate must equal their sum."""
+    """On W7900 (#7072), 40 GiB exceeds the smaller card: both rows get values that must sum."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),
@@ -104,8 +102,7 @@ def test_aggregate_requires_a_counter_per_visible_device():
 
 
 def test_aggregate_rejects_a_usage_larger_than_any_visible_card():
-    """A usage larger than every visible card's capacity means the counter set is not the visible
-    set, so the sum would include a hidden GPU and is refused."""
+    """Usage above all visible capacities means a hidden GPU is counted; the sum is refused."""
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([40 * GB, 10 * MiB], [8 * GB]) is None
     assert agg([40 * GB, 6 * GB], [45 * GB, 4 * GB]) is None
@@ -125,8 +122,7 @@ def test_aggregate_never_sums_bytes_that_are_not_on_a_visible_card():
 
 
 def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypatch):
-    """Counters come and go between polls, so each poll is judged on its own list and the tile shows
-    either the real figure or Unknown, never two figures."""
+    """Each poll is judged on its own counter list, so the tile shows one figure or Unknown."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     polls = [
         (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
@@ -143,8 +139,7 @@ def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypat
 
 
 def test_aggregate_tolerates_a_wddm_spill_over_the_smaller_card(win_rocm, monkeypatch):
-    """WDDM can spill an overrun into host RAM, so a usage may exceed its own card; a reading above
-    the largest visible capacity is refused, one that still fits the ranking is summed."""
+    """WDDM spills overruns into RAM; usage over the largest capacity is refused, else summed."""
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([9 * GB, 0.3 * GB], [45 * GB, 8 * GB]) == pytest.approx(9.3 * GB)
     assert agg([46 * GB, 2 * GB], [45 * GB, 8 * GB]) is None

@@ -47,7 +47,6 @@ def media_chat_status(task: str) -> Optional[dict]:
 
 
 def offered_media_chat_tools(enabled_tools) -> list[dict]:
-    """Schemas for the media tools the caller asked for whose model is loaded and visible."""
     from core.inference.generate_image_tool import generate_image_schema, offers_txt2img
     from core.inference.generate_video_tool import generate_video_schema
 

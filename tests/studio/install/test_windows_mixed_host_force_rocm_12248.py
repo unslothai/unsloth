@@ -70,7 +70,7 @@ COLLECT = _script(
 )
 
 INSTALL_DECISION = slice_between(
-    INSTALL_SRC, '    # "rocm": from here on this is an AMD host', "    # ── Intel GPU detection"
+    INSTALL_SRC, '    # "rocm": from here on this is an AMD host', "    # -- Intel GPU detection"
 )
 INSTALL_NOTICE = slice_between(
     INSTALL_SRC,

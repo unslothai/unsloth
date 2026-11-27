@@ -99,9 +99,8 @@ def _problems(paths: Paths, measured: float) -> list:
 
 
 def test_a_resume_that_sizes_the_ladder_differently_is_refused(tmp_path):
-    """The recorded run had no tokeniser and planned 1K at 4,000 characters; this one reads the
-    corpus at 3.336 and would plan 100K at 333,600 rather than 400,000; _resume_set skips the
-    first two rungs regardless since the ratio is nowhere in a cell id."""
+    """The recorded run had no tokeniser and planned 1K at 4,000 chars; this one reads 3.336
+    chars/token, and _resume_set skips rungs regardless since no cell id carries the ratio."""
 
     paths = _payload(
         tmp_path,
@@ -227,8 +226,7 @@ def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
 
 
 def test_a_rollback_never_cuts_into_what_it_was_given(tmp_path):
-    """The mark is a floor. A session that wrote nothing drops nothing, and a mark at or beyond the
-    end of the file is a no-op rather than a truncation of somebody else's rows."""
+    """The mark is a floor: a rollback never truncates below it; past-end marks are no-ops."""
 
     paths = _payload(
         tmp_path,

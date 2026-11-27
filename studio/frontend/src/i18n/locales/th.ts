@@ -2520,6 +2520,10 @@ export const th = {
         confirmDescriptionChatOnly:
           "หยุดเซิร์ฟเวอร์และเรียกใช้ตัวติดตั้งซ้ำ เนื่องจากนี่เป็นการติดตั้งแบบแชทเท่านั้น ตัวติดตั้งจะอัปเกรดเป็นการติดตั้งแบบเต็มพร้อม PyTorch ด้วย รวมหลายกิกะไบต์ แชทและการตั้งค่าจะยังคงอยู่ ขั้นตอนนี้อาจใช้เวลาหลายนาที",
         confirmAction: "ซ่อมแซมเดี๋ยวนี้",
+        recommendedTorch:
+          "แนะนำให้ซ่อมแซม: การติดตั้งนี้มี PyTorch {torch} ซึ่งเก่ากว่า {managedTorch} ที่จัดการไว้ซึ่งรองรับ GPU ซีรีส์ RTX 50",
+        recommendedDriver:
+          "PyTorch {torch} เก่ากว่า {managedTorch} ที่จัดการไว้ซึ่งรองรับ GPU ซีรีส์ RTX 50 แต่ไดรเวอร์ GPU นี้ไม่รองรับ CUDA 13 โปรดอัปเดตไดรเวอร์ GPU ก่อน แล้วจึงซ่อมแซมการติดตั้ง",
       },
       resetPreferences: {
         sectionTitle: "โซนอันตราย",
@@ -4252,8 +4256,8 @@ export const th = {
       summary: {
         single: "เทรนบน GPU เดียว",
         layerSplit: "โมเดลถูกแบ่งทีละเลเยอร์ไปยัง {count} GPU",
-        ddp: "โมเดลใส่ใน GPU เดียวได้: ขนานข้อมูลบน {count} GPU",
-        fsdp2: "โมเดลใหญ่เกินกว่า GPU เดียว: แบ่งส่วนไปยัง {count} GPU",
+        ddp: "แต่ละ GPU เทรนสำเนาเต็ม: ขนานข้อมูลบน {count} GPU",
+        fsdp2: "น้ำหนักและสถานะ optimizer แบ่งส่วนไปยัง {count} GPU",
         tp: "แต่ละเลเยอร์ถูกแบ่งไปยัง {count} GPU",
         pp: "เลเยอร์ทำงานเป็นไปป์ไลน์ {count} ขั้น ขั้นละหนึ่ง GPU",
         cp: "แต่ละลำดับถูกแบ่งไปยัง {count} GPU",
@@ -4264,7 +4268,7 @@ export const th = {
         noGpu: "เลือก GPU อย่างน้อยหนึ่งตัว",
         singleNeedsOne: "GPU เดียวใช้ GPU เพียงตัวเดียว ยกเลิกเลือกตัวอื่น",
         needsTwo: "โหมดนี้ต้องใช้ GPU อย่างน้อยสองตัว",
-        customSpec: "ใส่รูปแบบ เช่น dp=2,tp=2",
+        customSpec: "ใส่รูปแบบ เช่น {example}",
       },
     },
     preview: {
@@ -4636,6 +4640,12 @@ export const th = {
       epochs: "อีพ็อก",
       useMaxSteps: "ใช้สเต็ปสูงสุด",
       useEpochs: "ใช้อีพ็อก",
+      stepGuidancePass: "ประมาณ {steps} สเต็ปคือการวนหนึ่งรอบผ่าน {rows} แถวของคุณ ที่ effective batch {batch}",
+      stepGuidanceFloor: "การวนหนึ่งรอบผ่าน {rows} แถวของคุณใช้เพียง {passSteps} สเต็ปที่ effective batch {batch} ดังนั้นประมาณ {steps} สเต็ป (หลายรอบ) จึงเป็นขั้นต่ำที่เหมาะสม",
+      stepGuidanceCap: "การวนหนึ่งรอบผ่าน {rows} แถวของคุณใช้ {passSteps} สเต็ปที่ effective batch {batch} โดย {steps} สเต็ปจะเทรนบางส่วน ซึ่งมักเพียงพอสำหรับการรันครั้งแรก",
+      stepGuidanceEpoch: "หนึ่งอีพ็อกคือประมาณ {passSteps} สเต็ปผ่าน {rows} แถวของคุณ ที่ effective batch {batch}",
+      stepGuidancePacking: "Packing รวมแถวสั้นเข้าด้วยกัน การวนหนึ่งรอบจึงอาจใช้สเต็ปน้อยลง",
+      useSuggestedSteps: "ใช้ {steps}",
       maxStepsTooltip: "กำหนดจำนวนสเต็ปทั้งหมดของ optimizer แทนค่าเดิม",
       epochsTooltip: "จำนวนรอบที่ผ่านชุดข้อมูลทั้งหมด",
       contextLength: "บริบท",
@@ -5182,6 +5192,7 @@ export const th = {
       showPromptDescription: "ดูคำสั่งที่ส่งไปยังโมเดลอย่างละเอียด",
     },
     history: {
+      notSaved: "ไม่ได้บันทึกลงในประวัติ: พื้นที่จัดเก็บของเบราว์เซอร์เต็มแล้ว",
       title: "ประวัติ",
       search: "ค้นหาประวัติ",
       empty: "คำแปลของคุณจะแสดงที่นี่",
@@ -6161,6 +6172,12 @@ export const th = {
     maximize: "ขยายหน้าต่างใหญ่สุด",
     restore: "คืนขนาดหน้าต่าง",
     close: "ปิดหน้าต่าง",
+    mediaCodecs: {
+      title: "วิดีโอที่สร้างอาจเล่นไม่ได้",
+      // {command}: an apt command line, never translated.
+      description: "ระบบนี้ไม่มีตัวถอดรหัสวิดีโอของ GStreamer ติดตั้งด้วยคำสั่ง: {command}",
+      copy: "คัดลอกคำสั่ง",
+    },
   },
   runtimeUpdate: {
     installAudio: "ติดตั้งรันไทม์เสียง",

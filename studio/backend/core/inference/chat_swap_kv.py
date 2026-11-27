@@ -47,7 +47,6 @@ def _account_id() -> Optional[str]:
 
 
 def saving_progress(media: str) -> Optional[dict]:
-    """The load-progress answer while the caller's own save runs, else None."""
     with _lock:
         if _saving.get((media, _account_id())):
             return {"phase": SAVING_CHAT_CONTEXT}
@@ -141,8 +140,6 @@ def raise_if_load_cancelled(message: str) -> None:
 
 
 def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
-    """Runs fn under the preflight lock unless an unload cancelled the load, so a destructive step
-    never runs for a cancelled load."""
     token = _current_preparing.get()
     if token is None:
         return fn(*args, **kwargs)
@@ -250,8 +247,7 @@ class SwapSave:
 
 
 async def acquire_then_close(swap: SwapSave, acquire):
-    """Run the blocking acquire on a thread and close ``swap`` only once that thread is done. A
-    cancelled request leaves the thread running, and it may still evict chat and commit the save."""
+    """Closes swap once the acquire thread ends; cancelled, it may still evict chat and commit."""
     task = asyncio.ensure_future(asyncio.to_thread(acquire))
 
     def _done(finished) -> None:
@@ -272,8 +268,7 @@ def _keep_kv() -> bool:
 
 
 def _request_counted() -> bool:
-    """Whether the middleware counts this request as chat inference: a /v1 image or video call
-    loading through the media auto-switch. Read it on the request's context, not the save thread."""
+    """Whether the request counts as chat; read on the request's context, not the save thread."""
     from core.inference import llama_keepwarm
 
     scope = llama_keepwarm._current_response_scope.get()
@@ -468,8 +463,7 @@ async def save_chat_kv_before_swap(
             manifest = await asyncio.wait_for(asyncio.shield(future), budget)
         except BaseException as exc:  # noqa: BLE001 - timeout, client gone, a failed save
             abort.set()
-            # Both this and the thread's delivery run on the loop: a result that just landed
-            # is deleted here, and one still to come finds the future cancelled and deletes itself.
+            # Both run on the loop: a landed result is deleted here; a later one self-deletes.
             if future.done() and not future.cancelled() and future.exception() is None:
                 _delete(future.result())
             future.cancel()

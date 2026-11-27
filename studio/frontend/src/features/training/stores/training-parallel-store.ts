@@ -26,6 +26,10 @@ interface TrainingParallelState {
   planStatus: ParallelFetchStatus;
   plan: ParallelPlan | null;
   planError: string | null;
+  /** The request `plan` answers, and the request the current inputs need. They differ while a new
+   * plan is debounced or loading, so `plan` then describes the previous selection. */
+  planRequestKey: string | null;
+  wantedPlanKey: string | null;
 }
 
 interface TrainingParallelActions {
@@ -38,7 +42,8 @@ interface TrainingParallelActions {
     capabilities: ParallelCapabilities | null,
   ) => void;
   setPlanLoading: () => void;
-  setPlan: (plan: ParallelPlan) => void;
+  setPlan: (plan: ParallelPlan, requestKey?: string | null) => void;
+  setWantedPlanKey: (key: string | null) => void;
   setPlanUnavailable: (
     status: "unsupported" | "error",
     message?: string,
@@ -64,6 +69,8 @@ export const useTrainingParallelStore = create<
       planStatus: "idle",
       plan: null,
       planError: null,
+      planRequestKey: null,
+      wantedPlanKey: null,
       setOverrideEnabled: (enabled) =>
         set((s) => ({ override: { ...s.override, enabled } })),
       setOverrideMode: (mode) =>
@@ -76,10 +83,29 @@ export const useTrainingParallelStore = create<
         set({ capabilitiesStatus, capabilities }),
       // Keeps the last plan on screen while the next one loads, so the line does not flicker.
       setPlanLoading: () => set({ planStatus: "loading", planError: null }),
-      setPlan: (plan) => set({ planStatus: "ready", plan, planError: null }),
+      setPlan: (plan, requestKey = null) =>
+        set({
+          planStatus: "ready",
+          plan,
+          planError: null,
+          planRequestKey: requestKey,
+        }),
+      setWantedPlanKey: (wantedPlanKey) => set({ wantedPlanKey }),
       setPlanUnavailable: (planStatus, message) =>
-        set({ planStatus, plan: null, planError: message ?? null }),
-      clearPlan: () => set({ planStatus: "idle", plan: null, planError: null }),
+        set({
+          planStatus,
+          plan: null,
+          planError: message ?? null,
+          planRequestKey: null,
+        }),
+      clearPlan: () =>
+        set({
+          planStatus: "idle",
+          plan: null,
+          planError: null,
+          planRequestKey: null,
+          wantedPlanKey: null,
+        }),
     }),
     {
       name: "unsloth_training_parallel_override",

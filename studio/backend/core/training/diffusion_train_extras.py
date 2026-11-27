@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in extras: LoRA EMA (0.99 default decay, exported as a second adapter), conditioning cache
-(bit-identical to a fresh encode), aspect bucketing; pure helpers avoid torch at import time"""
+"""Opt-in LoRA EMA, bit-identical cond cache, aspect bucketing; helpers avoid torch at import."""
 
 from __future__ import annotations
 
@@ -242,8 +241,7 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
-# audio_vae: MiniMax-H3 caches its audio latents, so an edited local audio VAE must miss too.
+# In-place edits must change the fingerprint: connectors (LTX-2) and audio_vae (MiniMax-H3).
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "audio_vae", "connectors")
 
 
@@ -323,8 +321,7 @@ def default_cond_cache_enabled() -> bool:
 
 
 def default_cond_cache_dir() -> Optional[Path]:
-    """The default persistent cache directory for the acting account, or None when the default is switched off
-    (or the Studio paths cannot be resolved here, which only ever costs the re-encode)."""
+    """Default cache dir for the account; None when off or paths unresolvable (re-encode only)."""
     if not default_cond_cache_enabled():
         return None
     try:
@@ -359,8 +356,7 @@ def cond_cache_max_bytes() -> int:
 
 
 def compact_cache_namespace(family: str, *parts: str) -> str:
-    """A short, filesystem-safe namespace: the family readable, the rest (repo ids, local paths, revisions) hashed,
-    so a long local base path cannot push a key past the 255-byte file-name limit."""
+    """Readable family, hashed rest: long local paths cannot push keys past the 255-byte limit."""
     digest = hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:20]
     return f"{_sanitize(family)}-{digest}"
 
@@ -370,9 +366,8 @@ _MAX_FAMILY_CHARS = 96
 
 
 def _is_cache_entry(path: str) -> bool:
-    """True only for a safetensors file PersistentConditioningCache wrote: its header metadata carries the owner marker,
-    or (entries written before the marker) exactly the cache's own metadata keys over ``t<i>`` tensors. Reads the
-    header alone; anything unreadable or unexpected is not ours, so it is never evicted."""
+    """True only for safetensors files this cache wrote: owner marker or exactly the legacy keys
+    over t<i> tensors; reads only the header; unreadable or unexpected files are never evicted."""
     try:
         with open(path, "rb") as f:
             head = f.read(8)

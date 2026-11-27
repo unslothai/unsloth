@@ -5,9 +5,8 @@
 export const DEFAULT_KEEP_RUNNING_WHEN_TAB_CLOSED = true;
 
 /**
- * Run admission fields for the keep-running setting: off sets stopWhenUnattended so the server
- * stops the run once no tab has followed it for a while; on sends nothing (backend
- * state/unattended_runs.py).
+ * Keep-running admission fields: off sets stopWhenUnattended so the server stops the run once no
+ * tab follows it for a while; on sends nothing (backend state/unattended_runs.py).
  */
 export function tabCloseRunFields(keepRunningWhenTabClosed: boolean): {
   stopWhenUnattended?: true;

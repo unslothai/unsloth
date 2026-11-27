@@ -62,8 +62,7 @@ def test_a_reopenable_http_partial_can_be_resumed(cache):
 
 
 def test_a_nonce_partial_cannot_be_resumed_by_any_writer(cache):
-    """The bug: hub <= 1.17 is installed and the marker says HTTP, so a version-only check
-    said Resume. This file was written by a 1.18+ client and will be purged, not continued."""
+    """Version-only check resumed HTTP partials on hub<=1.17; 1.18+ nonce partial is purged."""
     _record("http", cache)
     _partial(cache, NONCE_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
@@ -134,8 +133,7 @@ def _record_with_companion(transport: str, entry: Path):
 
 
 def test_a_companion_partial_from_another_transport_is_not_a_resume(cache):
-    """The companion is governed by .transport.companion, not by this variant's marker.
-    prepare_cache_for_transport purges it on an HTTP run, so it cannot back a Resume."""
+    """Governed by .transport.companion, not this marker; an HTTP run purges it, so no Resume."""
     _record_with_companion("http", cache)
     download_registry._write_companion_marker(cache, "xet")
     _partial(cache, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
@@ -267,8 +265,7 @@ def test_another_roots_partial_does_not_vouch_for_this_row(two_roots):
 
 
 def test_a_remembered_roots_own_partial_still_resumes(two_roots):
-    """And the other direction: the row's bytes are reopenable and its manifest lives in that
-    root's scope, so the verdict may not be lost just because the active root is empty."""
+    """A remembered root's partial still resumes though the active root is empty; bytes reopen."""
     active, previous = two_roots
     _record_in(previous, "http", "Q4_K_M")
     _partial(previous, LEGACY_PARTIAL)

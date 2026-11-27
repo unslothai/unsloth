@@ -85,8 +85,7 @@ def test_the_kv_ratio_transfers_across_two_unrelated_models():
 
 
 def test_the_cache_is_the_worst_byte_to_move_by_an_order_of_magnitude():
-    """20x per byte against contiguous weights. This is the whole reason the
-    planner uses -ot (which leaves the cache resident) instead of -ngl."""
+    """20x per byte vs contiguous weights; planner uses -ot, not -ngl, to keep cache resident."""
     one_gib_weights = Placement([TensorGroup("w", int(GIB), Access.CONTIGUOUS)])
     one_gib_cache = Placement([], kv_host_bytes = int(GIB))
     assert generation_penalty_ms(one_gib_cache) > 15 * generation_penalty_ms(one_gib_weights)

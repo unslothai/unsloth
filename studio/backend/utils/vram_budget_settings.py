@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted fraction of each GPU a load may claim; the rest is reserved for fragmentation, the CUDA
-context and MoE routing. Raising it risks llama.cpp OOM, lowering it pushes tight fits to CPU
-offload. Stored value beats the environment, which beats VRAM_FRACTION_DEFAULT."""
+"""Persisted per-GPU fraction a load may claim (the rest is kept for fragmentation, CUDA context and
+MoE); raising risks llama.cpp OOM; stored beats environment beats VRAM_FRACTION_DEFAULT."""
 
 from __future__ import annotations
 

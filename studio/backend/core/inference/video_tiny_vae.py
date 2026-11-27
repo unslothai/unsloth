@@ -169,8 +169,7 @@ _FAILED: set = set()
 
 
 def _hub_cache() -> Optional[str]:
-    """Studio's live Hugging Face cache root (Settings can move it); huggingface_hub's import-time default otherwise
-    lands the checkpoint where no other Studio loader looks."""
+    """Studio's HF cache root (Settings can move it); the import default hides it from loaders."""
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
         return str(active_hf_hub_cache())
@@ -218,7 +217,6 @@ def prefetch(family: Optional[str], *, local_files_only: bool = False) -> None:
 
 
 def load_from_file(path: str, latent_channels: int, patch: int, *, device: Any, dtype: Any) -> Any:
-    """Decoder half of a TAEHV checkpoint (encoder keys dropped), strict, eval, on ``device`` in ``dtype``."""
     from safetensors.torch import load_file
 
     model = _build(latent_channels, patch)

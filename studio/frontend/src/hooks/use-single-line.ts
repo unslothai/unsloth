@@ -14,10 +14,7 @@ function fitsOneLine(el: HTMLElement): boolean {
   return content < lineHeight * 1.5;
 }
 
-/**
- * Whether the element's text fits on one line, tracked across resizes: a box that can wrap (a
- * command, a URL) is a pill on one line and a 16px box once wrapped; CSS cannot tell.
- */
+/** Whether the element's text fits on one line, tracked across resizes, since CSS cannot tell. */
 export function useSingleLine<T extends HTMLElement>(): [
   (node: T | null) => void,
   boolean,

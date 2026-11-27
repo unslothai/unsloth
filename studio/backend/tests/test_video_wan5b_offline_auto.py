@@ -40,8 +40,7 @@ _REAL_VIDEO_FETCH_REPO = __import__(
 
 @pytest.fixture(autouse = True)
 def _hermetic(monkeypatch):
-    """No network, no Hub, no hang: every reachability / mirror / Hub lookup is pinned, sockets refuse to connect,
-    and a stuck test dumps its stacks after 60 s instead of eating the CI job."""
+    """Hermetic: Hub lookups are pinned, sockets refuse, and a hang dumps stacks after 60 s."""
     import huggingface_hub
     from huggingface_hub import constants
 
@@ -201,7 +200,6 @@ def test_online_no_cache_auto_plans_bf16(monkeypatch):
 
 @pytest.mark.usefixtures("fake_runtime")
 def test_online_int8_cached_auto_still_plans_bf16(monkeypatch):
-    # A cached hosted int8 does not pull an ONLINE auto load off the bf16 rule.
     from core.inference import video as V
     from core.inference.video_families import detect_video_family
 

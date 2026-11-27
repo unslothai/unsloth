@@ -119,8 +119,7 @@ class TestSlotsThatFitOnGpu:
         assert use_fit is False and gi == [0, 1] and slots == 3
 
     def test_kv_counted_per_candidate(self):
-        # A non-zero (slot-independent) KV shifts the threshold: with 3000 MiB KV and
-        # base 19500 (= 22500 total at par-independent terms) the same par3 fit holds.
+        # KV (3000 MiB, slot-independent) shifts the threshold; base 19500 still fits par3.
         gi, use_fit, slots = _run(_backend(kv_fixed_mib = 3000), 4, 19500, [(0, 24576)], {0: 24576})
         assert use_fit is False and slots == 3
 
@@ -149,8 +148,7 @@ class TestSlotsThatFitOnGpu:
         assert all(call["swa_full"] is True for call in calls)
 
     def test_micro_batch_is_re_derived_per_candidate(self):
-        """Recompute the batch floor and ubatch for each candidate slot count.
-        Keeping the requested ubatch would reject the fitting three-slot candidate."""
+        """Batch floor and ubatch per candidate; requested ubatch rejects a fitting slot count."""
         from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
 
         def ubatch_for_slots(slots: int):
@@ -209,7 +207,6 @@ class TestMtpReserveIsRepricedPerCandidate:
         assert use_fit is False and gi == [0] and slots == 2
 
     def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
-        # Charging every candidate the 4-slot reserve made even one slot look too big.
         gi, use_fit, slots = self._fit(lambda _s, _ub: int(500 * 4 * MIB))
         assert use_fit is True and gi is None and slots == 4
 
@@ -217,8 +214,7 @@ class TestMtpReserveIsRepricedPerCandidate:
         assert self._fit(None) == self._fit(lambda _s, _ub: 0)
 
     def test_the_candidate_micro_batch_reaches_the_reserve(self):
-        """Compact SWA adds one micro-batch to its window allowance and a reduced candidate lowers
-        the batch floor, so the reserve must see the candidate ubatch (PR 8172)."""
+        """Reserve must see candidate ubatch; SWA and batch floor shift with it (PR 8172)."""
         seen = []
         self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
         assert seen, "the reserve callback was never consulted"

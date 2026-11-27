@@ -37,6 +37,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "modelDefaultsError",
     "isCheckingDataset",
     "isDatasetImage",
+    "datasetTotalRows",
     "isDatasetAudio",
     "datasetCheckFailed",
     "manualDatasetOptionsValid",

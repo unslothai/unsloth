@@ -538,6 +538,80 @@ def test_compact_summarises_a_cloud_chat_that_still_fits():
     assert _SUMMARY in _system_text(after)
 
 
+def _saved_chat(thread_id: str, chat: list[dict]) -> list[str]:
+    _saved_thread(thread_id)
+    ids: list[str] = []
+    for index, message in enumerate(m for m in chat if m["role"] != "system"):
+        ids.append(f"{thread_id}-{index}")
+        studio_db.upsert_chat_message(
+            {
+                "id": ids[-1],
+                "threadId": thread_id,
+                "parentId": ids[-2] if len(ids) > 1 else None,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    return ids
+
+
+def _fork(thread_id: str, message_id: str) -> str:
+    fork_id = f"{thread_id}-fork"
+    studio_db.fork_chat_thread(
+        source_thread_id = thread_id,
+        branch_message_id = message_id,
+        new_thread_id = fork_id,
+        created_at = 999,
+        id_factory = iter(f"{fork_id}-{index}" for index in range(100)).__next__,
+    )
+    return fork_id
+
+
+def test_a_fork_of_a_compacted_chat_keeps_its_summary_with_auto_compact_off():
+    chat = _long_chat()
+    ids = _saved_chat("thread-fork-compacted", chat)
+    _, [_], _ = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = "thread-fork-compacted",
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+    )
+    fork = _fork("thread-fork-compacted", ids[-1])
+    cloud_compaction._memory_summaries.clear()
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    for thread in ("thread-fork-compacted", fork):
+        chunks, summaries, [sent] = _bodies(_OverflowAt8k, messages = later, thread_id = thread)
+        assert summaries == [] and not [c for c in chunks if "error" in c]
+        assert _SUMMARY in _system_text(sent)
+        assert sent["messages"][-1]["content"] == "next"
+
+
+def test_a_fork_before_the_compacted_turns_does_not_replay_the_summary():
+    chat = _long_chat()
+    ids = _saved_chat("thread-fork-early", chat)
+    _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = "thread-fork-early",
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+    )
+    fork = _fork("thread-fork-early", ids[1])
+
+    diverged = list(chat[:3])
+    for index in range(12):
+        diverged.append({"role": "user", "content": f"other question {index}"})
+        diverged.append({"role": "assistant", "content": f"other answer {index}"})
+    diverged.append({"role": "user", "content": "next"})
+    _, summaries, [sent] = _bodies(_SummarisingHandler, messages = diverged, thread_id = fork)
+    assert summaries == []
+    assert _SUMMARY not in _system_text(sent)
+    assert sent["messages"][1:] == diverged[1:]
+
+
 def test_compact_without_a_saved_thread_is_ignored():
     chunks, summaries, [sent] = _bodies(
         _SummarisingHandler,

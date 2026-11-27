@@ -11,8 +11,7 @@ on:
   pull_request:
     types: [closed]
 
-# One per PR, latest wins: a second close (after a reopen) lists and cancels the
-# same runs again, so the earlier pass has nothing left that only it would do.
+# One per PR, latest wins: a second close after a reopen only repeats the same cancels.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -22,8 +21,7 @@ permissions: {}
 jobs:
   cancel:
     name: Cancel this PR's leftover runs
-    # A rarely requested hosted label: the ubuntu-latest queue can be hours deep,
-    # which is exactly when this job matters. It needs only gh and jq.
+    # Arm label: ubuntu-latest queues can be hours deep when this job matters; needs gh and jq.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
@@ -41,8 +39,7 @@ jobs:
           SELF_WORKFLOW: ${{ github.workflow_ref }}
         run: |
           set -euo pipefail
-          # A head repository that was deleted has no full_name; branch matching
-          # alone could then reach another fork's runs, so match by number only.
+          # Deleted head repo: no full_name, so match by number; branch may reach other forks.
           [ -n "${HEAD_REPO:-}" ] || HEAD_REPO="-"
           self_path="${SELF_WORKFLOW#*/*/}"; self_path="${self_path%@*}"
 
@@ -56,9 +53,7 @@ jobs:
             [ "$n_open" = 0 ] || shared=1
           fi
 
-          # Take every list before cancelling anything: a cancelled run leaves the
-          # status filter that defines the result set, so cancelling while
-          # paginating would shift the pages and skip runs.
+          # List all pages before cancelling; cancelling shifts the paginated result set.
           list="$RUNNER_TEMP/runs.tsv"; : > "$list"
           for st in queued waiting pending requested in_progress; do
             if ! gh api --paginate -X GET "repos/$REPO/actions/runs" \

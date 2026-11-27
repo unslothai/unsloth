@@ -62,14 +62,13 @@ function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
 
 export type TranslateMessage = { role: "user"; content: string };
 
-/** Hy-MT's model-card templates (Hy-MT2 and Hy-MT3 share them): one user turn, no system prompt; the card has no source-language slot. */
+/** Hy-MT's model-card prompts name only the target: naming the source can make Hy-MT3 reply in the source language. */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
   if (options.custom) return fillPlaceholders(options.custom, options);
-  const pair = `${options.sourceName ? `from ${options.sourceName} ` : ""}into ${options.targetName}`;
   const style = styleOf(options);
   return style
-    ? `Please translate the following text ${pair}. Note that the translation style must strictly conform to [${style}]:`
-    : `Translate the following text ${pair}. Note that you should only output the translated result without any additional explanation:`;
+    ? `Please translate the following text into ${options.targetName}. Note that the translation style must strictly conform to [${style}]:`
+    : `Translate the following text into ${options.targetName}. Note that you should only output the translated result without any additional explanation:`;
 }
 
 /** For a general chat model, which answers a bare question instead of translating it. */

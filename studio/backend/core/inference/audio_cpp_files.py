@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Weights are HF cache files (Model Hub and deletion see them); materialize hardlinks them by real
-name into a farm beside the cache, since audio.cpp picks loaders by extension after resolving
-symlinks. Real-file caches skip it, except on Windows, where the short farm path avoids the
-260-char limit."""
+"""Hardlinks weights by real name into a farm beside the cache, as audio.cpp picks loaders by
+extension after resolving symlinks; real-file caches skip it except on Windows (260-char limit)."""
 
 from __future__ import annotations
 
@@ -201,8 +199,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
 
 
 def served_path_problem(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> Optional[str]:
-    """Why the Windows server could not open the path ``materialize`` would hand it, or None. Checked
-    before any download or eviction, so a refused model costs nothing."""
+    """Why Windows cannot open the path, or None; checked before any download or eviction."""
     if sys.platform != "win32":
         return None
     if model.local_path:

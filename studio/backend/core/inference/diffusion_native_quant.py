@@ -31,8 +31,7 @@ _INT8PACK_ALIGN = 32
 # chip's own bf16 GEMM by this much (M1: about 1.3x; M3 parity; M5 4x behind, as its 16-bit GEMM uses matrix units).
 _INT8PACK_MIN_SPEEDUP = 1.10
 _INT8PACK_PROBE_ROWS = 1024
-# (dtype, in_features, out_features) of the probed layer -> verdict for this process (one chip per process). Each
-# quantised transformer's layers carry their own verdict, so a later model with other shapes is probed afresh.
+# Per (dtype, in_features, out_features) verdict, per process; other shapes are probed afresh.
 _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
@@ -166,9 +165,8 @@ def probe_mps_int8pack(
     device: Any = "mps",
     logger: Any = None,
 ) -> bool:
-    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer and stamp
-    the verdict on every eligible layer of ``module``. Verdicts are cached per (dtype, probed shape), so another model
-    with the same largest layer reuses it and one with a different shape is probed. The env override skips the probe."""
+    """Times the Metal kernel against dense GEMM on the largest eligible layer; the verdict covers
+    all eligible layers, cached per (dtype, probed shape); an env override skips the probe."""
     import torch
 
     if mps_int8pack_disabled() or mps_int8pack_forced():
@@ -218,8 +216,7 @@ def probe_mps_int8pack(
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
-    """``scale`` rounded up to a ``dtype``-exact fp32 value: the Metal kernel takes ``dtype`` scales, so a call-time
-    cast would add per-row gain error (up to 2**-9 in bf16); rounding up never clips a code."""
+    """Scale rounded up to dtype-exact fp32 (never clips); a call-time cast adds gain error."""
     import torch
 
     # nextafter is not implemented on every backend.
@@ -382,8 +379,7 @@ def rocm_rdna_w8a8_ready(ordinal: Optional[int] = None) -> bool:
 
 
 def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
-    """Compiled ``_w8a8_rows`` for an input on ``device`` (current card when None), or None if disabled, no inductor
-    runtime, a ROCm arch other than RDNA3 / RDNA4, or already failed on that card."""
+    """Compiled fn or None if disabled, no inductor, non-RDNA3/4 ROCm, or failed on that card."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return None
     devices = _FUSED_STATE.get("devices")
@@ -431,8 +427,7 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
         return fn
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
-    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
-    # "calls" after the first call would recompile each compiled function once.
+    # Older dynamo guards on len(_FUSED_STATE), so every key must exist before first trace.
     _FUSED_STATE.setdefault("calls", 0)
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
@@ -551,10 +546,9 @@ def native_linear_class():
             scale: Any = None,
             scale_dtype: Any = None,
         ):
-            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
-            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
-            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
-            not activations go int8. ``scale_dtype``: snap int8 scales exact in that dtype (``snap_scale_up``)."""
+            """Codes [out, in] (int8 or float8_e4m3fn) and per-row scale are stored as given; linear
+            gives shapes, dtype, bias. With rot_group, codes are ConvRot-rotated, so rotation is
+            installed even for non-int8 activations; scale_dtype snaps int8 scales exact."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -606,8 +600,7 @@ def native_linear_class():
                     and weight.is_floating_point()
                     and weight.dtype != cast
                 ):
-                    # Round to the compute dtype first, as a host-widened load would, so the codes
-                    # match either way.
+                    # Round to compute dtype first, like a host-widened load, so codes match.
                     weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()
@@ -742,8 +735,7 @@ def native_linear_class():
 
         @property
         def weight(self) -> Any:
-            """The dense weight, rebuilt on each read. Code that reads a wrapped Linear's weight directly
-            (PEFT's DoRA forward reads ``base_layer.weight``) keeps working; nothing holds it."""
+            """Rebuilt on each read and never held, so direct readers (PEFT DoRA) still work."""
             return self.dequantized_weight(self.compute_dtype)
 
         def _int_mm_ok(self, rows: int) -> bool:
@@ -1038,7 +1030,6 @@ def native_linear_class():
             return x.device.type == "mps" and x.numel() > 0 and self._int8pack_layer_ok(x.dtype)
 
         def int8pack_engaged(self, dtype: Any) -> bool:
-            """Whether a ``dtype`` forward on the stored device takes the Metal int8 kernel."""
             device = self.weight_q.device
             return (
                 device.type == "mps"
@@ -1107,7 +1098,6 @@ def is_native_linear(module: Any) -> bool:
 
 
 def is_native_quantised(module: Any) -> bool:
-    """Whether any layer of ``module`` has been swapped for a native weight-only Linear."""
     try:
         return any(is_native_linear(sub) for sub in module.modules())
     except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
@@ -1123,8 +1113,7 @@ def apply_native_weight_quant(
     logger: Any = None,
     scale_dtype: Any = None,
 ) -> int:
-    """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped. One layer
-    at a time; a failure part-way leaves a partial conversion the caller must refuse."""
+    """Returns layers swapped; a failure leaves a partial conversion the caller must refuse."""
     cls = native_linear_class()
     act_int8 = scheme == NATIVE_INT8 and bool(act_int8)
     rot_group = int8_rotation_group() if act_int8 else 0

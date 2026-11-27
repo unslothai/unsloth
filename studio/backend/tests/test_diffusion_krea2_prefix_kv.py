@@ -16,6 +16,7 @@ from diffusers.models.transformers import transformer_krea2  # noqa: E402
 
 from core.inference import diffusion_krea2_prefix_kv as pkv  # noqa: E402
 from core.inference import diffusion_krea2_text_trim as trim  # noqa: E402
+from core.inference import diffusion_cuda_graph as cg  # noqa: E402
 
 TEXT, GRID, LAYERS, DIM, BLOCKS = 40, 4, 3, 32, 2
 
@@ -220,7 +221,11 @@ def test_a_planned_call_is_never_recorded_by_a_cuda_graph(dit):
     def key(*_):
         try:
             keys.append(dit._unsloth_graph_key_extra())
-        except pkv.PlanNotRecordable:
+        except pkv.PlanNotRecordable as exc:
+            # the graph layers name this decline in the status (diffusion_cuda_graph.branch_decline_reason)
+            assert cg.branch_decline_reason(exc).startswith(
+                "declined by Krea 2 prefix K/V attention"
+            )
             keys.append("unrecordable")
 
     # read where the graph layers read it: inside the forward

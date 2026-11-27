@@ -7,8 +7,7 @@ name: Mac Unsloth Install Matrix CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS skip draft PRs, so marking one ready must start its run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/install_llama_prebuilt.py'
@@ -67,9 +66,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR branches; on main nothing running is killed, pending runs are replaced.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

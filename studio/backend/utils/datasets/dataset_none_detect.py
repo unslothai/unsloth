@@ -35,7 +35,6 @@ def _probe_conversation(dataset: Dataset, candidates = None):
     if candidates is None:
         candidates = CONVERSATION_COLUMNS
     columns = set(dataset.column_names)
-    # Remember the first all-corrupt candidate.
     all_corrupt_fallback = None
     for col in candidates:
         if col not in columns:
@@ -46,7 +45,6 @@ def _probe_conversation(dataset: Dataset, candidates = None):
             sample = dataset[i][col]
             if not isinstance(sample, list) or len(sample) == 0:
                 continue
-            # Skip non-dict leading turns (e.g. [None, {"role": ...}]).
             first_turn = next((t for t in sample if isinstance(t, dict)), None)
             if first_turn is not None:
                 first = first_turn
@@ -139,7 +137,6 @@ def is_none_or_empty(value) -> bool:
 
 
 def _classify_empty(value) -> str:
-    """Return a human-readable label for why this value is considered empty."""
     if value is None:
         return "None"
     if isinstance(value, str):
@@ -156,7 +153,6 @@ def _classify_empty(value) -> str:
     return "valid"  # unreachable if is_none_or_empty was True
 
 
-# Alpaca detection
 def find_none_alpaca(dataset: Dataset) -> dict:
     """Scan alpaca dataset for None/empty instruction or output; returns stats with a 'findings' list."""
     stats = {
@@ -188,7 +184,6 @@ def find_none_alpaca(dataset: Dataset) -> dict:
     return stats
 
 
-# ChatML / conversational detection
 def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     """Auto-detects the conversation column when col is None; findings hold one entry per bad turn."""
     if col is None:
@@ -410,7 +405,6 @@ def detect_format(dataset: Dataset) -> str:
 
 
 def get_scanner(fmt: str):
-    """Return the scanner function for a format name, or None if unknown."""
     for entry in FORMAT_REGISTRY:
         if entry["name"] == fmt:
             return entry["scan"]
@@ -449,7 +443,6 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
         pass
     fmt = FORMAT_ALIASES.get(fmt, fmt)
     was_auto = fmt == "auto"
-    # Zero-row dataset: return a trivially clean stats dict.
     if was_auto and len(dataset) == 0:
         return {
             "format": "unknown",
@@ -476,7 +469,6 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     scanner = get_scanner(fmt)
     if scanner is None:
         raise ValueError(f"Unknown or unsupported format: '{fmt}'")
-    # Column forwarding: on auto-detect pass the probed column
     use_probed_col = conv_info is not None and fmt != "alpaca" and was_auto
     if use_probed_col:
         stats = scanner(dataset, col = conv_info["column"])
@@ -540,7 +532,6 @@ def print_report(
     fmt: str,
     summary_only: bool = False,
 ):
-    """Print a human-readable summary, optionally with full findings list."""
     has_findings = _print_summary_header(stats, fmt)
     if not has_findings or summary_only:
         return
@@ -674,7 +665,6 @@ def show_row(
         print(f"{'=' * 64}")
 
 
-# CLI entry point
 if __name__ == "__main__":
     import argparse
     import os

@@ -37,8 +37,7 @@ def test_the_assertion_exists_and_is_driven_from_the_run():
 
 
 def test_the_python_tool_is_the_one_requested():
-    """`enabled_tools` omitted means ALL local tools, which would let the model
-    satisfy this with `terminal` and say nothing about `python`."""
+    """Omitted `enabled_tools` enables all tools, so `terminal` could pass a `python` check."""
     body = _body()
     assert "enable_tools = True" in body
     assert 'enabled_tools = ["python"]' in body
@@ -53,8 +52,7 @@ def test_the_permission_mode_is_one_the_local_python_tool_survives():
 
 
 def test_the_token_is_minted_per_run_and_not_hardcoded():
-    """A fixed token would be satisfied by a file an EARLIER run left in the
-    sandbox, which is a green tick for code that did not run this time."""
+    """A fixed token could be satisfied by a file an earlier run left in the sandbox."""
     body = _body()
     assert "secrets_module.token_hex" in body
     call = next(
@@ -104,8 +102,7 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
 
 
 def test_the_search_reads_content_rather_than_only_a_filename():
-    """The search checks file content, not only the filename, since a small model may reword the
-    path but the token's bytes cannot be faked on disk."""
+    """Search file content, not just the filename, since a small model may reword the path."""
     body = _body()
     assert "read_text" in body
     assert "token in body" in body
@@ -118,7 +115,6 @@ def test_it_looks_under_the_studio_home_sandbox_and_not_a_stray_root():
 
 
 def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
-    """The CPU fallback must record code_execution explicitly, because a skipped assertion with no
-    record is indistinguishable from one that never existed."""
+    """The CPU fallback must record code_execution, or a skipped assertion looks like none."""
     run = _body("execute")
     assert '"code_execution",' in run, "the non-GPU branch must record code_execution explicitly"

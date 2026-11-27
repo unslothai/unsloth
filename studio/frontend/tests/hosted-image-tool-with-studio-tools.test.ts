@@ -17,9 +17,8 @@ function studioToolsBranch(): string {
   return SOURCE.slice(start, end);
 }
 
-// Images and Fetch have their own toggles and no local implementation, so the Unsloth-tools branch
-// must still ask for them: Search, Tools, MCP or project RAG can now pick that branch, and a purely
-// local list would drop a lit Images pill.
+// Images and Fetch have no local implementation, so the Unsloth-tools branch must ask for them;
+// Search, Tools, MCP or project RAG can pick it, and a local list would drop a lit Images pill.
 test("the Unsloth-tools branch still asks for the hosted tools Unsloth cannot run", () => {
   const branch = studioToolsBranch();
 

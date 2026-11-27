@@ -6,8 +6,7 @@ set -e
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Bash tests ==="
-# Discovered, not listed: a hand-maintained list drifts.
-# tests/studio/test_ci_shell_suite_coverage.py keeps this in step with Backend CI.
+# Discovered, not listed: hand lists drift; test_ci_shell_suite_coverage.py checks Backend CI.
 SH_SKIP=""
 for _t in "$TESTS_DIR"/sh/test_*.sh; do
     case " $SH_SKIP " in
