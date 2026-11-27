@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One sd-server per card while requests queue: pricing, the FIFO dispatcher and the replica lanes.
-
-An idle engine renders exactly as before on its one server. Only once a request has to wait (the primary is busy) do
-the extra servers start, one per card, and the head of the line takes whichever server frees first. Kill switch:
-``UNSLOTH_SD_CPP_REPLICAS=off``."""
+"""One sd-server per card, started only once a request waits on a busy primary. Off: ``UNSLOTH_SD_CPP_REPLICAS=off``."""
 
 from __future__ import annotations
 
@@ -47,8 +43,7 @@ def replica_setting() -> tuple[str, Optional[int]]:
 def host_spill_mib(
     diffusion_mib: int, text_encoder_mib: int, vae_mib: int, limit_mib: int
 ) -> Optional[int]:
-    """MiB auto-fit leaves on the host for a one-card load (text encoders first, then the VAE); None when the
-    diffusion model itself does not fit the card."""
+    """MiB auto-fit leaves on the host for a one-card load; None when the diffusion model does not fit the card."""
     from .sd_cpp_multigpu import DENOISE_HEADROOM_MIB
 
     if diffusion_mib <= 0 or diffusion_mib + DENOISE_HEADROOM_MIB > limit_mib:
@@ -61,8 +56,7 @@ def host_spill_mib(
 
 
 def replica_host_mib(spill_mib: int, mmap: bool) -> int:
-    """Without --mmap the spill is copied into pinned host memory; with it the weights stay in the file's page cache,
-    shared by every server reading that file and reclaimable."""
+    """--mmap shares the spill via the page cache; without it the spill is pinned per server."""
     return PROCESS_HOST_MIB + (0 if mmap else int(spill_mib))
 
 
@@ -85,8 +79,7 @@ def price_replica(
     vae_mib: int,
     host_room_mib: Optional[int],
 ) -> ReplicaPrice:
-    """Whether one more one-card server fits cuda:``ordinal`` and the host: pinned when the host holds its spill,
-    else ``--mmap``, else refused."""
+    """Pinned if the host holds the spill, else ``--mmap``, else refused."""
     card = f"cuda:{ordinal}"
     if limit_mib is None:
         return ReplicaPrice(ordinal, False, reason = f"free memory of {card} is unknown")
@@ -130,7 +123,6 @@ def price_replica(
 
 
 def model_sizes(files: Any) -> tuple[int, int, int]:
-    """(diffusion, text encoders, VAE) MiB of a load's files."""
     from .sd_cpp_multigpu import TEXT_ENCODER_FIELDS, file_mib
     return (
         file_mib(getattr(files, "diffusion_model", None)),
@@ -156,8 +148,7 @@ def accelerator_ok(binary: Optional[str]) -> bool:
 
 
 def cuda_mask_entry(ordinal: int) -> str:
-    """The parent's CUDA_VISIBLE_DEVICES entry for torch ordinal ``ordinal`` (an index or a UUID), so a child masked
-    to it opens exactly that card."""
+    """The parent's CUDA_VISIBLE_DEVICES entry (index or UUID) for torch ordinal ``ordinal``."""
     raw = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
     entries = [e.strip() for e in raw.split(",") if e.strip()] if raw else []
     if entries:
@@ -187,9 +178,8 @@ def plan_for_load(
     limit_of: Optional[Callable[[int], Optional[int]]] = None,
     host_room: Optional[Callable[[], Optional[int]]] = None,
 ) -> Optional[ReplicaLoadPlan]:
-    """The replica cards of this load, None when it keeps one server. Auto applies only where the primary already runs
-    on one card. With an explicit server count a companion split is dropped for one-card servers when the primary's
-    spill and one replica fit the host; a block split (no card holds the model) always keeps."""
+    """Replica cards, None for one server. Auto only for one-card primaries; an explicit count may drop a companion
+    split if the primary's spill and one replica fit the host; a block split always keeps."""
     from .diffusion_multigpu import current_selection, multigpu_all_enabled
 
     mode, cap = replica_setting()
@@ -229,8 +219,7 @@ def plan_for_load(
         return None
     drop = False
     if split is not None and mode != "count":
-        # Auto keeps main's companion split (both cards serving one request, nothing pinned on the host) for a single
-        # user; one-card servers in its place cost host RAM at N=1, so they are opt-in with an explicit server count.
+        # One-card servers cost host RAM at N=1, so dropping the companion split is opt-in.
         logger.info(
             "sd_cpp.replicas: keeping the companion split (one-card servers need %s=N)",
             REPLICAS_ENV,
@@ -308,11 +297,8 @@ def _replica_failure(exc: BaseException, server: Any) -> bool:
 
 
 class ReplicaPool:
-    """The extra servers of one load and the FIFO line in front of every server of it.
-
-    ``owner`` is the backend: ``owner._generate_impl(**kwargs)`` renders on the primary (today's path),
-    ``owner._start_replica(state, ordinal, mmap)`` returns a started lane backend, ``owner._stop_server(server)``
-    stops a server with the owner's teardown accounting."""
+    """A load's extra servers plus the FIFO line in front of all its servers. ``owner`` provides ``_generate_impl``,
+    ``_start_replica(state, ordinal, mmap)`` and ``_stop_server(server)``."""
 
     def __init__(self, owner: Any, state: Any, plan: ReplicaLoadPlan, token: int) -> None:
         self._owner = owner
@@ -328,7 +314,6 @@ class ReplicaPool:
         self.closed = False
         self.lanes = [_Lane(int(o)) for o in plan.cards]
 
-    # ── dispatch ─────────────────────────────────────────────────────────────
     def run(self, kwargs: dict[str, Any]) -> Any:
         from core.inference.generation_ticket import bind_generation_cancel
 
@@ -377,7 +362,6 @@ class ReplicaPool:
                 self._line.appendleft(ticket)
             else:
                 self._line.append(ticket)
-            # A request is waiting on a busy server: demand is two or more, start the replicas.
             self._spawn_planned_locked()
             try:
                 while True:
@@ -431,7 +415,6 @@ class ReplicaPool:
                 target.busy = False
             self._cond.notify_all()
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
     def _spawn_planned_locked(self) -> None:
         for lane in self.lanes:
             if lane.status == "planned":
@@ -448,8 +431,7 @@ class ReplicaPool:
 
         try:
             diffusion, encoders, vae = model_sizes(self.state.files)
-            # One replica priced at a time, its price reserved before the next reads the host: a replica still
-            # loading has not charged the host yet.
+            # Serialised: a replica still loading has not charged the host yet.
             with self._price_lock:
                 room = host_room_mib()
                 with self._cond:
@@ -541,8 +523,7 @@ class ReplicaPool:
             ).start()
 
     def close(self) -> list[Any]:
-        """Stop dispatching (waiters fall through to the primary path) and cancel replica renders. Returns the replica
-        servers for the caller to stop under its own accounting."""
+        """Stop dispatching and cancel replica renders; returns the replica servers for the caller to stop."""
         with self._cond:
             self.closed = True
             servers = []
@@ -561,14 +542,13 @@ class ReplicaPool:
         return servers
 
     def wait_idle(self) -> None:
-        """Returns once no replica render runs (each lane holds its own generate lock while rendering)."""
+        """Returns once no replica render runs."""
         for lane in self.lanes:
             lock = getattr(lane.backend, "_generate_lock", None)
             if lock is not None:
                 with lock:
                     pass
 
-    # ── readers ──────────────────────────────────────────────────────────────
     def holds_server(self) -> bool:
         return any(lane.server is not None for lane in self.lanes)
 

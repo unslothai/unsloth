@@ -206,7 +206,7 @@ def _waiting(b):
 
 def test_two_waiting_requests_render_on_both_cards_at_once(monkeypatch, tmp_path):
     b, rig = _auto_load(monkeypatch, tmp_path)
-    assert len(rig.servers) == 1  # an idle load starts one server, as main
+    assert len(rig.servers) == 1
     first = _start(b, "a")
     rig.wait(lambda: len(rig.entered) == 1)
     second = _start(b, "b")
@@ -287,7 +287,7 @@ def test_a_replica_that_dies_mid_render_hands_the_request_to_another_server(monk
     first = _start(b, "a")
     rig.wait(lambda: len(rig.entered) == 1)
     second = _start(b, "b")
-    rig.wait(lambda: len(rig.entered) == 2)  # b reached the replica, which died
+    rig.wait(lambda: len(rig.entered) == 2)
     rig.wait(lambda: b.status()["replicas"]["cards"][1]["status"] == "dead")
     rig.wait(lambda: rig.servers[1].stopped)
     rig.gate.release(2)
@@ -299,7 +299,6 @@ def test_a_replica_that_dies_mid_render_hands_the_request_to_another_server(monk
     replicas = b.status()["replicas"]
     assert replicas["failovers"] == 1 and replicas["servers"] == 1
     assert "failed a render" in replicas["cards"][1]["reason"]
-    # The load stays usable on the primary.
     rig.gate.release(1)
     assert len(b.generate(prompt = "c", width = 256, height = 256, steps = 4, seed = 1)["images"]) == 1
 
@@ -485,7 +484,7 @@ def test_a_dead_primary_takes_its_replicas_with_the_load(monkeypatch, tmp_path):
     rig.wait(lambda: len(rig.entered) == 2)
     rig.gate.release(2)
     first.join(5), second.join(5)
-    rig.servers[0].alive = False  # the primary exits while idle
+    rig.servers[0].alive = False
     assert b.status()["loaded"] is False
     rig.wait(lambda: rig.servers[1].stopped)
     rig.wait(lambda: b._stopping_servers == 0)
