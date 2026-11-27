@@ -4976,6 +4976,7 @@ class FastBaseModel:
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
         if config_attn_impl is None:
