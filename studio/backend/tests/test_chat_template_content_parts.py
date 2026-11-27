@@ -173,3 +173,34 @@ def test_native_alpaca_drops_an_eos_the_turn_terminator_replaces():
     text = result["dataset"][0]["text"]
     assert text.rstrip().endswith("done<|im_end|>")
     assert "<|endoftext|>" not in text
+
+
+def test_native_alpaca_terminates_rows_when_the_template_does_not():
+    tokenizer = _JinjaTokenizer("{{ messages[-1].content }}")
+    tokenizer.eos_token = "<|im_end|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["dataset"][0]["text"] == "done<|im_end|>"
+
+
+def test_native_alpaca_keeps_its_template_for_later_splits():
+    from utils.datasets.chat_templates import _CHOSEN_TEMPLATE_ATTR
+
+    tokenizer = _JinjaTokenizer(_QWEN3_TEMPLATE)
+    tokenizer.eos_token = "<|im_end|>"
+    format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Echo", "output": "done"}]),
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR) == ("Qwen3ForCausalLM", _QWEN3_TEMPLATE)

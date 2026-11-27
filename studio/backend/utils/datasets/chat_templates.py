@@ -731,6 +731,16 @@ def apply_chat_template_to_dataset(
         dataset_template = None if native_alpaca else "alpaca"
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
         uses_content_parts = hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer")
+        if native_alpaca:
+            # Later splits (a ChatML eval file) must not swap the template the masker reads.
+            remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+            if remembered is not None and remembered[0] == model_name:
+                _set_chat_template(tokenizer, remembered[1])
+            else:
+                try:
+                    setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, (model_name, tokenizer.chat_template))
+                except Exception:
+                    pass
 
         def _alpaca_message(role, text):
             content = [{"type": "text", "text": text}] if uses_content_parts else text
@@ -754,8 +764,7 @@ def apply_chat_template_to_dataset(
                     context = cell_text(input_)
                     if context:
                         prompt += "\n\n" + context
-                    answer = cell_text(output)
-                    trimmed_answer = answer.removesuffix(eos_token)
+                    trimmed_answer = cell_text(output).removesuffix(eos_token)
                     messages = [
                         _alpaca_message("user", prompt),
                         _alpaca_message("assistant", trimmed_answer),
@@ -772,13 +781,13 @@ def apply_chat_template_to_dataset(
                         messages[0] = _alpaca_message("user", system + "\n\n" + prompt)
                         text = _render_messages(tokenizer, messages)
                     if (
-                        answer != trimmed_answer
+                        eos_token
                         and isinstance(text, str)
                         and trimmed_answer.strip()
                         and text.rstrip().endswith(trimmed_answer.rstrip())
                     ):
-                        # The template closes no turn after the answer, so keep the row's own EOS.
-                        messages[-1] = _alpaca_message("assistant", answer)
+                        # The template closes no turn after the answer, so the row needs EOS.
+                        messages[-1] = _alpaca_message("assistant", trimmed_answer + eos_token)
                         text = _render_messages(tokenizer, messages)
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("The model's chat template did not render the Alpaca example")
