@@ -5336,6 +5336,13 @@ def _torchao_gather_options(model, arguments):
     return gather_on_accelerator_if_it_fits(model)
 
 
+# The dense writer reads the model's own (packed or merged) weights; a supplied state dict would be ignored.
+_GGUF_PACKED_STATE_DICT_REFUSAL = (
+    "Unsloth: this model still holds GGUF-packed weights, which are saved from the model itself, so a supplied "
+    "`state_dict` cannot be used. Load its weights into the model, or call without `state_dict`."
+)
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 @_fsdp2_export_on_rank0("save_pretrained_gguf", adapter_only = _gguf_lora_only)
 @_normalize_tied_weights_keys_for_save
@@ -5560,6 +5567,8 @@ def unsloth_save_pretrained_gguf(
             if is_gguf_packed_model(self):
                 # Packed GGUF linears are uint8 blocks to save_pretrained: the converter reads the dequantized
                 # (and any merged) weights instead.
+                if state_dict is not None:
+                    raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
                 print("Unsloth: Model is not a PEFT model. Saving its dequantized GGUF weights...")
                 try:
                     write_gguf_dense_base(self, save_directory)
@@ -7662,6 +7671,8 @@ def unsloth_generic_save(
 
         if is_gguf_packed_model(model):
             # GGUF blocks are not a checkpoint transformers reads: write the dequantized (and any merged) weights.
+            if state_dict is not None:
+                raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
             if "16bit" not in save_method:
                 raise RuntimeError(
                     "Unsloth: this model's base weights stay packed in their GGUF blocks, so it saves as "

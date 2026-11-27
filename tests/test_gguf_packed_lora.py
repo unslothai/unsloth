@@ -497,10 +497,8 @@ def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     peft = pytest.importorskip("peft")
     from transformers import AutoModelForCausalLM
 
-    try:
-        from unsloth.save import unsloth_generic_save
-    except Exception as exc:  # the CPU harness may not import the full save module
-        pytest.skip(f"unsloth.save does not import here: {exc}")
+    from unsloth.save import unsloth_generic_save
+
     _write_llama_gguf(tmp_path / "tiny.gguf")
     with gp.gguf_packed_load():
         packed = AutoModelForCausalLM.from_pretrained(
@@ -522,6 +520,14 @@ def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     want = copy.deepcopy(merged)
     gp.densify_gguf_packed_model(want)
     want = want.state_dict()
+    with pytest.raises(ValueError, match = "state_dict"):
+        unsloth_generic_save(
+            merged,
+            None,
+            str(tmp_path / "bad"),
+            save_method = "merged_16bit",
+            state_dict = merged.state_dict(),
+        )
     with pytest.raises(RuntimeError, match = "merged_16bit"):
         unsloth_generic_save(merged, None, str(tmp_path / "bad"), save_method = "merged_4bit_forced")
     # An older single-file export in the destination must not shadow the new shards.
@@ -544,10 +550,8 @@ def test_gguf_export_of_an_unwrapped_packed_model(tmp_path, monkeypatch):
     _new_gguf_path()
     from transformers import AutoModelForCausalLM
 
-    try:
-        import unsloth.save as save_mod
-    except Exception as exc:
-        pytest.skip(f"unsloth.save does not import here: {exc}")
+    import unsloth.save as save_mod
+
     _write_llama_gguf(tmp_path / "tiny.gguf")
     with gp.gguf_packed_load():
         packed = AutoModelForCausalLM.from_pretrained(
@@ -595,6 +599,14 @@ def test_gguf_export_of_an_unwrapped_packed_model(tmp_path, monkeypatch):
         def save_pretrained(self, path):
             pass
 
+    with pytest.raises(ValueError, match = "state_dict"):
+        save_mod.unsloth_save_pretrained_gguf(
+            packed,
+            str(tmp_path / "bad"),
+            tokenizer = _Tokenizer(),
+            quantization_method = "q8_0",
+            state_dict = packed.state_dict(),
+        )
     save_mod.unsloth_save_pretrained_gguf(
         packed, str(tmp_path / "out"), tokenizer = _Tokenizer(), quantization_method = "q8_0"
     )
