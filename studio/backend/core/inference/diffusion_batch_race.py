@@ -653,8 +653,12 @@ def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) ->
 
 
 def batched_graph_sizes(state: Any) -> Optional[set]:
-    """Batch sizes every recording graph handle of this load holds a graph for now; None when the load has no graphs."""
-    handles = list(getattr(state, "cuda_graphs", ()) or ())
+    """Batch sizes every step-graph handle of this load holds a graph for now; None when no handle constrains it.
+
+    Only handles that label their batch-size graphs (GraphedForward ``_batched``) count: they never record one on a
+    user's request. Block / segment graphs (BlockGraphSet, offloaded and layer-split loads) record each new layout on
+    demand, user calls included, so a size they raced graphed is never missing for them."""
+    handles = [h for h in (getattr(state, "cuda_graphs", ()) or ()) if hasattr(h, "_batched")]
     if not handles:
         return None
     held = None
@@ -691,7 +695,7 @@ def effective_verdict(
         return verdict
     held = batched_graph_sizes(state)
     if held is None:
-        return verdict  # no graphs on this load: the graphed arm ran eager too
+        return verdict  # no step graphs: the graphed arm ran eager, or on block graphs that record on demand
     same_layout = verdict.get("layout") is not None and layout_token(layout) == verdict.get(
         "layout"
     )

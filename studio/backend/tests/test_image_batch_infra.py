@@ -1166,3 +1166,30 @@ def test_an_aborted_size_drops_the_batched_graphs_its_warm_up_recorded(monkeypat
     )
     assert calls == [1, 4] and report["aborted"] is True
     assert dropped == [4] and report["sizes"]["4"]["batched_graphs_dropped"] == 1
+
+
+def test_block_graph_handles_never_count_a_graphed_winner_as_missing():
+    """BlockGraphSet (offloaded / layer-split loads) records each layout on demand, user calls included, and keeps no
+    per-batch-size labels: only handles that refuse to record on a user's request (GraphedForward) decide."""
+    import inspect
+
+    from core.inference.diffusion_block_graph import BlockGraphSet
+
+    assert "_batched" not in inspect.getsource(BlockGraphSet)
+    graphed_win = {
+        "promoted": True,
+        "arm": "batched",
+        "layout": race.layout_token(()),
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
+    }
+    blocks = types.SimpleNamespace(cache = {(0, "k4"): object()})
+    assert (
+        race.effective_verdict(
+            graphed_win, 4, types.SimpleNamespace(cuda_graphs = (blocks,)), layout = ()
+        )["promoted"]
+        is True
+    )
+    # Beside a step-graph handle, that handle still decides.
+    step = types.SimpleNamespace(cache = {"k1": object()}, _batched = {})
+    mixed = types.SimpleNamespace(cuda_graphs = (blocks, step))
+    assert race.effective_verdict(graphed_win, 4, mixed, layout = ())["promoted"] is False
