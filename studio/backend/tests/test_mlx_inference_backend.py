@@ -12214,6 +12214,72 @@ def test_a_video_turn_renders_through_the_tokenizer_only_when_the_processor_drop
     assert _mlx_reads_video(keeps) is True
 
 
+class _JinjaImageProcessor:
+    def __init__(
+        self,
+        template,
+        image_token = "<image>",
+    ):
+        self.chat_template = template
+        self.image_token = image_token
+
+    def apply_chat_template(
+        self,
+        conversation,
+        tokenize = False,
+        add_generation_prompt = False,
+        **_k,
+    ):
+        sandbox = pytest.importorskip("jinja2.sandbox")
+        env = sandbox.ImmutableSandboxedEnvironment()
+        return env.from_string(self.chat_template).render(messages = conversation)
+
+
+# mlx-community/llava-v1.6-mistral-7b-4bit's form, and one taking strings or parts as Qwen2-VL's does.
+_STRING_ONLY_TEMPLATE = (
+    "{% for m in messages %}{% if m['role'] == 'user' %}{{ '[INST] ' + m['content'] + ' [/INST]' }}"
+    "{% else %}{{ m['content'] + '</s>' }}{% endif %}{% endfor %}"
+)
+_PART_LIST_TEMPLATE = (
+    "{% for m in messages %}{% if m['role'] == 'user' %}[INST] {% endif %}"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}{% for c in m['content'] %}"
+    "{% if c['type'] == 'image' %}<image>\n{% else %}{{ c['text'] }}{% endif %}{% endfor %}{% endif %}"
+    "{% if m['role'] == 'user' %} [/INST]{% else %}</s>{% endif %}{% endfor %}"
+)
+
+
+def test_a_string_only_template_renders_image_turns_with_the_image_token():
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    turns = [
+        {"role": "user", "content": [{"type": "text", "text": "Look"}, {"type": "image"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Red."}]},
+        {"role": "user", "content": [{"type": "text", "text": "Sure?"}]},
+    ]
+    backend = MLXInferenceBackend()
+    backend._processor = _JinjaImageProcessor(_STRING_ONLY_TEMPLATE)
+    prompt, _, _ = backend._render_vlm_prompt(turns, [object()])
+    assert prompt == "[INST] Look\n<image> [/INST]Red.</s>[INST] Sure? [/INST]"
+    prompt, _, _ = backend._render_vlm_prompt([turns[2]], None)
+    assert prompt == "[INST] Sure? [/INST]"
+    # A typed tag would be a second marker for one image.
+    typed = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "an <image> tag"}]}
+    ]
+    prompt, _, _ = backend._render_vlm_prompt(typed, [object()])
+    assert prompt == "[INST] <image>\nan < image> tag [/INST]"
+
+    # A template that takes part lists renders them as it always did.
+    backend._processor = _JinjaImageProcessor(_PART_LIST_TEMPLATE)
+    prompt, _, _ = backend._render_vlm_prompt(turns, [object()])
+    assert prompt == "[INST] Look<image>\n [/INST]Red.</s>[INST] Sure? [/INST]"
+
+    # Nothing names the image token, so flattening would drop the image.
+    backend._processor = _JinjaImageProcessor(_STRING_ONLY_TEMPLATE, image_token = None)
+    with pytest.raises(TypeError):
+        backend._render_vlm_prompt(turns, [object()])
+
+
 def _sampling_release(monkeypatch, **utils_fields):
     """Stand mlx_vlm.utils up in one release's shape, so one processor can be read on each."""
     mlx_vlm = _require_video_stack_module()
