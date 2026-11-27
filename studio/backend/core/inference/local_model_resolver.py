@@ -860,6 +860,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         if _is_abs_path_id(info.id)
         and (info.source in _STORE_SOURCES or (info.source == "custom" and _is_symlink_alias(info)))
     }
+    inactive_hf_aliases: dict[str, str] = {}
     for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
         if not raw_id:
@@ -888,9 +889,22 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         )
         # Only the active cache loads by repo id, so another cache's copy answers to its snapshot path alone.
         hf_copy = id(info) in copies and info.source == "hf_cache"
+        hf_repo = info.model_id if info.source == "hf_cache" else None
+        active_cache = getattr(info, "active_cache", None)
+        repo_key = hf_repo.strip().lower() if hf_repo else None
         for key, alias_entry in aliases[:2] if hf_copy else aliases:
-            if key and alias_entry is not None:
-                index.setdefault(key.strip().lower(), alias_entry)
+            if not key or alias_entry is None:
+                continue
+            name = key.strip().lower()
+            if name in index:
+                if active_cache is not True or not repo_key:
+                    continue
+                if inactive_hf_aliases.get(name) != repo_key:
+                    continue
+                inactive_hf_aliases.pop(name)
+            elif repo_key and active_cache is False:
+                inactive_hf_aliases[name] = repo_key
+            index[name] = alias_entry
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
         if entry.is_gguf:
             for name, sibling_entry in _sibling_revision_entries(raw_id, loader_id):

@@ -13971,3 +13971,30 @@ def test_an_unattended_switch_beside_rechecks_after_the_load_gate_before_replaci
     assert exc.value.status_code == 409
     assert checks == [1.0, 2.0]
     assert loads == [] and backend.model_identifier == "org/A-GGUF"
+
+
+def test_text_repo_prefers_active_cache_across_formats(tmp_path, monkeypatch):
+    active, previous = tmp_path / "active", tmp_path / "previous"
+    active_repo = active / "models--org--Mixed"
+    previous_repo = previous / "models--org--Mixed"
+    active_snapshot = active_repo / "snapshots" / ("a" * 40)
+    previous_snapshot = previous_repo / "snapshots" / ("b" * 40)
+    active_snapshot.mkdir(parents = True)
+    previous_snapshot.mkdir(parents = True)
+    (active_snapshot / "Mixed-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (previous_snapshot / "model.safetensors").write_bytes(b"weights")
+    (previous_snapshot / "config.json").write_text(
+        '{"model_type":"llama","architectures":["LlamaForCausalLM"]}'
+    )
+    os.utime(active_repo, (1_000, 1_000))
+    os.utime(previous_repo, (2_000, 2_000))
+    _local_sources(monkeypatch, tmp_path, hf_cache_dir = active, known_hf_caches = (previous,))
+    monkeypatch.setattr(studio_db, "list_scan_folders", list)
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
+
+    for name in ("org/Mixed", "org/Mixed:Q4_K_M"):
+        assert resolver.resolve_local_gguf(name)[:2] == (str(active_snapshot), "Q4_K_M")
+    assert resolver.resolve_local_gguf(str(previous_snapshot))[:2] == (
+        str(previous_snapshot),
+        None,
+    )
