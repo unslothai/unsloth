@@ -301,32 +301,43 @@ def h3_read_layers_text_encoder_class() -> Any:
     return H3ReadLayersQwen3VLForConditionalGeneration
 
 
+def _h3_read_layers_spec_target(pipe: Any) -> Any:
+    """The modular pipeline's ``text_encoder`` spec when loading it would build the read-layer conditioner: it
+    names stock ``Qwen3VLForConditionalGeneration``, the pipeline reads ``hidden_states[H3_TE_READ_LAYER]`` and no
+    encoder is seeded yet. Else None."""
+    try:
+        import transformers
+
+        specs = getattr(pipe, "_component_specs", None)
+        candidate = specs.get("text_encoder") if isinstance(specs, dict) else None
+        layer = getattr(pipe, "text_encoder_layer", H3_TE_READ_LAYER)
+        if (
+            candidate is not None
+            and getattr(candidate, "type_hint", None)
+            is transformers.Qwen3VLForConditionalGeneration
+            and layer == H3_TE_READ_LAYER
+            and getattr(pipe, "text_encoder", None) is None
+        ):
+            return candidate
+    except Exception:  # noqa: BLE001 -- unknown: the stock class may load
+        return None
+    return None
+
+
 def h3_read_layers_spec(pipe: Any) -> Any:
     """Context manager: while it is open the modular pipeline's ``text_encoder`` spec builds the read-layer
-    conditioner instead of the whole Qwen3-VL. A no-op unless the spec names stock ``Qwen3VLForConditionalGeneration``
-    and the pipeline reads ``hidden_states[H3_TE_READ_LAYER]``; the spec's class is restored on exit."""
+    conditioner instead of the whole Qwen3-VL. A no-op unless ``_h3_read_layers_spec_target`` accepts the spec;
+    the spec's class is restored on exit."""
     import contextlib
 
     @contextlib.contextmanager
     def _swap():
-        spec = None
-        try:
-            import transformers
-
-            specs = getattr(pipe, "_component_specs", None)
-            candidate = specs.get("text_encoder") if isinstance(specs, dict) else None
-            layer = getattr(pipe, "text_encoder_layer", H3_TE_READ_LAYER)
-            if (
-                candidate is not None
-                and getattr(candidate, "type_hint", None)
-                is transformers.Qwen3VLForConditionalGeneration
-                and layer == H3_TE_READ_LAYER
-                and getattr(pipe, "text_encoder", None) is None
-            ):
-                spec = candidate
+        spec = _h3_read_layers_spec_target(pipe)
+        if spec is not None:
+            try:
                 spec.type_hint = h3_read_layers_text_encoder_class()
-        except Exception:  # noqa: BLE001 -- the stock spec loads the whole conditioner, same output
-            spec = None
+            except Exception:  # noqa: BLE001 -- the stock spec loads the whole conditioner, same output
+                spec = None
         try:
             yield spec is not None
         finally:
@@ -335,6 +346,77 @@ def h3_read_layers_spec(pipe: Any) -> Any:
                 spec.type_hint = transformers.Qwen3VLForConditionalGeneration
 
     return _swap()
+
+
+# The released conditioner's shape (unsloth/MiniMax-H3 text_encoder/config.json); sizes what the read-layer load
+# never holds, so its budgets follow from the stock ones instead of being typed in.
+H3_TE_RELEASE_SHAPE: dict[str, int] = {
+    "num_hidden_layers": 64,
+    "hidden_size": 5120,
+    "intermediate_size": 25600,
+    "num_attention_heads": 64,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 151936,
+}
+
+
+def h3_te_unread_bytes(shape: Optional[dict] = None, *, bytes_per_param: int = 2) -> int:
+    """Bytes of decoder layers ``H3_TE_READ_LAYER``.., the final norm and the untied ``lm_head``: what the
+    read-layer conditioner does not load. 15.21 GB in bf16 for the release."""
+    c = shape or H3_TE_RELEASE_SHAPE
+    hidden, head_dim = c["hidden_size"], c["head_dim"]
+    per_layer = (
+        2 * hidden * c["num_attention_heads"] * head_dim  # q, o
+        + 2 * hidden * c["num_key_value_heads"] * head_dim  # k, v
+        + 3 * hidden * c["intermediate_size"]  # gate, up, down
+        + 2 * hidden  # input / post-attention norms
+        + 2 * head_dim  # q / k norms
+    )
+    unread_layers = max(0, c["num_hidden_layers"] - H3_TE_READ_LAYER)
+    return bytes_per_param * (unread_layers * per_layer + c["vocab_size"] * hidden + hidden)
+
+
+H3_TE_UNREAD_BF16_GB = h3_te_unread_bytes() / 1e9
+
+
+def h3_te_read_layers_gb(stock_bf16_gb: float) -> float:
+    """The read-layer conditioner's bf16 GB, from a budget sized for the whole released one."""
+    return max(0.0, float(stock_bf16_gb) - H3_TE_UNREAD_BF16_GB)
+
+
+def h3_is_read_layers_encoder(module: Any) -> bool:
+    """Whether ``module`` is a conditioner with the read-layer layout (the bf16 class here, or the hosted one)."""
+    try:
+        layers = module.model.language_model.layers
+        return (
+            len(layers) == H3_TE_READ_LAYER + 1
+            and type(layers[H3_TE_READ_LAYER]).__name__ == "H3TextEncoderTerminatorLayer"
+        )
+    except Exception:  # noqa: BLE001 -- not a Qwen3-VL conditioner: price it whole
+        return False
+
+
+def h3_bf16_te_gb(
+    stock_bf16_gb: float,
+    *,
+    pipe: Any = None,
+    module: Any = None,
+) -> float:
+    """bf16 conditioner budget: the read-layer size only where that is what is (or will be) loaded -- a loaded
+    read-layer module, or a pipeline whose spec ``h3_read_layers_spec`` swaps. ``stock_bf16_gb`` otherwise
+    (a stock class, another spec class, or nothing known)."""
+    if module is None and pipe is not None:
+        module = getattr(pipe, "text_encoder", None)
+    if module is not None:
+        return (
+            h3_te_read_layers_gb(stock_bf16_gb)
+            if h3_is_read_layers_encoder(module)
+            else stock_bf16_gb
+        )
+    if pipe is not None and _h3_read_layers_spec_target(pipe) is not None:
+        return h3_te_read_layers_gb(stock_bf16_gb)
+    return float(stock_bf16_gb)
 
 
 # Hosted keys use ComfyUI's flattened Qwen3-VL names; transformers nests them under ``model.``.

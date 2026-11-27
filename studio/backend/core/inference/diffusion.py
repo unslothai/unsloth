@@ -13646,7 +13646,7 @@ class DiffusionBackend:
             load_minimax_h3_image_pipeline,
         )
 
-        # Unset = Studio's hosted int8 encoder (the bf16 one is 66.7 GB); only an explicit dense ask keeps bf16.
+        # Unset = Studio's hosted int8 encoder (the bf16 one is about 51.5 GB, read layers only); only an explicit dense ask keeps bf16.
         te_scheme = h3_image_te_scheme(text_encoder_quant)
         baked: tuple = ()
         if _has_active_lora(loras):

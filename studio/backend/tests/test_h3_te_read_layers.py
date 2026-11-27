@@ -264,3 +264,194 @@ def test_real_config_saving():
     )
     saved = 2 * ((layers - te.H3_TE_READ_LAYER) * per_layer + vocab * hidden + hidden)
     assert 15.0e9 < saved < 15.3e9
+    assert te.h3_te_unread_bytes() == saved
+    assert te.H3_TE_UNREAD_BF16_GB == saved / 1e9
+
+
+def test_release_shape_matches_the_tiny_count(release):
+    """The byte formula counts exactly what the read-layer load drops, checked on a real (tiny) model."""
+    cfg = _config().text_config
+    shape = {
+        "num_hidden_layers": LAYERS,
+        "hidden_size": cfg.hidden_size,
+        "intermediate_size": cfg.intermediate_size,
+        "num_attention_heads": cfg.num_attention_heads,
+        "num_key_value_heads": cfg.num_key_value_heads,
+        "head_dim": cfg.head_dim,
+        "vocab_size": cfg.vocab_size,
+    }
+    full = sum(p.numel() * p.element_size() for p in _full(release).parameters())
+    trimmed = sum(p.numel() * p.element_size() for p in _trimmed(release).parameters())
+    assert full - trimmed == te.h3_te_unread_bytes(shape)
+
+
+# ---- memory planner budgets ---------------------------------------------------------------------------------------
+
+STOCK_GB = 66.7
+
+
+def _spec_pipe(
+    type_hint,
+    text_encoder = None,
+    layer = 50,
+):
+    spec = SimpleNamespace(type_hint = type_hint)
+    return SimpleNamespace(
+        _component_specs = {"text_encoder": spec}, text_encoder_layer = layer, text_encoder = text_encoder
+    )
+
+
+def test_bf16_budget_is_the_read_layer_size_only_where_that_class_loads(release):
+    read_gb = te.h3_te_read_layers_gb(STOCK_GB)
+    assert abs(read_gb - (STOCK_GB - 15.2086)) < 1e-3
+    stock_cls = transformers.Qwen3VLForConditionalGeneration
+    # Spec swapped at load, or a loaded read-layer encoder: the read-layer size.
+    assert te.h3_bf16_te_gb(STOCK_GB, pipe = _spec_pipe(stock_cls)) == read_gb
+    assert te.h3_bf16_te_gb(STOCK_GB, module = _trimmed(release)) == read_gb
+    assert (
+        te.h3_bf16_te_gb(STOCK_GB, pipe = _spec_pipe(stock_cls, text_encoder = _trimmed(release)))
+        == read_gb
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["another_class", "other_read_layer", "stock_module_loaded", "unknown"],
+)
+def test_bf16_budget_keeps_the_whole_size_where_the_stock_class_can_load(release, case):
+    stock_cls = transformers.Qwen3VLForConditionalGeneration
+
+    class OtherEncoder(stock_cls):
+        pass
+
+    kwargs = {
+        "another_class": {"pipe": _spec_pipe(OtherEncoder)},
+        "other_read_layer": {"pipe": _spec_pipe(stock_cls, layer = 49)},
+        "stock_module_loaded": {"module": _full(release)},
+        "unknown": {},
+    }[case]
+    assert te.h3_bf16_te_gb(STOCK_GB, **kwargs) == STOCK_GB
+
+
+def test_h3_image_plan_refused_at_the_whole_encoder_is_admitted_at_the_read_layers():
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    assert h3i.te_gb_for(None) == te.h3_te_read_layers_gb(h3i.H3_IMAGE_TE_BF16_GB)
+    assert h3i.te_gb_for("int8") == h3i.H3_IMAGE_TE_INT8_GB
+    args = dict(vram_gb = 80.0, dit_gb = 40.3)
+    # 60 GB host: the whole 66.7 GB encoder is refused, the read-layer one is kept on the host.
+    with pytest.raises(RuntimeError, match = "free system memory"):
+        h3i.plan_placement(host_gb = 60.0, te_gb = h3i.H3_IMAGE_TE_BF16_GB, **args)
+    plan = h3i.plan_placement(host_gb = 60.0, te_gb = h3i.te_gb_for(None), **args)
+    assert plan.te_kept_on_host
+    # 70 GB host: the whole encoder would be re-read every prompt, the read-layer one stays.
+    assert not h3i.plan_placement(
+        host_gb = 70.0, te_gb = h3i.H3_IMAGE_TE_BF16_GB, **args
+    ).te_kept_on_host
+    assert h3i.plan_placement(host_gb = 70.0, te_gb = h3i.te_gb_for(None), **args).te_kept_on_host
+
+
+def test_h3_image_status_text_names_the_read_layer_size():
+    from core.inference import diffusion_minimax_h3_image as h3i
+
+    src = Path(h3i.__file__).read_text()
+    assert "66.7 GB bf16" not in src
+    assert src.count("{H3_IMAGE_TE_BF16_READ_GB:.1f} GB bf16") == 2
+
+
+def _video_dense_mib(monkeypatch, pipe):
+    import core.inference.video as video_mod
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    seen = []
+
+    def _capture(*, model_dense_mib = None, **kwargs):
+        seen.append(int(model_dense_mib or 0))
+        return SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _capture)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda t: None)
+    monkeypatch.setattr(video_mod, "raise_on_unified_memory_shortfall", lambda *a, **k: None)
+    VideoBackend._raise_on_modular_unified_shortfall(
+        fam,
+        target = None,
+        dtype = torch.bfloat16,
+        device = "mps",
+        memory_mode = None,
+        scheme = None,
+        pipe = pipe,
+    )
+    return fam, seen[-1]
+
+
+def test_h3_video_unified_check_prices_the_read_layer_encoder(monkeypatch):
+    stock_cls = transformers.Qwen3VLForConditionalGeneration
+
+    class OtherEncoder(stock_cls):
+        pass
+
+    fam, trimmed_mib = _video_dense_mib(monkeypatch, _spec_pipe(stock_cls))
+    _fam, stock_mib = _video_dense_mib(monkeypatch, _spec_pipe(OtherEncoder))
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    transformer_gb, te_gb, vae_gb = fam.bf16_components_gb
+    assert stock_mib == int((transformer_gb + te_gb + vae_gb) * mib_per_gb)
+    assert trimmed_mib == int(
+        (transformer_gb + te.h3_te_read_layers_gb(te_gb) + vae_gb) * mib_per_gb
+    )
+
+
+def test_h3_video_host_ram_refused_at_the_whole_encoder_is_admitted(monkeypatch):
+    from core.inference import video_minimax_h3 as vh
+    from core.inference.video_minimax_h3_te import h3_te_resident_gb
+
+    stock = h3_te_resident_gb(None, bf16_gb = vh.H3_TEXT_ENCODER_BF16_GB)
+    read = h3_te_resident_gb(
+        None,
+        bf16_gb = te.h3_bf16_te_gb(
+            vh.H3_TEXT_ENCODER_BF16_GB,
+            pipe = _spec_pipe(transformers.Qwen3VLForConditionalGeneration),
+        ),
+    )
+    need_stock = vh.estimate_h3_diffusers_host_ram_gb(24.0, text_encoder_gb = stock)
+    need_read = vh.estimate_h3_diffusers_host_ram_gb(24.0, text_encoder_gb = read)
+    assert abs((need_stock - need_read) - te.H3_TE_UNREAD_BF16_GB) < 1e-6
+    capacity = (need_read + need_stock) / 2
+    monkeypatch.setattr(vh, "h3_host_capacity_bytes", lambda: int(capacity * 1e9))
+    assert vh.h3_host_ram_shortfall(24.0, text_encoder_gb = stock) is not None
+    assert vh.h3_host_ram_shortfall(24.0, text_encoder_gb = read) is None
+
+
+def test_h3_video_others_bytes_follow_the_spec():
+    from core.inference import video as video_mod
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    comps = fam.bf16_components_gb
+    stock_cls = transformers.Qwen3VLForConditionalGeneration
+
+    def others(pipe):
+        return video_mod._h3_others_bytes(
+            fam, comps, te_scheme = None, dtype = torch.bfloat16, rotating = False, pipe = pipe
+        )
+
+    assert abs(others(None) - others(_spec_pipe(stock_cls)) - te.h3_te_unread_bytes()) <= 2
+    # int8 is priced at its hosted size whatever the spec says.
+    assert video_mod._h3_others_bytes(
+        fam,
+        comps,
+        te_scheme = "int8",
+        dtype = torch.bfloat16,
+        rotating = False,
+        pipe = _spec_pipe(stock_cls),
+    ) == video_mod._h3_others_bytes(
+        fam, comps, te_scheme = "int8", dtype = torch.bfloat16, rotating = False
+    )
+
+
+def test_h3_video_runtime_checks_price_the_loaded_encoder():
+    """Every runtime H3 budget in video.py sizes the bf16 encoder from the loaded pipeline, none from the constant."""
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    assert "bf16_gb = H3_TEXT_ENCODER_BF16_GB" not in src
+    assert src.count("h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = state.pipe)") == 3
