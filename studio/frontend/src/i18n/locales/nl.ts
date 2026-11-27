@@ -1895,7 +1895,7 @@ export const nl = {
       levelHigh: "Hoog",
       levelLow: "Laag",
       levelHighShort: "Voegt OS-isolatie toe aan Python en Terminal",
-      godotMcpWarning: "Godot MCP voert code uit met de rechten van Godot, buiten de sandbox van Unsloth, ook als het sandboxniveau Hoog is. De code kan bestanden buiten je project openen.",
+      editorMcpWarning: "{name} MCP voert code uit met de rechten van de app, buiten de sandbox van Unsloth, ook als het sandboxniveau Hoog is. De code kan bestanden buiten je project openen.",
       levelLowShort: "Alleen software. Riskante code vraagt eerst",
       levelFullAccessNote:
         "Volledige toegang schakelt de sandbox uit. Deze instelling geldt weer zodra je een ander niveau kiest.",

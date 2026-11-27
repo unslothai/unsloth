@@ -206,7 +206,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
           id={`${editorId}-mcp-sandbox-warning`}
           className="text-xs leading-relaxed text-amber-700 dark:text-amber-400"
         >
-          {t(copy.sandboxWarning)}
+          {t("settings.sandbox.editorMcpWarning", { name: copy.name })}
         </p>
       )}
       {config && !config.is_enabled && (

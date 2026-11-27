@@ -1727,7 +1727,7 @@ export const en = {
       levelHigh: "High",
       levelLow: "Low",
       levelHighShort: "Adds OS isolation to Python and Terminal",
-      godotMcpWarning: "Godot MCP runs code outside Unsloth’s sandbox, even with Sandbox High on. That code can access any file Godot can, including files outside your project.",
+      editorMcpWarning: "{name} MCP runs code outside Unsloth’s sandbox, even with Sandbox High on. That code can access any file the app can, including files outside your project.",
       levelLowShort: "Software only. Risky code asks first",
       levelFullAccessNote: "Full access turns the sandbox off. This setting applies again when you pick another level.",
       learnMore: "Learn more",

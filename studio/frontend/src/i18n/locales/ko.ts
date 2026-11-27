@@ -1718,7 +1718,7 @@ export const ko = {
       levelHigh: "높음",
       levelLow: "낮음",
       levelHighShort: "Python과 터미널을 OS 샌드박스에서도 실행",
-      godotMcpWarning: "Godot MCP는 샌드박스 수준이 높음이어도 Unsloth 샌드박스 외부에서 Godot의 권한으로 코드를 실행합니다. 이 코드는 프로젝트 외부의 파일에 접근할 수 있습니다.",
+      editorMcpWarning: "{name} MCP는 샌드박스 수준이 높음이어도 Unsloth 샌드박스 외부에서 앱의 권한으로 코드를 실행합니다. 이 코드는 프로젝트 외부의 파일에 접근할 수 있습니다.",
       levelLowShort: "소프트웨어 샌드박스만 사용. 위험한 코드는 먼저 확인",
       levelFullAccessNote: "전체 액세스는 샌드박스를 끕니다. 다른 수준을 선택하면 이 설정이 다시 적용됩니다.",
       learnMore: "자세히 알아보기",

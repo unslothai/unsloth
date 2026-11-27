@@ -1814,7 +1814,7 @@ export const sv = {
       levelHigh: "Hög",
       levelLow: "Låg",
       levelHighShort: "Lägger till OS-isolering för Python och Terminal",
-      godotMcpWarning: "Godot MCP kör kod med Godots behörigheter utanför Unsloths sandlåda, även när sandlådenivån Hög är vald. Koden kan komma åt filer utanför ditt projekt.",
+      editorMcpWarning: "{name} MCP kör kod med appens behörigheter utanför Unsloths sandlåda, även när sandlådenivån Hög är vald. Koden kan komma åt filer utanför ditt projekt.",
       levelLowShort: "Endast programvara. Riskabel kod frågar först",
       levelFullAccessNote:
         "Fullständig åtkomst stänger av sandlådan. Den här inställningen gäller igen när du väljer en annan nivå.",

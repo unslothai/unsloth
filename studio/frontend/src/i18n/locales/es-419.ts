@@ -1889,7 +1889,7 @@ export const es419 = {
       levelHigh: "Alto",
       levelLow: "Bajo",
       levelHighShort: "Agrega aislamiento del sistema a Python y Terminal",
-      godotMcpWarning: "Godot MCP ejecuta código con los permisos de Godot fuera del entorno aislado de Unsloth, incluso con el nivel de aislamiento alto. El código puede acceder a archivos fuera de tu proyecto.",
+      editorMcpWarning: "{name} MCP ejecuta código con los permisos de la app fuera del entorno aislado de Unsloth, incluso con el nivel de aislamiento alto. El código puede acceder a archivos fuera de tu proyecto.",
       levelLowShort: "Solo software. El código riesgoso pregunta primero",
       levelFullAccessNote:
         "El acceso total desactiva el sandbox. Esta opción vuelve a aplicarse cuando elijas otro nivel.",

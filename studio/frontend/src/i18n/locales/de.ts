@@ -1722,7 +1722,7 @@ export const de = {
       levelHigh: "Hoch",
       levelLow: "Niedrig",
       levelHighShort: "Python und Terminal laufen zusätzlich in der OS-Sandbox",
-      godotMcpWarning: "Godot MCP führt Code mit den Berechtigungen von Godot außerhalb der Unsloth-Sandbox aus, auch auf der Sandbox-Stufe Hoch. Der Code kann auf Dateien außerhalb deines Projekts zugreifen.",
+      editorMcpWarning: "{name} MCP führt Code mit den Berechtigungen der App außerhalb der Unsloth-Sandbox aus, auch auf der Sandbox-Stufe Hoch. Der Code kann auf Dateien außerhalb deines Projekts zugreifen.",
       levelLowShort: "Nur Software-Sandboxing. Riskanter Code fragt zuerst",
       levelFullAccessNote: "Vollzugriff schaltet die Sandbox aus. Diese Einstellung gilt wieder, sobald du eine andere Stufe wählst.",
       learnMore: "Weitere Informationen",

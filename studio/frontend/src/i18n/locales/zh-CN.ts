@@ -1716,7 +1716,7 @@ export const zhCN = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "Python 和终端还会在操作系统沙盒中运行",
-      godotMcpWarning: "即使沙盒级别设为高，Godot MCP 也会在 Unsloth 沙盒之外以 Godot 的权限运行代码。这些代码可以访问项目之外的文件。",
+      editorMcpWarning: "即使沙盒级别设为高，{name} MCP 也会在 Unsloth 沙盒之外以该应用的权限运行代码。这些代码可以访问项目之外的文件。",
       levelLowShort: "仅软件沙盒。有风险的代码会先询问",
       levelFullAccessNote: "完全访问会关闭沙盒。选择其他级别后，此设置将重新生效。",
       learnMore: "了解详情",

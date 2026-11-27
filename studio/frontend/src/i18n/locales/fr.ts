@@ -1722,7 +1722,7 @@ export const fr = {
       levelHigh: "Élevé",
       levelLow: "Faible",
       levelHighShort: "Python et le Terminal tournent aussi dans le bac à sable du système",
-      godotMcpWarning: "Godot MCP exécute le code avec les autorisations de Godot, hors du bac à sable d’Unsloth, même au niveau élevé. Ce code peut accéder à des fichiers en dehors de votre projet.",
+      editorMcpWarning: "{name} MCP exécute le code avec les autorisations de l’application, hors du bac à sable d’Unsloth, même au niveau élevé. Ce code peut accéder à des fichiers en dehors de votre projet.",
       levelLowShort: "Bac à sable logiciel uniquement. Le code risqué demande d'abord",
       levelFullAccessNote: "L'Accès complet désactive le bac à sable. Ce réglage s'applique de nouveau quand vous choisissez un autre niveau.",
       learnMore: "En savoir plus",

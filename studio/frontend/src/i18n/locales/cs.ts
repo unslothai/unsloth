@@ -1879,7 +1879,7 @@ export const cs = {
       levelLow: "Nízká",
       levelHighShort:
         "Přidává izolaci operačního systému pro Python a Terminál",
-      godotMcpWarning: "Godot MCP spouští kód s oprávněními Godotu mimo sandbox Unsloth, i když je úroveň sandboxu vysoká. Kód může přistupovat k souborům mimo váš projekt.",
+      editorMcpWarning: "{name} MCP spouští kód s oprávněními této aplikace mimo sandbox Unsloth, i když je úroveň sandboxu vysoká. Kód může přistupovat k souborům mimo váš projekt.",
       levelLowShort: "Pouze software. Rizikový kód se nejprve zeptá",
       levelFullAccessNote:
         "Úplný přístup vypíná sandbox. Toto nastavení začne znovu platit, když zvolíte jinou úroveň.",

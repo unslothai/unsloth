@@ -1720,7 +1720,7 @@ export const ja = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "Python とターミナルを OS サンドボックス内でも実行",
-      godotMcpWarning: "Godot MCP は、サンドボックスが「高」でも Unsloth のサンドボックス外で Godot の権限を使ってコードを実行します。このコードはプロジェクト外のファイルにもアクセスできます。",
+      editorMcpWarning: "{name} MCP は、サンドボックスが「高」でも Unsloth のサンドボックス外でアプリの権限を使ってコードを実行します。このコードはプロジェクト外のファイルにもアクセスできます。",
       levelLowShort: "ソフトウェア サンドボックスのみ。危険なコードは先に確認",
       levelFullAccessNote: "フルアクセスではサンドボックスがオフになります。別のレベルを選ぶと、この設定が再び適用されます。",
       learnMore: "詳細",

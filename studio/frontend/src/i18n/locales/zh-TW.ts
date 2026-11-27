@@ -1793,7 +1793,7 @@ export const zhTW = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "為 Python 與終端機加上作業系統隔離",
-      godotMcpWarning: "即使沙箱層級設為高，Godot MCP 也會在 Unsloth 沙箱之外使用 Godot 的權限執行程式碼。這些程式碼可以存取專案以外的檔案。",
+      editorMcpWarning: "即使沙箱層級設為高，{name} MCP 也會在 Unsloth 沙箱之外使用該應用程式的權限執行程式碼。這些程式碼可以存取專案以外的檔案。",
       levelLowShort: "僅限軟體。有風險的程式碼會先詢問",
       levelFullAccessNote:
         "完整存取權會關閉沙箱。當您選擇其他等級時，此設定會再次生效。",

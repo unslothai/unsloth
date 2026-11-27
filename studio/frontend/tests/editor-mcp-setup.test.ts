@@ -66,3 +66,14 @@ test("Unreal's step says its MCP server is off until Auto Start Server is on", (
   assert.match(CATALOG, /Auto Start Server/);
   assert.doesNotMatch(CATALOG, /starts with the editor on port 8000/);
 });
+
+test("editors that run code outside the sandbox say so before consent", () => {
+  for (const id of ["unity", "unreal", "godot"]) {
+    assert.match(CATALOG, new RegExp(`\\n  ${id}: \\{((?!\\n  \\},)[\\s\\S])*?sandboxWarning: true,`));
+  }
+  for (const id of ["figma", "roblox"]) {
+    assert.doesNotMatch(CATALOG, new RegExp(`\\n  ${id}: \\{((?!\\n  \\},)[\\s\\S])*?sandboxWarning`));
+  }
+  assert.match(SETUP, /t\("settings\.sandbox\.editorMcpWarning", \{ name: copy\.name \}\)/);
+  assert.match(SETUP, /aria-describedby=\{copy\.sandboxWarning \? `\$\{editorId\}-mcp-sandbox-warning` : undefined\}/);
+});

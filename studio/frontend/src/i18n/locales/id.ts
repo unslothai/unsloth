@@ -1874,7 +1874,7 @@ export const id = {
       levelHigh: "Tinggi",
       levelLow: "Rendah",
       levelHighShort: "Menambahkan isolasi OS ke Python dan Terminal",
-      godotMcpWarning: "Godot MCP menjalankan kode dengan izin Godot di luar sandbox Unsloth, meski tingkat sandbox Tinggi aktif. Kode itu dapat mengakses berkas di luar proyek Anda.",
+      editorMcpWarning: "{name} MCP menjalankan kode dengan izin aplikasi di luar sandbox Unsloth, meski tingkat sandbox Tinggi aktif. Kode itu dapat mengakses berkas di luar proyek Anda.",
       levelLowShort:
         "Hanya perangkat lunak. Kode berisiko meminta izin terlebih dahulu",
       levelFullAccessNote:

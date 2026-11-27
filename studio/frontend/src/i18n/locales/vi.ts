@@ -1879,7 +1879,7 @@ export const vi = {
       levelHigh: "Cao",
       levelLow: "Thấp",
       levelHighShort: "Thêm lớp cô lập hệ điều hành cho Python và Terminal",
-      godotMcpWarning: "Godot MCP chạy mã với quyền của Godot bên ngoài sandbox của Unsloth, ngay cả khi chọn mức sandbox Cao. Mã này có thể truy cập các tệp bên ngoài dự án của bạn.",
+      editorMcpWarning: "{name} MCP chạy mã với quyền của ứng dụng bên ngoài sandbox của Unsloth, ngay cả khi chọn mức sandbox Cao. Mã này có thể truy cập các tệp bên ngoài dự án của bạn.",
       levelLowShort: "Chỉ phần mềm. Mã rủi ro sẽ hỏi trước",
       levelFullAccessNote:
         "Toàn quyền truy cập sẽ tắt sandbox. Cài đặt này sẽ áp dụng lại khi bạn chọn mức khác.",

@@ -1889,7 +1889,7 @@ export const pl = {
       levelHigh: "Wysoki",
       levelLow: "Niski",
       levelHighShort: "Dodaje izolację systemową do Python i Terminal",
-      godotMcpWarning: "Godot MCP uruchamia kod z uprawnieniami Godota poza piaskownicą Unsloth, nawet przy wysokim poziomie izolacji. Kod może uzyskać dostęp do plików spoza projektu.",
+      editorMcpWarning: "{name} MCP uruchamia kod z uprawnieniami tej aplikacji poza piaskownicą Unsloth, nawet przy wysokim poziomie izolacji. Kod może uzyskać dostęp do plików spoza projektu.",
       levelLowShort: "Tylko programowa. Ryzykowny kod najpierw pyta o zgodę",
       levelFullAccessNote:
         "Pełny dostęp wyłącza piaskownicę. To ustawienie zacznie znów obowiązywać po wybraniu innego poziomu.",

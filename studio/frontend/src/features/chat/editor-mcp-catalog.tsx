@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ReactNode } from "react";
-import type { TranslationKey } from "@/i18n";
 import type { EditorMcpId } from "./api/mcp-servers-api";
 
 const strong = (text: string) => <strong className="font-medium text-foreground">{text}</strong>;
@@ -11,7 +10,8 @@ type EditorCopy = {
   name: string;
   duplicate: RegExp;
   consent: string;
-  sandboxWarning?: TranslationKey;
+  // Runs arbitrary code in the app, outside Unsloth's sandbox (Figma is read-only, Roblox Luau is Roblox-sandboxed).
+  sandboxWarning?: boolean;
   link: { label: string; url: string };
   // Section of the MCP engines docs page with the app's install steps.
   guide: string;
@@ -37,6 +37,7 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
       <>Open {strong("Window → MCP for Unity")}, keep the transport on {strong("HTTP")} and start the server.</>,
     ],
     portHint: "Match the HTTP port in MCP for Unity.",
+    sandboxWarning: true,
   },
   unreal: {
     name: "Unreal Engine",
@@ -49,6 +50,7 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
       <>In {strong("Edit → Editor Preferences → General → Model Context Protocol")}, turn on {strong("Auto Start Server")} and restart. It listens on port 8000. Using the community {strong("EngineWire")} plugin instead? Set port 3000 and your project folder in Advanced settings.</>,
     ],
     portHint: "Match the Server Port Number in Editor Preferences → Model Context Protocol.",
+    sandboxWarning: true,
     projectField: true,
     installTools: true,
   },
@@ -56,7 +58,7 @@ export const EDITOR_MCP: Record<EditorMcpId, EditorCopy> = {
     name: "Godot",
     duplicate: /godot/i,
     consent: "Allow editing scenes, scripts and project files and running your project in Godot. Results may be sent to your model provider. Cancelling may not undo changes.",
-    sandboxWarning: "settings.sandbox.godotMcpWarning",
+    sandboxWarning: true,
     link: { label: "Get Godot MCP Native", url: "https://github.com/yurineko73/Godot-MCP-Native" },
     guide: "godot",
     steps: [

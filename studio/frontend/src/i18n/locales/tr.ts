@@ -1871,7 +1871,7 @@ export const tr = {
       levelHigh: "Yüksek",
       levelLow: "Düşük",
       levelHighShort: "Python ve Terminal'e işletim sistemi yalıtımı ekler",
-      godotMcpWarning: "Godot MCP, korumalı alan düzeyi yüksek olsa bile kodu Godot’un izinleriyle Unsloth’un korumalı alanı dışında çalıştırır. Bu kod, projenizin dışındaki dosyalara erişebilir.",
+      editorMcpWarning: "{name} MCP, korumalı alan düzeyi yüksek olsa bile kodu uygulamanın izinleriyle Unsloth’un korumalı alanı dışında çalıştırır. Bu kod, projenizin dışındaki dosyalara erişebilir.",
       levelLowShort: "Yalnızca yazılım. Riskli kod önce onay ister",
       levelFullAccessNote:
         "Tam erişim korumalı alanı kapatır. Başka bir düzey seçtiğinizde bu ayar yeniden geçerli olur.",
