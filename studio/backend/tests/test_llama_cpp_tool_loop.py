@@ -7652,18 +7652,24 @@ def _mcp_match_exchange(names = ()):
 
 
 @pytest.mark.parametrize(
-    "tool_choice, injected",
+    "tool_choice, injected, docs",
     [
-        (None, True),
-        ("none", False),
-        ({"type": "function", "function": {"name": "render_html"}}, False),
+        (None, True, False),
+        (None, True, True),
+        ("none", False, False),
+        ({"type": "function", "function": {"name": "render_html"}}, False, False),
     ],
 )
-def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected):
+def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected, docs):
+    from core.inference import tools
+
     stream = [_sse({"content": "done"}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     exchange = _mcp_match_exchange()
     user = {"role": "user", "content": "move it"}
+    # Docs on with no attachment: the card waits for a fit that never compacts.
+    monkeypatch.setattr(tools, "build_rag_autoinject", lambda *_a, **_kw: None)
+    backend._effective_context_length = 100_000
 
     events = _run_tool_loop(
         backend,
@@ -7671,6 +7677,8 @@ def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choi
         _render_html_tools(),
         mcp_match_exchange = exchange,
         tool_choice = tool_choice,
+        context_overflow = "truncate_oldest",
+        rag_scope = {"thread_id": "t1", "context_length": 100_000} if docs else None,
     )
 
     sent = payloads[0]["messages"]
