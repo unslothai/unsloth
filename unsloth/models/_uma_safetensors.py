@@ -10,10 +10,26 @@ import functools
 
 import torch
 
+
 __all__ = [
     "is_integrated_unified_memory_gpu",
     "patch_unified_memory_safetensors_load",
 ]
+
+
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
 
 
 @functools.lru_cache(maxsize = None)
@@ -109,7 +125,7 @@ def patch_unified_memory_safetensors_load():
         if (
             pread_off
             or pread_ok[0] is False
-            or getattr(torch.version, "hip", None)
+            or _is_rocm_torch(torch)
             or kwargs.get("_unsloth_keep_mmap")
             or kwargs.get("backend") not in (None, "mmap")
         ):

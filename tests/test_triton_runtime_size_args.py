@@ -15,7 +15,28 @@ CASES = {
         "layernorm_backward_dw": ("n_rows", "rows_per_program"),
         "_layernorm_sum_partials": ("n_programs",),
     },
-    "fp8.py": {"_w8a8_block_fp8_matmul": ("M",)},
+    "fp8.py": {"_w8a8_block_fp8_matmul": ("M",), "_w8a8_block_fp8_matmul_tma": ("M",)},
+    "nvfp4.py": {"_nvfp4_matmul_fwd_kernel": ("M",), "_nvfp4_matmul_dx_kernel": ("M",)},
+    # S only bounds rows and offsets the per-row LSE / delta; head_dim is the contiguous axis.
+    "large_head_attention.py": {
+        name: ("S",)
+        for name in (
+            "_lh_fwd",
+            "_lh_bwd_pre",
+            "_lh_bwd_dq",
+            "_lh_bwd_dkdv",
+            "_lh_fwd_tma",
+            "_lh_bwd_dq_tma",
+            "_lh_bwd_dkdv_tma",
+        )
+    },
+    # NUM_TOKENS only feeds row masks and the TMA descriptor's row count, never the vectorized K / N axis.
+    "moe/grouped_gemm/kernels/forward.py": {"_grouped_gemm_forward_kernel": ("NUM_TOKENS",)},
+    "moe/grouped_gemm/kernels/backward.py": {
+        "_grouped_gemm_dX_kernel": ("NUM_TOKENS",),
+        "_grouped_gemm_dW_kernel": ("NUM_TOKENS",),
+        "_grouped_gemm_dW_per_expert_kernel": ("NUM_TOKENS",),
+    },
     "rope_embedding.py": {"_rope_embedding_QK": ("seqlen",)},
     "qk_norm_rope.py": {
         "_qk_norm_rope_forward": ("seqlen",),
@@ -38,7 +59,19 @@ KEEP_SPECIALIZED = {
     "fp8_lora.py": {"_fp8_tensorwise_cast_kernel": ("numel",)},
 }
 
-COMMENTED = ("nf4.py", "nf4_gemv.py", "fp8_lora.py", "multi_lora.py")
+COMMENTED = (
+    "nf4.py",
+    "nf4_gemv.py",
+    "fp8_lora.py",
+    "multi_lora.py",
+    "fp8.py",
+    "nvfp4.py",
+    "int4_packed.py",
+    "dora.py",
+    "large_head_attention.py",
+    "moe/grouped_gemm/kernels/forward.py",
+    "moe/grouped_gemm/kernels/backward.py",
+)
 
 
 def _tree(rel):
