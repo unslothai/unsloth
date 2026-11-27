@@ -12884,6 +12884,11 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    try:
+                        from .diffusion_patch_embed import install_patch_embed_linear
+                        install_patch_embed_linear(pipe, target, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the stock Conv3d patch embed stays
+                        logger.warning("diffusion.patch_embed_linear: not installed: %s", exc)
                     # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
                     from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
 
