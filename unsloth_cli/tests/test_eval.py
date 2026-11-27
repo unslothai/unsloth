@@ -1227,7 +1227,15 @@ def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, 
 
 
 @pytest.mark.parametrize(
-    "vllm_version, ok", [("0.31.1", False), ("0.32.0", True), ("0.34.0", True), (None, False)]
+    "vllm_version, ok",
+    [
+        ("0.31.1", False),
+        ("0.32.0rc0", True),
+        ("0.32.0", True),
+        ("0.34.0", True),
+        ("", False),
+        (None, False),
+    ],
 )
 def test_vllm_backend_scores_per_module_lora_scale_on_vllm_that_applies_it(
     vllm_env, tmp_path, monkeypatch, vllm_version, ok
@@ -1237,7 +1245,8 @@ def test_vllm_backend_scores_per_module_lora_scale_on_vllm_that_applies_it(
             return "0.4.13"
         if vllm_version is None:
             raise evalmod.PackageNotFoundError(name)
-        return vllm_version
+        # dist-info without a Version field: importlib.metadata.version returns None
+        return vllm_version or None
 
     monkeypatch.setattr(evalmod, "version", fake_version)
     adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, rank_pattern = {"v_proj": 64})

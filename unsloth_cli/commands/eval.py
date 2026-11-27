@@ -338,7 +338,7 @@ def _pattern_value(patterns: dict, module: str, default):
 
 def _vllm_scales_lora_per_module() -> bool:
     try:
-        installed = tuple(int(n) for n in re.findall(r"\d+", version("vllm"))[:2])
+        installed = tuple(int(n) for n in re.findall(r"\d+", version("vllm") or "")[:2])
     except PackageNotFoundError:
         return False
     return installed >= (0, 32)
