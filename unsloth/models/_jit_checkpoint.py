@@ -113,11 +113,13 @@ def _wrap_train_begin(callback):
         return
 
     def on_train_begin(*args, **kwargs):
-        # A later train() call on the same Trainer starts with no checkpoint taken.
+        # A later train() call on the same Trainer starts with no checkpoint taken. Only a request left by a
+        # run that already checkpointed is stale: a SIGTERM heard before this train() still has to save.
         manager = getattr(callback, "jit_manager", None)
         if manager is not None:
+            if getattr(manager, "_unsloth_jit_done", False):
+                setattr(manager, _PENDING, False)
             manager._unsloth_jit_done = False
-            setattr(manager, _PENDING, False)
         return original(*args, **kwargs)
 
     on_train_begin._unsloth_jit_agreement = True
