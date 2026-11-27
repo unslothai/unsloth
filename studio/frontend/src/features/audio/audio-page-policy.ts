@@ -850,7 +850,18 @@ export function audioRestoreRequest(
           load_in_4bit: false,
           is_lora: false,
           gguf_variant: status.gguf_variant ?? null,
+          trust_remote_code: status.inference?.trust_remote_code === true,
           alongside: true,
+          // GGUF ignores audio_device: RAM placement is manual zero layers, as the ordinary load sends.
+          ...(status.is_gguf &&
+          (defaults.audio_device === "cpu" || status.resident_on_gpu === false)
+            ? // biome-ignore lint/style/useNamingConvention: API schema
+              {
+                gpu_memory_mode: "manual" as const,
+                gpu_layers: 0,
+                speculative_type: "off" as const,
+              }
+            : {}),
         };
   return {
     ...base,

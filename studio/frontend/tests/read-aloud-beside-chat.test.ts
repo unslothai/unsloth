@@ -35,7 +35,7 @@ test("a speech load from Audio keeps the chat model loaded", () => {
   // A load that fails after the replaced model was unloaded puts it back.
   assert.match(
     slotHook,
-    /lastTtsLoadRequest\.current = request;[\s\S]*?\} catch \(error\) \{[\s\S]*?if \(\s*restore &&\s*pending\.requestStarted &&\s*isCurrent\(\) &&\s*shouldRestorePreviousModel\(error\)\s*\) \{[\s\S]*?await loadModel\(restore\.request, \{ runtime: "tts" \}\);[\s\S]*?\} finally \{/,
+    /lastTtsLoadRequest\.current = request;[\s\S]*?\} catch \(error\) \{[\s\S]*?if \(\s*restore &&\s*pending\.requestStarted &&\s*isCurrent\(\) &&\s*shouldRestorePreviousModel\(error\)\s*\) \{[\s\S]*?pendingTtsLoad\.current = rollback;[\s\S]*?await loadModel\(restore\.request, \{\s*signal: rollback\.controller\.signal,[\s\S]*?\} finally \{/,
   );
   assert.match(
     slotHook,

@@ -524,16 +524,35 @@ export function useAudioModelSlot({
           shouldRestorePreviousModel(error)
         ) {
           const restoreToastId = toast.loading(`Reloading ${restore.label}…`);
+          // Registered as the pending attempt, so hiding the page cancels the rollback too.
+          const rollback = {
+            ...pending,
+            loadTarget: restore.request.model_path,
+            loadRequestId: restore.request.load_request_id ?? loadRequestId,
+            controller: new AbortController(),
+            requestStarted: false,
+          };
+          pendingTtsLoad.current = rollback;
           try {
-            await loadModel(restore.request, { runtime: "tts" });
-            toast.success(`${restore.label} is loaded again`, {
-              id: restoreToastId,
+            await loadModel(restore.request, {
+              signal: rollback.controller.signal,
+              runtime: "tts",
+              onRequestStart: () => {
+                rollback.requestStarted = true;
+              },
             });
+            if (isCurrent())
+              toast.success(`${restore.label} is loaded again`, {
+                id: restoreToastId,
+              });
+            else toast.dismiss(restoreToastId);
           } catch (restoreError) {
-            modelErrorToast(
-              `Could not reload ${restore.label}: ${restoreError instanceof Error ? restoreError.message : "Model load failed."}`,
-              { id: restoreToastId },
-            );
+            if (isCurrent())
+              modelErrorToast(
+                `Could not reload ${restore.label}: ${restoreError instanceof Error ? restoreError.message : "Model load failed."}`,
+                { id: restoreToastId },
+              );
+            else toast.dismiss(restoreToastId);
           }
         }
       } finally {

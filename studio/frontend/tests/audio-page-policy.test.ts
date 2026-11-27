@@ -1360,10 +1360,37 @@ test("a failed speech switch reloads a model loaded before the page was opened f
     assert.equal(request.alongside, true);
     assert.equal(request.max_seq_length, 4096);
     assert.equal(request.audio_device, "auto");
-    assert.equal(request.trust_remote_code, undefined);
+    assert.equal(request.trust_remote_code, false);
     assert.equal(request.force_cancel_active, false);
     assert.ok(request.load_request_id);
   }
+});
+
+test("a status-only rollback keeps the resident model's custom-code trust and RAM placement", () => {
+  const status = {
+    ...kokoroSlot,
+    is_gguf: true,
+    resident_on_gpu: false,
+    inference: { trust_remote_code: true },
+  };
+  const request = audioRestoreRequest(
+    status,
+    "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    null,
+    restoreDefaults,
+  );
+  assert.equal(request.trust_remote_code, true);
+  assert.equal(request.gpu_memory_mode, "manual");
+  assert.equal(request.gpu_layers, 0);
+  assert.equal(request.speculative_type, "off");
+  const onGpu = audioRestoreRequest(
+    { ...status, resident_on_gpu: true, inference: null },
+    "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    null,
+    restoreDefaults,
+  );
+  assert.equal(onGpu.trust_remote_code, false);
+  assert.equal(onGpu.gpu_layers, undefined);
 });
 
 test("a failed switch from a local speech model reloads it by its path", () => {
