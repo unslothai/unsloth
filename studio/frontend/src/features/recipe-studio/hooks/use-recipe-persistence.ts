@@ -323,10 +323,12 @@ export function useRecipePersistence({
       payload: RecipePayloadResult["payload"],
       signature: string,
       keepalive: boolean,
+      queued: readonly string[] = [
+        ...useRecipeStudioStore.getState().pendingUploadCleanups,
+      ],
     ): Promise<void> => {
       const { recipeId: id, onPersistRecipe: persist } = latest.current;
       const seq = ++savedRef.current.seq;
-      const queued = [...useRecipeStudioStore.getState().pendingUploadCleanups];
       setSaveLoading(true);
       const done: Promise<void> = persist({ id, name, payload, keepalive })
         .then(
@@ -391,7 +393,12 @@ export function useRecipePersistence({
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
   useEffect(() => {
-    const flush = (keepalive: boolean, unloading = keepalive): void => {
+    const flush = (
+      keepalive: boolean,
+      unloading = keepalive,
+      // Snapshot now: a deferred save may run after the next editor queued its own uploads.
+      queued = [...useRecipeStudioStore.getState().pendingUploadCleanups],
+    ): void => {
       const { ready, name, payload, signature } = latest.current;
       const { saved, failed } = savedRef.current;
       const running = inFlight.current;
@@ -402,10 +409,10 @@ export function useRecipePersistence({
       }
       // Only an unloading page sends on top of the save in flight; a hidden one may come back.
       if (running && !unloading) {
-        void running.done.then(() => flush(keepalive, false));
+        void running.done.then(() => flush(keepalive, false, queued));
         return;
       }
-      void runSave(name, payload, signature, keepalive);
+      void runSave(name, payload, signature, keepalive, queued);
     };
     const onPageHide = () => flush(true);
     const onVisibilityChange = () => {

@@ -610,3 +610,17 @@ test("hiding the page during a save sends the newer edit only after it lands", a
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
   assert.deepEqual(s.errors, []);
 });
+
+test("an exit save deferred behind a save in flight only cleans uploads queued at exit", async () => {
+  const s = setup();
+  s.uploads.pending.push("mine");
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  s.editor.unmount();
+  await settle();
+  s.uploads.pending.push("next-editor");
+  await s.server.release();
+  assert.equal(s.server.puts.length, 2);
+  assert.ok(!s.uploads.removed.includes("next-editor"));
+});
