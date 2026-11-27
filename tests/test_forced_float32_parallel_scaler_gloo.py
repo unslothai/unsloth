@@ -22,6 +22,8 @@ import types  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
 
+pytestmark = pytest.mark.xdist_group("test_forced_float32_parallel_scaler_gloo")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 

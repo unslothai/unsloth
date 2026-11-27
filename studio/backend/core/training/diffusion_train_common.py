@@ -537,6 +537,21 @@ def train_defaults(family: str) -> dict[str, Any]:
     return dict(FAMILY_TRAIN_DEFAULTS.get((family or "").strip().lower(), {}))
 
 
+# Step counts a training sweep measured per family, with the dataset size it ran on, so the Train UI can scale the
+# recommendation to the user's set (same passes per item). Only families with a step sweep are listed; the rest keep
+# the generic hint. minimax-h3-image: lr {5e-5, 1e-4} x steps {150, 300} on 18 tarot images (G4), 5e-5 x 150 had
+# the lowest drift on unrelated prompts at LoRA weight 1.0 (FAMILY_TRAIN_DEFAULTS above).
+FAMILY_STEP_GUIDANCE: dict[str, dict[str, Any]] = {
+    "minimax-h3-image": {"steps": 150, "items": 18, "batch_size": 1},
+}
+
+
+def step_guidance(family: str) -> Optional[dict[str, Any]]:
+    """The measured step count for ``family`` and the dataset size it was measured on, or None when no sweep exists."""
+    found = FAMILY_STEP_GUIDANCE.get((family or "").strip().lower())
+    return dict(found) if found else None
+
+
 # Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
 # so users pick a base with realistic expectations.
 _FAMILY_LABELS = {fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label}
@@ -584,20 +599,21 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "params": "19B",
         "qlora_vram_gb": 36,
         "gated": False,
-        "note": "Video: trains a style LoRA on still images.",
+        "note": "Video: trains a style LoRA on still images. Trained on stills it learns the look, not motion.",
     },
     "ltx-2.5": {
         "params": "22B",
         "qlora_vram_gb": 24,
         "gated": False,
-        "note": "Video: trains a style LoRA on still images; runs on the Video page's distilled model.",
+        "note": "Video: trains a style LoRA on still images, so it learns the look, not motion; runs on the Video "
+        "page's distilled model.",
     },
     # Measured on a B200 (nf4, 704px, rank 32): run peaks at 11.6 GB during the one-time UMT5-XXL encode.
     "wan2.2-ti2v-5b": {
         "params": "5B",
         "qlora_vram_gb": 12,
         "gated": False,
-        "note": "Video: trains a style LoRA on still images.",
+        "note": "Video: trains a style LoRA on still images. Trained on stills it learns the look, not motion.",
     },
     # Measured on a B200: the loop peaks near 44 GB, but a 20-step run peaked at 77.76 GB with the 63 GiB Qwen3-VL
     # conditioner resident, so 72 sizes users onto a card that OOMs later.
@@ -1005,7 +1021,11 @@ def make_lora_optimizer(
     return torch.optim.AdamW(params, lr = lr)
 
 
-def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
+def training_precision_preflight_error(
+    resolved_family: str,
+    base_precision: str,
+    cfg: Any = None,
+) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the start
     route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
     child, after eviction). Every gate mirrors one in _resolve_base_precision, so a doomed run is
@@ -1013,7 +1033,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     too); the dense precisions needing CUDA; the torchao precisions against a ROCm build, which
     clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8 needing a
     FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit fp8 needing
-    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Never raises."""
+    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. ``cfg`` judges a resume on its checkpoint's int8
+    kernel; omitted = fresh run. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -1025,9 +1046,9 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     mode = (base_precision or "").strip().lower()
     # The W8A8 int8 base (the default; UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only opts out) computes in fp16 too, as
     # the trainer allows.
-    from core.training.diffusion_block_swap import int8_w8a8_requested
+    from core.training.diffusion_block_swap import int8_w8a8_for_run
 
-    w8a8 = mode == "int8" and int8_w8a8_requested()
+    w8a8 = mode == "int8" and int8_w8a8_for_run(cfg)
     if mode in ("bf16", "int8", "fp8", "mxfp8") and not w8a8 and dit_fp16_fallback(fam):
         return dit_fp16_dense_reason(mode)
     if w8a8 and dit_fp16_fallback(fam):
@@ -1068,7 +1089,10 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
                 "Use base_precision='nf4' or 'auto'."
             )
         # Reject before eviction; _resolve_base_precision repeats this in the child.
-        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+        from core.training.diffusion_block_swap import rocm_w8a8_train_opt_in
+
+        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode, cfg)
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm() and not rocm_w8a8:
             return (
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use 'nf4', 'bf16', or 'auto'."
@@ -1077,6 +1101,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         if (
             mode == "int8"
             and not (w8a8 and dit_fp16_fallback(fam))
+            and not rocm_w8a8
             and not has_functional_torchao()
         ):
             return (
@@ -1225,6 +1250,7 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
+                "step_guidance": step_guidance(name),
                 "vram_note": dit_block or _family_vram_note(name, default_facts),
                 # Dropped on a dit_block, since vram_note then carries the reason.
                 "params": "" if dit_block else spec.get("params", ""),

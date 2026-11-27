@@ -36,7 +36,7 @@ def _frontend_rows(relative: str) -> dict[str, tuple[int, float]]:
         # Unchanged: already the reference values (Z-Image's diffusers g is the reference cfg minus 1).
         ("stabilityai/stable-diffusion-xl-base-1.0", (25, 7.0)),
         ("Tongyi-MAI/Z-Image", (25, 3.0)),
-        ("black-forest-labs/FLUX.3-Image-Klein-Base", (50, 3.5)),
+        ("black-forest-labs/FLUX.3-Image-Klein-Base", (50, 4.0)),
         ("flux.3-klein", (16, 1.0)),
     ],
 )

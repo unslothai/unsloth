@@ -2389,6 +2389,10 @@ export const zhCN = {
         confirmDescriptionChatOnly:
           "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
+        recommendedTorch:
+          "建议修复：此安装的 PyTorch {torch} 早于受管理的 {managedTorch}，而 RTX 50 系列 GPU 需要该版本才受支持。",
+        recommendedDriver:
+          "PyTorch {torch} 早于受管理的 {managedTorch}（RTX 50 系列 GPU 需要该版本才受支持），但此 GPU 驱动不支持 CUDA 13。请先更新 GPU 驱动，再修复安装。",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -4064,8 +4068,8 @@ export const zhCN = {
       summary: {
         single: "在一个 GPU 上训练",
         layerSplit: "模型按层拆分到 {count} 个 GPU 上",
-        ddp: "模型可放入单个 GPU：在 {count} 个 GPU 上进行数据并行",
-        fsdp2: "模型太大，单个 GPU 放不下：分片到 {count} 个 GPU 上",
+        ddp: "每个 GPU 训练一份完整副本：在 {count} 个 GPU 上进行数据并行",
+        fsdp2: "权重和优化器状态分片到 {count} 个 GPU 上",
         tp: "每一层都拆分到 {count} 个 GPU 上",
         pp: "各层组成 {count} 个流水线阶段，每个 GPU 一个",
         cp: "每个序列都拆分到 {count} 个 GPU 上",
@@ -4076,7 +4080,7 @@ export const zhCN = {
         noGpu: "请至少选择一个 GPU。",
         singleNeedsOne: "单 GPU 模式只使用一个 GPU，请取消勾选其他 GPU。",
         needsTwo: "此模式至少需要两个 GPU。",
-        customSpec: "请输入布局，例如 dp=2,tp=2。",
+        customSpec: "请输入布局，例如 {example}。",
       },
     },
     preview: {
@@ -4968,6 +4972,7 @@ export const zhCN = {
       showPromptDescription: "查看发送给模型的确切指令。",
     },
     history: {
+      notSaved: "未保存到历史记录：浏览器存储空间已满。",
       title: "历史记录",
       search: "搜索历史记录",
       empty: "你的翻译会显示在这里。",
@@ -5933,6 +5938,12 @@ export const zhCN = {
     maximize: "最大化窗口",
     restore: "还原窗口",
     close: "关闭窗口",
+    mediaCodecs: {
+      title: "生成的视频可能无法播放",
+      // {command}: an apt command line, never translated.
+      description: "此系统缺少 GStreamer 视频解码器。请使用以下命令安装：{command}",
+      copy: "复制命令",
+    },
   },
   runtimeUpdate: {
     installAudio: "安装音频运行时",

@@ -1235,9 +1235,132 @@ function Install-UnslothStudio {
         return $tag
     }
 
+    # One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
+    # failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
+    function Invoke-WoaHttpBytes {
+        param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
+        if (-not $Uri) { return $null }
+        $response = $null
+        try {
+            $req = [System.Net.WebRequest]::Create($Uri)
+            $req.UserAgent = 'unsloth-installer'
+            $req.Timeout = 20000
+            $req.ReadWriteTimeout = 20000
+            $ranged = $false
+            if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
+            elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
+            $response = $req.GetResponse()
+            $status = [int]$response.StatusCode
+            if ($ranged -and $status -ne 206) { return $null }
+            if (-not $ranged -and $status -ne 200) { return $null }
+            $total = -1
+            $contentRange = [string]$response.Headers['Content-Range']
+            if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
+            $stream = $response.GetResponseStream()
+            $buffer = New-Object System.IO.MemoryStream
+            $chunk = New-Object byte[] 65536
+            while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
+                $buffer.Write($chunk, 0, $read)
+                if ($buffer.Length -gt $MaxBytes) { return $null }
+            }
+            return @{ Bytes = $buffer.ToArray(); Total = $total }
+        } catch {
+            return $null
+        } finally {
+            if ($response) { try { $response.Close() } catch {} }
+        }
+    }
+
+    # The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
+    function Get-WoaMetadataTorchRequirement {
+        param([string]$Metadata)
+        if (-not $Metadata) { return "" }
+        $clauses = @()
+        foreach ($line in ($Metadata -split "`r?`n")) {
+            if ($line -eq "") { break }
+            if ($line -notmatch '^Requires-Dist:\s*(.+)$') { continue }
+            $req = $Matches[1].Trim()
+            if ($req -match ';') { continue }
+            if ($req -notmatch '^(?i)torch(?![A-Za-z0-9_.-])\s*(\[[^\]]*\])?\s*\(?\s*([^()]*?)\s*\)?\s*$') { continue }
+            if ($Matches[2]) { $clauses += $Matches[2] }
+        }
+        return ($clauses -join ',')
+    }
+
+    # The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
+    # else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+    function Get-WoaWheelTorchRequirement {
+        param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
+        if (-not $WheelUrl) { return "" }
+        if ($null -eq $script:WoaWheelTorchRequirementCache) { $script:WoaWheelTorchRequirementCache = @{} }
+        if ($script:WoaWheelTorchRequirementCache.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCache[$WheelUrl] }
+        $answer = ""
+        try {
+            $metadata = $null
+            if ($HasCoreMetadata) {
+                $got = Invoke-WoaHttpBytes -Uri "$WheelUrl.metadata"
+                if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+            }
+            if ($null -eq $metadata) {
+                $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
+                $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
+                $tail = Invoke-WoaHttpBytes -Uri $WheelUrl -Suffix 65558
+                if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
+                $t = $tail.Bytes
+                $eocd = -1
+                for ($i = $t.Length - 22; $i -ge 0; $i--) {
+                    if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
+                }
+                if ($eocd -lt 0) { throw "no end of central directory" }
+                $cdSize = & $u32 $t ($eocd + 12)
+                $cdOffset = & $u32 $t ($eocd + 16)
+                # Zip64 or an implausible directory: not worth parsing for one line.
+                if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
+                $tailStart = $tail.Total - $t.Length
+                if ($cdOffset -ge $tailStart) {
+                    $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
+                } else {
+                    $got = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
+                    if (-not $got) { throw "no directory" }
+                    $cd = $got.Bytes
+                }
+                $entry = $null
+                $p = 0
+                while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
+                    $nameLen = & $u16 $cd ($p + 28)
+                    $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
+                    if ($name -match '^[^/]+\.dist-info/METADATA$') {
+                        $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
+                        break
+                    }
+                    $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
+                }
+                if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
+                $head = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $entry.Offset -Length 30
+                if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
+                $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
+                $body = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $start -Length $entry.Size
+                if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
+                if ($entry.Method -eq 0) {
+                    $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
+                } else {
+                    $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
+                    $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                    try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                }
+            }
+            $answer = Get-WoaMetadataTorchRequirement -Metadata $metadata
+        } catch {
+            $answer = ""
+        }
+        $script:WoaWheelTorchRequirementCache[$WheelUrl] = $answer
+        return $answer
+    }
+
     # CUDA is established POSITIVELY by requiring +cuNNN: PyPI's own win_arm64 torch carries no local version, and the stamp and +cuXXX tag identify the torch BUILD a companion belongs to.
+    # -TorchRequirement is the companion wheel's own torch specifier from its METADATA; "" when it could not be read.
     function Test-WoaWheelPairsWithTorch {
-        param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
+        param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision", [string]$TorchRequirement = "")
         if (-not $TorchVersion -or -not $OtherVersion) { return $false }
         $stamp = {
             param($v)
@@ -1252,7 +1375,55 @@ function Install-UnslothStudio {
         if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
         if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
         if (& $stamp $TorchVersion) { return $true }
-        # Stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
+        # A stable companion pairs with what its own torch requirement admits; $null (a clause this cannot read) falls through.
+        $admits = {
+            param([string]$v, [string]$spec)
+            $public = ($v -split '\+', 2)[0]
+            if ($public -notmatch '^\d+(\.\d+)*$') { return $null }
+            $have = @($public -split '\.' | ForEach-Object { [long]$_ })
+            $order = {
+                param($a, $b)
+                for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+                    $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+                    $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+                    if ($x -ne $y) { return [Math]::Sign($x - $y) }
+                }
+                return 0
+            }
+            foreach ($clause in ($spec -split ',')) {
+                $c = $clause.Trim()
+                if (-not $c) { continue }
+                if ($c -notmatch '^(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?$') { return $null }
+                $op = $Matches[1]; $want = @($Matches[2] -split '\.' | ForEach-Object { [long]$_ }); $wild = [bool]$Matches[3]
+                if ($wild -and $op -notin @('==', '!=')) { return $null }
+                if ($wild) {
+                    $prefix = ($want.Count -le $have.Count) -and ((& $order @($have[0..($want.Count - 1)]) $want) -eq 0)
+                    if (($op -eq '==') -ne $prefix) { return $false }
+                    continue
+                }
+                $cmp = & $order $have $want
+                $ok = switch ($op) {
+                    '==' { $cmp -eq 0 }
+                    '!=' { $cmp -ne 0 }
+                    '<=' { $cmp -le 0 }
+                    '>=' { $cmp -ge 0 }
+                    '<'  { $cmp -lt 0 }
+                    '>'  { $cmp -gt 0 }
+                    '~=' {
+                        if ($want.Count -lt 2) { $null }
+                        else { ($cmp -ge 0) -and ((& $order @($have[0..($want.Count - 2)]) @($want[0..($want.Count - 2)])) -eq 0) }
+                    }
+                }
+                if ($null -eq $ok) { return $null }
+                if (-not $ok) { return $false }
+            }
+            return $true
+        }
+        if ($TorchRequirement) {
+            $verdict = & $admits $TorchVersion $TorchRequirement
+            if ($null -ne $verdict) { return [bool]$verdict }
+        }
+        # Unread metadata: stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
         $rel = {
             param($v)
             $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -1269,7 +1440,7 @@ function Install-UnslothStudio {
 
     function Get-WoaCudaWheelVersion {
         param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "",
-              [string]$PairWith = "", [string]$Below = "")
+              [string]$PairWith = "", [string]$Below = "", [string]$MaxCuda = "")
         if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $null }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
@@ -1280,6 +1451,28 @@ function Install-UnslothStudio {
             return $null
         }
         if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+        # Each wheel's link, so a stable companion's own torch requirement can be read (PEP 658 when the index serves it).
+        $links = @{}
+        foreach ($anchor in [regex]::Matches($body, '(?i)<a\s[^>]*>')) {
+            $href = [regex]::Match($anchor.Value, '(?i)\bhref\s*=\s*["'']([^"'']+)["'']')
+            if (-not $href.Success) { continue }
+            $target = ($href.Groups[1].Value -split '[#?]', 2)[0]
+            $file = ($target -split '/')[-1]
+            try { $file = [System.Uri]::UnescapeDataString($file) } catch {}
+            $core = [regex]::Match($anchor.Value, '(?i)\bdata-(?:core|dist-info)-metadata\s*=\s*["'']([^"'']*)["'']')
+            $links[$file.ToLowerInvariant()] = @{ Href = $target; Core = ($core.Success -and $core.Groups[1].Value -ne 'false') }
+        }
+        # Same release twice (+cu134 and +cu135): the newest CUDA build the driver runs, else the newest.
+        $driverCu = $null
+        if ($MaxCuda -match '^(\d+)\.(\d+)') { $driverCu = [int]$Matches[1] * 10 + [int]$Matches[2] }
+        $cudaRank = {
+            param([string]$v)
+            if ($v -notmatch '\+cu(\d+)') { return @(0, 0) }
+            $cu = [int]$Matches[1]
+            return @($(if ($null -eq $driverCu -or $cu -le $driverCu) { 1 } else { 0 }), $cu)
+        }
+        $readRequirement = [bool]($PairWith -and ($PairWith -notmatch '(?i)\.dev\d') -and
+            (($Project -replace '[-_.]+', '-').ToLowerInvariant() -eq "torchvision"))
         $best = $null
         $bestKey = $null
         # PEP 440 order within one numeric release: dev < a < b < rc < final, then by number.
@@ -1300,10 +1493,21 @@ function Install-UnslothStudio {
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
             try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-            if (-not (Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag)) { continue }
+            # torch is built per interpreter; a companion may be interpreter-agnostic (torchvision 0.29.2 is py3-none).
+            $tagsOk = if ($Project -eq "torch") { Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag }
+                      else { Test-WoaWheelTagsUsable -Name $name -PyTag $tag -AbiTag $AbiTag }
+            if (-not $tagsOk) { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
-            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
+            $requirement = ""
+            if ($readRequirement -and (($PairWith -split '\+', 2)[-1] -eq ($version -split '\+', 2)[-1]) -and $links.ContainsKey($name.ToLowerInvariant())) {
+                $link = $links[$name.ToLowerInvariant()]
+                try {
+                    $wheelUrl = ([System.Uri]::new([System.Uri]$projectUrl, $link.Href)).AbsoluteUri
+                    $requirement = Get-WoaWheelTorchRequirement -WheelUrl $wheelUrl -HasCoreMetadata $link.Core
+                } catch { $requirement = "" }
+            }
+            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version -Project $Project -TorchRequirement $requirement)) { continue }
             # Numeric release only: a .dev suffix must not make a newer line look older.
             $release = ($version -split '\+', 2)[0]
             $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
@@ -1321,6 +1525,10 @@ function Install-UnslothStudio {
             } elseif ($key -eq $bestKey) {
                 $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
                 if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
+                elseif (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -eq $rankBest[1])) {
+                    $cuNew = & $cudaRank $version; $cuBest = & $cudaRank $best
+                    if (($cuNew[0] -gt $cuBest[0]) -or (($cuNew[0] -eq $cuBest[0]) -and ($cuNew[1] -gt $cuBest[1]))) { $best = $version }
+                }
             }
         }
         return $best
@@ -1379,9 +1587,12 @@ function Install-UnslothStudio {
         $_woaTorchVersion = $null
         $_woaVisionVersion = $null
         $_woaUnpairedIndex = $null
+        # Ties between CUDA builds of one release go to the newest this driver runs.
+        $_woaDriverCap = Get-WoaDriverCudaVersion
+        $_woaMaxCuda = if ($_woaDriverCap) { "$($_woaDriverCap[0]).$($_woaDriverCap[1])" } else { "" }
         foreach ($candidate in $candidates) {
             if (-not (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Project "torch")) { continue }
-            $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
+            $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -MaxCuda $_woaMaxCuda
             # An index qualifies only with a torchvision build PAIRED to that torch, or a lagging nightly or partial mirror leaves torchvision resolving against a torch it was not built for.
             # The newest torch is not the only candidate: a nightly torchvision lags by days, so the newest COMPLETE pair is searched for, a few versions deep.
             $_woaVisionVersion = $null
@@ -1389,7 +1600,7 @@ function Install-UnslothStudio {
             while ($_woaTorchVersion) {
                 $_woaVisionVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
                 if ($_woaVisionVersion -or $_woaBacktracks -ge 5) { break }
-                $_woaOlderTorch = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Below $_woaTorchVersion
+                $_woaOlderTorch = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Below $_woaTorchVersion -MaxCuda $_woaMaxCuda
                 if (-not $_woaOlderTorch) { break }
                 substep "windows on arm: $(Remove-IndexUrlCredentials $candidate) publishes torch $_woaTorchVersion but no torchvision paired with it; trying torch $_woaOlderTorch." "Yellow"
                 $_woaTorchVersion = $_woaOlderTorch
@@ -1901,6 +2112,62 @@ function Install-UnslothStudio {
         Write-StudioLine ""
     }
 
+    # The process arch, not the machine's: an x64 shell on Windows on ARM runs emulated.
+    function Get-ShellProcessArch {
+        $a = ""
+        try { $a = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() } catch { $a = "" }
+        if ([string]::IsNullOrWhiteSpace($a)) { $a = [string]$env:PROCESSOR_ARCHITECTURE }
+        switch ($a.ToLowerInvariant()) {
+            "arm64" { return "arm64" }
+            "x64" { return "x86_64" }
+            "amd64" { return "x86_64" }
+            "x86" { return "x86" }
+        }
+        return "unknown"
+    }
+
+    # ARM64X shells inherit an emulated/elevated parent; explorer.exe relaunches native + non-elevated.
+    function Write-Arm64ShellNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$HostArch,
+            [Parameter(Mandatory = $true)][string]$ProcessArch,
+            [Parameter(Mandatory = $true)][string]$Elevated
+        )
+        if ($HostArch -ne "arm64") { return }
+        $emulated = ($ProcessArch -ne "arm64" -and $ProcessArch -ne "unknown")
+        if (-not $emulated -and $Elevated -ne "true") { return }
+        if ($emulated) {
+            Write-StudioLine "  [WARNING] This PowerShell runs as an emulated $ProcessArch process on Windows on ARM." -ForegroundColor Yellow
+            Write-StudioLine "            Programs it starts inherit the emulation." -ForegroundColor Yellow
+        } else {
+            Write-StudioLine "  [WARNING] Windows on ARM: this PowerShell is elevated." -ForegroundColor Yellow
+        }
+        Write-StudioLine "            To install natively as your normal user, run this here, then paste the" -ForegroundColor Yellow
+        Write-StudioLine "            install command into the new window:" -ForegroundColor Yellow
+        Write-StudioLine "              explorer.exe `"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`"" -ForegroundColor Cyan
+        Write-StudioLine "            (or open Windows PowerShell from the Start menu, not 'Run as administrator')." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+
+    # An unanswerable UAC prompt blocks forever. UNSLOTH_NONINTERACTIVE=0 forces prompting.
+    function Test-InstallUacUnanswerable {
+        param([switch]$Tauri, [string]$Elevated = "unknown")
+        if ($Tauri -or $Elevated -eq "true") { return $false }
+        $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+        if ($opt -in @("1", "true", "yes")) { return $true }
+        if ($opt -in @("0", "false", "no")) { return $false }
+        $ci = "$env:CI".Trim().ToLowerInvariant()
+        if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+        if (-not [Environment]::UserInteractive) { return $true }
+        try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+        try {
+            foreach ($_arg in [Environment]::GetCommandLineArgs()) {
+                if ("$_arg" -match '^[-/]noni') { return $true }
+            }
+        } catch { }
+        return $false
+    }
+
     function Get-CanonicalRootPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
@@ -1944,6 +2211,11 @@ function Install-UnslothStudio {
         $ElevationRoot = $UnslothRoot
     }
     Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
+    $script:InstallElevationState = Get-ElevationState
+    try {
+        Write-Arm64ShellNotice -HostArch (Get-HostMachineArch) -ProcessArch (Get-ShellProcessArch) -Elevated $script:InstallElevationState
+    } catch { }
+    $script:InstallUacUnanswerable = Test-InstallUacUnanswerable -Tauri:$TauriMode -Elevated $script:InstallElevationState
 
     # Whitespace-only == unset (matches the Python resolvers' .strip()).
     $envOverrideVar = $null
@@ -6445,14 +6717,19 @@ exit 0
             substep "installing uv package manager..."
         }
         if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
-            if (-not (Test-UvVersionOk)) {
-                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            # winget's VC++ dependency raises UAC; the release zip does not.
+            if ($script:InstallUacUnanswerable) {
+                substep "unattended run: installing uv from its release archive (winget would wait on a UAC prompt)"
+            } else {
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                if (-not (Test-UvVersionOk)) {
+                    try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                }
+                $ErrorActionPreference = $prevEAP
+                Refresh-SessionPath
             }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
         }
         # Pinned release fallback when winget is unavailable or leaves no uv on PATH (ARM64, no
         # Store); a stale private uv is replaced even if PATH has a good one. Studio puts it first.
@@ -7885,7 +8162,7 @@ exit 0
             }
             $WoaOverrideLines += "$candidate ; platform_machine == `"AMD64`""
         }
-        # Released unsloth metadata caps torch below the only win_arm64 CUDA build (a 2.15 nightly).
+        # Released unsloth metadata caps torch below the win_arm64 CUDA builds (2.14.0+cu134 on the GA index, 2.16 dev on the nightly one).
         $WoaOverrideLines += 'torch>=2.4'
         $WoaOverrideLines += 'torchvision>=0.19'
         # Without this uv takes the newest pyarrow on PyPI, an sdist here. For the PyPI route too.
@@ -11059,7 +11336,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
             # Clear an inherited value: nothing here detected it.
             Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
-        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        # setup.ps1 cannot see this shell's -NonInteractive.
+        $_hadNonInteractive = Test-Path Env:UNSLOTH_NONINTERACTIVE
+        if ($script:InstallUacUnanswerable -and -not $_hadNonInteractive) { $env:UNSLOTH_NONINTERACTIVE = "1" }
+        try {
+            Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        } finally {
+            if (-not $_hadNonInteractive) { Remove-Item Env:UNSLOTH_NONINTERACTIVE -ErrorAction SilentlyContinue }
+        }
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
         if ($hadPreviousUnslothStudioHome) {

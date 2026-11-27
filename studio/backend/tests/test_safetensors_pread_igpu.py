@@ -128,13 +128,25 @@ def test_image_load_scope_engages_on_windows_igpu_only(monkeypatch, platform, ig
         convert_to = None,
         keep = (),
         every_shard = False,
+        integrated_cuda = False,
     ):
-        got.update(convert_to = convert_to, keep = keep, every_shard = every_shard)
+        got.update(
+            convert_to = convert_to,
+            keep = keep,
+            every_shard = every_shard,
+            integrated_cuda = integrated_cuda,
+        )
         return "scope"
 
     monkeypatch.setattr(sp, "pread_safetensors", fake_scope)
     assert diffusion._converted_shards_pread(torch.bfloat16, None) == "scope"
-    assert got == {"convert_to": torch.bfloat16, "keep": (), "every_shard": every}
+    # no target device given: the integrated NVIDIA rule (test_safetensors_pread_integrated_cuda.py) stays off
+    assert got == {
+        "convert_to": torch.bfloat16,
+        "keep": (),
+        "every_shard": every,
+        "integrated_cuda": False,
+    }
 
 
 _COMMIT_ARM = r"""
