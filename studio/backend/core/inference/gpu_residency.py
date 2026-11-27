@@ -809,8 +809,9 @@ def foreign_on(owner: str, account_id: Optional[str]) -> int:
             import sys
 
             video = sys.modules.get("core.inference.video")
-            running = video.generation_account_in_flight() if video is not None else None
-            return int(running is not None and running != account_id)
+            from hub.services.models.account_access import _video_holders
+
+            return int(any(holder != account_id for holder in _video_holders(video)))
     except Exception as exc:  # noqa: BLE001 - unknown reads as busy, so nothing is torn down under a stream
         logger.warning("gpu_residency: could not count generations on %s: %s", owner, exc)
         return 1

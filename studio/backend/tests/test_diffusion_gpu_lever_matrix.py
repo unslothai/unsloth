@@ -13,7 +13,10 @@ cards plus synthetic future archs) with torch mocked to that card, and diffs the
 
 (a) the lever table: every arch-gated policy function (INT8 attention / GEMM / ConvRot / grouped / CUTLASS tables,
     the H3 attention gates, VAE strips, quant ladders, NVFP4 routes, ...) per profile, head dim and dtype: engaged or
-    off, the config it engages with, a reason code;
+    off, the config it engages with, a reason code; plus the runtime decisions a tester round measured moving: how
+    many of a family's int8 Linears the CUTLASS race routes to the prebuilt GEMM (the real race against ``CardSim``,
+    a clock model of the measured power-capped cards), when an image load's deferred race first serves under
+    back-to-back renders, and where H3 video's int8 denoiser is placed;
 (b) the speed layer per profile: every registered image / video family through ``install_patches`` +
     ``run_speed_layer`` (the parity harness's entry) at the default speed tier and the dtype the profile resolves.
 
@@ -31,6 +34,7 @@ the decision that would have caught it.
 from __future__ import annotations
 
 import contextlib as _contextlib
+import dataclasses
 import itertools
 import os
 import subprocess
@@ -353,6 +357,424 @@ def probe_int8_gemm_tiles(p: GpuProfile) -> dict:
             target = getattr(g, name)
             target.clear()
             target.update(value)
+
+
+# Race-outcome model for the int8 CUTLASS race (R5 / R8 / R9): the REAL race, pair check (#19807), plan and routing run
+# with timers replaced by a card clock model, so the outcome is a pure function of the profile. R9: the Ada served 313
+# CUTLASS Linears at ~1035 vs ~1240 MHz (300 W cap), 133.6 vs 121.6-125.4 s with UNSLOTH_DIFFUSION_INT8_CUTLASS=0.
+
+
+@dataclasses.dataclass(frozen = True)
+class PowerModel:
+    """SM clock per kernel class at ``rows >= cut._HUGE_M`` (below: ``boost_mhz``, R9 kept image cells on CUTLASS with
+    no loss). ``paired`` = clock of a (CUTLASS, today) pair, as in a denoise step; relaxes with time constant ``settle_s``."""
+
+    boost_mhz: float
+    settle_s: float
+    steady_mhz: dict  # {"today": MHz, "cutlass": MHz, "paired": MHz} at rows >= cut._HUGE_M
+    source: str
+
+
+# ``settle_s`` unmeasured (any value well under 0.25 s gives the same verdicts). L4 (72 W): all clocks measured (#19807).
+# Ada (300 W): today / paired are R9 step clocks; alone CUTLASS unmeasured, R9's alone race keeping a winner on every H3
+# shape bounds it above 0.90 * 1240 / 0.98 = 1139 MHz, 1180 adds margin. Unmeasured cards race uncapped.
+POWER_MODELS = {
+    "l4": PowerModel(
+        2040.0,
+        0.05,
+        {"today": 1290.0, "cutlass": 855.0, "paired": 1171.0},
+        "diffusion_int8_cutlass.time_sustained_us + #19807's denoise-like loop: L4 72 W, H3 shapes at 19318 rows",
+    ),
+    "rtx6000_ada": PowerModel(
+        2505.0,
+        0.05,
+        {"today": 1240.0, "cutlass": 1180.0, "paired": 1035.0},
+        "tester R9: H3 video ~1240 MHz (CUTLASS=0) vs ~1035 MHz (313 CUTLASS Linears) at the 300 W cap",
+    ),
+}
+# Tile speed at equal clock vs today's path: R9 Ada step times (5.40 s @ 1240 vs 6.13 s @ 1035 MHz) give the best tile ~9%.
+_TILE_SPEED = {0: 0.90, 1: 0.93, 2: 0.97}
+_TILE_ROWS = {0: 128, 1: 128, 2: 256}
+
+
+def _is_today(name: Any) -> bool:
+    return name in ("today", "cublas")
+
+
+class CardSim:
+    """``diffusion_int8_cutlass.race`` timers on a modelled card; inside ``paired_cost_us`` each call is a pair. Each
+    race starts at boost."""
+
+    def __init__(self, model: Optional[PowerModel]):
+        self.model = model
+        self.clock = model.boost_mhz if model else 1.0
+        self.shape = (0, 0, 0)
+        self.pairing = False
+        self.paired_timings = 0
+
+    def begin(self, m: int, n: int, k: int) -> None:
+        self.shape = (int(m), int(n), int(k))
+        self.clock = self.model.boost_mhz if self.model else 1.0
+
+    def _steady(self, name: Any) -> float:
+        from core.inference import diffusion_int8_cutlass as cut
+
+        if self.model is None:
+            return 1.0
+        if self.shape[0] < cut._HUGE_M:
+            return self.model.boost_mhz
+        if _is_today(name):
+            return self.model.steady_mhz["today"]
+        return self.model.steady_mhz["paired" if self.pairing else "cutlass"]
+
+    def _work(self, name: Any) -> float:
+        m, n, k = self.shape
+        speed = 1.0 if _is_today(name) else _TILE_SPEED[int(name)]
+        if self.pairing:
+            speed += 1.0
+        return m * n * k * 1e-6 * speed
+
+    def time_us(
+        self,
+        fns: dict,
+        rounds: int = 3,
+        reps: int = 3,
+        warm: int = 1,
+    ) -> dict:
+        return {name: self._work(name) / self.clock for name in fns}
+
+    def time_sustained_us(
+        self,
+        fns: dict,
+        settle_s: float = 0.25,
+        measure_s: float = 0.25,
+    ) -> dict:
+        import math
+
+        self.paired_timings += int(self.pairing)
+        out = {}
+        for name in fns:
+            steady = self._steady(name)
+            if self.model is None:
+                out[name] = self._work(name) / steady
+                continue
+            tau, f0 = self.model.settle_s, self.clock
+            a, b = math.exp(-settle_s / tau), math.exp(-(settle_s + measure_s) / tau)
+            mean = steady + (f0 - steady) * tau / measure_s * (a - b)
+            self.clock = steady + (f0 - steady) * b
+            out[name] = self._work(name) / mean
+        return out
+
+
+# (label, N, K, Linears, rows per call at the tester's setting). H3 video: 313 Linears, 5 weight shapes (as logged).
+INT8_INVENTORIES = {
+    "minimax-h3": (
+        ("qkv", 7168, 5376, 150, 19318),
+        ("qkv_text", 7168, 5376, 6, 512),
+        ("out", 5376, 7168, 50, 19318),
+        ("out_text", 5376, 7168, 2, 512),
+        ("ff_in", 28672, 5376, 50, 19318),
+        ("ff_in_text", 28672, 5376, 2, 512),
+        ("ff_out", 5376, 14336, 50, 19318),
+        ("ff_out_text", 5376, 14336, 2, 512),
+        ("context", 5376, 5120, 1, 512),
+    ),
+    "qwen-image-2.1": (
+        ("attn_img", 3072, 3072, 240, 4096),
+        ("attn_txt", 3072, 3072, 240, 256),
+        ("mlp_in_img", 12288, 3072, 60, 4096),
+        ("mlp_in_txt", 12288, 3072, 60, 256),
+        ("mlp_out_img", 3072, 12288, 60, 4096),
+        ("mlp_out_txt", 3072, 12288, 60, 256),
+    ),
+}
+
+
+@_contextlib.contextmanager
+def card_sim(p: GpuProfile, model: Any = "profile"):
+    """Race GPU seams replaced by ``CardSim`` timers (inside ``mock_profile(p)``); plan dicts restored after."""
+    import torch
+
+    from core.inference import diffusion_int8_cutlass as cut
+    from core.inference import diffusion_int8_gemm as g8
+
+    sim = CardSim(POWER_MODELS.get(p.key) if model == "profile" else model)
+
+    def eligible(a, w, xs, ws, bias, out_dtype):
+        sim.begin(a.shape[0], w.shape[0], w.shape[1])
+        return True
+
+    to = torch.Tensor.to
+
+    def lazy_randint(
+        low,
+        high,
+        size,
+        generator = None,
+        dtype = None,
+        device = None,
+        **kw,
+    ):
+        return torch.empty(size, dtype = dtype or torch.int64)
+
+    def to_device(self, *a, **k):
+        if a and isinstance(a[0], (torch.device, str)) and str(a[0]).startswith("cuda"):
+            return self
+        if "device" in k and str(k["device"]).startswith("cuda") and len(k) == 1 and not a:
+            return self
+        return to(self, *a, **k)
+
+    dicts = (
+        g8._CUT_PLAN,
+        g8._CUT_FAMILY,
+        g8._CUT_RACES,
+        g8._CUT_DONE,
+        g8._CUT_CKEY,
+        g8._CUT_ROWS,
+        g8._CUT_ROWS_PENDING,
+        g8._CUT_LIVE,
+        cut._PROBED,
+    )
+    saved = [dict(d) for d in dicts]
+    for d in dicts:
+        d.clear()
+    tiles = tuple(sorted(_TILE_SPEED))
+    real_paired_cost_us = cut.paired_cost_us
+
+    def paired_cost_us(fns: dict, base_name: str) -> dict:
+        # the real pair check; only the timer it calls knows it is timing pairs
+        sim.pairing = True
+        try:
+            return real_paired_cost_us(fns, base_name)
+        finally:
+            sim.pairing = False
+
+    try:
+        with (
+            _pinned(
+                cut,
+                time_us = sim.time_us,
+                time_sustained_us = sim.time_sustained_us,
+                paired_cost_us = paired_cost_us,
+                eligible = eligible,
+                has_kernel = lambda *a, **k: True,
+                probed_tiles = lambda index: tiles,
+                tiles = lambda fam: tuple((_TILE_ROWS[t], 128, 64, 0, 0, 0, 0, 0) for t in tiles),
+            ),
+            _pinned(
+                g8,
+                _cut_cache_key = lambda index: None,
+                _xs_dtype = lambda *a, **k: torch.float32,
+                _huge_race_fits = lambda *a, **k: True,
+            ),
+            _pinned(
+                torch.cuda,
+                is_current_stream_capturing = lambda: False,
+                synchronize = lambda *a, **k: None,
+                empty_cache = lambda: None,
+                device = lambda *a, **k: _contextlib.nullcontext(),
+            ),
+            _pinned(torch, randint = lazy_randint),
+            _pinned(torch.Tensor, to = to_device),
+        ):
+            yield sim
+    finally:
+        for d, old in zip(dicts, saved):
+            d.clear()
+            d.update(old)
+
+
+def _routing(
+    p: GpuProfile,
+    family: str,
+    model: Any = "profile",
+) -> dict:
+    """``{"int8": n, "cutlass_logged": n, "cutlass_at_rows": n, "plan": {label: race outcome}, "paired_timings": n}`` after the
+    real race. ``cutlass_logged`` = what the load logs; ``cutlass_at_rows`` = 313 vs 52 of R9 / R8."""
+    import torch
+
+    from core.inference import diffusion_int8_cutlass as cut
+    from core.inference import diffusion_int8_gemm as g8
+
+    inv = INT8_INVENTORIES[family]
+    weights: dict = {}
+    recs = []
+    for _label, n, k, _count, _rows in inv:
+        if (n, k) in weights:
+            continue
+        w = _types.SimpleNamespace(
+            qdata = torch.empty(n, k, dtype = torch.int8), scale = torch.empty(n, 1, dtype = torch.bfloat16)
+        )
+        weights[(n, k)] = w
+        recs.append((_types.SimpleNamespace(bias = None), ("v2", None, False, w, True)))
+    with card_sim(p, model) as sim:
+        plan = g8._cutlass_plan(0, recs, True)
+        out = {"int8": 0, "cutlass_logged": 0, "cutlass_at_rows": 0, "plan": {}}
+        out["paired_timings"] = sim.paired_timings  # how many races ran #19807's pair check
+        for label, n, k, count, rows in inv:
+            key = g8._cut_key(n, k, torch.float32, torch.bfloat16, False)
+            entry = plan.get(key) or {}
+            out["int8"] += count
+            if g8._cutlass_fused(0, n, k, torch.float32, torch.bfloat16, False):
+                out["cutlass_logged"] += count
+            tile = cut.slot(rows, entry) if entry else None
+            if tile is not None:
+                out["cutlass_at_rows"] += count
+            out["plan"][label] = "triton" if tile is None else f"tile{tile}"
+    return out
+
+
+@probe
+def probe_int8_gemm_routing(p: GpuProfile) -> dict:
+    """How many of each family's int8 Linears the CUTLASS race routes to the prebuilt GEMM on this card, after the
+    real race against ``CardSim`` (``POWER_MODELS``: measured power-capped cards; others race uncapped)."""
+    keys = [f"{fam}.int8_gemm_routing" for fam in INT8_INVENTORIES]
+    if p.vendor != "nvidia":
+        return {k: lever(False, why = _na_code(p)) for k in keys}
+    import torch
+
+    from core.inference import diffusion_int8_cutlass as cut
+    from core.inference import diffusion_int8_gemm as g8
+
+    cap = tuple(torch.cuda.get_device_capability(0))
+    if cut.family(cap) is None:
+        return {k: lever(False, why = "no_cutlass_family") for k in keys}
+    if not g8.cutlass_wanted(cap):
+        return {k: lever(False, why = "cutlass_not_wanted") for k in keys}
+    power = (
+        "uncapped"
+        if p.key not in POWER_MODELS
+        else f"capped:settle={POWER_MODELS[p.key].settle_s}s"
+    )
+    out = {}
+    for fam, key in zip(INT8_INVENTORIES, keys):
+        r = _routing(p, fam)
+        out[key] = lever(
+            r["cutlass_at_rows"] > 0,
+            cfg = {
+                "int8": r["int8"],
+                "logged": r["cutlass_logged"],
+                "at_rows": r["cutlass_at_rows"],
+                "power": power,
+            },
+            why = None if r["cutlass_at_rows"] else "race_kept_triton",
+        )
+    return out
+
+
+@probe
+def probe_cutlass_race_schedule(p: GpuProfile) -> dict:
+    """When an image load's CUTLASS race runs (R8: never under back-to-back renders; #19547 bounds the wait)."""
+    key = "image.int8_cutlass.race_schedule"
+    if p.vendor != "nvidia":
+        return {key: lever(False, why = _na_code(p))}
+    import torch
+
+    from core.inference import diffusion_int8_cutlass as cut
+    from core.inference import diffusion_int8_cutlass_defer as defer
+    from core.inference import diffusion_int8_gemm as g8
+
+    cap = tuple(torch.cuda.get_device_capability(0))
+    if cut.family(cap) is None or not g8.cutlass_wanted(cap):
+        return {key: lever(False, why = "no_cutlass")}
+    return {key: _race_schedule_cell(p)}
+
+
+def _race_schedule_cell(p: GpuProfile, renders: int = 4) -> dict:
+    """Back-to-back image renders after a fresh image load (no stored verdict): the 1-based render whose GEMM calls
+    first see the race's winner, or 0 if none of ``renders`` does."""
+    import torch
+
+    from core.inference import diffusion_int8_cutlass_defer as defer
+    from core.inference import diffusion_int8_gemm as g8
+
+    n, k, rows = 3072, 3072, 4096
+    w = _types.SimpleNamespace(
+        qdata = torch.empty(n, k, dtype = torch.int8), scale = torch.empty(n, 1, dtype = torch.bfloat16)
+    )
+    recs = [(_types.SimpleNamespace(bias = None), ("v2", None, False, w, True))]
+    key = g8._cut_key(n, k, torch.float32, torch.bfloat16, False)
+    saved_env = {e: os.environ.get(e) for e in (defer.IDLE_ENV,)}
+    os.environ[defer.IDLE_ENV] = (
+        "600"  # a benchmark client: the next render follows at once, never an idle spell
+    )
+    defer._reset_for_tests()
+    try:
+        with (
+            card_sim(p, model = None),
+            _pinned(g8, _cut_misses = lambda index, r: ([], [(m, rec, key) for m, rec in r])),
+        ):
+            g8._CUT_TRITON_ON[0] = True
+            with defer.allow():
+                g8._plan_or_defer(0, recs, True, False)
+            where = "deferred" if g8._CUT_DEFER_KEYS.get(0) else "at_load"
+            served = 0
+            for i in range(1, renders + 1):
+                defer.render_begin()
+                entry = (g8._CUT_PLAN.get(0) or {}).get(key)
+                if not served and entry and any(t is not None for t in entry.values()):
+                    served = i
+                defer.render_end()
+            cfg = {"where": where, "serves_from_render": served}
+            if where == "deferred":
+                cfg["b2b_bound"] = defer.max_renders()
+            return lever(served > 0, cfg = cfg, why = None if served else "race_never_ran")
+    finally:
+        defer._reset_for_tests()
+        g8._CUT_DEFER_KEYS.clear()
+        g8._CUT_TRITON_ON.clear()
+        for e, v in saved_env.items():
+            if v is None:
+                os.environ.pop(e, None)
+            else:
+                os.environ[e] = v
+
+
+def _h3_video_sizes() -> tuple:
+    """(whole set, pinned + larger rotating component) bytes for H3 video's default int8 load, sized as the load does."""
+    import torch
+
+    from core.inference import video as v
+    from core.inference import video_families as vf
+    from core.inference.video_minimax_h3 import H3_TRANSFORMER_PREQUANT_GB
+
+    fam = next(f for f in vf._FAMILIES if getattr(f, "name", None) == "minimax-h3")
+    den = int(H3_TRANSFORMER_PREQUANT_GB["int8"] * 1e9)
+    comps = fam.bf16_components_gb
+    sizes = [
+        (den, v._h3_others_bytes(fam, comps, te_scheme = "int8", dtype = torch.bfloat16, rotating = r))
+        for r in (False, True)
+    ]
+    return sizes[0], sizes[1]
+
+
+def h3_video_tier(free_bytes: Optional[int]) -> str:
+    from core.inference import video as v
+    whole, pinned = _h3_video_sizes()
+    return v._h3_placement_tier(
+        quantised = True,
+        whole_set_sizes = whole,
+        pinned_sizes = pinned,
+        free_bytes = free_bytes,
+        speed_off = False,
+    )
+
+
+@probe
+def probe_h3_video_placement(p: GpuProfile) -> dict:
+    """Where MiniMax-H3 video's default int8 denoiser lives on the whole card: resident, pinned or streamed block by
+    block (R1: the streamed tier ran unpinned blocks 6-9% slower per step; the tester's cards all stream)."""
+    key = "minimax-h3.placement"
+    if not p.cuda:
+        return {key: lever(False, why = _na_code(p))}
+    from core.inference import video as v
+
+    tier = h3_video_tier(v._h3_free_device_bytes("cuda"))
+    return {
+        key: lever(
+            tier in ("resident", "pinned"), cfg = tier, why = None if tier != "stream" else "streams"
+        )
+    }
 
 
 @probe
@@ -2350,9 +2772,7 @@ def test_future_arch_exclusions_are_not_stale(matrix):
     assert all(str(r).strip() for r in FUTURE_ARCH_EXCLUSIONS.values())
 
 
-# One test per regression an external tester's benchmark found (rounds R4-R7), each asserting the production
-# decision that would have caught it on a CPU runner. Every replay calls the real policy function; where a test
-# double stands in, it stands in for hardware or for diffusers, never for the decision under test.
+# One test per tester regression (R1-R9); every replay calls the real policy, doubles stand in only for hardware.
 def _h3_video_default_gate(p: GpuProfile):
     """The H3 video load's INT8 attention gate for Studio's default request on profile ``p``: the request fields
     come from ``VideoLoadRequest`` defaults, the card capability from the same helper video.py reads it with, and
@@ -2451,6 +2871,183 @@ def test_h3_exact_policy_cell_records_what_the_load_installs(key, active, golden
         assert cell["why"].startswith("inactive:"), cell
 
 
+# Per-arch tables are written out so any change fails here (and in the golden) for review.
+ARCH_KEYS = {
+    "sm75": "t4",
+    "sm80": "a100_40",
+    "sm86": "rtx3090",
+    "sm89": "rtx6000_ada",
+    "sm90": "h100",
+    "sm100": "b200",
+    "sm120": "rtx5090",
+}
+
+# H3 video default load: 4-step exact start on every arch (R7: never an arch deny-list); sm75 has no strided processor.
+H3_VIDEO_EXACT_START_PER_ARCH = {
+    "sm75": lever(False, cfg = {"kernel": "none", "steps": 0}, why = "inactive:no_strided_processor"),
+    "sm80": lever(True, cfg = {"kernel": "_native_flash", "steps": 4}),
+    "sm86": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm89": lever(True, cfg = {"kernel": "_native_flash", "steps": 4}),
+    "sm90": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm100": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+    "sm120": lever(True, cfg = {"kernel": "_native_cudnn", "steps": 4}),
+}
+
+
+@pytest.mark.parametrize("arch", sorted(ARCH_KEYS))
+def test_incident_r7_r8_h3_video_int8_attention_per_arch(arch, golden, monkeypatch):
+    """R7 / R8: #19098's sm89 deny-list turned H3 Auto INT8 attention off on the Ada (-25%); #19344 restored it with a
+    4-step exact start (R8: 3090 -11%, Ada -5%). Replay: a #19098-shaped deny-list moves the cell."""
+    from core.inference import video_minimax_h3_attn as h3
+
+    p = PROFILES[ARCH_KEYS[arch]]
+    with clean_policy_env(), mock_profile(p):
+        gate, cap = _h3_video_default_gate(p)
+        cells = probe_h3_video_attention(p)
+    assert f"sm{cap[0]}{cap[1]}" == arch, cap
+    assert h3.H3_INT8_EXACT_START_STEPS == 4 and not h3.H3_INT8_AUTO_OFF_ARCHS
+    assert gate.auto and not gate.forced and gate.reason is None and gate.exact_steps == 4, gate
+    assert cells["minimax-h3.int8_attn_auto"] == lever(True, cfg = "exact_steps=4", why = "auto_race")
+    want = H3_VIDEO_EXACT_START_PER_ARCH[arch]
+    assert cells["minimax-h3.int8_exact_policy"] == want, (
+        arch,
+        cells["minimax-h3.int8_exact_policy"],
+    )
+    assert golden["cells"][f"{p.key}.minimax-h3.int8_exact_policy"] == want
+    # The replay bites: #19098's policy shape (Auto off on this arch).
+    monkeypatch.setattr(h3, "H3_INT8_AUTO_OFF_ARCHS", frozenset({tuple(cap)}))
+    with clean_policy_env(), mock_profile(p):
+        before, _ = _h3_video_default_gate(p)
+        moved = probe_h3_video_attention(p)
+    assert not before.auto and before.exact_steps == 0 and arch in (before.reason or ""), before
+    assert moved["minimax-h3.int8_attn_auto"]["on"] is False
+    assert moved["minimax-h3.int8_exact_policy"] != want or not want["on"], moved
+
+
+# ConvRot (R1): ``stock`` rotation is the R1 defect (separate Hadamard pass). sm75 pinned as shipped, unmeasured on T4.
+CONVROT_ROUTE_PER_ARCH = {
+    "sm75": ("stock", "cutlass"),
+    "sm80": ("rotq_tile", "arch_tile"),
+    "sm86": ("unlisted_h16", "unlisted_race"),
+    "sm89": ("rotq_tile", "arch_tile"),
+    "sm90": ("unlisted_h16", "unlisted_race"),
+    "sm100": ("unlisted_h16", "cublas_by_measurement"),
+    "sm120": ("rotq_tile", "arch_tile"),
+}
+
+
+def _convrot_route(p: GpuProfile) -> tuple:
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g
+
+    cap = tuple(p.capability)
+    if cq.rotquant_config(cap) is not None:
+        rotation = "rotq_tile"
+    elif cq.unlisted_wanted(cap):
+        rotation = "unlisted_h16"
+    else:
+        rotation = "stock"
+    if g.arch_config(cap) is not None:
+        gemm = "arch_tile"
+    elif g.unlisted_wanted(cap):
+        gemm = "unlisted_race"
+    elif g.cutlass_wanted(cap):
+        gemm = "cutlass"
+    elif cap in g._UNLISTED_SKIP:
+        gemm = "cublas_by_measurement"
+    else:
+        gemm = "stock"
+    return rotation, gemm
+
+
+def test_incident_r1_convrot_route_per_arch():
+    """R1 (#12874, fixed by #14988 / #15654): on sm80+ neither rotation nor GEMM is ``stock``; without those fixes
+    sm86 / sm90 fall back to stock."""
+    from unittest import mock
+
+    from core.inference import diffusion_convrot_quant as cq
+    from core.inference import diffusion_int8_gemm as g
+    from core.inference import diffusion_transformer_quant as tq
+
+    with clean_policy_env():
+        assert tq.int8_convrot_enabled("qwen-image-2.1")
+        got = {}
+        for arch, key in ARCH_KEYS.items():
+            with mock_profile(PROFILES[key]):
+                got[arch] = _convrot_route(PROFILES[key])
+    assert got == CONVROT_ROUTE_PER_ARCH, got
+    for arch, (rotation, gemm) in got.items():
+        if arch != "sm75":
+            assert rotation != "stock" and gemm != "stock", (arch, rotation, gemm)
+    with (
+        clean_policy_env(),
+        mock.patch.object(cq, "unlisted_mode", lambda: "off"),
+        mock.patch.object(g, "unlisted_wanted", lambda *a, **k: False),
+        mock.patch.object(g, "cutlass_wanted", lambda *a, **k: False),
+    ):
+        for arch in ("sm86", "sm90"):
+            with mock_profile(PROFILES[ARCH_KEYS[arch]]):
+                assert _convrot_route(PROFILES[ARCH_KEYS[arch]]) == ("stock", "stock"), arch
+
+
+# INT8 attention Auto tables (R5): #18004 left H3 video out (forcing it was 20% / 37% faster); #18248 added it.
+INT8_ATTENTION_AUTO_TABLES = {
+    "AUTO_DITS": frozenset(
+        {
+            "Flux3Transformer2DModel",
+            "Krea2Transformer2DModel",
+            "MOSSImageTransformer",
+            "HunyuanVideo15Transformer3DModel",
+            "QwenImage21Transformer2DModel",
+            "WanTransformer3DModel",
+            "ZImageTransformer2DModel",
+        }
+    ),
+    "AUTO_QUANTIZED_ONLY": frozenset({"MOSSImageTransformer"}),
+    "AUTO_SINGLE_EXPERT_ONLY": frozenset({"WanTransformer3DModel"}),
+    "AUTO_CUDA_ONLY": frozenset(
+        {
+            "Flux3Transformer2DModel",
+            "Krea2Transformer2DModel",
+            "HunyuanVideo15Transformer3DModel",
+            "ZImageTransformer2DModel",
+        }
+    ),
+    "SPEED_UNSET_DITS": frozenset(
+        {"Flux3Transformer2DModel", "QwenImage21Transformer2DModel", "ZImageTransformer2DModel"}
+    ),
+    "ROCM_AUTO_DITS": {
+        ("gfx1151", "linux"): frozenset({"QwenImage21Transformer2DModel", "WanTransformer3DModel"}),
+        ("gfx1151", "win32"): frozenset({"QwenImage21Transformer2DModel"}),
+    },
+    "FAMILY_RACE_TOKENS": {"MiniMaxH3Transformer3DModel": (16384, 8192)},
+}
+
+
+def test_incident_r5_int8_attention_auto_family_table(monkeypatch):
+    """R5: Auto races exactly the table above, H3 video included. Replay: #18004's table gives H3 no Auto race."""
+    from core.inference import diffusion_int8_attention as i8
+    from core.inference import diffusion_int8_attention_dispatch as dispatch
+
+    got = {
+        name: getattr(i8 if name == "FAMILY_RACE_TOKENS" else dispatch, name)
+        for name in INT8_ATTENTION_AUTO_TABLES
+    }
+    got["FAMILY_RACE_TOKENS"] = {k: tuple(v) for k, v in got["FAMILY_RACE_TOKENS"].items()}
+    assert got == INT8_ATTENTION_AUTO_TABLES, got
+    h3_dit = type("MiniMaxH3Transformer3DModel", (), {})()
+    with clean_policy_env():
+        assert i8.resolve_policy(None).mode == "auto"
+        assert i8.family_race_tokens(h3_dit) == (16384, 8192)
+    # the H3 video load is the caller (read as text: importing video.py is not needed for the table)
+    assert "int8_attention.install_family_auto(" in (
+        _BACKEND / "core/inference/video.py"
+    ).read_text(encoding = "utf-8")
+    monkeypatch.setattr(i8, "FAMILY_RACE_TOKENS", {})
+    assert i8.family_race_tokens(h3_dit) is None
+    assert i8.install_family_auto(h3_dit, device = "cuda:0", dtype = None) == 0
+
+
 def test_incident_r5_18248_h3_video_int8_attention_auto_by_default():
     """R5, #18004 left H3 video out of Auto INT8 attention (Ada / 3090 -2 to -5%; forcing it was 20% / 37% faster);
     #18248 put it on by default and R6 measured +27% Ada, +57% 3090. Auto is the default policy, H3 video races at its
@@ -2489,6 +3086,21 @@ def test_incident_r5_18105_int8_gemm_race_at_the_long_row_bucket(monkeypatch):
         # The replay bites: without the long race (pre-#18105) the plan has no 16384-row point.
         monkeypatch.setenv(cut.HUGE_RACE_ENV, "0")
         assert 16384 not in cut.race_points()
+
+
+def test_incident_r9_cutlass_winners_are_paired_with_todays_path(monkeypatch):
+    """R9: on the RTX 6000 Ada (300 W) the CUTLASS tiles won every MiniMax-H3 weight shape timed alone, so 313 int8
+    Linears ran them (R8: 52); the video step ran 6.13 s instead of 5.40 s at the same 291 W (SM clock 1240 -> 1035 MHz)
+    and H3-Image 2048^2 lost 5% the same way. The 16384-row race (the slot video row counts take) checks its sustained
+    winners in pairs with today's path, whose clock both set; image row counts keep their race as before."""
+    from core.inference import diffusion_int8_cutlass as cut
+    with clean_policy_env():
+        for rows in (16384, 19318):
+            assert cut.paired_for(rows), rows
+        for rows in (512, 4160, 4608):
+            assert not cut.paired_for(rows), rows
+        monkeypatch.setenv(cut.PAIRED_ENV, "0")
+        assert not cut.paired_for(16384)
 
 
 @pytest.mark.parametrize("steps", [1, 8, 20, 30])
@@ -2941,10 +3553,120 @@ def test_incident_r3_stream_tier_keeps_cuda_graphs(matrix, key):
 
 
 def test_a_developer_opt_out_never_reaches_the_cells(monkeypatch):
-    # every env name a lever module reads to switch a lever off is cleared while cells are collected
+    # lever-off env names are cleared during collection
     import os
 
     monkeypatch.setenv("UNSLOTH_DISABLE_FP16_ACCUM", "1")
     with clean_policy_env():
         assert "UNSLOTH_DISABLE_FP16_ACCUM" not in os.environ
     assert os.environ["UNSLOTH_DISABLE_FP16_ACCUM"] == "1"
+
+
+# R8 / R9: the int8 CUTLASS race's timing and outcome. The cells run the real race (``CardSim`` timers) in-process.
+
+
+def _huge_rows_on_cutlass(
+    p: GpuProfile,
+    family: str,
+    model: Any = "profile",
+) -> int:
+    """Linears of ``family`` whose video-sized calls (rows >= ``_HUGE_M``) take a CUTLASS tile on the modelled card."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    r = _routing(p, family, model)
+    return sum(
+        count
+        for label, _n, _k, count, rows in INT8_INVENTORIES[family]
+        if rows >= cut._HUGE_M and r["plan"][label] != "triton"
+    )
+
+
+def test_incident_r8_19547_deferred_race_serves_back_to_back_renders(monkeypatch):
+    """R8, #19308 (fixed by #19547): the deferred image race never ran under back-to-back renders; it must serve
+    from render 2."""
+    p = PROFILES["rtx6000_ada"]
+    with clean_policy_env(), mock_profile(p):
+        cell = _race_schedule_cell(p)
+    assert cell == lever(
+        True, cfg = {"where": "deferred", "serves_from_render": 2, "b2b_bound": 1}
+    ), cell
+    from core.inference import diffusion_int8_cutlass_defer as defer
+
+    monkeypatch.setenv(defer.MAX_RENDERS_ENV, "0")
+    with mock_profile(p):
+        before = _race_schedule_cell(p)
+    assert before["on"] is False and before["why"] == "race_never_ran", before
+
+
+@pytest.mark.parametrize("key", ["rtx3090", "a100_40", "a100_80"])
+def test_incident_r9_clock_stable_cards_keep_cutlass_on_h3_video(key):
+    """R9 control: the 3090 kept 313 CUTLASS Linears with no clock loss; the Ada fix must not take them away."""
+    p = PROFILES[key]
+    with clean_policy_env(), mock_profile(p):
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 300
+        assert _routing(p, "qwen-image-2.1")["cutlass_at_rows"] == 720
+
+
+def test_incident_r5_18149_l4_sustained_race_keeps_triton_on_h3_video(monkeypatch):
+    """R5, #17486 (fixed by #18105 / #18149): L4 tiles won short bursts ~23% but ran ~25% slower sustained."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    p = PROFILES["l4"]
+    with clean_policy_env(), mock_profile(p):
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 0
+        assert _routing(p, "qwen-image-2.1")["cutlass_at_rows"] == 720
+    monkeypatch.setenv(cut.SUSTAINED_ENV, "0")
+    with mock_profile(p):
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 300
+
+
+@pytest.mark.parametrize("key", ["rtx6000_ada", "l4"])
+def test_incident_r9_power_capped_ada_keeps_triton_on_h3_video(key, monkeypatch):
+    """R9 (fixed by #19807): H3 video on the Ada went 118.6 -> 133.6 s as the race (unchanged) routed 313 Linears to
+    CUTLASS and the clock fell ~1240 -> ~1035 MHz. The pair check must keep today's path on video-sized calls; image
+    calls keep CUTLASS."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    p = PROFILES[key]
+    with clean_policy_env(), mock_profile(p):
+        assert _routing(p, "qwen-image-2.1")["cutlass_at_rows"] == 720
+        video = _routing(p, "minimax-h3")
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 0, video
+    if key == "l4":
+        # L4: the alone sustained race already rejects the tiles (R5)
+        assert video["paired_timings"] == 0, video
+        return
+    shapes = {(n, k) for _label, n, k, _count, _rows in INT8_INVENTORIES["minimax-h3"]}
+    assert video["paired_timings"] == len(shapes) == 5, video
+    # pre-#19807 (no pair check) the Ada reproduces R9
+    monkeypatch.setenv(cut.PAIRED_ENV, "0")
+    with mock_profile(p):
+        assert _huge_rows_on_cutlass(p, "minimax-h3") == 300
+        assert _routing(p, "minimax-h3")["paired_timings"] == 0
+
+
+def test_card_sim_alone_wins_and_the_pair_loses_on_the_ada():
+    """``CardSim`` sanity: on the Ada the tile wins alone sustained but its pair loses; uncapped the pair keeps it."""
+    from core.inference import diffusion_int8_cutlass as cut
+
+    sim = CardSim(POWER_MODELS["rtx6000_ada"])
+    sim.begin(19318, 5376, 14336)
+    alone = sim.time_sustained_us({"today": None, 0: None})
+    assert alone[0] < alone["today"] * (1 - cut._MARGIN)
+    sim.pairing = True
+    pairs = sim.time_sustained_us({"today": None, 0: None})
+    half = pairs["today"] / 2
+    assert pairs[0] - half > half * (1 - cut._MARGIN)
+    flat = CardSim(None)
+    flat.begin(19318, 5376, 14336)
+    flat.pairing = True
+    pairs = flat.time_sustained_us({"today": None, 0: None})
+    assert pairs[0] - pairs["today"] / 2 < pairs["today"] / 2 * (1 - cut._MARGIN)
+
+
+@pytest.mark.parametrize("gb", [8.188, 12.288, 16.376, 24.576, 50.9])
+def test_h3_video_streams_on_every_tester_tier(gb):
+    """R6-R9: the tester's H3 video cells (8-24 GB tiers on the Ada, whole Ada) all stream the int8 denoiser."""
+    assert h3_video_tier(int(gb * 1e9)) == "stream"
+    _whole, pinned = _h3_video_sizes()
+    assert abs(sum(pinned) / 1e9 - 56.4) < 0.05

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
-import { setHfEndpoints } from "@/lib/hf-endpoint";
+import { DEFAULT_HF_ENDPOINT, setHfEndpoints, setHubPageLinks } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -286,6 +286,7 @@ async function readHealth(
         hub_source?: string;
         hub_proxy?: string | null;
         datasets_server_proxy?: string | null;
+        modelscope_pages?: unknown;
       };
       if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
       if (
@@ -316,6 +317,11 @@ async function readHealth(
         datasetsProxy ? backendUrl(datasetsProxy) : data.hf_datasets_server,
         data.hub_source,
         { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
+      );
+      // A saved endpoint is reported as the default; `useHubPageUrl` asks the owner route instead.
+      setHubPageLinks(
+        hubProxy && data.hf_endpoint !== DEFAULT_HF_ENDPOINT ? data.hf_endpoint : null,
+        data.modelscope_pages,
       );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;

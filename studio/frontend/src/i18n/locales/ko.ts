@@ -5057,6 +5057,7 @@ export const ko = {
       showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
     },
     history: {
+      notSaved: "기록에 저장되지 않았습니다: 브라우저 저장 공간이 가득 찼습니다.",
       title: "기록",
       search: "기록 검색",
       empty: "번역이 여기에 표시됩니다.",

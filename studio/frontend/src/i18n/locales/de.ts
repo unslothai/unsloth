@@ -5142,6 +5142,7 @@ export const de = {
       showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
     },
     history: {
+      notSaved: "Nicht im Verlauf gespeichert: Der Browserspeicher ist voll.",
       title: "Verlauf",
       search: "Verlauf durchsuchen",
       empty: "Deine Übersetzungen erscheinen hier.",

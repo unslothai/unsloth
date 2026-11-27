@@ -4,6 +4,8 @@
 """UNSLOTH_PARALLEL / unsloth.parallelize and the context parallel x tensor / pipeline parallel refusals, without a
 process group (tests/test_parallel_cp_compose_gloo.py trains the composed layouts on gloo ranks)."""
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -1020,8 +1022,30 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
         caps.check(
-            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+            _q(cp = 2, cp_backend = "ulysses", router_aux_loss = True, **{**moe_q, "family": "phimoe"})
         )
+    # The other cp router aux families (tests/test_cp_router_aux_gloo.py::test_family_*): lora (on the experts where
+    # PEFT's all-linear adapts them) and full finetuning.
+    for family in caps.CP_ROUTER_AUX_FAMILIES[1:]:
+        expert_lora = family not in ("gpt_oss", "qwen3_5_moe")
+        for mode in ("lora", "full"):
+            q = _q(
+                cp = 2,
+                cp_backend = "ulysses",
+                router_aux_loss = True,
+                family = family,
+                moe = True,
+                mode = mode,
+                expert_lora = expert_lora and mode == "lora",
+                attention = "eager" if family == "gpt_oss" else "sdpa",
+            )
+            assert caps.cell_status(q)[0] == "supported", (family, mode, caps.cell_status(q))
+            caps.check(q)
+            # Their parity ran without checkpointing: Unsloth's checkpoint stays unadvertised for them.
+            gc = dataclasses.replace(q, memory = "unsloth_offload")
+            assert caps.cell_status(gc)[0] != "supported", (family, mode, caps.cell_status(gc))
+            with pytest.raises(NotImplementedError):
+                caps.check(gc)
     with pytest.raises(
         NotImplementedError, match = r"^Unsloth: MoE x pp / cp: .*router_aux_loss_coef = 0.0"
     ):
@@ -1042,13 +1066,18 @@ def test_moe_rows_cover_family_precision_aux_and_mode():
             assert caps.cell_status(pp_q)[0] == "supported", (aux, schedule)
             caps.check(pp_q)
     with pytest.raises(
-        NotImplementedError, match = r"x pp' lacks .*Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp only"
+        NotImplementedError, match = r"x pp' lacks .*Qwen2-MoE and Ernie 4.5 MoE only"
     ):
         caps.check(
-            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "mixtral"})
+            _q(pp = 2, pp_schedule = "gpipe", router_aux_loss = True, **{**moe_q, "family": "qwen3_next"})
         )
     with pytest.raises(NotImplementedError, match = r"x pp' lacks .*no gloo parity run"):
-        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "mixtral"}))
+        caps.check(_q(pp = 2, pp_schedule = "gpipe", **{**moe_q, "family": "qwen3_next"}))
+    # Mixtral / OLMoE / Qwen2-MoE / Ernie 4.5 MoE: carried, aux on or off (test_pp_moe_aux_gloo.py families).
+    for family in ("mixtral", "olmoe", "qwen2_moe", "ernie4_5_moe"):
+        for aux in (True, False):
+            pp_q = _q(pp = 2, pp_schedule = "1f1b", router_aux_loss = aux, **{**moe_q, "family": family})
+            assert caps.cell_status(pp_q)[0] == "supported", (family, aux)
     # gpt-oss pp with aux loss off runs; with it on the note names the switch.
     gpt_oss_q = {**moe_q, "family": "gpt_oss", "attention": "eager", "windowed": True}
     for extra in ({}, {"memory": "gc"}, {"memory": "unsloth_offload", "mode": "qlora"}):

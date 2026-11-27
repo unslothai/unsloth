@@ -5137,6 +5137,7 @@ export const it = {
       showPromptDescription: "Vedi le istruzioni esatte inviate al modello.",
     },
     history: {
+      notSaved: "Non salvata nella cronologia: lo spazio di archiviazione del browser è pieno.",
       title: "Cronologia",
       search: "Cerca nella cronologia",
       empty: "Le tue traduzioni appaiono qui.",

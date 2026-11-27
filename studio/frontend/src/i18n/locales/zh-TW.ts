@@ -5140,6 +5140,7 @@ export const zhTW = {
       showPromptDescription: "查看傳送給模型的確切指示。",
     },
     history: {
+      notSaved: "未儲存到歷史記錄：瀏覽器儲存空間已滿。",
       title: "記錄",
       search: "搜尋記錄",
       empty: "您的翻譯會顯示在這裡。",

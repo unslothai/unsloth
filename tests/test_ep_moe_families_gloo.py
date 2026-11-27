@@ -435,7 +435,7 @@ class _PerExpertListExperts(torch.nn.Module):
         router_indices = None,
         routing_weights = None,
     ):
-        raise AssertionError("never reached: refused before any forward")
+        raise AssertionError("never reached: the case only shards the model")
 
 
 def _case_refused_per_expert_lists(rank, world, tmp, repo):
@@ -741,16 +741,14 @@ def test_ep_refuses_models_it_cannot_shard(family):
         assert r["unchanged"] and not r["is_ep"], r
 
 
-def test_ep_refuses_per_expert_linear_lists_with_a_clear_message():
-    """The load_in_4bit gpt-oss experts layout: refused before anything changes, naming the way out."""
+def test_ep_shards_per_expert_linear_lists():
+    """The load_in_4bit gpt-oss experts layout (one experts call over per-expert Linear lists) is no longer refused:
+    each rank keeps its experts of gate_up_projs / down_projs (parity in test_ep_expert_lists_gloo.py)."""
     results = _spawn("_case_refused_per_expert_lists", repo = FAMILIES["gpt_oss"])
     assert all(r is not None and "error" not in r for r in results), results
     for r in results:
-        for message in r["messages"]:
-            assert message is not None and "per-expert Linear lists" in message, r
-            assert "gate_up_projs" in message and "load_in_4bit = False" in message, message
-            assert "UNSLOTH_FSDP2=1" in message, message
-        assert r["unchanged"] and not r["is_ep"], r
+        assert r["messages"] == [None, None], r
+        assert r["is_ep"] and not r["unchanged"], r
 
 
 _SAVED = {}

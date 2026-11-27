@@ -5152,6 +5152,7 @@ export const fr = {
       showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
     },
     history: {
+      notSaved: "Non enregistrée dans l'historique : le stockage du navigateur est plein.",
       title: "Historique",
       search: "Rechercher dans l'historique",
       empty: "Vos traductions s'affichent ici.",

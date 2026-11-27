@@ -5097,6 +5097,7 @@ export const ptBR = {
       showPromptDescription: "Veja as instruções exatas enviadas ao modelo.",
     },
     history: {
+      notSaved: "Não foi salva no histórico: o armazenamento do navegador está cheio.",
       title: "Histórico",
       search: "Buscar no histórico",
       empty: "Suas traduções aparecem aqui.",

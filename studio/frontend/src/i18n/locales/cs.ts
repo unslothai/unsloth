@@ -5428,6 +5428,7 @@ export const cs = {
       showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
     },
     history: {
+      notSaved: "Neuloženo do historie: úložiště prohlížeče je plné.",
       title: "Historie",
       search: "Hledat v historii",
       empty: "Vaše překlady se zobrazí zde.",

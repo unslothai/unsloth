@@ -285,6 +285,8 @@ def nvfp4_prewarm(
     import torch
 
     try:
+        from .flashinfer_import import import_flashinfer
+        import_flashinfer()
         import flashinfer
     except Exception as exc:  # noqa: BLE001 - nothing to tune without the backend
         _log(logger, "debug", f"[nvfp4] prewarm skipped: {type(exc).__name__}: {exc}")
@@ -306,7 +308,11 @@ def nvfp4_prewarm(
 def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
     import torch
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
+
     for module in modules:
         for m in shapes:
             m = int(m)

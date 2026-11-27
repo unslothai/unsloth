@@ -1107,7 +1107,7 @@ def _fix_rope_inv_freq(model):
                 if module.multi_gpu_cos_cached[device_idx] is not None:
                     module._set_cos_sin_cache(
                         seq_len = module.current_rope_size,
-                        device = torch.device(device_idx),
+                        device = torch.device(DEVICE_TYPE_TORCH, device_idx),
                         dtype = torch.get_default_dtype(),
                     )
 
@@ -1151,7 +1151,7 @@ def _fix_rope_inv_freq(model):
                         )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
-                            device_obj = torch.device(device_idx)
+                            device_obj = torch.device(DEVICE_TYPE_TORCH, device_idx)
                             module.multi_gpu_short_cos_cached[device_idx] = (
                                 emb.cos() * module.scaling_factor
                             ).to(dtype = dtype, device = device_obj, non_blocking = True)
@@ -1406,10 +1406,13 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
 
         _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2413,10 +2416,13 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
 
         _unsloth_load_begins()
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
@@ -3084,6 +3090,7 @@ class FastModel(FastBaseModel):
                 register_custom_dtype(
                     "torch.float16;torch.bfloat16;torch.float16;"
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "
+                    "not module.weight.is_meta and "  # another expert parallel rank's expert
                     "torch.amax(dequantize_module_weight(module)) >= 0:"
                     "module._pre_set_compute_dtype = torch.float32\n"
                     ""

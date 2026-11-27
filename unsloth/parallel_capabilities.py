@@ -114,8 +114,18 @@ def _rl(q):
     return q.trainer in ("dpo", "grpo", "other_rl")
 
 
-# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again).
-CP_ROUTER_AUX_FAMILIES = ("qwen3_moe",)
+# UNSLOTH_CP_ROUTER_AUX=0 turns cp router aux off (refused again). Each family matched one process under Ulysses
+# cp 2 (tests/test_cp_router_aux_gloo.py). PhiMoE stays refused: its training-mode SparseMixer samples the routes
+# from the torch RNG, so a cp shard routes its tokens differently from one process.
+CP_ROUTER_AUX_FAMILIES = (
+    "qwen3_moe",
+    "mixtral",
+    "qwen2_moe",
+    "olmoe",
+    "qwen3_5_moe",
+    "qwen3_next",
+    "gpt_oss",
+)
 
 
 def _cp_router_aux_formed(q) -> bool:
@@ -1034,7 +1044,16 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Families beyond Qwen3-MoE that pp carries the router aux loss for (OLMoE / Qwen2-MoE: transformers 5.x records their
+# router logits; 4.x refuses aux on at the split and runs aux off as before).
+_MOE_PP_FAMILY = (
+    "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_families_match_gradient_accumulation"
+)
+_MOE_PP_FAMILIES = ("mixtral", "olmoe", "qwen2_moe", "ernie4_5_moe")
 _MOE_CP_AUX = "tests/test_cp_router_aux_gloo.py::test_router_aux_loss_under_cp_matches_one_process"
+_MOE_CP_AUX_FAMILY = (
+    "tests/test_cp_router_aux_gloo.py::test_family_router_aux_loss_under_cp_matches_one_process"
+)
 _EP_CP = "tests/test_ep_x_cp_gloo.py::test_ep_x_cp_qwen3_moe_lora_matches_one_process"
 _MOE_CP_AUX_GC = (
     "lora+experts",
@@ -1163,6 +1182,20 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "full", True, "cp"): (_MOE_CP_AUX + "[full-cp2-right_pad]",) * 2
     + ("eager: no compiled region",),
+    # The other cp router aux families: lora cp 2 plain, right padded and cp padded, full cp 2, vs one process.
+    # PEFT's all-linear also adapts the fused experts of all but gpt_oss and qwen3_5_moe (lora+experts).
+    **{
+        (family, precision, True, "cp"): (f"{_MOE_CP_AUX_FAMILY}[{family}-{cases}]",) * 2
+        + ("eager: no compiled region",)
+        for family in CP_ROUTER_AUX_FAMILIES[1:]
+        for precision, cases in (
+            (
+                "lora" if family in ("gpt_oss", "qwen3_5_moe") else "lora+experts",
+                "lora-plain|lora-right_pad|lora-cp_pad",
+            ),
+            ("full", "full-plain"),
+        )
+    },
     ("qwen3_moe", "lora+experts", False, "ep_cp"): (
         _EP_CP + "[ep2_cp2|dp2_cp2-ep2_replicas|dp2_cp2-ep4]",
     )
@@ -1182,6 +1215,12 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    **{
+        (family, "lora+experts", aux, "pp"): (f"{_MOE_PP_FAMILY}[{case}-{family}]",) * 2
+        + ("eager: no compiled region",)
+        for family in _MOE_PP_FAMILIES
+        for aux, case in ((True, "1f1b_lora_coef1"), (False, "gpipe_lora_aux_off"))
+    },
     ("deepseek_v41", "lora", False, "pp"): (
         _DSV41_PP + "[pp2_gpipe|pp2_1f1b|pp4_gpipe_mb4|pp2_gpipe_mb4_gc|pp2_1f1b_gc]",
     )
@@ -1272,6 +1311,12 @@ _MOE_EVIDENCE = {
         + ("eager: no compiled region",)
         for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
     },
+    ("gpt_oss", "qlora", False, "ep"): (
+        "tests/test_ep_expert_lists_gloo.py::test_ep_gpt_oss_linear_lists_match_one_process"
+        " + 2x T4 gpt-oss-20b bnb-4bit ep2 vs one T4",
+    )
+    * 2
+    + ("eager: no compiled region",),
 }
 
 
@@ -1288,18 +1333,26 @@ _EP_BLOCKED_FAMILIES = {
     "jetmoe": "its experts forward takes (layer_input,), not (hidden_states, top_k_index, top_k_weights)",
     "longcat_flash": "zero / identity experts: the experts module has no integer num_experts",
 }
-# Families whose load_in_4bit layout expert parallel cannot shard, though their 16-bit layout shards.
-_EP_BLOCKED_4BIT_FAMILIES = {
-    "gpt_oss": (
-        "per-expert Linear lists (down_projs / gate_up_projs): one Linear4bit per expert, not a fused expert "
-        "stack (unsloth_zoo's GptOssExpertsBnb4bit, the load_in_4bit gpt-oss layout)"
-    ),
-}
+# load_in_4bit per-expert lists shard only with equal experts per rank; released checkpoint expert counts.
+_EP_EVEN_4BIT_FAMILIES = {"gpt_oss": (32, 128)}
 
 
-def _family_ep_blocker(family, load_in_4bit = False) -> str:
-    if load_in_4bit and family in _EP_BLOCKED_4BIT_FAMILIES:
-        return _EP_BLOCKED_4BIT_FAMILIES[family]
+def _family_ep_blocker(
+    family,
+    load_in_4bit = False,
+    ep = None,
+    experts = None,
+) -> str:
+    counts = _EP_EVEN_4BIT_FAMILIES.get(family) if load_in_4bit else None
+    if counts and isinstance(experts, int) and experts > 0:
+        counts = (experts,)  # the checkpoint's own count when the caller read its config
+    if counts and isinstance(ep, int) and ep > 1:
+        uneven = [E for E in counts if E % ep]
+        if uneven:
+            return (
+                f"per-expert Linear lists (load_in_4bit {family}) need the experts to split evenly over the ranks: "
+                f"{uneven[0]} experts over {ep}"
+            )
     return _EP_BLOCKED_FAMILIES.get(family, "")
 
 
@@ -1339,6 +1392,7 @@ def _moe_note(family, precision, aux, mode):
             "qwen4_exp",
             "deepseek_v41",
             "gpt_oss",
+            *_MOE_PP_FAMILIES,
         ):
             if not aux:
                 return (
@@ -1346,8 +1400,8 @@ def _moe_note(family, precision, aux, mode):
                     "covers this family under pipeline parallel yet"
                 )
             return (
-                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE and Qwen4Exp "
-                "only (refused at the split)"
+                "pipeline parallel carries the router auxiliary loss for Qwen3-MoE, Qwen3.5-MoE, Qwen4Exp, "
+                "Mixtral, OLMoE, Qwen2-MoE and Ernie 4.5 MoE only (refused at the split)"
             )
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
@@ -1392,8 +1446,9 @@ def _moe_cells():
                             match = {**match, "multimodal": (False,)}
                         note = compiled_note = ""
                         if mode in ("cp", "fsdp2_cp") and aux:
-                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one row.
-                            gc = (precision, mode) == _MOE_CP_AUX_GC
+                            # HF checkpointing did not run with the aux loss under cp; Unsloth's did for one
+                            # qwen3_moe row only (the other cp router aux families ran without checkpointing).
+                            gc = family == "qwen3_moe" and (precision, mode) == _MOE_CP_AUX_GC
                             match = {
                                 **match,
                                 "memory": ("none", "unsloth_offload") if gc else ("none",),
@@ -1878,25 +1933,32 @@ def _ep_blocker(
     model,
     ep,
     load_in_4bit = False,
+    experts = None,
 ) -> str:
     """Why apply_expert_parallel would refuse `model` at `ep` ranks, "" if it shards. Strings and
     structureless models fall back to _EP_BLOCKED_FAMILIES (and, for a load_in_4bit load,
-    _EP_BLOCKED_4BIT_FAMILIES); a loaded model is read by structure, its experts' num_experts included."""
+    _EP_EVEN_4BIT_FAMILIES); a loaded model is read by structure, its experts' num_experts included."""
     if not isinstance(ep, int) or ep <= 1 or model is None:
         return ""
     family = model if isinstance(model, str) else _model_traits(model)[0]
     if not callable(getattr(model, "named_modules", None)):
-        return _family_ep_blocker(family, load_in_4bit)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     try:
         from .models import ep_native, tp_native
+
         if ep_native.is_expert_parallel(model):
             return ""
+        from .models import ep_expert_lists
+
         problems = [
-            tp_native.expert_shard_problem(block, ep)
+            None
+            if ep_expert_lists.list_shard_problem(block, ep) is None
+            or ep_expert_lists.fused_list_problem(block, ep) is None
+            else tp_native.expert_shard_problem(block, ep)
             for block in tp_native.moe_blocks_with_experts(model)
         ]
     except Exception:
-        return _family_ep_blocker(family, load_in_4bit)
+        return _family_ep_blocker(family, load_in_4bit, ep, experts)
     if any(problem is None for problem in problems):
         return ""
     reasons = (

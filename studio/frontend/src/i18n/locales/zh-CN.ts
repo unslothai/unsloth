@@ -4968,6 +4968,7 @@ export const zhCN = {
       showPromptDescription: "查看发送给模型的确切指令。",
     },
     history: {
+      notSaved: "未保存到历史记录：浏览器存储空间已满。",
       title: "历史记录",
       search: "搜索历史记录",
       empty: "你的翻译会显示在这里。",

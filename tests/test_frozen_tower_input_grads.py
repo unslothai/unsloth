@@ -177,3 +177,13 @@ def test_compiled_hook_keeps_the_flag_for_a_tower_unfrozen_later():
     assert compiled(x).requires_grad  # traced while frozen: kept, so a later unfreeze still trains
     model.model.visual.blocks[0].mlp.up_proj.weight.requires_grad_(True)
     assert compiled(x).requires_grad
+
+
+def test_keep_frozen_towers_env_is_read_per_call(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "1")
+    model, _ = _model()
+    tower = [
+        getattr(h, "__qualname__", "")
+        for h in model.model.visual.patch_embed._forward_hooks.values()
+    ]
+    assert tower and all("_sub_model_hook" not in n for n in tower)
