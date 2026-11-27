@@ -1121,6 +1121,32 @@ def test_grpo_terminal_set_validates(monkeypatch):
         opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", coef = 0.0))
     with pytest.raises(ValueError, match = "top_p"):
         opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", top_p = 0.9, use_vllm = True))
+    for extra, match in (
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(presence_penalty = 0.5)),
+            "presence_penalty",
+        ),
+        (dict(generation_kwargs = {"frequency_penalty": 0.3}), "frequency_penalty"),
+        (dict(generation_kwargs = {"logit_bias": {9: 2.0}}), "logit_bias"),
+        (
+            dict(vllm_sampling_params = types.SimpleNamespace(allowed_token_ids = [9])),
+            "allowed_token_ids",
+        ),
+    ):
+        with pytest.raises(ValueError, match = match):
+            opd.grpo_setup_distillation(make("<|im_end|>,<|endoftext|>", use_vllm = True, **extra))
+    # Neutral values pass, and without the terminal set the penalties stay vLLM's business as before.
+    opd.grpo_setup_distillation(
+        make(
+            "<|im_end|>,<|endoftext|>",
+            use_vllm = True,
+            generation_kwargs = {"presence_penalty": 0.0, "logit_bias": {}},
+        )
+    )
+    plain = _grpo_trainer(
+        unsloth_distillation_coef = 1.0, use_vllm = True, generation_kwargs = {"presence_penalty": 0.5}
+    )
+    opd.grpo_setup_distillation(plain)
     off = _grpo_trainer(unsloth_distillation_coef = 1.0)
     opd.grpo_setup_distillation(off)
     assert off._unsloth_distillation_terminal_ids is None

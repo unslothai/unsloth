@@ -626,7 +626,38 @@ def grpo_setup_distillation(trainer, teacher_model = None):
         trainer._unsloth_distillation_terminal_ids = _resolve_terminal_ids(trainer, terminal)
         # The student's own mass on the other terminal tokens is rescored at args.temperature.
         _refuse_unreconstructable_sampler(trainer, rescoring = True)
+        _refuse_terminal_sampler_edits(trainer)
     return coef
+
+
+def _refuse_terminal_sampler_edits(trainer):
+    # vLLM edits that change the relative odds of the terminal tokens (by output history or by id) are not in the
+    # student rescoring, so log q(token) + log p(set) - log p(token) would not be the sampler's log q(set).
+    args = getattr(trainer, "args", None)
+    used = set()
+    for source in (
+        args,
+        getattr(args, "vllm_sampling_params", None),
+        getattr(args, "generation_kwargs", None),
+    ):
+        if source is None:
+            continue
+        read = (
+            source.get
+            if isinstance(source, dict)
+            else (lambda k, d = None, src = source: getattr(src, k, d))
+        )
+        for key in ("presence_penalty", "frequency_penalty"):
+            if float(read(key, 0.0) or 0.0) != 0.0:
+                used.add(key)
+        for key in ("logit_bias", "allowed_token_ids", "bad_words"):
+            if read(key, None):
+                used.add(key)
+    if used:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_terminal_tokens rescores the student's terminal mass without "
+            f"{', '.join(sorted(used))}, so it would not match the sampler. Leave those unset or drop the terminal set."
+        )
 
 
 def _resolve_terminal_ids(trainer, terminal):
