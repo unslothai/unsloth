@@ -199,6 +199,7 @@ test("the shared agent list keeps the nine agents in order", () => {
       "openclaw",
       "pi",
       "vibe",
+      "antigravity",
     ],
   );
   assert.equal(detailsFor("codex").name, "OpenAI Codex");

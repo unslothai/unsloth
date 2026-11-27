@@ -178,6 +178,7 @@ const DEFAULT_AGENTS = [
   "openclaw",
   "pi",
   "vibe",
+  "antigravity",
 ];
 const DEFAULT_AGENT = "claude";
 

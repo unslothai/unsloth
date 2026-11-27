@@ -30,15 +30,17 @@ def test_matches_unsloth_start_subcommands():
         "openclaw",
         "pi",
         "vibe",
+        "antigravity",
     )
 
 
-def test_detects_vscode_by_its_code_launcher():
+@pytest.mark.parametrize(("agent", "launcher"), [("vscode", "code"), ("antigravity", "agy")])
+def test_detects_agent_by_its_launcher(agent, launcher):
     with patch(
         "utils.coding_agents.shutil.which",
-        side_effect = lambda name: "/usr/local/bin/code" if name == "code" else None,
+        side_effect = lambda name: f"/usr/local/bin/{launcher}" if name == launcher else None,
     ):
-        assert detect_installed_coding_agents() == ["vscode"]
+        assert detect_installed_coding_agents() == [agent]
 
 
 def test_detects_only_agents_present_on_path():

@@ -535,6 +535,7 @@ _YOLO_COMMAND_FLAGS = {
     # Pi never prompts per tool call; its only approval gate is project trust, so -a (trust project resources) is the closest "do not ask me" equivalent.
     "pi": ["--approve"],
     "vibe": ["--auto-approve"],
+    "antigravity": ["--dangerously-skip-permissions"],
 }
 
 
@@ -4776,6 +4777,9 @@ def _augment_path_with_install_dirs() -> None:
         appdata = os.environ.get("APPDATA")
         if appdata:
             candidates.append(Path(appdata) / "npm")
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidates.append(Path(local) / "agy" / "bin")
     managed_node = _managed_node_tools()
     if managed_node is not None and not managed_node[2]:
         candidates.append(managed_node[0].parent)
@@ -5496,7 +5500,7 @@ def _run(
             cwd_env = cwd_env,
         )
         if _keep_auto_served():
-            typer.echo(f"Unsloth Studio is still running at {base}.")
+            typer.echo(f"Unsloth is still running at {base}.")
             typer.echo("Stop it with: unsloth studio stop")
         return
     _remember_start(base, entry)
@@ -5521,7 +5525,7 @@ def _run(
         # The server status below must not read as a successful agent session.
         typer.echo(f"The agent exited with code {code}.")
     if is_loopback_url(base):
-        typer.echo(f"Unsloth Studio is still running at {base}.")
+        typer.echo(f"Unsloth is still running at {base}.")
         typer.echo("Stop it with: unsloth studio stop")
     else:
         typer.echo(f"The remote Unsloth server is still running at {base}.")
@@ -5536,6 +5540,7 @@ _CONTINUE_ARGS = {
     "claude": ["--continue"],
     "opencode": ["--continue"],
     "vibe": ["--continue"],
+    "antigravity": ["--continue"],
     "codex": ["resume", "--last"],
     "hermes": ["--continue"],
     "pi": ["--continue"],
@@ -5543,7 +5548,7 @@ _CONTINUE_ARGS = {
     "openclaw": [],
     "dsh": [],
 }
-_OWN_HOME_AGENTS = ("claude", "opencode", "vibe")
+_OWN_HOME_AGENTS = ("claude", "opencode", "vibe", "antigravity")
 # api_key is cached per server; --yolo is never re-granted silently; --app never reaches _run.
 _NOT_REPLAYED = frozenset({"model", "api_key", "launch", "yolo", "app"})
 
@@ -8967,6 +8972,150 @@ def dsh(
             ),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+@start_app.command("antigravity", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def antigravity(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+):
+    """Start Google Antigravity CLI (agy) with the model served by Unsloth."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("antigravity", ctx.args)
+    from unsloth_cli.antigravity import antigravity_endpoint, session_settings
+
+    install_hint = (
+        "irm https://antigravity.google/cli/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    )
+    passthrough = list(ctx.args)
+    if "--" in passthrough:
+        passthrough.remove("--")
+    try:
+        user_settings, passthrough = session_settings(passthrough)
+    except ValueError as exc:
+        _fail(str(exc))
+    _require_agent_for_launch("agy", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    # A printed command must create a fresh listener when it is eventually run.
+    if not launch:
+        command = [
+            "unsloth",
+            "start",
+            "antigravity",
+            "--model",
+            model or entry["id"],
+            *_typed_options(ctx),
+        ]
+        if yolo:
+            command.append("--yolo")
+        _run(
+            base,
+            entry,
+            {"UNSLOTH_STUDIO_URL": base, "UNSLOTH_API_KEY": key},
+            [*command, *ctx.args],
+            launch = False,
+            install_hint = install_hint,
+        )
+        return
+
+    tools, images, thinking = _vscode_capabilities(base, key, entry)
+    window = entry.get("context_length") or entry.get("max_context_length")
+    overrides = server_options.request_body()
+    if window:
+        output = min(65536, max(1, int(window) // 4))
+        overrides["max_tokens"] = output
+    with antigravity_endpoint(base, key, entry["id"], overrides) as (url, token):
+        custom_model = {
+            "modelName": f"gemini-api://{urlparse(url).netloc}/models/unsloth",
+            "label": entry["id"],
+            "toolFormatterType": "TOOL_FORMATTER_TYPE_NONE",
+            "modelFeatures": {
+                "supportsImages": images,
+                "supportsVideo": False,
+                "supportsAudio": False,
+                "supportsPdf": False,
+                "supportsToolCalls": tools,
+                "supportsThinking": thinking,
+            },
+        }
+        if window:
+            # agy 1.5 reserves 65,536 output tokens for every custom model. Its
+            # settings expose only the total. Give its planner the real input
+            # budget while the adapter enforces the real output allowance.
+            custom_model["maxTokens"] = int(window) - output + 65536
+        settings = {
+            **user_settings,
+            "modelProvider": "gemini",
+            "customModelsConfig": {"customModels": {"unsloth": custom_model}},
+        }
+        # User settings may contain private values or exceed the Windows
+        # command-line limit. Pass one session file to agy on every platform.
+        with _temporary_agent_config("agy-") as directory:
+            path = directory / "settings.json"
+            _write_private_json(path, settings)
+            command = [
+                "agy",
+                "--settings",
+                _agent_config_path(path, ["agy"]),
+                "--model",
+                "unsloth",
+                *_yolo_command_flags("antigravity", yolo),
+                *passthrough,
+            ]
+            _run(
+                base,
+                entry,
+                {"GOOGLE_GEMINI_BASE_URL": url, "GEMINI_API_KEY": token},
+                command,
+                launch = True,
+                install_hint = install_hint,
+                unset_env = ("UNSLOTH_API_KEY",),
+            )
 
 
 @start_app.command("vibe", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)

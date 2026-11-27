@@ -6332,7 +6332,7 @@ def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeyp
 
     assert result.exit_code == 0, result.output
     assert f"Unsloth ready at {BASE} · model {MODEL['id']}\n" in result.output
-    assert f"Unsloth Studio is still running at {BASE}." in result.output
+    assert f"Unsloth is still running at {BASE}." in result.output
     assert "Stop it with: unsloth studio stop\n" in result.output
 
 
@@ -6355,7 +6355,7 @@ def test_nonzero_agent_exit_notes_code_before_stop_hint(fake_studio, monkeypatch
 
     assert result.exit_code == 3
     assert "The agent exited with code 3." in result.output
-    assert f"Unsloth Studio is still running at {BASE}." in result.output
+    assert f"Unsloth is still running at {BASE}." in result.output
 
 
 def test_redacted_log_tail_strips_minted_keys(tmp_path):
@@ -9061,6 +9061,62 @@ def test_vibe_env_compaction_threshold_fits_the_window(window):
     low = max(min(50_000, window // 2), 10_000)
     high = window - min(24_000, math.ceil(window / 4))
     assert low <= models[0]["auto_compact_threshold"] <= high
+
+
+def test_antigravity_launch_routes_selected_model_without_editing_user_settings(
+    fake_studio, monkeypatch
+):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/agy")
+    settings = {}
+    write = start._write_private_json
+
+    def record(path, data):
+        if path.name == "settings.json":
+            settings.update(data)
+        write(path, data)
+
+    monkeypatch.setattr(start, "_write_private_json", record)
+    captured = _capture_launch(
+        monkeypatch, ["antigravity", "--yolo", "--continue", "--", "-p", "hello"]
+    )
+    command, env = captured["command"], captured["env"]
+    assert command[0] == "/usr/local/bin/agy"
+    assert command[-6:] == [
+        "--model",
+        "unsloth",
+        "--dangerously-skip-permissions",
+        "--continue",
+        "-p",
+        "hello",
+    ]
+    assert not Path(command[command.index("--settings") + 1]).exists()
+    assert settings["modelProvider"] == "gemini"
+    custom = settings["customModelsConfig"]["customModels"]["unsloth"]
+    assert custom["label"] == MODEL["id"]
+    assert custom["maxTokens"] - 65536 == MODEL["context_length"] * 3 // 4
+    assert env["GOOGLE_GEMINI_BASE_URL"].startswith("http://127.0.0.1:")
+    assert env["GEMINI_API_KEY"] and env["GEMINI_API_KEY"] != "sk-unsloth-feedfacefeedface"
+    assert "UNSLOTH_API_KEY" not in env
+
+
+def test_antigravity_no_launch_prints_replayable_launcher_command(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app, ["antigravity", "--no-launch", "--temperature", "0.2", "--", "-p", "hello"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == [
+        "unsloth",
+        "start",
+        "antigravity",
+        "--model",
+        MODEL["id"],
+        "--temperature",
+        "0.2",
+        "--",
+        "-p",
+        "hello",
+    ]
+    assert "GOOGLE_GEMINI_BASE_URL" not in result.output
 
 
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):

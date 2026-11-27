@@ -86,6 +86,12 @@ export const SUPPORTED_AGENTS: AgentDetails[] = [
     logo: "mistral",
     compact: true,
   },
+  {
+    id: "antigravity",
+    name: "Google Antigravity",
+    docsUrl: "https://antigravity.google/docs/getting-started?tab=cli",
+    logo: "google",
+  },
 ];
 
 // Most developers have `code` on PATH, and VS Code is not a terminal agent: offered, never auto-picked.
