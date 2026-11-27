@@ -1015,6 +1015,7 @@ export const th = {
     error: "ข้อผิดพลาด",
     export: "ส่งออก",
     help: "ความช่วยเหลือ",
+    hide: "ซ่อน",
     todayAt: "วันนี้ {time}",
     yesterdayAt: "เมื่อวาน {time}",
     loading: "กำลังโหลด...",

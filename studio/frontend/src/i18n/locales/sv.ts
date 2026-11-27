@@ -1018,6 +1018,7 @@ export const sv = {
     error: "Fel",
     export: "Exportera",
     help: "Hjälp",
+    hide: "Dölj",
     todayAt: "I dag, {time}",
     yesterdayAt: "I går, {time}",
     loading: "Läser in …",

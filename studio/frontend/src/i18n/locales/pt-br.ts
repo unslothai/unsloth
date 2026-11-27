@@ -967,6 +967,7 @@ export const ptBR = {
     error: "Erro",
     export: "Exportar",
     help: "Ajuda",
+    hide: "Ocultar",
     todayAt: "Hoje, {time}",
     yesterdayAt: "Ontem, {time}",
     loading: "Carregando...",

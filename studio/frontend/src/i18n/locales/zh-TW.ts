@@ -1012,6 +1012,7 @@ export const zhTW = {
     error: "錯誤",
     export: "匯出",
     help: "說明",
+    hide: "隱藏",
     todayAt: "今天 {time}",
     yesterdayAt: "昨天 {time}",
     loading: "載入中...",

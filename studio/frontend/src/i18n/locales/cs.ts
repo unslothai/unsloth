@@ -1067,6 +1067,7 @@ export const cs = {
     error: "Chyba",
     export: "Exportovat",
     help: "Nápověda",
+    hide: "Skrýt",
     todayAt: "Dnes, {time}",
     yesterdayAt: "Včera, {time}",
     loading: "Načítání...",

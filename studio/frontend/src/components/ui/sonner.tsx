@@ -9,6 +9,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { subscribeLocale, translate } from "@/i18n";
 import { createLoadingToastIcon } from "@/lib/toast";
 import { cornerInsetScope } from "@/lib/toast-offset";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
@@ -67,13 +68,45 @@ function markMultilineToasts(scope: HTMLElement): () => void {
   };
 }
 
+// On a toast with its own Cancel, the X only hides the toast while the work goes on, so it says so.
+function labelHideButtons(scope: HTMLElement): () => void {
+  const label = () => {
+    const hideLabel = translate("common.hide");
+    for (const toast of scope.querySelectorAll("[data-sonner-toast]")) {
+      const close = toast.querySelector("[data-close-button]");
+      if (!close) continue;
+      if (toast.querySelector("[data-cancel]")) {
+        if (!close.hasAttribute("data-hide-label")) {
+          close.setAttribute("data-hide-label", close.getAttribute("aria-label") ?? "");
+        }
+        close.setAttribute("aria-label", hideLabel);
+        close.setAttribute("title", hideLabel);
+      } else if (close.hasAttribute("data-hide-label")) {
+        close.setAttribute("aria-label", close.getAttribute("data-hide-label") ?? "");
+        close.removeAttribute("data-hide-label");
+        close.removeAttribute("title");
+      }
+    }
+  };
+  label();
+  const changed = new MutationObserver(label);
+  changed.observe(scope, { childList: true, subtree: true });
+  const unsubscribe = subscribeLocale(label);
+  return () => {
+    changed.disconnect();
+    unsubscribe();
+  };
+}
+
 function toasterScope(element: HTMLDivElement | null) {
   if (!element) return undefined;
   const releaseInsets = cornerInsetScope(element);
   const releaseLines = markMultilineToasts(element);
+  const releaseHideLabels = labelHideButtons(element);
   return () => {
     releaseInsets?.();
     releaseLines();
+    releaseHideLabels();
   };
 }
 
@@ -128,7 +161,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
           {
             "--normal-bg": "var(--popover)",
             "--normal-text": "var(--popover-foreground)",
-            "--normal-border": "transparent",
+            // A hairline edge so a light toast does not blend into a light page.
+            "--normal-border":
+              "color-mix(in srgb, var(--foreground) 10%, transparent)",
             // Just above the compact-box tier; at --radius-xl a two-line toast reads as a capsule.
             "--border-radius": "calc(var(--radius-lg) + 2px)",
             // Sonner defaults the close button to the outer edge; the horizontal override stays
