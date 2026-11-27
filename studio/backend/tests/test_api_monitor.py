@@ -1630,6 +1630,52 @@ def test_progress_updates_advance_updated_at_on_a_frozen_clock(monkeypatch):
     assert seen[0] < seen[1] < seen[2]
 
 
+def test_api_monitor_can_stop_and_resume_recording_without_interrupting_inflight():
+    """A switch stops new recordings while already-started requests finish normally."""
+    monitor = ApiMonitor()
+    started = _start(monitor, subject = "alice")
+    monitor.set_enabled(False)
+    assert monitor.enabled is False
+    assert _start(monitor, subject = "alice") == ""
+    assert monitor.record_lifecycle(event = "load", model = "m") == ""
+    monitor.finish(started)
+    assert monitor.get(started, subject = "alice")["status"] == "completed"
+    monitor.set_enabled(True)
+    assert monitor.enabled is True
+    assert _start(monitor, subject = "alice")
+
+
+def test_disabling_monitor_during_new_entry_prevents_recording(monkeypatch):
+    """A request already constructing an entry must recheck admission under the lock."""
+    import threading
+    from core.inference import api_monitor as module
+
+    entered = threading.Event()
+    resume = threading.Event()
+    original = module.ApiMonitorEntry
+
+    def delayed_entry(**kwargs):
+        """Pause a real entry construction until recording is disabled."""
+        entered.set()
+        assert resume.wait(5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(module, "ApiMonitorEntry", delayed_entry)
+    monitor = ApiMonitor()
+    result = []
+    worker = threading.Thread(target = lambda: result.append(_start(monitor)))
+    worker.start()
+    try:
+        assert entered.wait(5)
+        monitor.set_enabled(False)
+    finally:
+        resume.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert result == [""]
+    assert monitor.snapshot() == []
+
+
 def test_mistral_reasoning_stream_reaches_the_client_and_the_monitor(monkeypatch):
     import asyncio
     from types import SimpleNamespace

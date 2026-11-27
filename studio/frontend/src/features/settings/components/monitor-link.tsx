@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth";
 // Direct path, not the barrel: the barrel re-exports the page, defeating its lazy route.
 import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
 import { getApiMonitor } from "@/features/chat/api/chat-api";
@@ -14,6 +15,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactElement, useEffect, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import {
+  loadApiMonitorSettings,
+  updateApiMonitorSettings,
+} from "../api/api-monitor";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -23,14 +28,30 @@ export function MonitorLink({
   hideHeading?: boolean;
 } = {}): ReactElement {
   const navigate = useNavigate();
+  const isOwner = useIsAccountOwner();
   const locale = useLocale();
   const t = useT();
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
+  const [recording, setRecording] = useState<Awaited<
+    ReturnType<typeof loadApiMonitorSettings>
+  > | null>(null);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const autoOpen = useApiMonitorOverlayStore((s) => s.autoOpen);
   const setAutoOpen = useApiMonitorOverlayStore((s) => s.setAutoOpen);
 
   useEffect(() => {
     let cancelled = false;
+    void loadApiMonitorSettings()
+      .then((next) => {
+        if (!cancelled) setRecording(next);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setRecordingError(
+            t("settings.resources.liveMonitor.recordingLoadError"),
+          );
+      });
     void getApiMonitor()
       .then((next) => {
         if (!cancelled) setData(next);
@@ -39,7 +60,20 @@ export function MonitorLink({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
+
+  /** Apply changes only after the server confirms that they were saved. */
+  const saveRecording = async (enabled: boolean) => {
+    setSaving(true);
+    setRecordingError(null);
+    try {
+      setRecording(await updateApiMonitorSettings(enabled));
+    } catch {
+      setRecordingError(t("settings.resources.liveMonitor.recordingSaveError"));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const active = data?.active_requests ?? 0;
   const recent = data?.entries.length ?? 0;
@@ -97,6 +131,30 @@ export function MonitorLink({
             className="ml-auto size-4 shrink-0 text-muted-foreground"
           />
         </button>
+
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.recording")}
+          description={t("settings.resources.liveMonitor.recordingDescription")}
+        >
+          <Switch
+            checked={recording?.effective_enabled ?? false}
+            disabled={
+              !isOwner || !recording || saving || recording.disabled_by_env
+            }
+            onCheckedChange={(enabled) => void saveRecording(enabled)}
+            aria-label={t("settings.resources.liveMonitor.recording")}
+          />
+        </SettingsRow>
+        {recording?.disabled_by_env ? (
+          <p className="text-xs text-muted-foreground">
+            {t("settings.resources.liveMonitor.recordingDisabledByEnv")}
+          </p>
+        ) : null}
+        {recordingError ? (
+          <p role="alert" className="text-xs text-destructive">
+            {recordingError}
+          </p>
+        ) : null}
 
         {/* Where the panel's own "stop opening this" gets turned back on. */}
         <SettingsRow
