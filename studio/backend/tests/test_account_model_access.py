@@ -264,6 +264,24 @@ def test_a_blank_managed_token_is_anonymous_not_the_installations(monkeypatch):
     assert access.account_hf_token("   ") == "   "
 
 
+def test_managed_account_uses_its_saved_hf_token_when_request_omits_one(monkeypatch):
+    from storage import credential_secrets
+    from utils.account_context import current_account_id
+
+    saved = {ALICE.account_id: " alice-saved ", BOB.account_id: None}
+    monkeypatch.setattr(
+        credential_secrets,
+        "get_hf_token",
+        lambda: saved[current_account_id()],
+    )
+
+    assert run_as(ALICE, access.account_hf_token, None) == "alice-saved"
+    assert run_as(ALICE, access.account_hf_token, "   ") == "alice-saved"
+    assert run_as(BOB, access.account_hf_token, None) is False
+    # An explicit per-request token still takes precedence over the saved account token.
+    assert run_as(ALICE, access.account_hf_token, "request-token") == "request-token"
+
+
 def test_the_shared_chat_template_read_needs_model_access(monkeypatch):
     from picker.routes import templates
 
