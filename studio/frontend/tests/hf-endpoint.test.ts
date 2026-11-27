@@ -256,6 +256,31 @@ test("hub page links open ModelScope directly, aliased ids included", async () =
     hubWebUrl(`${adapter}/unsloth/Qwen3-8B?tab=files`),
     "https://www.modelscope.cn/models/unsloth/Qwen3-8B?tab=files",
   );
+  setHubPageLinks(null, {
+    base: "https://www.modelscope.cn",
+    aliases: {
+      model: { "zai-org/cogvlm-chat-hf": "zai-org/cogvlm-chat-hf", "zai-org/x": "AI-ModelScope/x" },
+      dataset: {},
+    },
+    orgs: { "zai-org": "ZhipuAI" },
+  });
+  assert.equal(
+    hubWebUrl(`${adapter}/ZAI-ORG/GLM-5.3/resolve/main/README.md`),
+    "https://www.modelscope.cn/models/ZhipuAI/GLM-5.3/resolve/master/README.md",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/zai-org/cogvlm-chat-hf`),
+    "https://www.modelscope.cn/models/zai-org/cogvlm-chat-hf",
+  );
+  assert.equal(hubWebUrl(`${adapter}/zai-org/x`), "https://www.modelscope.cn/models/AI-ModelScope/x");
+  assert.equal(
+    hubWebUrl(`${adapter}/constructor/chinese-roberta-wwm-ext-large`),
+    "https://www.modelscope.cn/models/constructor/chinese-roberta-wwm-ext-large",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/datasets/zai-org/d`),
+    "https://www.modelscope.cn/datasets/zai-org/d",
+  );
   // A pinned revision needs the backend's commit mapping, so it keeps the mount.
   const pinned = `${adapter}/unsloth/Qwen3-8B/resolve/${"a".repeat(40)}/LICENSE`;
   assert.equal(hubWebUrl(pinned), pinned);
