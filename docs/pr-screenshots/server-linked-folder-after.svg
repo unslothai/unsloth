@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-labelledby="title desc">
+  <title id="title">After: linked folders can browse the Studio server</title>
+  <desc id="desc">A project source folders panel with Add local and Browse server actions, plus a server folder browser showing a selected folder.</desc>
+  <rect width="960" height="560" fill="#f5f7fb"/>
+  <rect x="74" y="38" width="812" height="484" rx="20" fill="#ffffff" stroke="#d7dce5"/>
+  <text x="112" y="86" font-family="Inter,Arial,sans-serif" font-size="22" font-weight="700" fill="#182230">Source folders</text>
+  <text x="112" y="116" font-family="Inter,Arial,sans-serif" font-size="14" fill="#667085">Choose a folder on this server or link one from Desktop.</text>
+  <rect x="112" y="148" width="312" height="116" rx="12" fill="#fbfcfe" stroke="#d7dce5"/>
+  <text x="144" y="190" font-family="Inter,Arial,sans-serif" font-size="15" fill="#667085">Source folders</text>
+  <text x="144" y="222" font-family="Inter,Arial,sans-serif" font-size="14" fill="#98a2b3">No source folders.</text>
+  <rect x="112" y="288" width="142" height="44" rx="10" fill="#ffffff" stroke="#c8ced8"/>
+  <text x="134" y="316" font-family="Inter,Arial,sans-serif" font-size="13" fill="#344054">＋ Add local</text>
+  <rect x="264" y="288" width="160" height="44" rx="10" fill="#ffffff" stroke="#c8ced8"/>
+  <text x="281" y="316" font-family="Inter,Arial,sans-serif" font-size="13" fill="#344054">＋ Browse server</text>
+  <rect x="470" y="90" width="368" height="382" rx="16" fill="#ffffff" stroke="#98a2b3"/>
+  <text x="502" y="132" font-family="Inter,Arial,sans-serif" font-size="18" font-weight="700" fill="#182230">Choose a server folder</text>
+  <text x="502" y="158" font-family="Inter,Arial,sans-serif" font-size="12" fill="#667085">/workspace/projects</text>
+  <line x1="496" y1="178" x2="812" y2="178" stroke="#e4e7ec"/>
+  <text x="514" y="212" font-family="Inter,Arial,sans-serif" font-size="14" fill="#344054">⌃  ..</text>
+  <text x="514" y="250" font-family="Inter,Arial,sans-serif" font-size="14" fill="#344054">▰  datasets</text>
+  <rect x="500" y="266" width="316" height="42" rx="8" fill="#eef4ff"/>
+  <text x="514" y="293" font-family="Inter,Arial,sans-serif" font-size="14" fill="#155eef">▰  project-docs</text>
+  <line x1="496" y1="330" x2="812" y2="330" stroke="#e4e7ec"/>
+  <rect x="638" y="356" width="146" height="42" rx="10" fill="#155eef"/>
+  <text x="656" y="383" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="700" fill="#ffffff">Link server folder</text>
+</svg>
