@@ -5897,6 +5897,7 @@ export const en = {
     mustDiffer: "New password must be different from your current password.",
     pleaseWait: "Please wait...",
     continueAsOwner: "Continue as owner",
+    continueAsProxyUser: "Continue as {name}",
     signInWithUsername: "Sign in with your username and password.",
     bootstrapping: "Auth is still bootstrapping the default admin account.",
     signInToChange:

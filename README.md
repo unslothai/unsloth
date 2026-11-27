@@ -229,6 +229,8 @@ setx UNSLOTH_STUDIO_PROXY_HOSTS studio.example.com              # Windows
 ```
 Forward the allowed hostname in `Host` or `X-Forwarded-Host`. In cloudflared, leave the HTTP Host Header override unset. Sign in with the password under `Settings > Remote access > Remote password`.
 
+If that proxy already signs people in (Authelia, Authentik, oauth2-proxy and other forward-auth setups), Studio can take the user name it sends. Name the header with `UNSLOTH_STUDIO_TRUSTED_USER_HEADER` (for example `Remote-User`). The login page then offers "Continue as <name>" for the matching Studio account. The value must be an existing, active Studio username (or `unsloth` for the owner); accounts are never created from it. Studio reads the header only on requests that come through an allowlisted proxy on the same machine. To keep other local programs from setting it, also set `UNSLOTH_STUDIO_TRUSTED_PROXY_SECRET` and have the proxy send that value in `X-Unsloth-Proxy-Secret`. The proxy must replace any user header the browser sends.
+
 For HTTPS with your own certificate, set both variables before `unsloth studio` (Docker or systemd). Either `--ssl-certfile` or `--ssl-keyfile` overrides both.
 ```bash
 UNSLOTH_STUDIO_SSL_CERTFILE=/path/to/full-chain.pem \

@@ -6266,6 +6266,7 @@ export const cs = {
     mustDiffer: "Nové heslo se musí lišit od aktuálního hesla.",
     pleaseWait: "Čekejte prosím...",
     continueAsOwner: "Pokračovat jako vlastník",
+    continueAsProxyUser: "Pokračovat jako {name}",
     signInWithUsername: "Přihlaste se uživatelským jménem a heslem.",
     bootstrapping: "Ověřování stále vytváří výchozí účet správce.",
     signInToChange:

@@ -5926,6 +5926,7 @@ export const fr = {
     mustDiffer: "Le nouveau mot de passe doit être différent de votre mot de passe actuel.",
     pleaseWait: "Veuillez patienter...",
     continueAsOwner: "Continuer en tant que propriétaire",
+    continueAsProxyUser: "Continuer en tant que {name}",
     signInWithUsername: "Connectez-vous avec votre nom d'utilisateur et votre mot de passe.",
     bootstrapping: "L'authentification initialise encore le compte administrateur par défaut.",
     signInToChange:

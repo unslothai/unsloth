@@ -6,7 +6,15 @@ import { apiUrl, isTauri } from "@/lib/api-base";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
-import { fetchAuthStatus, loginFromForm, loginWithPassword, setLoginMode, type TokenResponse } from "../login-client";
+import {
+  fetchAuthStatus,
+  fetchProxySession,
+  loginFromForm,
+  loginWithPassword,
+  loginWithProxySession,
+  setLoginMode,
+  type TokenResponse,
+} from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
@@ -71,6 +79,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [requiresPasswordChange, setRequiresPasswordChange] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when a trusted forward-auth proxy (UNSLOTH_STUDIO_TRUSTED_USER_HEADER) names an account.
+  const [proxyUsername, setProxyUsername] = useState<string | null>(null);
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
@@ -135,6 +145,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               if (!canceled) setStatusLoading(false);
               navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
               return;
+            }
+            // Offered, not automatic: signing out must leave the login page in place.
+            if (!isTauri) {
+              const proxied = await fetchProxySession();
+              if (!canceled) setProxyUsername(proxied);
             }
           }
         }
@@ -342,6 +357,30 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     }
   }
 
+  async function handleContinueWithProxy() {
+    setError(null);
+    setLoading(true);
+    try {
+      const token = await loginWithProxySession();
+      const signedInUsername = sessionAccount(token.access_token)?.username ?? proxyUsername ?? "";
+      const replaced = await transitionBrowserAccount(
+        { username: signedInUsername, accountId: token.account_id },
+        q ? `/chat?q=${encodeURIComponent(q)}` : "/chat",
+        () => {
+          setMustChangePassword(false);
+          storeAuthTokens(token.access_token, token.refresh_token);
+        },
+      );
+      if (replaced) return;
+      navigate({ to: getPostAuthRoute(), search: { q }, replace: Boolean(q) });
+    } catch (err: unknown) {
+      setProxyUsername(null);
+      setError(err instanceof Error ? err.message : t("auth.failed"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleContinueAsOwner() {
     setError(null);
     setLoading(true);
@@ -377,6 +416,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             t("auth.shutdownCountdown", { time: formatCountdown(deadlineAt - nowMs) })
           )}
         </p>
+      )}
+      {isLoginMode && proxyUsername && (
+        <Button
+          type="button"
+          variant="outline"
+          className="mx-auto flex w-fit"
+          disabled={loading || statusLoading}
+          onClick={() => void handleContinueWithProxy()}
+        >
+          {t("auth.continueAsProxyUser", { name: proxyUsername })}
+        </Button>
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
         {passwordManagerUsername && (

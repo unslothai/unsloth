@@ -33,6 +33,19 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
 
 
+class ProxySessionResponse(BaseModel):
+    """Who the trusted reverse proxy says is signing in, when proxy sign-in is available."""
+
+    username: Optional[str] = Field(
+        None,
+        description = (
+            "The account the proxy's user header names, when UNSLOTH_STUDIO_TRUSTED_USER_HEADER "
+            "is set, the request came through an allowlisted proxy and the account can sign in. "
+            "Null otherwise."
+        ),
+    )
+
+
 class AuthStatusResponse(BaseModel):
     """Indicate whether the seeded admin auth flow is ready."""
 

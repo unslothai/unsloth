@@ -6217,6 +6217,7 @@ export const fa = {
     mustDiffer: "گذرواژهٔ جدید باید با گذرواژهٔ فعلی شما متفاوت باشد.",
     pleaseWait: "لطفاً صبر کنید...",
     continueAsOwner: "ادامه به‌عنوان مالک",
+    continueAsProxyUser: "ادامه به عنوان {name}",
     signInWithUsername: "با نام کاربری و گذرواژهٔ خود وارد شوید.",
     bootstrapping:
       "احراز هویت هنوز در حال راه‌اندازی اولیهٔ حساب مدیر پیش‌فرض است.",

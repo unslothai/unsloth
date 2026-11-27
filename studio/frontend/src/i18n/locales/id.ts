@@ -6245,6 +6245,7 @@ export const id = {
     mustDiffer: "Kata sandi baru harus berbeda dari kata sandi saat ini.",
     pleaseWait: "Harap tunggu...",
     continueAsOwner: "Lanjutkan sebagai pemilik",
+    continueAsProxyUser: "Lanjutkan sebagai {name}",
     signInWithUsername: "Masuk dengan nama pengguna dan kata sandi Anda.",
     bootstrapping: "Autentikasi masih menyiapkan akun admin default.",
     signInToChange:

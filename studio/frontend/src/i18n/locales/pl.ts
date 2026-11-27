@@ -6295,6 +6295,7 @@ export const pl = {
     mustDiffer: "Nowe hasło musi być inne niż bieżące.",
     pleaseWait: "Proszę czekać...",
     continueAsOwner: "Kontynuuj jako właściciel",
+    continueAsProxyUser: "Kontynuuj jako {name}",
     signInWithUsername: "Zaloguj się za pomocą nazwy użytkownika i hasła.",
     bootstrapping:
       "Uwierzytelnianie nadal tworzy domyślne konto administratora.",

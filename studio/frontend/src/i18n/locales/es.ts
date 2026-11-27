@@ -5915,6 +5915,7 @@ export const es = {
     mustDiffer: "La contraseña nueva debe ser distinta de la actual.",
     pleaseWait: "Espera...",
     continueAsOwner: "Continuar como propietario",
+    continueAsProxyUser: "Continuar como {name}",
     signInWithUsername: "Inicia sesión con tu nombre de usuario y contraseña.",
     bootstrapping: "La autenticación aún está creando la cuenta de administrador predeterminada.",
     signInToChange:

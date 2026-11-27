@@ -6239,6 +6239,7 @@ export const tr = {
     mustDiffer: "Yeni parola geçerli parolanızdan farklı olmalıdır.",
     pleaseWait: "Lütfen bekleyin...",
     continueAsOwner: "Sahip olarak devam et",
+    continueAsProxyUser: "{name} olarak devam et",
     signInWithUsername: "Kullanıcı adınız ve parolanızla oturum açın.",
     bootstrapping:
       "Kimlik doğrulama, varsayılan yönetici hesabını hâlâ hazırlıyor.",

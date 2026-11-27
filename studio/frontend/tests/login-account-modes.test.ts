@@ -459,6 +459,8 @@ test("cleanup retries reuse an issued setup session without consuming the code a
         requires_password_change: false,
         login_mode: "multi",
       });
+    if (String(path).endsWith("/proxy-session"))
+      return Response.json({ username: null });
     logins++;
     return Response.json({ ...token, must_change_password: true });
   };
@@ -790,4 +792,53 @@ test("a desktop password sign-in clears the explicit sign-out", async (t) => {
   await tick();
   await tick();
   assert.deepEqual(desktop.calls, ["clear"]);
+});
+
+test("a trusted proxy session is offered as Continue as <name> and signs in through the transition", async (t) => {
+  environment(t);
+  const posts: string[] = [];
+  globalThis.fetch = async (path, init) => {
+    const url = String(path);
+    if (url.endsWith("/status"))
+      return Response.json({ initialized: true, requires_password_change: false, login_mode: "multi" });
+    if (url.endsWith("/proxy-session")) return Response.json({ username: "alice" });
+    posts.push(`${init?.method ?? "GET"} ${url}`);
+    return Response.json(token);
+  };
+  const session = { access: null as string | null, change: false };
+  const form = mountForm(client(), session);
+  const tree = await form.initialize();
+  const proxy = elements(tree).find(
+    (element) => element.type === "Button" && textContent(element).trim() === "Continue as alice",
+  );
+  assert.ok(proxy);
+  (proxy.props.onClick as () => void)();
+  await tick();
+  await tick();
+  assert.deepEqual(posts, ["POST /api/auth/proxy-login"]);
+  assert.deepEqual(form.transitions, ["alice@a1:/chat"]);
+  assert.equal(session.access, "access");
+  assert.equal(session.change, false);
+  assert.deepEqual(form.routes, ["/chat"]);
+});
+
+test("no proxy session, or the desktop app, shows no proxy shortcut", async (t) => {
+  environment(t);
+  let probes = 0;
+  globalThis.fetch = async (path) => {
+    if (String(path).endsWith("/proxy-session")) {
+      probes++;
+      return Response.json({ username: null });
+    }
+    return Response.json({ initialized: true, requires_password_change: false, login_mode: "single" });
+  };
+  const form = mountForm(client(), { access: null, change: false });
+  assert.doesNotMatch(textContent(await form.initialize()), /Continue as alice/);
+  assert.equal(probes, 1);
+  const desktop = mountForm(client(), { access: null, change: false }, false, false, {
+    continued: false,
+    calls: [],
+  });
+  await desktop.initialize();
+  assert.equal(probes, 1);
 });

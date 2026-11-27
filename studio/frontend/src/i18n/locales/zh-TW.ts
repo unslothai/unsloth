@@ -5929,6 +5929,7 @@ export const zhTW = {
     mustDiffer: "新密碼必須與目前的密碼不同。",
     pleaseWait: "請稍候…",
     continueAsOwner: "以擁有者身分繼續",
+    continueAsProxyUser: "以 {name} 身分繼續",
     signInWithUsername: "使用您的使用者名稱和密碼登入。",
     bootstrapping: "驗證系統仍在初始化預設的管理員帳號。",
     signInToChange: "請先使用預設的登入資訊登入一次，以變更密碼。",

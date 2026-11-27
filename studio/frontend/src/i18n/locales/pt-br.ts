@@ -5871,6 +5871,7 @@ export const ptBR = {
     mustDiffer: "A nova senha deve ser diferente da senha atual.",
     pleaseWait: "Aguarde...",
     continueAsOwner: "Continuar como proprietário",
+    continueAsProxyUser: "Continuar como {name}",
     signInWithUsername: "Entre com seu nome de usuário e senha.",
     bootstrapping: "A autenticação ainda está inicializando a conta de administrador padrão.",
     signInToChange:
