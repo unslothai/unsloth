@@ -6763,7 +6763,13 @@ def _unsloth_save_lora_gguf(
         )
         if inkling2:
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
-            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, converter_input)
+            converted = ()
+            if converter_input != lora_dir or getattr(model, "_unsloth_residual_save", False):
+                from .models._utils import _residual_lora_rows
+                converted = {n for _, _, n in _residual_lora_rows(model, {"default"})}
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(
+                model, converter_input, converted = converted
+            )
         cmd = [
             sys.executable,
             converter,

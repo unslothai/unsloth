@@ -182,7 +182,7 @@ def test_inkling2_adapter_folds_the_scale_itself(tmp_path, monkeypatch):
     monkeypatch.setattr(
         save_mod,
         "inkling2_lora_gguf_adapter",
-        lambda model, folder: shutil.copytree(folder, copy_dir),
+        lambda model, folder, **kwargs: shutil.copytree(folder, copy_dir),
     )
     out, converter_input = _export(model, tmp_path, monkeypatch)
     assert _config(converter_input)["use_rslora"]
@@ -223,6 +223,23 @@ def test_lora_ga_converted_save_keeps_its_scale(tmp_path, monkeypatch):
         tmp_path, init_lora_weights = False, snapshot = "lora_ga", set_scale = 2.0
     )
     trained = copy.deepcopy(model).merge_and_unload().state_dict()
+    _, converter_input = _export(model, tmp_path, monkeypatch)
+    config = _config(converter_input)
+    weights = load_file(f"{converter_input}/adapter_model.safetensors")
+    for target in TARGETS:
+        key = f"model.layers.0.self_attn.{target}"
+        A = weights[f"base_model.model.{key}.lora_A.weight"]
+        B = weights[f"base_model.model.{key}.lora_B.weight"]
+        applied = original[f"{key}.weight"] + config["lora_alpha"] / A.shape[0] * (B @ A)
+        torch.testing.assert_close(applied, trained[f"{key}.weight"], atol = 1e-5, rtol = 1e-4)
+
+
+@pytest.mark.parametrize("init", ["pissa", "olora"])
+def test_inkling2_keeps_the_configured_scale_on_converted_rows(tmp_path, monkeypatch, init):
+    # Inkling 2's own fold reads the live scale; rows converted to the original base carry it already.
+    model, original = _trained_model(tmp_path, init_lora_weights = init, set_scale = 2.0)
+    trained = copy.deepcopy(model).merge_and_unload().state_dict()
+    monkeypatch.setattr(save_mod, "is_inkling2_config", lambda config: True)
     _, converter_input = _export(model, tmp_path, monkeypatch)
     config = _config(converter_input)
     weights = load_file(f"{converter_input}/adapter_model.safetensors")

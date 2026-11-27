@@ -927,7 +927,11 @@ def _expert_lora_b_layout(lora_config, parameter):
     return layout
 
 
-def inkling2_lora_gguf_adapter(model, adapter_dir):
+def inkling2_lora_gguf_adapter(
+    model,
+    adapter_dir,
+    converted = (),
+):
     """Copy of the adapter saved in ``adapter_dir`` that llama.cpp's convert_lora_to_gguf.py can map, in a new
     temporary directory the caller removes.
 
@@ -939,7 +943,8 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
     swap a 3D parameter's features, trains the transposed pair, so its factors swap roles). transformers keeps
     gate_up halved (gate rows, then up rows), which is the order the converter writes the base expert stack in.
     A LoRA scaling other than ``lora_alpha / r`` (rsLoRA, alpha_pattern, rank_pattern) is folded into lora_B, since
-    the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``."""
+    the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``. Modules in ``converted`` were
+    saved relative to the original base with the live scale already folded, so they keep the configured one."""
     import json
     import os
     import shutil
@@ -984,6 +989,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             out[key] = tensor  # the converter reports anything it cannot place
             continue
         prefix, kind = match.groups()
+        live_name = prefix
         module = layers.get(prefix)
         rank = None
         if ParamWrapper and isinstance(module, ParamWrapper):
@@ -1013,7 +1019,11 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             if module is not None:
                 rank = tensor.shape[0 if kind == "lora_A" else -1]
         if kind == "lora_B" and module is not None and rank:
-            scaling = float(module.scaling[adapter])
+            if live_name in converted:
+                from ._utils import _configured_scaling
+                scaling = float(_configured_scaling(model, module, adapter))
+            else:
+                scaling = float(module.scaling[adapter])
             factor = scaling * rank / alpha if alpha else scaling
             if abs(factor - 1.0) > 1e-6:
                 tensor = (tensor.float() * factor).to(tensor.dtype)
