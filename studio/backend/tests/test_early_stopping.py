@@ -432,6 +432,53 @@ def test_checkpoint_keeps_patience_when_weights_cannot_be_serialized(tmp_path):
     assert resumed._best_weights is None
 
 
+def test_fsdp2_resume_restores_shards_after_evaluation(tmp_path):
+    import torch.distributed as dist
+
+    if not dist.is_available() or not dist.is_gloo_available():
+        pytest.skip("needs a gloo-enabled PyTorch build")
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import DTensor
+    from unsloth.models.fsdp2_native import _fsdp_api
+
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    args = SimpleNamespace(output_dir = str(tmp_path), process_index = 0, world_size = 1)
+    state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = True)
+    dist.init_process_group("gloo", init_method = (tmp_path / "store").as_uri(), rank = 0, world_size = 1)
+    try:
+        model = nn.Linear(2, 2, bias = False).eval()
+        with torch.no_grad():
+            model.weight.fill_(2.0)
+        _, _, fully_shard = _fsdp_api()
+        fully_shard(model, mesh = init_device_mesh("cpu", (1,)), reshard_after_forward = False)
+
+        callback = es.create_early_stopping_callback(2, sharded = True)
+        with torch.no_grad():
+            model(torch.ones(1, 2))
+        assert not isinstance(model.weight, DTensor)
+        callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+        state.global_step = 2
+        callback.on_save(args, state, None)
+
+        model.reshard()
+        with torch.no_grad():
+            model.weight.to_local().fill_(7.0)
+        resumed = es.create_early_stopping_callback(
+            2, resume_from_checkpoint = checkpoint, sharded = True
+        )
+        resumed.on_train_begin(args, state, None, model = model)
+        with torch.no_grad():
+            model(torch.ones(1, 2))
+        assert not isinstance(model.weight, DTensor)
+        state.global_step = 3
+        resumed.on_train_end(args, state, None, model = model)
+        assert resumed.restored
+        assert torch.all(model.weight.to_local() == 2.0)
+    finally:
+        dist.destroy_process_group()
+
+
 def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):
     # Zoo's MLX trainer restores the best adapters whenever the run finishes; the CUDA path keeps the same contract.
     trainer = _trainer(tmp_path, eval_target = 1.0, max_steps = 5, eval_steps = 2)

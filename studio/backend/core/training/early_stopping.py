@@ -77,7 +77,7 @@ def create_early_stopping_callback(
     from transformers import TrainerCallback
 
     if pipeline_parallel or sharded:
-        from unsloth.models.fsdp2_save import _local_tensor
+        from unsloth.models.fsdp2_save import _local_tensor, _reshard_units, fsdp2_units
         from unsloth.models.portable_resume import _agree
     sharded = sharded or pipeline_parallel
 
@@ -131,9 +131,7 @@ def create_early_stopping_callback(
                 self._best_weights = weights
 
         def _restore_rank_weights(self, model, snapshot, progress):
-            trainable = {
-                name: param for name, param in model.named_parameters() if param.requires_grad
-            }
+            trainable = self._trainable_parameters(model)
             layout = _shard_signature(model, trainable)
             weights = None
             self._too_large = False
@@ -316,7 +314,7 @@ def create_early_stopping_callback(
                 # casts and moves one tensor at a time, so nothing is staged on the GPU.
                 pairs = [
                     (_local_tensor(param) if sharded else param, best[name])
-                    for name, param in model.named_parameters()
+                    for name, param in self._trainable_parameters(model).items()
                     if name in best
                 ]
                 fits = len(pairs) == len(best) and all(
@@ -334,13 +332,17 @@ def create_early_stopping_callback(
             except Exception as exc:
                 logger.warning(f"Could not restore the best weights, keeping the final ones: {exc}")
 
+        def _trainable_parameters(self, model):
+            if sharded:
+                # FSDP2 can leave full parameters registered after evaluation.
+                _reshard_units(fsdp2_units(model))
+            return {name: param for name, param in model.named_parameters() if param.requires_grad}
+
         def _keep_best_weights(self, model):
             if model is None or self._too_large:
                 return
             try:
-                trainable = {
-                    name: param for name, param in model.named_parameters() if param.requires_grad
-                }
+                trainable = self._trainable_parameters(model)
                 self._best_layout = _shard_signature(model, trainable) if sharded else None
                 if sharded:
                     trainable = {name: _local_tensor(param) for name, param in trainable.items()}
