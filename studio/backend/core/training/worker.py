@@ -5427,6 +5427,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
             return
 
+        if config.get("s3_config"):
+            # Dataset loading can resolve audio from the downloaded manifest. The weight loader
+            # must agree with the formatter, and text manifests keep their original routing.
+            config["is_dataset_audio"] = trainer._is_dataset_audio
+            _check_finetune_targets_after_detect(trainer, config)
+
         # Start the tqdm monitor early to capture download + tokenization bars.
         import threading as _th
 

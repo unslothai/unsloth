@@ -556,6 +556,7 @@ class UnslothTrainer:
         self.is_vlm = False
         self.is_audio = False
         self.is_audio_vlm = False
+        self._model_accepts_audio_input = False
         self._audio_type = None
         self.diffusion_lm_profile = None
         self._use_gradient_checkpointing = "unsloth"
@@ -627,7 +628,8 @@ class UnslothTrainer:
             revision = model_revision,
         )
         self._is_dataset_audio = is_dataset_audio
-        if self._audio_type == "audio_vlm":
+        self._model_accepts_audio_input = self._audio_type == "audio_vlm"
+        if self._model_accepts_audio_input:
             self.is_audio = False
             self.is_audio_vlm = is_dataset_audio
             self._audio_type = None
@@ -711,8 +713,8 @@ class UnslothTrainer:
             if not retried_known:
                 return False
             self._audio_type, self._audio_type_known = retried_type, True
-            # audio_vlm is detected as an audio_type now; handle separately
-            if self._audio_type == "audio_vlm":
+            self._model_accepts_audio_input = self._audio_type == "audio_vlm"
+            if self._model_accepts_audio_input:
                 self.is_audio = False
                 self.is_audio_vlm = is_dataset_audio
                 self._audio_type = None
@@ -3719,6 +3721,16 @@ class UnslothTrainer:
                 logger.info("Stopped before applying chat template\n")
                 # No separate HF eval split - caller handles programmatic splitting
                 return None
+
+            if (
+                s3_download is not None
+                and not raw_text_mode
+                and _dataset_has_audio_column(dataset) is True
+            ):
+                # The S3 picker has no local rows to inspect. Resolve modality from its loaded manifest.
+                self._is_dataset_audio = True
+                if self._model_accepts_audio_input:
+                    self.is_audio_vlm = True
 
             # An inconclusive probe must not read as "not an audio model": falling through lands on the text path,
             # which fails later with a column-mapping complaint. _dataset_has_audio_column is the tiebreaker because
