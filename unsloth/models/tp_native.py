@@ -4948,6 +4948,7 @@ def _checkpoint_aliases(
                 break
         converted = None
         if renamings is not None:
+            source = new
             try:
                 new, converted = rename_source_key(new, renamings, converters, prefix, meta)
             except Exception:
@@ -4956,7 +4957,12 @@ def _checkpoint_aliases(
             out[new] = None
             if converted in stack_sources:
                 part, count = stack_sources[converted]
-                expert = _expert_number(converted, key)
+                # The converter's pattern matches the key after the renamings (e.g. Mistral-format names).
+                try:
+                    renamed = rename_source_key(source, renamings, [], prefix, meta)[0]
+                except Exception:
+                    renamed = source
+                expert = _expert_number(converted, renamed)
                 parts = stacks.setdefault(new, [{} for _ in range(count)])
                 if parts is not None:
                     if expert is None or len(parts) != count or expert in parts[part]:

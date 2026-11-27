@@ -91,6 +91,30 @@ def test_gate_up_rows_are_each_experts_gate_then_up():
         assert reader.slice_bytes == want[5:12].numel() * 4 and reader.full_bytes == 0
 
 
+def test_expert_index_is_read_after_the_renamings():
+    """A checkpoint naming experts otherwise (here `moe.experts.N`), renamed before the stacking converter."""
+    tp = _tp()
+    from safetensors.torch import load_file, save_file
+
+    with tempfile.TemporaryDirectory() as d:
+        full = _qwen3_moe(d)
+        for path in glob.glob(os.path.join(d, "*.safetensors")):
+            tensors = {
+                k.replace(".mlp.experts.", ".moe.experts."): v for k, v in load_file(path).items()
+            }
+            save_file(tensors, path, metadata = {"format": "pt"})
+        index = _index(d)
+        aliases = tp._checkpoint_aliases(
+            _meta(d), index, {r"\.moe\.experts\.": ".mlp.experts."}, stacked_experts = True
+        )
+        gate_up = aliases["model.layers.0.mlp.experts.gate_up_proj"]
+        assert gate_up[10][1] == "model.layers.0.moe.experts.10.up_proj.weight"
+        want = full.model.layers[0].mlp.experts.gate_up_proj.detach()
+        assert torch.equal(
+            tp._SliceReader(index).rows_to(gate_up, 0, 12, torch.float32, "cpu"), want
+        )
+
+
 def test_missing_expert_keeps_the_refusal():
     tp = _tp()
     with tempfile.TemporaryDirectory() as d:
