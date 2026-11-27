@@ -254,6 +254,8 @@ def _share_trainer(**attrs):
         ({}, ["p"] * 16, (None,), slice(8, 16)),
         ({"rollout_func": lambda *a: None}, ["p"] * 16, (), None),
         ({"environment_factories": [object]}, ["p"] * 16, (), None),
+        ({"environments": [object()] * 16}, ["p"] * 16, (), None),  # TRL 1.0 - 1.9
+        ({"environments": None, "environment_factories": None}, ["p"] * 16, (), slice(8, 16)),
         ({"is_deepspeed_enabled": True}, ["p"] * 16, (), None),
         (
             {

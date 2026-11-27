@@ -54,6 +54,7 @@ __all__ = [
 
 _UNSET = object()
 _LAYOUT = _UNSET
+_LAYOUT_SIGNATURE = None  # parallel_env.layout_signature() when _LAYOUT was read
 _DEPTH = {"load": 0, "peft": 0}
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 
@@ -61,21 +62,25 @@ _DDP_MESH = "_unsloth_tp_ddp_mesh"
 from ..parallel_env import PP_SCHEDULES as _PP_SCHEDULES  # noqa: F401  (old import path)
 from ..parallel_env import ParallelLayout as TPEnvLayout
 from ..parallel_env import _int_env  # noqa: F401
+from ..parallel_env import layout_signature as _layout_signature
 from ..parallel_env import read_layout as _read_layout
 
 
 def env_layout():
     """The layout from UNSLOTH_TP_SIZE (read once), or None when tensor parallelism is not requested."""
-    global _LAYOUT
+    global _LAYOUT, _LAYOUT_SIGNATURE
     if _LAYOUT is _UNSET:
-        _LAYOUT = _read_layout()
+        layout = _read_layout()
+        _LAYOUT_SIGNATURE = _layout_signature()
+        _LAYOUT = layout
     return _LAYOUT
 
 
 def _reset_env_layout():
     """Tests: read the environment again."""
-    global _LAYOUT
+    global _LAYOUT, _LAYOUT_SIGNATURE
     _LAYOUT = _UNSET
+    _LAYOUT_SIGNATURE = None
 
 
 def env_hint():

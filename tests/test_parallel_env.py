@@ -23,6 +23,7 @@ _ENV = (
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_STAGES_PER_RANK",
     "UNSLOTH_PP_KEEP_REPLICA",
+    "UNSLOTH_EP_SIZE",
     "UNSLOTH_RETURN_LOGITS",
     "WORLD_SIZE",
 )
@@ -249,6 +250,56 @@ def test_parallelize_sets_the_flag_and_refuses_after_a_load(clean_env):
         for key in _ENV:
             os.environ.pop(key, None)
         tp_env._reset_env_layout()
+
+
+@pytest.mark.parametrize(
+    "first, second, changed",
+    [
+        (dict(tp = 2), dict(tp = 2, cp = 2), "cp 1 -> 2"),
+        (dict(tp = 2), dict(tp = 2, fsdp = True), "fsdp False -> True"),
+        (dict(tp = 2, cp = 2), dict(tp = 2, cp = 2, cp_backend = "ring"), "cp_backend None -> ring"),
+        (dict(ep = 2), dict(), "ep 2 -> 1"),
+        (dict(ep = 2), dict(ep = 4), "ep 2 -> 4"),
+        (dict(fsdp = True), dict(cp = 2, fsdp = False), "cp 1 -> 2"),
+        (dict(pp = 2), dict(pp = 2, pp_microbatches = 4), "pp_microbatches None -> 4"),
+    ],
+)
+def test_parallelize_after_a_load_refuses_any_layout_change(clean_env, first, second, changed):
+    """Every axis the load read, not only pp x tp; and an accepted repeat keeps the loaded layout."""
+    import os
+
+    import unsloth as u
+    from unsloth.models import ep_native, tp_env
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    tp_env._reset_env_layout()
+    u.parallelize(**first)
+    loaded = tp_env.env_layout()  # what from_pretrained reads first
+    written = {key: os.environ.get(key) for key in _ENV}
+    with pytest.raises(RuntimeError, match = "must run before from_pretrained") as info:
+        u.parallelize(**second)
+    assert changed in str(info.value)
+    # Nothing was written: later readers still see the load's layout.
+    assert {key: os.environ.get(key) for key in _ENV} == written
+    assert ep_native.ep_env_size() == first.get("ep", 1)
+    # The same layout again is accepted and keeps the layout read at load, so a change after it is still refused.
+    u.parallelize(**first)
+    assert tp_env.env_layout() is loaded
+    with pytest.raises(RuntimeError, match = "must run before from_pretrained"):
+        u.parallelize(**second)
+
+
+def test_parallelize_before_a_load_can_still_change_the_layout(clean_env):
+    import unsloth as u
+    from unsloth.models import tp_env
+
+    clean_env.setenv("WORLD_SIZE", "4")
+    tp_env._reset_env_layout()
+    u.parallelize(ep = 2)
+    u.parallelize(tp = 2)
+    u.parallelize(tp = 2, cp = 2, fsdp = True)
+    layout = tp_env.env_layout()
+    assert (layout.tp, layout.cp, layout.fsdp2) == (2, 2, True)
 
 
 def test_interleaved1f1b_flag_translates_and_reads_into_the_layout(clean_env):
