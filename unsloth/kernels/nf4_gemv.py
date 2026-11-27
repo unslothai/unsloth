@@ -546,7 +546,7 @@ def _gemv_nf4_rows_op(
 
 def gemv_nf4_rows(X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out):
     """X (M, 1, K) contiguous -> out (M, 1, N), maybe strided. Each row sums as gemv_nf4 does, but fp fusion
-    contracts a multi-row binary differently, so a few outputs can be 1-2 ulps from gemv_nf4."""
+    can contract a multi-row binary differently, so a few outputs can differ from gemv_nf4 by fp32 rounding."""
     N, K = int(shape[0]), int(shape[1])
     blocksize, blocksize2 = int(blocksize), int(blocksize2) if code2 is not None else 0
     if _is_compiling():

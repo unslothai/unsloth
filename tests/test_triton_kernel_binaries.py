@@ -3,7 +3,8 @@
 
 """Mid-generate recompiles, counted on real Triton binaries: once the first decode / prefill shapes are
 built, other prompt lengths, multiples of 16 included, build nothing new, and the NF4 GEMV builds one
-binary per rows-per-program (1 to 4) that every larger batch reuses; outputs still match a reference."""
+binary per rows-per-program (1 to 4), and larger batches reuse a grouped one each; outputs still match a
+reference."""
 
 import pytest
 import torch
@@ -44,15 +45,23 @@ def test_gemv_rows_binaries_are_one_per_rows_per_program():
         err = (out.float().view(m, -1) - ref).abs().max() / ref.abs().max()
         assert err < 1e-2, (m, err.item())
 
-    # M_ROWS (1 to 4 rows per program) is a constexpr; larger batches reuse those binaries in groups.
+    # M_ROWS (1 to 4 rows per program) is a constexpr: one binary each up to the default cap of 4 rows.
     before = _binaries(*G._KERNELS)
     for m in (1, 2, 3, 4):
         run(m)
     built = _binaries(*G._KERNELS)
     assert built - before <= 4
-    for m in (5, 6, 7, 8, 9, 10, 2, 3):
+    for m in (2, 3, 4, 1):
         run(m)
     assert _binaries(*G._KERNELS) == built
+    # Above it (UNSLOTH_GEMV_MAX_ROWS) groups of 1 to 4 rows: M_GROUPS != 1 adds one binary per M_ROWS, then reuse.
+    for m in (5, 6, 8, 10):
+        run(m)
+    grouped = _binaries(*G._KERNELS)
+    assert grouped - built <= 4
+    for m in (7, 9, 5, 6, 8, 10):
+        run(m)
+    assert _binaries(*G._KERNELS) == grouped
 
 
 def _rope_ref(x, cos, sin):
