@@ -1687,8 +1687,10 @@ def _assert_base_repo_accessible(
     probe_file: str = "model_index.json",
     *,
     local_files_only: bool = False,
+    known_gated: Any = None,
 ) -> Optional[str]:
-    """Fails up front on an unreadable gated base; probes gated repos only, other errors fail open; under local_files_only only the cache is read."""
+    """Fails up front on an unreadable gated base; probes gated repos only, other errors fail open; under local_files_only only the cache is read.
+    ``known_gated=False`` is this load's own model_info answer for the repo: not gated, so no second model_info."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
@@ -1736,6 +1738,8 @@ def _assert_base_repo_accessible(
         # Cache read only, no model_info or HEAD; sets other_root_snapshot, and a miss is not a refusal since the loader raises for missing files.
         _already_downloaded()
         return other_root_snapshot
+    if known_gated is False:
+        return None  # what model_info answering gated=False returns below
 
     def _is_auth_error(exc: Any) -> bool:
         """Catches plain 401/403 HfHubHTTPError from expired tokens or missing permissions; others
@@ -7043,6 +7047,8 @@ class DiffusionBackend:
             fetch_repos: dict[str, str] = {}
             planned_sizes: dict[str, dict[str, int]] = {}
             planned_keys: dict[str, dict[str, str]] = {}
+            # The pipeline listing's gated answer per repo, so the base access check below skips a repeat model_info.
+            listed_gated: dict[str, Any] = {}
             expected, base_files = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -7078,6 +7084,7 @@ class DiffusionBackend:
                 fetch_repos_out = fetch_repos,
                 file_sizes_out = planned_sizes,
                 file_keys_out = planned_keys,
+                gated_out = listed_gated,
             )
             # A local operator checkpoint has no Hub entry, so the seed costs nothing and must be kept.
             local_seed = (
@@ -7134,6 +7141,7 @@ class DiffusionBackend:
                 kwargs.get("hf_token"),
                 _base_manifest_name(fam),
                 local_files_only = local_files_only,
+                known_gated = listed_gated.get(fetch_base.lower()),
             )
             # Also here, since a direct begin_load skips the plan and route preflights; keep it before _prefetch_files and the unload.
             assert_flux2_pick_compatible(
@@ -8316,6 +8324,7 @@ class DiffusionBackend:
         failures_out: Optional[list] = None,
         local_files_only: bool = False,
         fp16_twins: bool = False,
+        gated_out: Optional[dict[str, Any]] = None,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to fetch (the prefetch
         reuses this list, so the base is listed only once).
@@ -8431,6 +8440,8 @@ class DiffusionBackend:
                 total = sum(s.size or 0 for s in picked)
                 if fetch_repos_out is not None:
                     fetch_repos_out[repo_id] = metadata_repo
+                if gated_out is not None:
+                    gated_out[metadata_repo.lower()] = getattr(info, "gated", None)
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
                 if file_sizes_out is not None:
