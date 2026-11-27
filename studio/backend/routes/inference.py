@@ -5255,7 +5255,6 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
 
 
 def _llama_inkling_channel(llama_backend) -> bool:
-    # Inkling still reasons at effort none, and llama-server returns that thought as reasoning_content.
     from core.inference.chat_template_helpers import replays_reasoning_content
     from core.inference.llama_cpp import _rendered_chat_template
 
@@ -38350,7 +38349,6 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
-                # Where the backend reports its thought, only that span is reasoning.
                 _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
