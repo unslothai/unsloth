@@ -488,3 +488,19 @@ def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatc
     if bv is not None:
         want.add_(bv.float())
     assert torch.equal(got, want.to(torch.bfloat16))
+
+
+def test_the_cache_tag_survives_a_failing_compile_config(monkeypatch):
+    # A Windows torch 2.10 wheel lost the tag: an earlier step in the fingerprint raised and the tag read was skipped.
+    import torch.compiler.config as ccfg
+
+    from core.inference import diffusion_compile_cache as cc
+    from core.inference import diffusion_compile_config as dcc
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "unsloth_fp8_unit_scale=256")
+
+    def boom():
+        raise RuntimeError("compile config unavailable on this build")
+
+    monkeypatch.setattr(dcc, "apply", boom)
+    assert cc.environment_fingerprint()["torch_cache_key_tag"] == "unsloth_fp8_unit_scale=256"
