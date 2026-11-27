@@ -757,14 +757,16 @@ def apply_chat_template_to_dataset(
                 return _render_messages(tokenizer, turns)
 
         def _probe_content_parts():
-            # A list-only template given strings (an AutoTokenizer on a VLM) renders empty turns.
+            # A list-only template given strings renders empty turns.
+            # Strings first: a string template on a processor prints a parts list as its repr.
             probe = "unsloth-studio-alpaca-probe"
-            for parts in (uses_content_parts, not uses_content_parts):
+            for parts in (False, True):
                 try:
-                    if probe in _render_alpaca(probe, probe, None, parts):
-                        return parts
+                    text = _render_alpaca(probe, probe, None, parts)
                 except Exception:
-                    pass
+                    continue
+                if probe in text and "'type': 'text'" not in text:
+                    return parts
             return uses_content_parts
 
         alpaca_parts = _probe_content_parts() if native_alpaca else uses_content_parts

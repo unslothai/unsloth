@@ -223,3 +223,16 @@ def test_native_alpaca_accepts_templates_that_rewrite_the_answer():
 
     assert result["success"] is True
     assert result["dataset"][0]["text"] == "user:Qassistant:42"
+
+
+def test_native_alpaca_sends_strings_to_a_processors_string_template():
+    template = "{%- for m in messages %}{{ m.role }}:{{ m.content | trim }}|{%- endfor %}"
+    result = format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Say hi", "output": "Salut"}]),
+        model_name = "Gemma3ForConditionalGeneration",
+        tokenizer = _JinjaProcessor(template),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["dataset"][0]["text"] == "user:Say hi|assistant:Salut|"
