@@ -1376,9 +1376,7 @@ def _h3_image_block_inputs(
 
 
 def _per_row(fn: Callable, x: Any) -> Any:
-    """``fn`` over each row of a batch as its own batch-1 call: the fp32 patch projection and output head of a batched
-    forward run at the batch-1 GEMM shape of each image's own forward, so the batch changes none of their
-    roundings (the sampler amplifies a 1e-7 head difference to a visible one in 6 steps)."""
+    """``fn`` per row at batch 1: keeps batch-1 GEMM roundings (the sampler amplifies a 1e-7 head diff in 6 steps)."""
     import torch
 
     if int(x.shape[0]) == 1:
@@ -1758,7 +1756,6 @@ def lockstep_state_gb(
 
 
 def _module_gb_off(module: Any, device: Any) -> float:
-    """GB of ``module``'s parameters and buffers that are not on ``device`` (what bringing it in will take)."""
     try:
         import torch
 
@@ -2787,8 +2784,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         max_sequence_length: int = H3_IMAGE_MAX_SEQUENCE_LENGTH,
         row_images: Any = None,
     ) -> Any:
-        """``row_images``: per prompt, its own reference image(s) (None = text-to-image), in place of ``image`` shared
-        by every prompt (a coalesced batch of edits); images with equal layouts still run one batched forward."""
+        """``row_images``: per-prompt reference image(s) (None = text-to-image), replacing the shared ``image``."""
         import torch
 
         steps = H3_IMAGE_STEPS if num_inference_steps is None else num_inference_steps
@@ -2909,8 +2905,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
 
     @staticmethod
     def _output_size(image: Any, vae_refs: list, height: Any, width: Any) -> tuple:
-        """(height, width): no size, an edit takes the reference edit size of Picture 1 (as the API and UI);
-        text-to-image 2048x2048."""
+        """No size: an edit takes Picture 1's reference edit size (as the API and UI); text-to-image 2048x2048."""
         if not vae_refs:
             default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
         elif source_resize_enabled():
@@ -2941,8 +2936,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         """Render ``jobs`` in lockstep groups the plan has room for: ``(images done, their pixels)``, -1 done when
         interrupted. Jobs are set up one at a time and join the group while the plan has room for every image's
         state (one that does not fit is set up again for the next group); a group of one, or one that runs out of
-        memory, leaves the rest to separate renders. ``per_job``: each image's ``(vae_refs, vision_refs, height,
-        width)`` in place of the shared ones."""
+        memory, leaves the rest to separate renders. ``per_job`` overrides the shared refs and size per image."""
         import torch
 
         def setup(index: int) -> dict:
@@ -3302,8 +3296,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return None
 
     def _together_refusal(self, images: int) -> Optional[str]:
-        """Why ``images`` images of one request cannot denoise together; None = they can. The stream tier shares its
-        block uploads (lockstep); a resident DiT runs same-layout images as one batched forward."""
+        """Why ``images`` images cannot denoise together; None = they can."""
         if images < 2 or self._placement() == PLACE_STREAM:
             return self._lockstep_refusal(images)
         if self._placement() == PLACE_SEQUENTIAL:
@@ -3325,9 +3318,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return None
 
     def _sequential_refusal(self) -> Optional[str]:
-        """Why images of one request on the sequential tier cannot denoise together; None = they can. Together, the
-        DiT comes onto the card once for every image instead of once per image; each image runs each block as its own
-        batch-1 call (lockstep), so its pixels are those of its own render."""
+        """Sequential tier: why images cannot denoise together (one DiT upload for all); None = they can."""
         if not lockstep_enabled():
             return f"{LOCKSTEP_ENV}=0"
         if not h3_image_forward_active(self.transformer):
@@ -3344,18 +3335,15 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         return "h3_compiled" in (getattr(self, "_unsloth_h3_speed_levers", None) or ())
 
     def _together_room(self, job: dict) -> Optional[float]:
-        """GB the device leaves for more images beside ``job``: the stream plan's priced room, else (resident) the
-        free device memory less the stream reserve."""
         if self._placement() == PLACE_STREAM:
             return self._lockstep_room(job)
         room = resident_room_gb(job["device"])
         if room is not None and self._placement() == PLACE_SEQUENTIAL:
-            # set up with the DiT on the host: it takes its room when the group's denoise brings it in
+            # DiT is on the host now: its room is taken when the denoise brings it in
             room = max(0.0, room - _module_gb_off(self.transformer, job["device"]))
         return room
 
     def _batch_cap(self, jobs: list, room: Optional[float]) -> int:
-        """Rows per batched block call ``room`` leaves beside every image's lockstep state; 1 = lockstep."""
         if room is None or len(jobs) < 2 or self._compiled_blocks():
             return 1
         if self._placement() == PLACE_SEQUENTIAL and not h3_batch.batched_forward_enabled():
@@ -3425,11 +3413,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         width: int,
         cap: int = 1,
     ) -> Optional[list]:
-        """Denoise set-up ``jobs`` together: every step runs one transformer forward. Images of one packed layout run
-        each block as one batched call of up to ``cap`` rows (``diffusion_minimax_h3_image_batch``); the batches
-        (``cap`` 1: each image) run each block in turn (``lockstep_blocks``), so a streamed block is uploaded once per
-        step for all of them. Each image keeps its own noise, scheduler and conditioning; at ``cap`` 1 its pixels are
-        those of its own render. The callback runs once per step with the first image's latents. None = interrupted."""
+        """Denoise ``jobs`` together, same-layout images batched up to ``cap`` rows per block call; a streamed block
+        uploads once per step. Callback gets the first image's latents. None = interrupted."""
         transformer = self._enter("transformer")
         t1 = time.perf_counter()
         gate = None
@@ -3445,7 +3430,6 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             for job in jobs:
                 job["t1"] = t1
                 self._denoise_setup(job, transformer)
-            # same-layout images run each block as one call over all their rows (cap 1: one call per image)
             if cap > 1:
                 batches = h3_batch.batch_groups(jobs, cap)
             statics = None

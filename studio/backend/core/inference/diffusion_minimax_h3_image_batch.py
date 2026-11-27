@@ -1,24 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3-Image batched forward: images of one request (or coalesced requests) whose packed layouts match run
-every block as ONE call over all their rows, instead of one batch-1 call per image (lockstep).
+"""MiniMax-H3-Image batched forward: same-layout images run every block as ONE call over all their rows.
 
-Two images share a layout when their packed sequences are the same shape and order: equal canvas, equal text token
-count and tags (the prompt template plus the vision blocks of their references), equal reference latent grids and
-the same step count. Their position ids, AdaLN indices, rotary tables and per-step timesteps and heads are then
-equal, so a block call over ``(B, S, D)`` hidden states computes each row as its own forward does: nothing in a block
-mixes rows (no mask, no shared scale). Rows keep their own noise, reference noise, refined text and scheduler. Images
-whose layouts differ run as separate batches inside one lockstep forward (a streamed block is still uploaded once per
-step for all of them). The fp32 patch projection and the output head run per row at the batch-1 GEMM shape (the
-6-step sampler turns their 1e-7 batch-shape roundings into a visible change), so each batched image measured
-bit-identical to its own render on CUDA.
+Same layout (canvas, text tokens and tags, reference grids, steps) means equal position ids, AdaLN indices, rotary
+tables and timesteps, and no block op mixes rows, so each row computes as its own forward. The fp32 patch projection
+and output head run per row at batch-1 GEMM shape (the 6-step sampler amplifies 1e-7 roundings), so batched images
+are bit-identical to their own renders on CUDA.
 
-Opt-in: ``UNSLOTH_H3_IMAGE_BATCHED=1``. Unset (or ``0``) keeps one batch-1 call per image (lockstep on the stream
-tier, separate renders on a resident DiT). A block call takes at most ``UNSLOTH_H3_IMAGE_BATCH_TOKENS`` (4608) packed
-rows: batching pays where one image leaves the GEMMs short of rows. Batch of 4 against the incumbent, int8: RTX PRO
-6000 1024x1024 1.11x resident and 1.11x streamed, 2048x2048 resident 0.88x (one image per call under the budget);
-A100-80 1024x1024 resident 1.00x."""
+Opt-in ``UNSLOTH_H3_IMAGE_BATCHED=1``; ``UNSLOTH_H3_IMAGE_BATCH_TOKENS`` (4608) caps packed rows per call.
+Batch 4, int8: RTX PRO 6000 1024x1024 1.11x, 2048x2048 resident 0.88x; A100-80 1024x1024 resident 1.00x."""
 
 from __future__ import annotations
 
@@ -29,7 +20,6 @@ from typing import Any, Optional, Sequence
 BATCHED_ENV = "UNSLOTH_H3_IMAGE_BATCHED"
 BATCH_TOKENS_ENV = "UNSLOTH_H3_IMAGE_BATCH_TOKENS"
 BATCH_TOKENS = 4608
-# The per-layout fields every row of one batch shares.
 _SHARED_FIELDS = ("position_ids", "token_tags", "image_indices", "text_indices")
 
 
@@ -38,8 +28,7 @@ def batched_forward_enabled() -> bool:
 
 
 def layout_key(job: dict) -> tuple:
-    """What two set-up images must share to run one block call: canvas (latent grid), packed sequence length, text
-    rows, reference rows, steps. The tensors behind it are compared by ``same_layout``."""
+    """What two set-up images must share to run one block call; tensors are compared by ``same_layout``."""
     return (
         int(job["lh"]),
         int(job["lw"]),
@@ -57,7 +46,6 @@ def same_layout(a: dict, b: dict) -> bool:
 
     if layout_key(a) != layout_key(b):
         return False
-    # set up for the denoise: the same compute dtype and the same forward extras (head, refined text, output rows)
     if a.get("dtype") != b.get("dtype") or sorted(a.get("extra") or {}) != sorted(
         b.get("extra") or {}
     ):
@@ -78,7 +66,7 @@ def same_layout(a: dict, b: dict) -> bool:
 
 
 def batch_groups(jobs: Sequence[dict], cap: int) -> list:
-    """Job indices grouped by layout (first appearance order), each group cut into batches of at most ``cap``."""
+    """Job indices grouped by layout (first-seen order), cut into batches of at most ``cap``."""
     cap = max(1, int(cap))
     groups: list = []
     for index, job in enumerate(jobs):
@@ -95,7 +83,6 @@ def batch_groups(jobs: Sequence[dict], cap: int) -> list:
 
 
 def merged_static(calls: Sequence[dict]) -> dict:
-    """The per-render tensors of one batch, concatenated once: conditioning and refined text."""
     import torch
 
     out = {}
@@ -107,8 +94,6 @@ def merged_static(calls: Sequence[dict]) -> dict:
 
 
 def merge_step_calls(calls: Sequence[dict], static: Optional[dict] = None) -> dict:
-    """One forward's keyword arguments for a batch of same-layout images: their model input rows stacked on the batch
-    dimension, the shared layout / timestep / head of the first."""
     import torch
 
     merged = dict(calls[0])
@@ -120,7 +105,6 @@ def merge_step_calls(calls: Sequence[dict], static: Optional[dict] = None) -> di
 
 
 def split_rows(output: Any, count: int) -> list:
-    """Per image ``(1, rows, C)`` views of a batch's ``(B, rows, C)`` velocity."""
     if int(output.shape[0]) != count:
         raise ValueError(f"batched forward returned {int(output.shape[0])} rows for {count} images")
     return [output[b : b + 1] for b in range(count)]
@@ -133,9 +117,7 @@ def batched_row_gb(
     heads_dim: Optional[int] = None,
     itemsize: int = 2,
 ) -> float:
-    """Device memory one more row of a batched block call holds (GB): the block's own working set at that row's
-    sequence (modulated input, q / k / v / attention out, residual, the gated-SwiGLU intermediates), on top of the
-    row's lockstep state. Generous: every intermediate counted live at once."""
+    """GB one more batched row holds beyond its lockstep state; generous (every intermediate live at once)."""
     inner = int(heads_dim or hidden)
     per = seq * itemsize * (hidden * 4 + inner * 4 + ffn * 3)
     return per / 1e9
@@ -155,8 +137,7 @@ def batch_cap(
     row_gb: float,
     seq: int = 0,
 ) -> int:
-    """Rows per block call that fit ``room`` beside ``images`` images' lockstep state and ``batch_tokens()`` packed
-    rows of ``seq`` each; 1 = one call per image."""
+    """Rows per block call that fit ``room`` and ``batch_tokens()``; 1 = one call per image."""
     if images < 2 or not batched_forward_enabled() or room is None:
         return 1
     tokens = images if seq <= 0 else max(1, batch_tokens() // int(seq))
@@ -177,8 +158,7 @@ def row_layout_key(
     num_inference_steps: Optional[int] = None,
     min_generation_area: Optional[int] = None,
 ) -> tuple:
-    """For a request coalescer: two rows with equal keys share one batched block call (same canvas, same packed
-    text length, same reference layout, same steps); without the text encoder (the tokenizer only)."""
+    """Coalescer key: equal keys share one batched block call (tokenizer only, no text encoder)."""
     from . import diffusion_minimax_h3_image as h3
 
     vae_refs, vision_refs = pipe.prepare_references(image)
@@ -216,8 +196,7 @@ def _flat(x: Any) -> Any:
 
 
 def batched_modulate(rowmod: Any, x: Any, scale: Any, shift: Any, idx: Any) -> Any:
-    """``rowmod.modulate`` over a ``(B, S, D)`` batch: the rows flattened to one ``(1, B*S, D)`` sequence with the AdaLN
-    index repeated per image, so the batch-1 kernel serves (each element is the same op on the same operands)."""
+    """``rowmod.modulate`` over ``(B, S, D)`` flattened to ``(1, B*S, D)`` (AdaLN index repeated) for the batch-1 kernel."""
     b = int(x.shape[0])
     if b == 1 or x.dim() != 3:
         return rowmod.modulate(x, scale, shift, idx)
@@ -241,8 +220,7 @@ def _batched_row_mod_block_forward(
     rotary_emb: Any,
     attention_mask: Any = None,
 ) -> Any:
-    """The row-mod block forward (``video_minimax_h3_rowmod._row_mod_block_forward``) at any batch: batch 1 calls it
-    as is; a larger batch runs the same ops with the row ops over the flattened rows."""
+    """``_row_mod_block_forward`` at any batch: batch 1 as is, else row ops over the flattened rows."""
     from . import video_minimax_h3_rowmod as rowmod
 
     if int(hidden_states.shape[0]) == 1:
@@ -269,7 +247,6 @@ def _batched_row_mod_block_forward(
 
 
 def install_batched_row_mod(transformer: Any) -> int:
-    """Over every block the row-mod lever swapped: its forward again at batch 1, the flattened row ops above it."""
     from . import video_minimax_h3_rowmod as rowmod
 
     n = 0

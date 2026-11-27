@@ -31,7 +31,7 @@ pytestmark = pytest.mark.timeout(600)
 def _env(monkeypatch):
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_BATCHED", "1")
-    # the edit rows here pack ~2k rows each: no token budget, every same-layout row in one call
+    # no token budget: every same-layout row in one call
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_BATCH_TOKENS", "1000000")
     monkeypatch.delenv("UNSLOTH_H3_IMAGE_LOCKSTEP", raising = False)
 
@@ -113,12 +113,10 @@ def test_one_block_call_per_step_for_every_row_of_one_layout(h3i, pipe, resident
     alone = [_render(pipe, "a cat", [s])[0] for s in seeds]
     resident.clear()
     together = _render(pipe, "a cat", seeds)
-    # G3: one call per block per step, each over the 4 rows
     assert len(resident) == steps * blocks
     assert {b for _k, b in resident} == {4}
     assert pipe._unsloth_h3_last_stats["batched"] == [4]
     assert len(together) == 4 and not torch.equal(together[0], together[1])
-    # the patch projection and head run per row, the blocks see no other row: each image is its own render
     for a, b in zip(alone, together):
         assert a.shape == b.shape and torch.equal(a, b)
 
@@ -240,7 +238,6 @@ def test_per_row_references_batch_and_a_neighbours_reference_never_moves_the_tar
     swapped = _render(pipe, ["a cat", "a cat", "a cat"], [1, 2, 3], row_images = [a, c, a])
     assert torch.equal(first[0], swapped[0]) and torch.equal(first[2], swapped[2])
     assert not torch.equal(first[1], swapped[1])
-    # each row equals its own edit
     solo = _render(pipe, "a cat", [2], image = b)[0]
     torch.testing.assert_close(first[1], solo, rtol = 1e-5, atol = 1e-5)
     # a text-to-image row beside edits: its own batch
@@ -305,7 +302,7 @@ def test_the_batch_cap_is_what_the_room_leaves(h3i, pipe, resident, monkeypatch)
     monkeypatch.setattr(h3i.h3_batch, "batched_row_gb", lambda *a, **k: 1.0)
     out = _render(pipe, "a cat", [1, 2, 3])
     assert len(out) == 3
-    # room for the lockstep state, not for a batched row: one call per image (lockstep on the resident DiT)
+    # room for lockstep state only: one call per image
     assert pipe._unsloth_h3_last_stats["batched"] == [1, 1, 1]
     assert len(resident) == 3 * steps * blocks
     monkeypatch.setattr(h3i.h3_batch, "batched_row_gb", lambda *a, **k: 0.2)
@@ -313,7 +310,6 @@ def test_the_batch_cap_is_what_the_room_leaves(h3i, pipe, resident, monkeypatch)
     _render(pipe, "a cat", [1, 2, 3])
     assert pipe._unsloth_h3_last_stats["batched"] == [3]
     assert len(resident) == steps * blocks
-    # no room at all: one after another
     monkeypatch.setattr(h3i, "resident_room_gb", lambda device: 0.0)
     _render(pipe, "a cat", [1, 2, 3])
     assert "batched" not in pipe._unsloth_h3_last_stats
@@ -374,7 +370,6 @@ def test_row_mod_ops_over_a_batch_are_its_rows_flattened(h3i):
     rec = Recorder()
     batch.batched_modulate(rec, x, scale, shift, idx)
     batch.batched_modulate(rec, x[:1], scale, shift, idx)
-    # the kernel sees one (1, B*S, D) sequence; batch 1 as before
     assert rec.shapes == [((1, 21, 16), 21), ((1, 7, 16), 7)]
 
 

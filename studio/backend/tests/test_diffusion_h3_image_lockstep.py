@@ -25,7 +25,6 @@ pytestmark = pytest.mark.timeout(300)
 @pytest.fixture(autouse = True)
 def _picture_one_at_its_own_size(monkeypatch):
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_SOURCE_RESIZE", "0")
-    # one batch-1 block call per image (the batched forward has its own tests: test_h3_image_batched_forward.py)
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_BATCHED", "0")
 
 
@@ -578,7 +577,6 @@ def test_the_sequential_tier_brings_the_dit_in_once_for_every_image(
     together = _render(pipe, [21, 22, 23])
     assert entries.count("transformer") == 1
     assert pipe._unsloth_h3_last_stats["lockstep"] == 3
-    # each image runs each block as its own batch-1 call: its own render, bit for bit
     assert all(a.dtype == b.dtype and torch.equal(a, b) for a, b in zip(alone, together))
     assert not torch.equal(together[0], together[1])
     assert pipe._sequential_refusal() is None
