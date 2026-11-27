@@ -87,28 +87,6 @@ def _use_triton(X: torch.Tensor) -> bool:
     return _TRITON_ENABLED and X.device.type in ("cuda", "xpu")
 
 
-_CUDA_MAJOR = {}
-
-
-def _cuda_major(device: torch.device) -> int:
-    index = device.index if device.index is not None else torch.cuda.current_device()
-    major = _CUDA_MAJOR.get(index)
-    if major is None:
-        major = _CUDA_MAJOR[index] = torch.cuda.get_device_capability(index)[0]
-    return major
-
-
-def _use_segment_kernels(X: torch.Tensor, A: torch.Tensor) -> bool:
-    """The tl.dot segment kernels, or the PyTorch fallback. sm75 has no tensor-core tl.dot (scalar FMA), so
-    there they only win at rank <= 16 with >= 4 adapters. T4 fp16 fwd + bwd, 4096 x 4096: 1.2-1.8x faster
-    there; at rank >= 32 or 2 adapters the fallback is 1.1-8x faster."""
-    if not _use_triton(X):
-        return False
-    if X.device.type != "cuda" or _is_rocm_torch(torch) or _cuda_major(X.device) >= 8:
-        return True
-    return A.shape[1] <= 16 and A.shape[0] >= 4
-
-
 @dataclass
 class MultiLoraBatch:
     """``sorted_idx[seg_start[u]:seg_start[u + 1]]`` are adapter u's rows; id -1 sorts last, in no segment.
@@ -611,7 +589,7 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
         raise ValueError(
             "Call set_multi_lora_batch(model, ...) with this batch's adapter ids first."
         )
-    if _use_segment_kernels(X, A):
+    if _use_triton(X):
         Y = MultiLoRA_W.apply(X, W, W_quant, A, B, scales, batch.sorted_idx, batch.seg_start)
     else:
         Wd = fast_dequantize(W, W_quant, dtype = X.dtype) if W_quant is not None else W.to(X.dtype)
