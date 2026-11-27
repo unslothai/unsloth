@@ -562,3 +562,42 @@ def test_an_active_grad_scaler_blocks_both_tiers(af):
     trainer = _Trainer()
     trainer.accelerator = type("A", (), {"scaler": object(), "mixed_precision": "no"})()
     assert "fp16" in af._blocker(trainer, _plan_model(), forced = True)
+
+
+class _Looped(torch.nn.Module):
+    """One block run twice under reentrant checkpointing; its Linear is read functionally (F.linear on the child's
+    weight, never calling the child), as Inkling-2's loop convolutions are."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.block = torch.nn.Module()
+        self.block.proj = torch.nn.Linear(8, 8)
+        self.block.forward = lambda t: torch.tanh(
+            torch.nn.functional.linear(t, self.block.proj.weight, self.block.proj.bias)
+        )
+        self.head = torch.nn.Linear(8, 1)
+
+    def forward(self, x):
+        from torch.utils.checkpoint import checkpoint
+
+        h = x.requires_grad_()
+        for _ in range(2):
+            h = checkpoint(self.block, h, use_reentrant = True)
+        return self.head(h).square().mean()
+
+
+def test_a_functionally_read_weight_in_a_looped_block_is_stepped_at_the_end(af):
+    x = torch.randn(4, 8)
+    standard, head = _Looped(), _Looped()
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(head.parameters(), lr = 1e-2), model = head)
+    for _ in range(3):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+    assert wrapper.deferred_steps == 3 * 2

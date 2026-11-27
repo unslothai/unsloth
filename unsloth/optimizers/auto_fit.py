@@ -253,10 +253,13 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                 self._handles.append(p.register_post_accumulate_grad_hook(hook))
 
     def _watch_reuse(self, model):
-        """Count calls of the modules that own each weight during the forward (not the checkpoint recompute in
-        backward). A weight whose modules ran more than once (a looped block, a tied embedding) may receive one
-        gradient per call under reentrant checkpointing, so it is stepped at optimizer.step() instead."""
+        """Count module calls during the forward (not the checkpoint recompute inside backward). A weight is reused
+        when a module that owns it ran more than once in total (a tied embedding and head), or any module containing
+        it ran more than once (a looped block, even when the weight is read functionally, as Inkling-2's loop
+        convolutions are). Under reentrant checkpointing such a weight gets one gradient per call, so it is stepped
+        at optimizer.step() instead."""
         mine = {id(p) for group in self.param_groups for p in group["params"]}
+        self._names = {id(p): n for n, p in model.named_parameters() if id(p) in mine}
         ref = weakref.ref(self)
 
         def count(module, args):
@@ -264,19 +267,34 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             if opt is not None and opt._armed and not _in_backward_pass():
                 opt._calls[id(module)] = opt._calls.get(id(module), 0) + 1
 
-        for module in model.modules():
-            owned = [p for p in module.parameters(recurse = False) if id(p) in mine]
-            if not owned:
-                continue
-            for p in owned:
-                self._owners.setdefault(id(p), []).append(id(module))
-            self._handles.append(module.register_forward_pre_hook(count))
+        owners, within = {}, {}
+
+        def walk(module, ancestors):
+            here = ancestors + (id(module),)
+            holds = False
+            for p in module.parameters(recurse = False):
+                if id(p) in mine:
+                    owners.setdefault(id(p), []).append(id(module))
+                    within.setdefault(id(p), set()).update(here)
+                    holds = True
+            for child in module.children():
+                holds = walk(child, here) or holds
+            if holds:
+                self._handles.append(module.register_forward_pre_hook(count))
+            return holds
+
+        walk(model, ())
+        self._owners = {k: (tuple(v), tuple(within[k])) for k, v in owners.items()}
 
     def _reused(self, p):
-        owners = self._owners.get(id(p))
-        if not owners:
+        entry = self._owners.get(id(p))
+        if not entry:
             return False
-        return sum(self._calls.get(m, 0) for m in owners) > 1
+        direct, containing = entry
+        calls = self._calls
+        if sum(calls.get(m, 0) for m in direct) > 1:
+            return True
+        return any(calls.get(m, 0) > 1 for m in containing)
 
     def close(self):
         for handle in self._handles:
@@ -323,9 +341,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         if not final and self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done:
+            name = getattr(self, "_names", {}).get(id(p), "a weight")
             raise RuntimeError(
                 "Unsloth: the optimizer steps inside backward (each gradient is used and freed as soon as it "
-                "is ready), but a weight received a second gradient before optimizer.step(): this training "
+                f"is ready), but {name} received a second gradient before optimizer.step(): this training "
                 "step runs more than one backward (gradient accumulation, a split micro-batch, or a weight "
                 "reused across checkpointed blocks). Set UNSLOTH_AUTO_FIT_OPTIMIZER=0 to keep every gradient "
                 "until the step."
