@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from unsloth.kernels import fp8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 CUDA = torch.cuda.is_available()
 needs_cuda = pytest.mark.skipif(not CUDA, reason = "needs CUDA")
@@ -186,6 +187,8 @@ def _router(monkeypatch):
         with monkeypatch.context() as mp:
             mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
             mp.setattr(torch.version, "hip", hip)
+            if not hip:
+                drop_rocm_tag(mp, torch)
             if hip is not None:
                 props = types.SimpleNamespace(gcnArchName = arch)
                 mp.setattr(torch.cuda, "get_device_properties", lambda *a, **k: props)
