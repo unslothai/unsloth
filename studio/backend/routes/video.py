@@ -2662,6 +2662,8 @@ async def _start_openai_video(
                 input_reference = reference,
                 video_id = video_id,
                 seed = seed,
+                # Headless (API, chat tool, MCP): nothing shows the preview, so skip the per-step previewer.
+                live_preview = False,
                 **_batch_kwargs(batch),
             )
             controls = dict(

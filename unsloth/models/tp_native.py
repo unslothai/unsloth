@@ -5333,6 +5333,58 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     model = loaded[0] if isinstance(loaded, tuple) else loaded
     if plan.get("model") is model and plan["remote"]:
         counts["remote_expert_tensors"] += _ep_finish_remote(model, tp, rank, tuple(ranks))
+    _guard_preloaded_modules(model)
+    model.__dict__["_unsloth_tp_load_stats"] = {
+        "tp": tp,
+        "rank": rank,
+        "quantized_on_load": state.get("on_load", True),
+        **counts,
+    }
+    state["models"].append(model)
+    return loaded
+
+
+# Expert parallel over a pre-quantized packed checkpoint (packed_expert_loader: compressed-tensors / ModelOpt NVFP4,
+# MXFP8): transformers' own load, but the packed expert stacks are read for this rank's experts only.
+_EP_PACKED_LOAD = contextvars.ContextVar("_unsloth_ep_packed_load", default = None)
+
+
+def ep_packed_load_cut(model, experts):
+    """(lo, hi, mark) when expert parallel loading reads only experts [lo, hi) of the packed `experts` module of
+    `model` (the meta model transformers is loading), else None (it loads every expert)."""
+    info = _EP_PACKED_LOAD.get()
+    if (
+        info is None
+        or _TP_QUANTIZE_OWNER.get()
+        is not info["owner"]  # a nested load inside it is an ordinary load
+        or not isinstance(model, info["cls"])
+        or info.setdefault("model", model) is not model
+    ):
+        return None
+    tp, rank = info["tp"], info["rank"]
+    E = experts.__dict__.get("num_experts")
+    if not isinstance(E, int) or isinstance(E, bool) or E % tp or E // tp < 2:
+        return None
+    for block in moe_blocks_with_experts(model):
+        chain = _experts_chain(block)
+        if chain and chain[-1] is experts:
+            if expert_shard_problem(block, tp) is not None:
+                return None
+            per = E // tp
+            return rank * per, (rank + 1) * per, (E, tp, info["ranks"])
+    return None
+
+
+def ep_packed_load_count(loaded_bytes, kept_bytes):
+    """packed_expert_loader read one packed expert stack for this rank's experts only."""
+    info = _EP_PACKED_LOAD.get()
+    if info is not None:
+        info["sharded_expert_stacks"] += 1
+        info["loaded_bytes"] += loaded_bytes
+        info["kept_bytes"] += kept_bytes
+
+
+def _guard_preloaded_modules(model):
     for module in model.modules():
         if "_unsloth_tp_load_guard" in module.__dict__:
             continue
@@ -5342,13 +5394,47 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
             module.__dict__["_unsloth_tp_load_guard"] = module.register_forward_pre_hook(
                 _refuse_unapplied_forward
             )
-    model.__dict__["_unsloth_tp_load_stats"] = {
-        "tp": tp,
-        "rank": rank,
-        "quantized_on_load": state.get("on_load", True),
-        **counts,
+
+
+def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
+    """transformers' own (full) load of an otherwise quantized checkpoint under expert parallel loading, where
+    packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut)."""
+    owner = object()
+    info = {
+        "owner": owner,
+        "cls": cls,
+        "tp": mesh.size(),
+        "rank": mesh.get_local_rank(),
+        "ranks": tuple(mesh.mesh.tolist()),
+        "sharded_expert_stacks": 0,
+        "loaded_bytes": 0,
+        "kept_bytes": 0,
     }
-    state["models"].append(model)
+    # As _tp_load_quantizing: an enclosing sharded_loading passes this load through, a nested one is ordinary.
+    state["active"] = True
+    owner_token = _TP_QUANTIZE_OWNER.set(owner)
+    token = _EP_PACKED_LOAD.set(info)
+    try:
+        loaded = original(cls, name, *args, **kwargs)
+    finally:
+        _EP_PACKED_LOAD.reset(token)
+        _TP_QUANTIZE_OWNER.reset(owner_token)
+        state["active"] = False
+    model = loaded[0] if isinstance(loaded, tuple) else loaded
+    if info["sharded_expert_stacks"] and info.get("model") is model:
+        _guard_preloaded_modules(model)
+        model.__dict__["_unsloth_tp_load_stats"] = {
+            "tp": info["tp"],
+            "rank": info["rank"],
+            "quantized_on_load": False,
+            "prequantized": True,
+            "sharded_weights": 0,
+            "sharded_expert_stacks": info["sharded_expert_stacks"],
+            "remote_expert_tensors": 0,
+            "loaded_bytes": info["loaded_bytes"],
+            "kept_bytes": info["kept_bytes"],
+        }
+        state["models"].append(model)
     return loaded
 
 
@@ -5705,6 +5791,9 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
             finally:
                 state.pop("on_load", None)
         if chunked is None or on_load or mesh.ndim != 1:
+            if other and not fp8 and mesh.ndim == 1 and mesh.size() > 1:
+                # A pre-quantized packed checkpoint: packed_expert_loader reads this rank's experts only.
+                return _ep_packed_load(original, cls, name, args, original_kwargs, mesh, state)
             return original(cls, name, *args, **original_kwargs)
         state["on_load"] = False
         try:
