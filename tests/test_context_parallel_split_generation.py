@@ -247,7 +247,7 @@ def _share_trainer(**attrs):
     [
         ({}, ["p"] * 16, (), slice(8, 16)),
         ({}, ["p"] * 4, (), None),  # one group cannot be split over two peers
-        ({}, ["p"] * 8, (), None),  # one group per peer: unmasked decode, kept on the root
+        ({}, ["p"] * 8, (), slice(4, 8)),  # one group per peer
         ({}, ["p"] * 24, (), slice(12, 24)),  # 3 groups per peer
         ({}, ["p"] * 14, (), None),  # not whole groups
         ({}, ["p"] * 16, (["img"] * 16,), None),  # TRL 0.24 images
