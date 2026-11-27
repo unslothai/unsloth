@@ -97,9 +97,7 @@ export function annotateNames(
   // Two names spelled alike cannot be told apart in the output, so neither is annotated.
   const shared = (target: string) =>
     names.filter((name) => name.target === target).length > 1;
-  const byLength = names
-    .filter((name) => !shared(name.target))
-    .sort((a, b) => b.target.length - a.target.length);
+  const byLength = [...names].sort((a, b) => b.target.length - a.target.length);
   for (const { source, target } of byLength) {
     for (
       let at = text.indexOf(target);
@@ -110,7 +108,7 @@ export function annotateNames(
       if (LETTER.test(text[end] ?? "") || !startsWord(text, at)) continue;
       if (claimed.some(([from, to]) => at < to && end > from)) continue;
       claimed.push([at, end]);
-      if (annotated.has(source)) continue;
+      if (annotated.has(source) || shared(target)) continue;
       annotated.add(source);
       if (!text.slice(end).trimStart().startsWith(`(${source})`))
         inserts.push([end, ` (${source})`]);

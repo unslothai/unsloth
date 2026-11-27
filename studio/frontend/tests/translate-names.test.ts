@@ -82,6 +82,18 @@ test("two names with one spelling are both left alone rather than guessed", () =
   );
 });
 
+test("a shared full-name spelling still keeps its surname out of it", () => {
+  const spelled = [
+    { source: "John Smith", target: "Джон Смит" },
+    { source: "Jon Smith", target: "Джон Смит" },
+    { source: "Smith", target: "Смит" },
+  ];
+  assert.equal(
+    annotateNames("Джон Смит встретил Джон Смит и Смит.", spelled, new Set()),
+    "Джон Смит встретил Джон Смит и Смит (Smith).",
+  );
+});
+
 test("a spelling ending another word is not that name", () => {
   const mali = [{ source: "Mali", target: "马里" }];
   assert.equal(
