@@ -2042,6 +2042,47 @@ def _resolved_revision(
     return memo[key]
 
 
+_COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _cached_missing_adapter_error(
+    model_name,
+    model_config,
+    revision,
+    token = None,
+    local_files_only = False,
+):
+    """PeftConfig's error without a Hub HEAD if the cache records no adapter_config.json at this commit, else None."""
+    if (
+        model_config is None
+        or local_files_only
+        or not isinstance(model_name, str)
+        or not model_name
+        or _env_says_offline()
+        or os.path.exists(model_name)
+    ):
+        return None
+    try:
+        # Memo hit from the config probe; transformers < 5.18 stamps _commit_hash instead.
+        resolved = _resolved_revision(model_name, revision, token, local_files_only)
+        if _ResolvedRevision is not None and isinstance(resolved, _ResolvedRevision):
+            commit = resolved.resolved
+        elif isinstance(revision, str) and _COMMIT_HASH_RE.fullmatch(revision):
+            commit = revision
+        else:
+            commit = getattr(model_config, "_commit_hash", None)
+        if not isinstance(commit, str) or not _COMMIT_HASH_RE.fullmatch(commit):
+            return None
+        from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+        from peft.utils import CONFIG_NAME
+
+        if try_to_load_from_cache(model_name, CONFIG_NAME, revision = commit) is not _CACHED_NO_EXIST:
+            return None
+    except Exception:
+        return None
+    return ValueError(f"Can't find '{CONFIG_NAME}' at '{model_name}'")
+
+
 _TOKEN_FROM_KWARGS = object()
 
 
@@ -3238,7 +3279,66 @@ def _routed_dense_weight(module):
             module.weight_scale,
             getattr(module, "_unsloth_ct_compute_dtype", torch.bfloat16),
         )
-    return None
+    return _native_fp8_dense_weight(module)
+
+
+def _native_fp8_dense_weight(module):
+    """Dense weight of a native fp8 linear (transformers FineGrainedFP8 / ModelOpt FP8Linear: float8 weight with
+    `weight_scale_inv`, FbgemmFP8Linear: `weight_scale`), else None. PEFT's DoRA would read the raw float8."""
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.dtype not in _FP8_DTYPES or weight.ndim != 2:
+        return None
+    scale = None
+    for name in ("weight_scale_inv", "weight_scale"):
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, torch.Tensor):
+            scale = candidate
+            break
+    if scale is None:
+        return None
+    bias = getattr(module, "bias", None)
+    dtype = getattr(module, "_unsloth_ct_compute_dtype", None) or (
+        bias.dtype
+        if isinstance(bias, torch.Tensor) and bias.dtype in (torch.float16, torch.bfloat16)
+        else torch.bfloat16
+    )
+    from unsloth.kernels.fp8 import (
+        _blockwise_weight_dequant_any_shape,
+        _torch_blockwise_dequant,
+        weight_dequant,
+    )
+
+    block_size = getattr(module, "block_size", None)
+    # Block scales by the module's block_size, also a single block column ((256, 128) with 128x128 blocks).
+    if block_size is not None and scale.ndim == 2 and scale.numel() > 1:
+        block_size = [int(block_size[0]), int(block_size[1])]
+        # The Triton kernel is CUDA / ROCm only; a CPU-resident (offloaded) weight takes the torch expansion.
+        dequant = (
+            _blockwise_weight_dequant_any_shape if weight.is_cuda else _torch_blockwise_dequant
+        )
+        return dequant(weight, scale, block_size, dtype)
+    return weight_dequant(weight, scale, dtype)
+
+
+def _patch_peft_for_native_fp8(model):
+    """Before get_peft_model on a model with native fp8 linears: DoRA reads the dense weight (see above)."""
+    try:
+        modules = model.modules()
+    except Exception:
+        return False
+    for module in modules:
+        weight = getattr(module, "weight", None)
+        if (
+            isinstance(weight, torch.Tensor)
+            and weight.dtype in _FP8_DTYPES
+            and any(
+                isinstance(getattr(module, name, None), torch.Tensor)
+                for name in ("weight_scale_inv", "weight_scale")
+            )
+        ):
+            _patch_peft_for_routed_compressed_tensors()
+            return True
+    return False
 
 
 def _dequantize_routed_linear_(module):
@@ -4576,6 +4676,15 @@ def check_and_disable_bitsandbytes_loading(
     if inkling2_owns_modelopt_quantization(model_config):
         drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
         register_inkling2_expert_dequantization()
+        from .inkling2_packed import (
+            inkling2_packed_experts_enabled,
+            install_inkling2_packed_expert_loading,
+        )
+
+        if (
+            inkling2_packed_experts_enabled()
+        ):  # opt-in: the released NVFP4 / MXFP8 experts stay packed
+            install_inkling2_packed_expert_loading()
         return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:

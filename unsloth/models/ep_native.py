@@ -601,7 +601,45 @@ def apply_expert_parallel(model, mesh = None):
             + (f", {len(kept)} kept whole" if kept else "")
             + "."
         )
+        hint = _list_exchange_hint(model, len(listed), ep)
+        if hint is not None:
+            print(hint)
     return model
+
+
+# The whole model's parameters within this share of one GPU: data parallel holds it per GPU with room for training.
+_DDP_FIT_FRACTION = 0.6
+
+
+def _device_total_bytes():
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+
+
+def _list_exchange_hint(model, listed, ep):
+    """The rank-0 note when transformers 4.x per-expert ModuleList blocks were sharded and the whole model would fit
+    one GPU: their exchange runs one small all-to-all and matmul per expert from the host (OLMoE on 2x T4: 3.4x
+    slower per step than data parallel), so data parallel or transformers 5's fused experts is faster."""
+    if not listed:
+        return None
+    device = _device_total_bytes()
+    if not device:
+        return None
+    whole = 0
+    for _, p in model.named_parameters():
+        nbytes = p.numel() * p.element_size()
+        whole += (
+            nbytes * ep if getattr(p, _EP, None) is not None else nbytes
+        )  # each rank holds 1 / ep of them
+    if whole > _DDP_FIT_FRACTION * device:
+        return None
+    return (
+        f"Unsloth: {listed} mixture-of-experts blocks are transformers 4.x per-expert modules, whose expert "
+        "parallel exchange is bound by the host (one small exchange and matmul per expert). The whole model "
+        f"({whole / 2**30:.1f} GiB of parameters) fits one GPU ({device / 2**30:.0f} GiB): data parallel (unset "
+        "UNSLOTH_EP_SIZE) is usually faster, as is transformers 5, whose fused experts shard without it."
+    )
 
 
 def _lists():
@@ -710,9 +748,8 @@ def _ep_save_entrypoints(level):
         @functools.wraps(prior_save)
         def save_pretrained(*args, **kwargs):
             if _SAVING or kwargs.get("state_dict") is not None:
-                with _lists().remote_experts_for_save(
-                    level
-                ):  # a gathered state dict keeps every expert
+                # a gathered state dict keeps every expert
+                with _lists().remote_experts_for_save(level), _whole_expert_counts(level):
                     return prior_save(*args, **kwargs)
             if kwargs.get("push_to_hub"):
                 raise NotImplementedError(_EP_PUSH_REFUSAL)
@@ -735,7 +772,7 @@ def _ep_save_entrypoints(level):
                     return None
                 _SAVING.append(True)
                 try:
-                    with _lists().remote_experts_for_save(level):
+                    with _lists().remote_experts_for_save(level), _whole_expert_counts(level):
                         return prior_save(*args, state_dict = state, **kwargs)
                 finally:
                     _SAVING.pop()
@@ -750,6 +787,26 @@ def _ep_save_entrypoints(level):
             raise NotImplementedError(_EP_PUSH_REFUSAL)
 
         level.push_to_hub = push_to_hub
+
+
+@contextlib.contextmanager
+def _whole_expert_counts(model):
+    """While the writing rank saves the gathered state dict: the experts modules and their PEFT wrappers report
+    the whole expert count (num_experts, LoRA factor sizes) again. unsloth_zoo's save rewrite of swapped expert
+    LoRA factors (Llama 4, Qwen3-VL-MoE) and of the legacy grouped lora_B packing reshapes by num_experts, which
+    the shard set to this rank's count."""
+    restore = []
+    try:
+        for block in _tpn().moe_blocks_with_experts(model):
+            shard = block.__dict__.get("_unsloth_tp_expert_shard")
+            for module, key, value in getattr(shard, "full_attrs", None) or ():
+                if key in module.__dict__:
+                    restore.append((module, key, module.__dict__[key]))
+                    module.__dict__[key] = value
+        yield
+    finally:
+        for module, key, value in reversed(restore):
+            module.__dict__[key] = value
 
 
 _EP_PUSH_REFUSAL = (

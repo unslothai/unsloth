@@ -126,19 +126,38 @@ PLATFORMS = {
         "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
-    # NVIDIA publishes flash-attn for Windows ARM64 (studio resolves it), so only the other two are
-    # built, against the only CUDA torch for it: 2.14.0+cu134, which needs CUDA 13.4.
+    # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
+    # two are built here, against the CUDA torches that exist for it on NVIDIA's index:
+    # 2.14.0+cu134 (CUDA 13.4, the first toolkit with a Windows ARM64 nvcc) and 2.15.0+cu135.
+    # Each torch builds with the toolkit its own +cuNNN tag names, from WIN_ARM64_CUDA_REDIST.
     "win_arm64": {
         "os": "windows",
         "runner": "windows-11-arm",
         "abi": "TRUE",
         "label": " / win_arm64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
-        "torches": ("2.14.0",),
+        "torches": ("2.14.0", "2.15.0"),
         "packages": ("causal-conv1d", "mamba-ssm"),
-        "torch_local": "cu134",
+        "torch_locals": {"2.14.0": "cu134", "2.15.0": "cu135"},
         "torch_index_args": "--extra-index-url https://pypi.nvidia.com/nvtorch_oot",
     },
+}
+
+# Windows ARM64 CUDA toolkit per torch, installed from NVIDIA's redist archives: (release,
+# manifest URL, manifest sha256). The manifest lists a sha256 for every archive, so pinning it
+# pins everything unpacked. Keyed by torch so a cell's nvcc matches the +cuNNN torch it links.
+_CUDA_REDIST = "https://developer.download.nvidia.com/compute/cuda/redist"
+WIN_ARM64_CUDA_REDIST = {
+    "2.14.0": (
+        "13.4.1",
+        f"{_CUDA_REDIST}/redistrib_13.4.1.json",
+        "e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5",
+    ),
+    "2.15.0": (
+        "13.5.0",
+        f"{_CUDA_REDIST}/redistrib_13.5.0.json",
+        "401529e951b845788177f999c0756c520c4d0db1cd4cd05c0a295e331884b596",
+    ),
 }
 
 # Per platform, what differs from the x86_64 defaults below without changing any x86_64 cell.
@@ -147,6 +166,7 @@ _PLATFORM_DEFAULTS = {
     "packages": None,  # every SPECS entry
     "extra_torch_packages": None,  # packages built for `extra_torches` (None = `packages`)
     "torch_local": "",
+    "torch_locals": None,  # torch version -> local tag, over `torch_local`
     "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
 }
 # Checks interpreter arch: emulated x64 Python on ARM must not make an x64 wheel named arm64.
@@ -162,14 +182,29 @@ def _platform(platform: str, key: str):
     return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
 
 
-# torch 2.10 and 2.11 pin triton==3.6.0, 2.12.0 triton==3.7.0, 2.13 triton==3.7.1 and 2.14
-# triton~=3.8.0 (Linux-only markers); exact pins keep the Windows smoke test reproducible.
+def _torch_local(platform: str, torch_version: str) -> str:
+    """The +cuNNN local tag the platform's torch carries for this version ("" for none)."""
+    per_torch = _platform(platform, "torch_locals") or {}
+    return per_torch.get(torch_version, _platform(platform, "torch_local"))
+
+
+def _cuda_redist(platform: str, torch_version: str) -> tuple[str, str, str]:
+    """(release, manifest URL, manifest sha256) of the redist toolkit, or empty strings."""
+    if platform != "win_arm64":
+        return "", "", ""
+    return WIN_ARM64_CUDA_REDIST[torch_version]
+
+
+# torch 2.10 and 2.11 pin triton==3.6.0, 2.12.0 triton==3.7.0, 2.13 triton==3.7.1, 2.14
+# triton~=3.8.0 and 2.15 triton~=3.9.0 (Linux-only markers); exact pins keep the Windows smoke
+# test reproducible. 3.8.0.post29 and 3.9.0.post30 also publish win_arm64 wheels.
 TRITON_WINDOWS = {
     "2.10": "3.6.0.post26",
     "2.11": "3.6.0.post26",
     "2.12": "3.7.0.post26",
     "2.13": "3.7.1.post27",
     "2.14": "3.8.0.post29",
+    "2.15": "3.9.0.post30",
 }
 WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
@@ -382,10 +417,11 @@ def build_matrix(
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
         torches = _platform_torches(platform)
-        local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
             if torch_version not in torches:
                 continue
+            local = _torch_local(platform, torch_version)
+            redist_version, redist_url, redist_sha256 = _cuda_redist(platform, torch_version)
             packages_here = _platform_packages(platform, torch_version)
             for python_version in chosen_python:
                 for package in chosen_packages:
@@ -434,13 +470,16 @@ def build_matrix(
                             + (f"+{local}" if local else ""),
                             "torch_index_args": _platform(platform, "torch_index_args"),
                             "py_platform": _PY_PLATFORM[platform],
+                            "cuda_redist_version": redist_version,
+                            "cuda_redist_url": redist_url,
+                            "cuda_redist_sha256": redist_sha256,
                         }
                     )
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
             "(torch 2.10.0 to 2.12.0 build flash-attn on win_amd64 only; win_arm64 builds "
-            "causal-conv1d and mamba-ssm for torch 2.14.0 only)."
+            "causal-conv1d and mamba-ssm for torch 2.14.0 and 2.15.0 only)."
         )
     return include
 

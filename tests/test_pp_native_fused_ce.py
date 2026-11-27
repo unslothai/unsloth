@@ -19,9 +19,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if not os.path.exists(os.path.join(REPO, "unsloth", "models", "deepseek_v41", "modeling.py")):
     pytest.skip("this tree has no native DeepSeek-V4.1", allow_module_level = True)
-if not torch.cuda.is_available():
-    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")  # unsloth_zoo on its CPU backend
-pytest.importorskip("unsloth_zoo.fused_losses.cross_entropy_loss")
 
 
 def _packages():
@@ -47,9 +44,21 @@ def _load(name):
     return sys.modules[full]
 
 
-ppn = _load("pp_native")
-from unsloth.models.deepseek_v41 import modeling as dsv41  # noqa: E402
-from unsloth.models.deepseek_v41.configuration import DeepseekV41Config  # noqa: E402
+# unsloth_zoo on its CPU backend while this module imports it. Only for the import: left set, every later
+# test in the worker and every interpreter it spawns would take the CPU route too.
+_FORCE_CPU = os.environ.get("UNSLOTH_FORCE_CPU")
+if not torch.cuda.is_available():
+    os.environ.setdefault("UNSLOTH_FORCE_CPU", "1")
+try:
+    pytest.importorskip("unsloth_zoo.fused_losses.cross_entropy_loss")
+    ppn = _load("pp_native")
+    from unsloth.models.deepseek_v41 import modeling as dsv41
+    from unsloth.models.deepseek_v41.configuration import DeepseekV41Config
+finally:
+    if _FORCE_CPU is None:
+        os.environ.pop("UNSLOTH_FORCE_CPU", None)
+    else:
+        os.environ["UNSLOTH_FORCE_CPU"] = _FORCE_CPU
 
 VOCAB = 512
 SEQ = 24
@@ -103,6 +112,9 @@ def build(seed = 0):
             if p.ndim == 1 or name.endswith(("q_weight", "k_weight")):
                 p.add_(torch.randn_like(p) * 0.1)
     model.bind_token_map([i % 97 for i in range(VOCAB)])
+    # A model built from a config has no checkpoint to bind its engram tables to: give them rows.
+    for rows, layer_id in zip(text["engram_num_embeddings"], text["engram_layer_ids"]):
+        model.model.set_engram_table(layer_id, torch.randn(rows, text["engram_head_dim"]) * 0.5)
     for layer in model.model.layers:
         if layer.engram is not None:
             layer.engram.clamp_value = 1e-2

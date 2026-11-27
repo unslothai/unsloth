@@ -1498,7 +1498,7 @@ export function ChatsLibrary({
             <div
               role="toolbar"
               aria-label={t("shell.selection.countSelected", { count: selectedChats.length })}
-              className="fixed bottom-8 left-1/2 z-30 flex font-sans -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+              className="glass-card fixed bottom-8 left-1/2 z-30 flex font-sans -translate-x-1/2 items-center gap-2 rounded-full bg-sidebar py-2 pl-6 pr-2 text-sidebar-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
             >
               <span aria-live="polite" className="mr-4 whitespace-nowrap text-sm font-medium">
                 {t("shell.selection.countSelected", { count: selectedChats.length })}

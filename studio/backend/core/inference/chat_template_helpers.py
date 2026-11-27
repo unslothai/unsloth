@@ -1977,6 +1977,9 @@ class InklingMessageNormalizer:
         self._think_open = False
         self._in_string = False
         self._escape = False
+        # [at, len] of each <think> written: the opener's offset in the output, then the body length.
+        self.thought_spans: list[list[int]] = []
+        self._emitted = 0
 
     def feed(self, text: str) -> str:
         self._buffer += text or ""
@@ -1989,6 +1992,7 @@ class InklingMessageNormalizer:
         output = self.drain()
         if self._think_open:
             output += _THINK_CLOSE
+            self._emitted += len(_THINK_CLOSE)
             self._think_open = False
         return output
 
@@ -2049,23 +2053,29 @@ class InklingMessageNormalizer:
                             key = len,
                         )
                     )
-                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)], output))
                     self._buffer = held
                     break
                 index, marker = min(found)
-                output.append(self._body(self._buffer[:index]))
+                output.append(self._body(self._buffer[:index], output))
                 self._buffer = self._buffer[index + len(marker) :]
                 if self._think_open:
                     output.append(_THINK_CLOSE)
                     self._think_open = False
                 self._state = "header"
-        return "".join(output)
+        result = "".join(output)
+        self._emitted += len(result)
+        return result
 
-    def _body(self, text: str) -> str:
-        if self._state == "thought" and text and not self._think_open:
-            self._think_open = True
-            return _THINK_OPEN + text
-        return text
+    def _body(self, text: str, output: list) -> str:
+        if self._state != "thought" or not text:
+            return text
+        if self._think_open:
+            self.thought_spans[-1][1] += len(text)
+            return text
+        self._think_open = True
+        self.thought_spans.append([self._emitted + sum(map(len, output)), len(text)])
+        return _THINK_OPEN + text
 
     def _tool_call_end(self) -> int:
         """Index of the closer outside the call's JSON strings, or -1."""
@@ -2254,6 +2264,26 @@ class RecipientChannelNormalizer:
         return output
 
 
+class ThoughtSpans(str):
+    """A normalized snapshot carrying ``thought_spans``, so a literal ``<think>`` in it is never read as one."""
+
+    thought_spans: tuple = ()
+
+
+def with_thought_spans(
+    text: str,
+    normalizer,
+    prefix: str = "",
+) -> str:
+    # A prefilled prefix is text no span covers, so that snapshot keeps tag parsing.
+    spans = getattr(normalizer, "thought_spans", None)
+    if spans is None or prefix:
+        return text
+    snapshot = ThoughtSpans(text)
+    snapshot.thought_spans = tuple(map(tuple, spans))
+    return snapshot
+
+
 def make_reasoning_normalizer(
     markers: tuple[str, ...],
     *,
@@ -2292,6 +2322,7 @@ def normalize_reasoning_snapshots(
     prompt: Optional[str] = None,
     continued: bool = False,
     ended = None,
+    prefix: str = "",
 ):
     """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
     closes."""
@@ -2314,7 +2345,7 @@ def normalize_reasoning_snapshots(
         raw_output = snapshot
         if delta:
             normalized_output += delta
-            yield normalized_output
+            yield with_thought_spans(normalized_output, normalizer, prefix)
 
     cancelled = (
         not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
@@ -2322,7 +2353,7 @@ def normalize_reasoning_snapshots(
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
-        yield normalized_output
+        yield with_thought_spans(normalized_output, normalizer, prefix)
 
 
 def detect_think_prefill(
@@ -2654,6 +2685,43 @@ def count_structured_images(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
 
 
+def flatten_part_lists(messages: list, image_marker: Optional[str] = None) -> Optional[list]:
+    """String content for a template that concatenates ``message['content']``: parts in order, an
+    image as ``image_marker``. None when nothing is a part list or a part has nowhere to go."""
+
+    def typed(text):
+        # The template never names the marker, so the sweep left a typed one; only images may mark.
+        if image_marker and isinstance(text, str):
+            return text.replace(image_marker, f"{image_marker[0]} {image_marker[1:]}")
+        return text
+
+    flattened, changed = [], False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            flattened.append(
+                {**message, "content": typed(content)} if isinstance(content, str) else message
+            )
+            continue
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                text = typed(part)
+            elif not isinstance(part, dict):
+                return None
+            elif part.get("type") == "text":
+                text = typed(part.get("text"))
+            elif str(part.get("type", "")).lower() in _STRUCTURED_IMAGE_TYPES and image_marker:
+                text = image_marker
+            else:
+                return None
+            if isinstance(text, str) and text:
+                pieces.append(text)
+        flattened.append({**message, "content": "\n".join(pieces)})
+        changed = True
+    return flattened if changed else None
+
+
 def count_structured_videos(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
@@ -2947,8 +3015,10 @@ def apply_chat_template_for_generation(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     continue_final_message: bool = False,
+    image_marker: Optional[str] = None,
 ) -> str:
-    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
+    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn.
+    A template that cannot take part lists is retried on flattened content, images as ``image_marker``."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
     for template in _selected_chat_template_strings(tokenizer, tools):
@@ -2970,7 +3040,21 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
-    if reasoning_effort is not None:
+    if enable_thinking is False and reasoning_effort is None:
+        from core.inference.llama_cpp import _thinking_off_effort
+
+        # Swapped, not added: a processor rejecting enable_thinking would otherwise drop "none" with it.
+        def _off(kw: dict) -> dict:
+            template = "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools")))
+            if "enable_thinking" not in kw or _thinking_off_effort(template) != "none":
+                return kw
+            return {
+                **{k: v for k, v in kw.items() if k != "enable_thinking"},
+                "reasoning_effort": "none",
+            }
+
+        attempts = [_off(kw) for kw in attempts]
+    if any("reasoning_effort" in kw for kw in attempts):
         from core.inference.llama_cpp import _fit_reasoning_effort_to_template
 
         # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
@@ -2979,7 +3063,7 @@ def apply_chat_template_for_generation(
                 **kw,
                 "reasoning_effort": _fit_reasoning_effort_to_template(
                     "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
-                    reasoning_effort,
+                    kw["reasoning_effort"],
                 ),
             }
             if "reasoning_effort" in kw
@@ -3127,6 +3211,12 @@ def apply_chat_template_for_generation(
             try:
                 # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
                 return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
+        flattened = flatten_part_lists(normalized, image_marker)
+        if flattened is not None:
+            try:
+                return _render_with_fallback(flattened)
             except Exception:
                 pass
         raise

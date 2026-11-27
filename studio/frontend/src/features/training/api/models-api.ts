@@ -97,6 +97,7 @@ export interface ModelConfigResponse {
   model_type?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+  bnb_4bit?: boolean;
 }
 
 // laya: a Laya checkpoint. clef: Cloudflare Clef. llm: a text or vision LLM trained with a Clef decision head.

@@ -894,6 +894,7 @@ export interface DiffusionTrainingStatus {
   catalog_path?: string | null;
   family?: string | null;
   base_model?: string | null;
+  instance_prompt?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
   // What block_swap resolved to once the base loaded; absent when it did not run.
@@ -982,8 +983,13 @@ export async function getDiffusionTrainingRun(
   return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
-export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
-  return parseJson(await authFetch("/api/train/diffusion/status"));
+/** The raw body, so a poller can skip an unchanged reply without parsing it. */
+export async function getDiffusionTrainingStatusText(): Promise<string> {
+  const response = await authFetch("/api/train/diffusion/status");
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return response.text();
 }
 
 export interface DiffusionDatasetSummary {
