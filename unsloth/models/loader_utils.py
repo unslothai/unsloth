@@ -2080,7 +2080,6 @@ def _cached_missing_adapter_error(
             return None
     except Exception:
         return None
-    # peft's exact wording; callers match on it.
     return ValueError(f"Can't find '{CONFIG_NAME}' at '{model_name}'")
 
 
