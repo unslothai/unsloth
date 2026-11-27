@@ -145,8 +145,7 @@ from utils.hidden_models import (
 
 
 def _cached_decision_repo_ids() -> set[str]:
-    """Cached repos in a Clef or Laya layout, which only the built-ins match by id. The cache is shared, so a managed
-    account, whose Hub rows are filtered, is not told what it holds."""
+    """Cached Clef / Laya repos; empty for managed accounts, as the cache is shared."""
     if account_access.managed_account():
         return set()
     return {

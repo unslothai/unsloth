@@ -312,11 +312,10 @@ def _read_local_json_object(path: Path) -> dict:
 
 
 def _is_decision_folder(path: str | Path, hf_token: Optional[str] = None) -> bool:
-    """A Decision API model (Clef or Laya) by its files: a folder, or a repo id's cached snapshot. Never raises, so
-    one odd folder cannot fail a scan or a load."""
+    """A Clef or Laya model by its files (folder or cached repo snapshot). Never raises."""
     from utils.models.model_config import is_decision_model
     try:
-        # The d1 marker test reads config.json, and that read blocks forever on a FIFO.
+        # The d1 marker test reads config.json, which blocks forever on a FIFO.
         config = Path(path) / "config.json"
         if config.exists() and not config.is_file():
             return False
@@ -345,8 +344,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if not config:
         return None
 
-    # A Clef decision model is a causal LM plus a decision head, so the rules below answer True. Checked after the
-    # guarded read above, as the d1 marker test reads config.json again.
+    # A Clef model is a causal LM plus a decision head, which the rules below would call chat.
     if _is_decision_folder(path):
         return False
 

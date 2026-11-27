@@ -170,8 +170,7 @@ def test_a_diffusion_data_dir_refuses_a_unc_path_before_resolving_it(studio_home
 def test_a_chat_load_refuses_a_unc_path_before_resolving_it(
     studio_home, unc_calls, unc, lease, monkeypatch
 ):
-    # The Decision API layout check reads the model's files, so it runs after the access check. A native
-    # selection's model_path is only a label: its file is checked once the lease names it.
+    # The decision layout check reads files, so it must run after the access check.
     import asyncio
     from contextlib import asynccontextmanager
 

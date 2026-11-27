@@ -19313,7 +19313,6 @@ async def load_model_gated(
     model is resident and raises the real exception. A chat-image restore already
     holds the model load, lifecycle and media admission gates.
     """
-    # The built-ins by id; _load_model_impl checks any other decision model by its files.
     if is_decision_api_model(request.model_path):
         raise HTTPException(status_code = 400, detail = _NOT_A_CHAT_MODEL)
     # A sidecar install that has reserved the swap must not lose to a load that
@@ -20423,9 +20422,8 @@ async def _load_model_impl(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
-    # Other Clef and Laya models, by their files: after the access check, as a share path must be refused before
-    # any disk call. The account may see this model by now, so a tokenless one reads the cache as the owner does
-    # (False, the anonymous sentinel, would skip it). A native lease names one .gguf; its model_path is a label.
+    # After the access check: share paths are refused before any disk call. `or None`: the anonymous False sentinel
+    # would skip the cache read. A native lease's model_path is a label.
     if not request.native_path_lease and await asyncio.to_thread(
         _is_decision_folder, request.model_path, request.hf_token or None
     ):

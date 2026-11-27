@@ -183,8 +183,7 @@ def test_a_chat_model_still_loads(monkeypatch, model_path):
     assert loaded == [model_path]
 
 
-# Decision models that are not built-in repos: Studio's own decision runs, a downloaded one in outputs, a
-# third-party one in the HF cache. Only their files say what they are.
+# Decision models that are not built-in repos, known only by their files.
 THIRD_PARTY_CLEF = "someone/clef-finetune"
 ALICE = AccountContext("a" * 32, "alice")
 _QWEN3_CONFIG = b'{"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}'
@@ -371,7 +370,7 @@ def test_a_managed_account_without_a_token_cannot_load_a_cached_decision_repo_as
 
 
 def test_a_layout_check_that_raises_never_fails_a_load(monkeypatch, tmp_path):
-    # Path.is_file() raises PermissionError or ENAMETOOLONG for some paths; the load goes on and reports its own error.
+    # Path.is_file() can raise (PermissionError, ENAMETOOLONG); the load must go on.
     from utils.models import model_config
 
     folder = _write(tmp_path / "run", CHAT_FILES)
