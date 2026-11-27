@@ -177,9 +177,8 @@ def _load_conditioners(
     vaes = True,
     pipe = None,
 ):
-    """Loads only the named conditioning components, not the transformer; omit workflow=, which prunes the block graph statically and cannot be undone.
-    ``text`` / ``vaes`` pick the halves a partial cache miss needs (a clip-only edit never reads the conditioner);
-    ``pipe`` adds a half to a pipeline an earlier call opened."""
+    """Loads only the named halves (text, vaes), not the transformer; omit workflow=, which prunes
+    the block graph and cannot be undone; pipe adds to a pipeline an earlier call opened."""
     import torch
 
     from core.inference.diffusion import hub_cache_dir
@@ -257,8 +256,7 @@ def _read_layers_config(pipe, cache_dir, auth) -> Any:
 
 
 def _finish_read_layers(encoder) -> None:
-    """A pass-through 51st slot keeps hidden_states[50] the raw output of the 50th layer, not the post-norm one; the
-    norm and the LM head never feed it, so they go before the move to the device."""
+    """Pass-through 51st slot keeps hidden_states[50] raw; norm and lm_head go before the move."""
     import torch
 
     from core.inference.video_minimax_h3_te import _terminator_layer_class
@@ -333,9 +331,8 @@ class _HiddenStateReached(Exception):
 
 
 def _early_exit_hidden_state(encoder, layer: int, kwargs: dict) -> Any:
-    """hidden_states[layer] is the raw output of decoder layer ``layer - 1`` (index 0 is the embeddings), so capture
-    it there and stop: layers past it and the final norm never run, and the other 64 states are never kept. Text-only
-    input, so no deepstack visual rows are added between layers. None (run the full encoder) on any surprise."""
+    """hidden_states[layer] is the raw output of decoder layer layer-1 (0 is embeddings), so capture
+    and stop there; text-only, so no deepstack rows; None (full encoder) on any surprise."""
     import torch
 
     text_model = getattr(getattr(encoder, "model", None), "language_model", None)
@@ -632,8 +629,7 @@ def _open_h3_cache(cfg, on_event):
 
 
 def _h3_clip_key(pcache, path, width, height, num_frames, num_audio_latents) -> Optional[str]:
-    """Everything that changes a clip's (video mean, video std, audio) entry: canvas, frame count, fps, the audio
-    layout, and the clip's own bytes. None (uncached) when there is no cache or the clip cannot be read."""
+    """Covers canvas, frames, fps, audio layout and clip bytes; None if uncached or unreadable."""
     if pcache is None:
         return None
     try:
@@ -702,9 +698,8 @@ def _prepare_h3_conditioning(
     num_frames: int,
     num_audio_latents: int,
 ):
-    """Returns (caption_embeds, per-clip (video_a, video_b, audio)), or None on stop; a warm
-    persistent cache serves both without loading conditioner or VAEs (misses are encoded and
-    written back); loads and encodes are RNG-isolated so warm and cold runs match."""
+    """Returns (caption_embeds, per-clip (video_a, video_b, audio)) or None on stop; warm cache
+    skips conditioner/VAE loads, misses written back; RNG-isolated so warm and cold runs match."""
     import torch
 
     from core.training.diffusion_samples import isolated_sampling
@@ -749,8 +744,7 @@ def _prepare_h3_conditioning(
     vaes_loaded = len(clip_entries) < len(clip_paths)
     with isolated_sampling(device, False):
         pipe = _load_conditioners(cfg, device, text = text_loaded, vaes = vaes_loaded)
-        # The load can move the revision (a first run read "unresolved", or the fetch pulled a newer snapshot):
-        # what was served under the old namespace is dropped and everything is read and written under the new one.
+        # A load can move the revision; what was served under the old namespace is dropped.
         if pcache is not None:
             fresh = _open_h3_cache(cfg, on_event)
             if fresh is not None and fresh.family != pcache.family:
@@ -860,8 +854,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_frames = h3_video_latent_frames(num_frames)
     num_audio_latents = h3_audio_latent_count(num_frames)
 
-    # Phases 1 and 2: caption embeddings and clip latents, served from the persistent cache when warm.
-    # One canvas from the FIRST clip's aspect ratio; other clips are cover-cropped onto it.
+    # Phases 1-2 use the persistent cache if warm; canvas from first clip, rest cover-cropped.
     width, height = _dataset_canvas(clip_paths[0], cfg.resolution)
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     prepared = _prepare_h3_conditioning(

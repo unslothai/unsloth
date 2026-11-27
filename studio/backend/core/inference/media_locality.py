@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Proves a media model is downloaded via the download planner (tri-state); refuses unless complete;
-auto-switch never downloads; a planner failure is not proof."""
+"""Proves a media model is complete; auto-switch never downloads; planner failure is not proof."""
 
 from __future__ import annotations
 
@@ -261,8 +260,7 @@ def _pipeline_components_present(root: Path) -> bool:
         if not isinstance(index, dict):
             return False
         if name == "modular_model_index.json" and _is_flux3_manifest(index):
-            # FLUX.3 loads only fixed folders, so judge those; its optional upsampler sits in
-            # another repo.
+            # FLUX.3 loads only fixed folders, so judge those; upsampler is in another repo.
             from core.inference.diffusion_families import local_pipeline_components_are_complete
             from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
 
@@ -290,16 +288,14 @@ def _pipeline_components_present(root: Path) -> bool:
 
 def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
     """Hub repo id of a FLUX.3 snapshot whose only gaps are dense transformer and text-encoder
-    weights, or None; everything else the loader opens, configs and tokenizer included, must be
-    there"""
+    weights, or None; all else the loader opens, configs and tokenizer included, must be there."""
     import json
     try:
         snapshot = Path(path)
         repo_dir = snapshot.parent.parent
         if snapshot.parent.name != "snapshots" or not repo_dir.name.startswith("models--"):
             return None
-        # A load by repo id resolves refs/main, so only the snapshot main names may be rewritten: another (or a
-        # commit-pinned) snapshot would be swapped for a different one.
+        # Only refs/main's snapshot may be rewritten; a pinned or other one would be swapped.
         if (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip() != snapshot.name:
             return None
         index = json.loads((snapshot / "modular_model_index.json").read_text(encoding = "utf-8-sig"))
@@ -359,8 +355,7 @@ def _cached_snapshot_root(repo_id: str, revision: str = "") -> Optional[Path]:
 
     repo_dir = Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
     snapshots = repo_dir / "snapshots"
-    # a pinned revision is a commit sha, or a branch or tag the cache records under refs/, and it is the only
-    # candidate: falling back to main is how the default snapshot approves a pin
+    # A pinned revision is the only candidate; a fallback to main is how a pin gets approved.
     for candidate in [revision] if revision else ["main"]:
         pinned = snapshots / candidate
         if pinned.is_dir():
@@ -426,8 +421,7 @@ def _component_present(component: Path, variant: str = "") -> bool:
     # A tokenizer needs its vocabulary file, which name varies by class, so any known spelling answers.
     if (component / "tokenizer_config.json").is_file():
         return any((component / name).is_file() for name in _TOKENIZER_ASSETS)
-    # a metadata-only component is its config: a scheduler or processor directory holding anything else at all (a stray
-    # README) builds nothing and is fetched at load time
+    # A metadata-only component is its config; a stray file builds nothing, fetched at load.
     return any(entry.name.endswith("config.json") for entry in files)
 
 
@@ -473,9 +467,7 @@ def missing_download_bytes(
         repo = flux3_seeded_cache_repo(target.model_path) if owner == DIFFUSION else None
         if repo is None:
             return UNSIZED_MISSING
-        # A FLUX.3 snapshot Studio staged for a pre-quantized seed holds no dense transformer shards: whether the seed
-        # is cached and is what the load picks is the planner's question, so ask it of the repo, which is also what
-        # the switch loads (cache only), instead of requiring dense weights the load never opens.
+        # FLUX.3 seed snapshots have no dense shards: plan the cached repo, not dense weights.
         family_override = seeded_family_override(target.model_path, repo)
         target = replace(target, model_path = repo)
         local_pipeline = False

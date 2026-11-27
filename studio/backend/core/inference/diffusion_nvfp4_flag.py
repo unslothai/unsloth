@@ -36,7 +36,6 @@ def nvfp4_diffusion_enabled() -> bool:
 
 
 def is_nvfp4(value: Optional[str]) -> bool:
-    """Whether ``value`` names the NVFP4 scheme, in any case or spacing."""
     if value is None:
         return False
     return str(value).strip().lower().replace("-", "_") == NVFP4_SCHEME
@@ -55,14 +54,12 @@ def nvfp4_repo_blocked(repo_id: Optional[str]) -> bool:
 
 
 def without_nvfp4(schemes: Iterable[str]) -> tuple[str, ...]:
-    """``schemes`` in order, minus NVFP4 while the switch is off."""
     if nvfp4_diffusion_enabled():
         return tuple(schemes)
     return tuple(scheme for scheme in schemes if not is_nvfp4(scheme))
 
 
 def nvfp4_disabled_message(control: str = "transformer_quant") -> str:
-    """The refusal a request naming NVFP4 gets while the switch is off."""
     return (
         f"{control}='nvfp4' could not be used: NVFP4 is disabled in this build. Pick another "
         f"precision, or set {NVFP4_DIFFUSION_ENV}=1 on the Unsloth backend to enable it."

@@ -178,8 +178,7 @@ def load_krea2_pipeline(
     import diffusers
     import torch
 
-    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
-    # AttributeError, so fail first with the fix.
+    # Krea2Pipeline needs diffusers 0.39+; older installs hit a bare AttributeError below.
     if not hasattr(diffusers, "Krea2Pipeline"):
         from .diffusion_families import DIFFUSERS_UPDATE_REMEDY
         raise RuntimeError(

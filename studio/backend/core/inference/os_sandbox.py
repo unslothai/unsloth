@@ -342,8 +342,7 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
-    # POSIX: each directory's stat as its parent saw it (the root via stat, as scandir follows it). While still current
-    # when walked, it stands in for the path/.. stat ismount reads; a missing or swapped one takes the ismount calls.
+    # POSIX: parent-listed stat stands in for path/.. if unswapped; if missing, ismount runs.
     listed: dict[str, os.stat_result] = {}
     if not _NT_PATHS:
         try:
@@ -772,8 +771,7 @@ _nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
 
 
 def _tree_fingerprint(folder: str) -> "tuple | None":
-    """Path, link target and link count of every entry; None past the cap or where the tree cannot be fully
-    read. scandir, not walk: walk lists a whole directory before the cap could stop it."""
+    """Path, link target, nlink; None past the cap or if unreadable; scandir, not walk."""
     rows = []
     pending = [folder]
     while pending:

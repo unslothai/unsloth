@@ -25,7 +25,6 @@ from models import TrainingStartRequest
 
 TRAINING_TYPES = ("LoRA/QLoRA", "Full Finetuning", "Continued Pretraining")
 
-# Only "vlm" and "audio_vlm" forward the selectors on CUDA.
 BRANCHES = ("text", "vlm", "audio_vlm", "codec", "whisper", "snac")
 _CUDA_BRANCHES_READING_SELECTORS = ("vlm", "audio_vlm")
 
@@ -105,8 +104,7 @@ def _request_config(
     selectors: dict,
     target_modules = None,
 ) -> dict:
-    """Build the worker config the way /training/start does: through the request model, so
-    an omitted field arrives as the request model's default rather than as a missing key."""
+    """Build the config as /training/start does; omitted fields get request-model defaults."""
     request = TrainingStartRequest(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         training_type = training_type,
@@ -228,8 +226,7 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
     vision, language, attention, mlp = _finetune_selectors(config)
     targets = config.get("target_modules")
 
-    # Two rules, as in the loader: no explicit list means the default seven (all attn/MLP);
-    # with one, the text branch also needs a layer family unless it is a CPT target.
+    # No list means the default seven; with one, text needs a layer family unless a CPT target.
     if not targets:
         empty = not (attention or mlp)
     else:
@@ -241,8 +238,7 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
 
 @pytest.mark.parametrize("branch", BRANCHES)
 def test_omitted_selectors_never_trip_either_guard(branch):
-    """The headline of the default flip: a caller that sends none of the four now trains
-    the language attention and MLP modules on every branch instead of failing."""
+    """Omitted selectors train language attention and MLP on every branch instead of failing."""
     for training_type in TRAINING_TYPES:
         config = _request_config(training_type, branch, {})
 
@@ -453,8 +449,7 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
 
 @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]])
 def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
-    """embed_tokens and lm_head train through the get_peft_model CPT path, so preflight must not
-    refuse them however the four selectors are set."""
+    """embed_tokens and lm_head train via get_peft_model CPT, so preflight never refuses them."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
 
     _check_mlx_finetune_targets(config)
@@ -494,8 +489,7 @@ def test_mlx_still_rejects_an_empty_module_selection_on_the_defaults():
 
 
 def test_the_error_names_every_field_the_caller_has_to_set():
-    """An all-false request has to be actionable: the message must name the four request
-    fields, not the internal flag names, so an API caller can fix it without reading source."""
+    """The error must name the request fields, not internal flags, so an API caller can fix it."""
     config = _request_config("LoRA/QLoRA", "vlm", SELECTOR_CASES["all_false"], None)
 
     with pytest.raises(ValueError) as excinfo:

@@ -233,8 +233,7 @@ def test_request_guard_of_an_unseeded_family_reads_its_learned_peak(klein_pipe):
 
 
 def _pin_device_name(monkeypatch):
-    """The fake torch these tests install has no get_device_name, so the record would key on None while the lookup,
-    on real torch, keys on the visible card's name: pin both."""
+    """The fake torch lacks get_device_name, so records would key on None; pin the card name."""
     monkeypatch.setattr(mp, "device_name", lambda device: "NVIDIA L4")
 
 
@@ -444,8 +443,7 @@ def _tied_tiny_encoder(torch):
 
 
 def test_partial_residency_keeps_tied_weights_together():
-    """Base: the embedding group went resident while the tied head streamed; the head's offload pointed the shared
-    weight back at the host and the next encode failed (index on cuda, weight on cpu)."""
+    """Tied embedding and head stay resident together; splitting them broke the next encode."""
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA and diffusers group offloading")
@@ -1376,8 +1374,7 @@ def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
 
 
 def test_the_setup_oom_retry_frees_what_the_failed_setup_allocated(monkeypatch):
-    """The failed setup's traceback holds its frames, so the stored failure is only type + message: a 4 MiB
-    allocation made before the OOM is gone by the time the retry installs again, and after it."""
+    """Only type and message are stored: a traceback would pin the failed setup's allocations."""
     import weakref
 
     torch = pytest.importorskip("torch")

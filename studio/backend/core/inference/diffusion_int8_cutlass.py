@@ -91,9 +91,7 @@ def row_bucket(m: int) -> int:
 
 
 FILL_TIE_ENV = "UNSLOTH_DIFFUSION_INT8_CUTLASS_FILL_TIES"
-# Race timings this close to the fastest winner are a tie. L4, 3072x9216 at 4224 rows: the same tile's sustained race
-# timing moved 1.7-5.7% between loads, and a 256-row tile won by 2.1% while it runs 2.4% slower sustained at 4176 rows
-# (2252 vs 1779 us in the pipeline) than the 128-row tile it beat.
+# Timings within 3% of the fastest winner are a tie; sustained timings moved 1.7-5.7% between loads.
 _FILL_TIE = 0.03
 
 
@@ -153,7 +151,6 @@ def slot(m: int, entry: dict) -> Optional[int]:
 
 
 def large_slots(entry: dict) -> tuple:
-    """Tiles of the entry's slots that serve M >= ``_LARGE_M``."""
     return tuple(v for r, v in entry.items() if r >= _LARGE_M)
 
 
@@ -483,8 +480,7 @@ def _is_oom(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
-# Out-of-memory failures inside ``_probe_tile``, counted here: the allocator's num_ooms stays 0 under
-# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync, which never fills the native allocator's stats.
+# OOMs counted here: num_ooms stays 0 under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync.
 _PROBE_OOMS: list = [0]
 _PROBED: dict = {}
 # The tile verdicts persist per card (uuid), driver, torch / CUDA / Triton / torchao, this module's source, and
@@ -530,8 +526,7 @@ def _stored_tiles(index: int, fam: int) -> Optional[tuple]:
 
 
 def _alloc_failures(index: int) -> Optional[int]:
-    """The caching allocator's out-of-memory count on ``index`` after a sync; None when the context cannot answer
-    (a sticky launch error). Never raises."""
+    """OOM count after sync; None if context cannot answer (sticky launch error); never raises."""
     try:
         import torch
         torch.cuda.synchronize(index)
@@ -566,8 +561,7 @@ def probed_tiles(index: int) -> tuple:
                 probe_ooms = _PROBE_OOMS[0]
                 ok = tuple(t for t in range(len(tiles(fam))) if _probe_tile(index, fam, t, pairs))
                 failed = [t for t in range(len(tiles(fam))) if t not in ok]
-                # a failure persists only when it repeats and nothing around it failed: one transient error, an
-                # out-of-memory on a full card or a broken context must not drop a tile for good
+                # Drop a tile for good only if its failure repeats and nothing else failed.
                 repeated = not any(_probe_tile(index, fam, t, pairs) for t in failed)
                 after = _alloc_failures(index)
                 if _PROBE_OOMS[0] != probe_ooms or (
@@ -620,7 +614,6 @@ _CLOCK_DRIFT = 0.05
 
 
 def sustained_decides(m: int, short: dict, sustained: dict, base_name: str) -> tuple:
-    """(decide on the sustained timings, today's sustained / short - 1)."""
     try:
         drift = float(sustained[base_name]) / float(short[base_name]) - 1.0
     except (KeyError, TypeError, ZeroDivisionError):

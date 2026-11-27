@@ -128,8 +128,7 @@ def _resolve_get_last_error() -> Any:
         return None
     import os
 
-    # Lookup goes through torch's own extension (searches only its dependency tree): a global lookup
-    # could hit a second libcudart from another package or LD_PRELOAD.
+    # Use torch's own extension: a global lookup could hit a second libcudart or LD_PRELOAD.
     fn = getattr(ctypes.CDLL(torch._C.__file__), sym, None)
     if fn is not None:
         return fn
