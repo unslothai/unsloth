@@ -583,9 +583,11 @@ def normalize_model_override(
         ):
             entry[key] = value if value == "off" else float(value)
 
-    # An omitted override follows the engine's default, which differs for local MLX checkpoints.
-    if isinstance(payload.get("load_in_4bit"), bool):
-        entry["load_in_4bit"] = payload["load_in_4bit"]
+    # An untouched model follows the default for its loader.
+    if payload.get("load_in_4bit") is False:
+        entry["load_in_4bit"] = False
+    if payload.get("mlx_load_in_4bit") is True:
+        entry["mlx_load_in_4bit"] = True
 
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
@@ -691,8 +693,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["load_in_4bit"] = False
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
-    elif not is_gguf and isinstance(override.get("load_in_4bit"), bool):
-        kwargs["load_in_4bit"] = override["load_in_4bit"]
+    elif not is_gguf:
+        if override.get("mlx_load_in_4bit") is True:
+            kwargs["load_in_4bit"] = True
+        elif override.get("load_in_4bit") is False:
+            kwargs["load_in_4bit"] = False
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:

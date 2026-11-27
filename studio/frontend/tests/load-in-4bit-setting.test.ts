@@ -57,7 +57,8 @@ test("the server row carries an explicit precision choice and reads it back", ()
   assert.equal(fromApiOverride({}).loadIn4bit, true);
   const localOptIn = normalizePerModelConfig({ mlxLoadIn4bit: true });
   assert.equal(isDefaultConfig(localOptIn), false);
-  assert.equal(toApiOverride(localOptIn).load_in_4bit, true);
+  assert.equal(toApiOverride(localOptIn).load_in_4bit, undefined);
+  assert.equal(toApiOverride(localOptIn).mlx_load_in_4bit, true);
   assert.equal(fromApiOverride(toApiOverride(localOptIn)).mlxLoadIn4bit, true);
   assert.equal(normalizePerModelConfig({ loadIn4bit: true }).mlxLoadIn4bit, undefined);
 });
