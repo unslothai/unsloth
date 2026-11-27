@@ -126,13 +126,14 @@ export function ChatFilesBridge() {
     useChatFiles.setState({ files: [] });
   }, [sessionKey]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat cancels this one's scan, even mid-stream at the same length.
   useEffect(() => {
     const messages =
       settled ?? aui.thread().getState().messages.slice(0, settledCount);
     return scheduleChatFiles(messages, folders, (files) =>
       useChatFiles.setState({ files }),
     );
-  }, [aui, settled, settledCount, folders]);
+  }, [aui, sessionKey, settled, settledCount, folders]);
   useEffect(() => () => useChatFiles.setState({ files: [] }), []);
 
   return null;

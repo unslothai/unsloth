@@ -5161,7 +5161,7 @@ export function ChatPage({
               />
             ) : null}
             {view.mode === "single" ||
-            (view.mode === "project" && activeThreadId != null) ? (
+            (view.mode === "project" && projectChatShownId != null) ? (
               <ChatFilesMenu />
             ) : null}
             {view.mode === "single" && (

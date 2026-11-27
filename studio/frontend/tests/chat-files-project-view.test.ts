@@ -52,7 +52,7 @@ function count(value: unknown, type: string): number {
   return (node.type === type ? 1 : 0) + count(node.props.children, type);
 }
 
-function headerMenu(view: View, activeThreadId: string | null): unknown {
+function headerMenu(view: View, projectChatShownId: string | null): unknown {
   const menu = findNode(
     (node) =>
       ts.isJsxExpression(node) &&
@@ -62,7 +62,7 @@ function headerMenu(view: View, activeThreadId: string | null): unknown {
   assert.ok(menu.expression);
   return evaluate(`return (${menu.expression.getText(source)});`, {
     view,
-    activeThreadId,
+    projectChatShownId,
     ChatFilesMenu: "files-menu",
   });
 }
@@ -113,6 +113,7 @@ test("a chat started on a project page collects its files", () => {
 
 test("the Files menu shows for a project chat, not for the empty project page or Compare", () => {
   assert.ok(headerMenu({ mode: "project", projectId: "p1" }, "t1"));
+  // An outgoing chat's id can linger in the store over an empty project page.
   assert.equal(headerMenu({ mode: "project", projectId: "p1" }, null), null);
   assert.ok(headerMenu({ mode: "single", threadId: "t1" }, "t1"));
   assert.ok(headerMenu({ mode: "single" }, null));
