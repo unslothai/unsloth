@@ -41,6 +41,7 @@ from .float8_training import (
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
+    int8_lora_from_env,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -2318,6 +2319,8 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        if fp8_lora is None and fp8_request in (None, False):
+            fp8_lora = int8_lora_from_env(model, qat_scheme = qat_scheme)
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
@@ -3909,6 +3912,10 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if fp8_lora is None and float8_training is None:
+            fp8_lora = int8_lora_from_env(
+                model, full_finetuning = full_finetuning, qat_scheme = qat_scheme
+            )
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
