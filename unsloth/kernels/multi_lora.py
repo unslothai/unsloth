@@ -880,7 +880,12 @@ def _peft_expert_in_axis(is_transposed: bool) -> int:
 
 
 def _expert_stack_shape(param) -> tuple[int, int, int]:
-    shape = getattr(param, "_original_shape", None) or tuple(param.shape)
+    shape = getattr(param, "_original_shape", None)
+    # FSDP2 sharded load: a local chunk recording the whole shape.
+    preload = getattr(param, "_unsloth_fsdp2_preload", None)
+    if shape is None and isinstance(preload, dict) and not preload.get("packed"):
+        shape = preload["shape"]
+    shape = shape or tuple(param.shape)
     if len(shape) != 3:
         raise ValueError(f"Expected a fused (experts, d1, d2) parameter, got shape {tuple(shape)}.")
     return tuple(int(x) for x in shape)
