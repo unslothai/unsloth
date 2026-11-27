@@ -104,6 +104,69 @@ def test_kernel_shim_defaults_to_the_reference(monkeypatch):
     assert gp._resolve_ops().name == "unsloth_zoo.gguf_kernels"
 
 
+@pytest.mark.parametrize("kernels", ("reference", "zoo"))
+def test_gguf_expert_stack_grouped_mm_routing(monkeypatch, kernels):
+    # zoo kernels: the stack's own grouped GEMM (gguf_grouped_mm) runs forward and dX; reference: the zoo's
+    # chunked dequantize + grouped GEMM. Both equal the dense stack.
+    import sys
+    import types
+
+    pe = pytest.importorskip("unsloth_zoo.packed_experts")
+    if not getattr(pe, "PACKED_EXPERT_OWN_GROUPED_MM", False):
+        pytest.skip("this unsloth_zoo has no own-grouped-GEMM hook")
+    from unsloth_zoo.mxfp4_stacked_experts import _grouped_mm
+
+    calls = []
+
+    def fake_grouped(
+        x,
+        packed,
+        t,
+        shape,
+        counts,
+        transpose_b = True,
+    ):
+        calls.append((tuple(shape), counts.dtype, transpose_b))
+        dense = ref.dequantize_gguf(packed, t, shape, x.dtype)
+        weight = dense.transpose(-1, -2) if transpose_b else dense
+        return _grouped_mm(x, weight, torch.cumsum(counts, 0, dtype = torch.int32))
+
+    fake = types.ModuleType("unsloth_zoo.gguf_kernels")
+    fake.dequantize_gguf = lambda packed, t, shape, dtype: ref.dequantize_gguf(
+        packed, t, shape, dtype
+    )
+    fake.gguf_linear = lambda x, packed, t, shape, bias = None: gp._reference_linear(
+        x, packed, t, shape, bias
+    )
+    fake.gguf_linear_backward_input = gp._reference_linear_backward_input
+    fake.gguf_grouped_mm = fake_grouped
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.gguf_kernels", fake)
+    monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", kernels)
+    monkeypatch.setattr(gp, "_OPS", [])
+    cls = gp.gguf_expert_param_class()
+    assert cls is not None
+    E, N, K = 3, 32, 256
+    t = ref.GGML_TYPE_IDS["Q8_0"]
+    blocks = torch.stack([_blocks("Q8_0", N, K, seed) for seed in range(E)])
+    param = cls(blocks, ggml_type = t, packed_cols = K)
+    dense = ref.dequantize_gguf(blocks, t, (E, N, K), torch.float32)
+    counts = torch.tensor([2, 0, 5])
+    x = torch.randn(7, K, requires_grad = True)
+    x2 = x.detach().clone().requires_grad_(True)
+    out = pe.packed_expert_grouped_linear(x, param, counts, True)
+    want = _grouped_mm(x2, dense.transpose(-1, -2), torch.cumsum(counts, 0, dtype = torch.int32))
+    assert torch.equal(out, want)
+    g = torch.randn_like(out)
+    out.backward(g)
+    want.backward(g)
+    assert torch.equal(x.grad, x2.grad)
+    assert calls == (
+        [((E, N, K), torch.int32, True), ((E, N, K), torch.int32, False)]
+        if kernels == "zoo"
+        else []
+    )
+
+
 def test_input_permutation_is_the_dense_column_reorder():
     torch.manual_seed(0)
     permutation = torch.randperm(256)

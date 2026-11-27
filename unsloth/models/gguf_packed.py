@@ -95,6 +95,8 @@ def _resolve_ops():
         dequantize = _ref.dequantize_gguf,
         linear = _reference_linear,
         linear_backward_input = _reference_linear_backward_input,
+        # None: expert stacks take the zoo's chunked dequantize + grouped GEMM.
+        grouped_mm = None,
         supports = _ref.is_supported,
     )
     if os.environ.get("UNSLOTH_GGUF_KERNELS", "reference").strip().lower() != "zoo":
@@ -140,11 +142,27 @@ def _resolve_ops():
             )
         return _reference_linear_backward_input(grad_output, packed, ggml_type, shape)
 
+    zoo_grouped = getattr(zoo_kernels, "gguf_grouped_mm", None)
+
+    def grouped_mm(x, packed, ggml_type, shape, counts, transpose_b):
+        # Rows sorted by expert, counts[e] each; transpose_b: x @ W[e]^T (forward), else x @ W[e] (dX). None declines.
+        if zoo_grouped is None or not _zoo_has(ggml_type):
+            return None
+        return zoo_grouped(
+            x,
+            packed,
+            ggml_type,
+            tuple(shape),
+            counts.to(torch.int32),
+            transpose_b = bool(transpose_b),
+        )
+
     return types.SimpleNamespace(
         name = "unsloth_zoo.gguf_kernels",
         dequantize = dequantize,
         linear = linear,
         linear_backward_input = linear_backward_input,
+        grouped_mm = grouped_mm,
         supports = lambda t: _zoo_has(t) or _ref.is_supported(t),
     )
 
@@ -449,6 +467,15 @@ def gguf_expert_param_class():
         def packed_dims(self):
             E, N, _ = self.data.shape
             return E, N, self.packed_cols
+
+        def packed_grouped_mm(self, x, counts, transpose_b):
+            """The zoo's hook for a stack's own grouped GEMM (frozen base, forward and dX); None declines."""
+            grouped = gguf_ops().grouped_mm
+            if grouped is None:
+                return None
+            E, N, _ = self.data.shape
+            blocks = self.as_subclass(torch.Tensor)
+            return grouped(x, blocks, self.ggml_type, (E, N, self.packed_cols), counts, transpose_b)
 
         def _init_kwargs(self):
             kwargs = super()._init_kwargs()
