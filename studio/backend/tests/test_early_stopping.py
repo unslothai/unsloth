@@ -412,6 +412,26 @@ def test_pipeline_checkpoint_restores_each_stages_own_weights(tmp_path):
         assert model[f"stage{rank}"].item() == rank + 1.0
 
 
+def test_checkpoint_keeps_patience_when_weights_cannot_be_serialized(tmp_path):
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    args = SimpleNamespace(output_dir = str(tmp_path))
+    state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = True)
+    weights = torch.sparse_coo_tensor([[0]], [1.0], (2,))
+    model = nn.ParameterDict({"weight": nn.Parameter(weights)})
+    callback = es.create_early_stopping_callback(2)
+    callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+    state.global_step = 2
+    callback.on_evaluate(args, state, None, metrics = {"eval_loss": 2.0}, model = model)
+    callback.on_save(args, state, None)
+
+    resumed = es.create_early_stopping_callback(2, resume_from_checkpoint = checkpoint)
+    resumed.on_train_begin(args, state, None, model = model)
+    assert resumed.best_step == 1
+    assert resumed.bad_evals == 1
+    assert resumed._best_weights is None
+
+
 def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):
     # Zoo's MLX trainer restores the best adapters whenever the run finishes; the CUDA path keeps the same contract.
     trainer = _trainer(tmp_path, eval_target = 1.0, max_steps = 5, eval_steps = 2)

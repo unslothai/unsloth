@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 import tempfile
@@ -35,12 +37,37 @@ def early_stopping_patience(value: Any) -> int:
     return min(int(patience), MAX_EARLY_STOPPING_PATIENCE)
 
 
+def _shard_signature(model, trainable):
+    from unsloth.models.ep_native import _layout, is_expert_parallel
+    from unsloth.models.portable_resume import _ep_layout, _is_dtensor
+    from unsloth.models.tp_native import _param_layouts
+
+    tensor_layouts = _param_layouts(model)
+    shards = {}
+    for name, param in trainable.items():
+        if _is_dtensor(param):
+            shards[name] = (
+                tuple(param.shape),
+                param.device_mesh.mesh.tolist(),
+                tuple(repr(placement) for placement in param.placements),
+                tensor_layouts.get(id(param)),
+            )
+        elif (layout := _ep_layout(param)) is not None:
+            shards[name] = layout
+    expert = _layout(model) if is_expert_parallel(model) else None
+    if not shards and expert is None:
+        return None
+    encoded = json.dumps((expert, shards), sort_keys = True, separators = (",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
 def create_early_stopping_callback(
     patience: int,
     user_stopped = None,
     resume_from_checkpoint = None,
     *,
     pipeline_parallel: bool = False,
+    sharded: bool = False,
 ):
     """HF TrainerCallback: counts evaluations whose eval_loss is not below the best so far, stops the run after
     ``patience`` of them in a row, and, like load_best_model_at_end (and zoo's MLX trainer), copies the best
@@ -48,6 +75,11 @@ def create_early_stopping_callback(
     Its own bookkeeping, not EarlyStoppingCallback, which needs metric_for_best_model and restores nothing without
     load_best_model_at_end, and that needs checkpoints Studio does not write by default."""
     from transformers import TrainerCallback
+
+    if pipeline_parallel or sharded:
+        from unsloth.models.fsdp2_save import _local_tensor
+        from unsloth.models.portable_resume import _agree
+    sharded = sharded or pipeline_parallel
 
     class EvalLossEarlyStopping(TrainerCallback):
         def __init__(self):
@@ -58,13 +90,11 @@ def create_early_stopping_callback(
             self.stopped_at: Optional[int] = None
             self.restored = False
             self._best_weights: Optional[dict] = None
+            self._best_layout: Optional[str] = None
             self._too_large = False
 
-        def _checkpoint_path(self, folder, args):
-            name = _EARLY_STOPPING_STATE
-            if pipeline_parallel:
-                name = f"rank-{args.process_index}-of-{args.world_size}.safetensors"
-            return folder / _EARLY_STOPPING_DIR / name
+        def _rank_path(self, args):
+            return f"rank-{args.process_index}-of-{args.world_size}.safetensors"
 
         def on_train_begin(
             self,
@@ -77,37 +107,60 @@ def create_early_stopping_callback(
             if not resume_from_checkpoint:
                 return
             folder = Path(resume_from_checkpoint)
-            source = self._checkpoint_path(folder, args)
-            if not pipeline_parallel and not source.exists():
+            source = folder / _EARLY_STOPPING_DIR / _EARLY_STOPPING_STATE
+            if not source.exists():
                 source = folder / _EARLY_STOPPING_STATE
-            snapshot = self._read_checkpoint(source, state.global_step)
-            if pipeline_parallel:
-                from unsloth.models.portable_resume import _agree
-
-                # Every stage must resume with the same patience, even if a rank file is missing.
+            snapshot = self._read_checkpoint(source, state.global_step, read_weights = not sharded)
+            if sharded:
+                rank_snapshot = self._read_checkpoint(
+                    folder / _EARLY_STOPPING_DIR / self._rank_path(args), state.global_step
+                )
+                # Old pipeline checkpoints placed patience in the rank file only.
                 if not _agree(snapshot is not None):
-                    return
-                weights = snapshot[-1]
-                shapes = {
-                    name: param.shape
-                    for name, param in model.named_parameters()
-                    if param.requires_grad
-                }
-                if not _agree(
-                    bool(weights)
-                    and shapes == {name: value.shape for name, value in weights.items()}
-                ):
-                    snapshot = (*snapshot[:-1], None)
-            if snapshot is not None:
-                (
-                    self.best_step,
-                    self.best_loss,
-                    self.bad_evals,
-                    self._too_large,
-                    self._best_weights,
-                ) = snapshot
+                    if not _agree(rank_snapshot is not None):
+                        return
+                    snapshot = rank_snapshot
+            if snapshot is None:
+                return
 
-        def _read_checkpoint(self, source, step):
+            progress, weights, _ = snapshot
+            self.best_step, self.best_loss, self.bad_evals, self._too_large = progress
+            if sharded:
+                self._restore_rank_weights(model, rank_snapshot, progress)
+            else:
+                self._best_weights = weights
+
+        def _restore_rank_weights(self, model, snapshot, progress):
+            trainable = {
+                name: param for name, param in model.named_parameters() if param.requires_grad
+            }
+            layout = _shard_signature(model, trainable)
+            weights = None
+            self._too_large = False
+            if snapshot is not None:
+                local_progress, local_weights, saved_layout = snapshot
+                # Before layouts were recorded, only plain pipeline stages wrote ranked snapshots.
+                same_layout = saved_layout == (layout or "whole-parameters") or (
+                    saved_layout is None and layout is None and pipeline_parallel
+                )
+                if same_layout and local_progress[:3] == progress[:3]:
+                    weights = local_weights if trainable else {}
+                    self._too_large = local_progress[3]
+            if _agree(
+                weights is not None
+                and {name: _local_tensor(param).shape for name, param in trainable.items()}
+                == {name: value.shape for name, value in weights.items()}
+            ):
+                self._best_weights = weights
+                self._best_layout = layout
+
+        def _read_checkpoint(
+            self,
+            source,
+            step,
+            *,
+            read_weights = True,
+        ):
             if not source.is_file() or source.is_symlink():
                 return None
             try:
@@ -125,22 +178,45 @@ def create_early_stopping_callback(
                     if best_loss is not None and not math.isfinite(best_loss):
                         raise ValueError("invalid early-stopping loss")
                     # Bound restored tensors before allocating them.
-                    if source.stat().st_size > MAX_BEST_WEIGHTS_BYTES + 16 * 1024 * 1024:
-                        raise ValueError("early-stopping weights exceed the checkpoint limit")
-                    weights = {name: saved.get_tensor(name) for name in saved.keys()}
-                return best_step, best_loss, bad_evals, too_large, weights or None
+                    weights = None
+                    if (
+                        read_weights
+                        and source.stat().st_size <= MAX_BEST_WEIGHTS_BYTES + 16 * 1024 * 1024
+                    ):
+                        weights = {name: saved.get_tensor(name) for name in saved.keys()} or None
+                return (best_step, best_loss, bad_evals, too_large), weights, meta.get("layout")
             except Exception as exc:
                 logger.warning(f"Could not restore early-stopping progress: {exc}")
                 return None
 
         def save_checkpoint(self, args, state):
-            if not pipeline_parallel and not state.is_world_process_zero:
+            if not sharded and not state.is_world_process_zero:
                 return
             step = state.global_step
             folder = Path(args.output_dir) / f"checkpoint-{step}"
             if not folder.is_dir():
                 return
-            destination = self._checkpoint_path(folder, args)
+            directory = folder / _EARLY_STOPPING_DIR
+            metadata = {
+                "checkpoint_step": str(step),
+                "best_step": "" if self.best_step is None else str(self.best_step),
+                "best_loss": "" if self.best_loss is None else str(self.best_loss),
+                "bad_evals": str(self.bad_evals),
+                "too_large": "1" if self._too_large else "0",
+            }
+            if state.is_world_process_zero:
+                self._write_checkpoint(
+                    directory / _EARLY_STOPPING_STATE,
+                    metadata,
+                    None if sharded else self._best_weights,
+                )
+            if sharded:
+                metadata["layout"] = self._best_layout or "whole-parameters"
+                self._write_checkpoint(
+                    directory / self._rank_path(args), metadata, self._best_weights
+                )
+
+        def _write_checkpoint(self, destination, metadata, weights):
             pending = None
             try:
                 from safetensors.torch import save_file
@@ -150,20 +226,20 @@ def create_early_stopping_callback(
                     dir = destination.parent, suffix = ".tmp", delete = False
                 ) as file:
                     pending = Path(file.name)
-                save_file(
-                    {
-                        name: value.contiguous()
-                        for name, value in (self._best_weights or {}).items()
-                    },
-                    pending,
-                    metadata = {
-                        "checkpoint_step": str(step),
-                        "best_step": "" if self.best_step is None else str(self.best_step),
-                        "best_loss": "" if self.best_loss is None else str(self.best_loss),
-                        "bad_evals": str(self.bad_evals),
-                        "too_large": "1" if self._too_large else "0",
-                    },
-                )
+                if weights:
+                    try:
+                        save_file(
+                            {name: value.contiguous() for name, value in weights.items()},
+                            pending,
+                            metadata = metadata,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"Could not save the best weights, saving progress only: {exc}"
+                        )
+                        save_file({}, pending, metadata = metadata)
+                else:
+                    save_file({}, pending, metadata = metadata)
                 os.replace(pending, destination)
             except Exception as exc:
                 logger.warning(f"Could not save early-stopping progress: {exc}")
@@ -217,12 +293,21 @@ def create_early_stopping_callback(
             **kwargs,
         ):
             # User stops never restore, even at patience's limit; optimizer state is current.
-            if user_stopped is not None and user_stopped():
+            user_stop = user_stopped is not None and user_stopped()
+            if sharded:
+                user_stop = not _agree(not user_stop)
+            if user_stop:
                 # Studio's manual stop writes its resume checkpoint after on_train_end.
                 return
             best, self._best_weights = self._best_weights, None
             finished = self.stopped_at is not None or state.global_step >= state.max_steps
-            if not finished or self.best_step == state.global_step or best is None or model is None:
+            can_restore = (
+                finished
+                and self.best_step != state.global_step
+                and best is not None
+                and model is not None
+            )
+            if not (_agree(can_restore) if sharded else can_restore):
                 return
             try:
                 import torch
@@ -230,9 +315,14 @@ def create_early_stopping_callback(
                 # Check every shape before touching the model, so a mismatch leaves the final weights whole. copy_
                 # casts and moves one tensor at a time, so nothing is staged on the GPU.
                 pairs = [
-                    (param, best[name]) for name, param in model.named_parameters() if name in best
+                    (_local_tensor(param) if sharded else param, best[name])
+                    for name, param in model.named_parameters()
+                    if name in best
                 ]
-                if any(param.shape != saved.shape for param, saved in pairs):
+                fits = len(pairs) == len(best) and all(
+                    param.shape == saved.shape for param, saved in pairs
+                )
+                if not (_agree(fits) if sharded else fits):
                     raise ValueError("a saved tensor no longer matches its parameter's shape")
                 with torch.no_grad():
                     for param, saved in pairs:
@@ -248,8 +338,13 @@ def create_early_stopping_callback(
             if model is None or self._too_large:
                 return
             try:
-                trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
-                size = sum(p.numel() * p.element_size() for _, p in trainable)
+                trainable = {
+                    name: param for name, param in model.named_parameters() if param.requires_grad
+                }
+                self._best_layout = _shard_signature(model, trainable) if sharded else None
+                if sharded:
+                    trainable = {name: _local_tensor(param) for name, param in trainable.items()}
+                size = sum(param.numel() * param.element_size() for param in trainable.values())
                 if size > MAX_BEST_WEIGHTS_BYTES:
                     self._too_large = True
                     self._best_weights = None
@@ -259,14 +354,14 @@ def create_early_stopping_callback(
                     )
                     return
                 # Refill the previous copy in place: building a new dict first would hold two copies at once.
-                if self._best_weights is not None and self._best_weights.keys() == {
-                    n for n, _ in trainable
-                }:
-                    for n, p in trainable:
+                if self._best_weights is not None and self._best_weights.keys() == trainable.keys():
+                    for n, p in trainable.items():
                         self._best_weights[n].copy_(p.detach())
                 else:
                     self._best_weights = None
-                    self._best_weights = {n: p.detach().to("cpu", copy = True) for n, p in trainable}
+                    self._best_weights = {
+                        n: p.detach().to("cpu", copy = True) for n, p in trainable.items()
+                    }
             except Exception as exc:
                 self._too_large = True
                 self._best_weights = None
@@ -291,11 +386,17 @@ def attach_early_stopping(
     ):
         logger.info("Early stopping is off: this run has no evaluation to watch\n")
         return None
+    pipeline_parallel = getattr(trainer, "_unsloth_pipeline_parallel", None) is not None
+    sharded = pipeline_parallel
+    if not sharded and getattr(trainer.args, "world_size", 1) > 1:
+        from unsloth.models.portable_resume import _sharded_trainer
+        sharded = _sharded_trainer(trainer)
     callback = create_early_stopping_callback(
         patience,
         user_stopped = user_stopped,
         resume_from_checkpoint = resume_from_checkpoint,
-        pipeline_parallel = getattr(trainer, "_unsloth_pipeline_parallel", None) is not None,
+        pipeline_parallel = pipeline_parallel,
+        sharded = sharded,
     )
     trainer.add_callback(callback)
     logger.info(f"Early stopping on: patience of {patience} evaluations\n")
