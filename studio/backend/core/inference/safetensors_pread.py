@@ -19,8 +19,7 @@ from typing import Any, Iterable, Iterator, Optional
 PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 FADVISE_ENV = "UNSLOTH_SAFETENSORS_FADVISE"
 GiB = 1 << 30
-# a ROCm integrated GPU reads through pread when MemAvailable - checkpoint bytes < max(16 GiB, 25% of RAM): the mmap
-# reader's transient (gfx1151, Qwen-Image-2.1, 24.3 GB: peak RSS 30.3 vs 17.5 GiB pread) has to fit in that headroom
+# ROCm iGPU: pread when MemAvailable - checkpoint bytes < max(16 GiB, 25% RAM) (gfx1151 mmap peak RSS 30.3 vs 17.5 GiB)
 PRESSURE_FLOOR_BYTES = 16 * GiB
 PRESSURE_FRACTION = 0.25
 
@@ -32,7 +31,7 @@ _DIFFUSERS_LOADERS = ("diffusers.models.model_loading_utils", "diffusers.models.
 # per load thread, so concurrent media loads never share rules: (target dtype or None = fp32-only video rule, kept dirs,
 # every shard, diffusers shards too[, memory-pressure gate of a ROCm integrated GPU])
 _local = threading.local()
-# DONTNEED calls issued by this process and the last pressure decision (diagnostics; the load path never reads them)
+# diagnostics only
 fadvise_calls = 0
 last_reader_decision: Optional[dict[str, Any]] = None
 

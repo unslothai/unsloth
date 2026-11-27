@@ -287,7 +287,7 @@ def _open_through_transformers(seen, path):
 
 @requires_backend
 def test_rocm_ample_memory_converting_fp32_shard_stays_mapped(monkeypatch, tmp_path):
-    # Codex 4717831117: the gate's mmap must not fall through to the fp32 -> bf16 conversion predicate
+    # the gate's mmap must not fall through to the conversion predicates
     _gpu(monkeypatch, "rocm", True, PLENTY)
     sp.last_reader_decision = None
     path = _fp32_shard(tmp_path)
@@ -300,7 +300,6 @@ def test_rocm_ample_memory_converting_fp32_shard_stays_mapped(monkeypatch, tmp_p
 
 @requires_backend
 def test_rocm_ample_memory_fp32_video_shard_stays_mapped(monkeypatch, tmp_path):
-    # the video scope's fp32-only rule (convert_to None) must not override the gate either
     _gpu(monkeypatch, "rocm", True, PLENTY)
     sp.last_reader_decision = None
     path = _fp32_shard(tmp_path, "transformer")
@@ -331,7 +330,6 @@ def test_rocm_pressure_converting_and_video_fp32_shards_read_pread(monkeypatch, 
 @requires_backend
 @pytest.mark.parametrize("video", [False, True])
 def test_windows_discrete_conversion_rules_unchanged(monkeypatch, tmp_path, video):
-    # non-ROCm: the fp32 video rule and the converting rule still read through pread
     _gpu(monkeypatch, "cuda", False, PLENTY, platform = "win32")
     path = _fp32_shard(tmp_path)
     seen = _spy(monkeypatch)
