@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
-import { hubTokenHeader } from "@/features/hub";
+import { CONTEXT_LENGTHS } from "@/config/training";
+import { authFetch } from "@/features/auth/api";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { TrainingConfigState } from "../types/config";
 import { buildTrainingStartPayload } from "./mappers";
@@ -32,7 +33,57 @@ export type TokenPreviewResponse = {
   final_format: string | null;
   vocab_size: number;
   example_text: string | null;
+  max_row_tokens?: number | null;
+  recommended_max_seq_length?: number | null;
 };
+
+/** Smallest standard CONTEXT_LENGTHS bucket covering `maxTokens` (#18236). */
+export function recommendContextLengthForTokenCount(
+  maxTokens: number | null | undefined,
+  modelMaxLength?: number | null,
+): number | null {
+  if (typeof maxTokens !== "number" || !Number.isFinite(maxTokens) || maxTokens <= 0) {
+    return null;
+  }
+  const minBucket = CONTEXT_LENGTHS[0] ?? 512;
+  const maxBucket = CONTEXT_LENGTHS[CONTEXT_LENGTHS.length - 1] ?? 262144;
+  const cap =
+    typeof modelMaxLength === "number" &&
+    Number.isFinite(modelMaxLength) &&
+    modelMaxLength >= minBucket &&
+    modelMaxLength <= maxBucket
+      ? Math.floor(modelMaxLength)
+      : maxBucket;
+  for (const bucket of CONTEXT_LENGTHS) {
+    if (bucket >= maxTokens) {
+      return Math.min(bucket, cap);
+    }
+  }
+  return Math.min(maxBucket, cap);
+}
+
+/** Resolve recommended context length from a TokenPreviewResponse (#18236). */
+export function resolveRecommendedContextLength(
+  response: Pick<TokenPreviewResponse, "recommended_max_seq_length" | "max_row_tokens" | "samples">,
+): { recommended: number; maxTokens: number } | null {
+  const sampleMax = response.samples.reduce((acc, sample) => {
+    const rowLen = sample.truncated_from ?? sample.num_tokens;
+    return rowLen > acc ? rowLen : acc;
+  }, 0);
+  const maxTokens =
+    typeof response.max_row_tokens === "number" && response.max_row_tokens > 0
+      ? Math.max(response.max_row_tokens, sampleMax)
+      : sampleMax;
+  const recommended =
+    typeof response.recommended_max_seq_length === "number" &&
+    response.recommended_max_seq_length > 0
+      ? response.recommended_max_seq_length
+      : recommendContextLengthForTokenCount(maxTokens);
+  if (!recommended || maxTokens <= 0) {
+    return null;
+  }
+  return { recommended, maxTokens };
+}
 
 type TokenPreviewArgs = {
   config: TrainingConfigState;

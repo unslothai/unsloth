@@ -25,6 +25,39 @@ _EXAMPLE_CONVERSATION = [
     {"role": "assistant", "content": "The capital of Hungary is Budapest."},
 ]
 
+_STANDARD_CONTEXT_LENGTHS = (
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+)
+
+
+def _recommend_max_seq_length(lengths: list[int], tokenizer: Any = None) -> int | None:
+    """Smallest standard context length bucket covering the longest sampled dataset row (#18236)."""
+    valid = [int(n) for n in lengths if isinstance(n, (int, float)) and n > 0]
+    if not valid:
+        return None
+    max_tokens = max(valid)
+    model_cap = getattr(tokenizer, "model_max_length", None)
+    if (
+        not isinstance(model_cap, int)
+        or isinstance(model_cap, bool)
+        or model_cap < _STANDARD_CONTEXT_LENGTHS[0]
+        or model_cap > _STANDARD_CONTEXT_LENGTHS[-1]
+    ):
+        model_cap = _STANDARD_CONTEXT_LENGTHS[-1]
+    for bucket in _STANDARD_CONTEXT_LENGTHS:
+        if bucket >= max_tokens:
+            return min(bucket, model_cap)
+    return min(_STANDARD_CONTEXT_LENGTHS[-1], model_cap)
+
 
 def _load_tokenizer(config: dict):
     from transformers import AutoTokenizer
@@ -221,6 +254,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
     from utils.datasets.online_tokenization import resolve_add_special_tokens
 
     model_name = config["model_name"]
+    pool_rows = None
     if request.get("text") and request.get("raw_text"):
         texts, final_format = _format_rows(tokenizer, request, [{"text": request["text"]}])
         first_text = texts[0]
@@ -233,6 +267,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         texts, final_format = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )
+        pool_rows = list(texts)
         first_text = texts[0] if texts else None
         texts = _sample(texts, int(request.get("num_samples") or 3), request.get("seed") or 0)
     if not getattr(tokenizer, "chat_template", None):
@@ -245,6 +280,16 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         all_ids, labels, full_lengths, masking = _pretokenized(
             tokenizer, model_name, texts, max_length, request
         )
+        if pool_rows:
+            from datasets import Dataset
+            from utils.datasets.pretokenized import prepare_pretokenized_dataset
+
+            pool_ds = prepare_pretokenized_dataset(
+                Dataset.from_list(pool_rows), max_seq_length = None
+            )
+            pool_lengths = [len(ids) for ids in pool_ds["input_ids"]]
+        else:
+            pool_lengths = list(full_lengths)
         texts = [tokenizer.decode(ids) for ids in all_ids]
     else:
         add_special_tokens = resolve_add_special_tokens(tokenizer, first_text)
@@ -255,6 +300,13 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         full_lengths = [
             len(ids) for ids in tokenizer(texts, add_special_tokens = add_special_tokens)["input_ids"]
         ]
+        if pool_rows:
+            pool_lengths = [
+                len(ids)
+                for ids in tokenizer(pool_rows, add_special_tokens = add_special_tokens)["input_ids"]
+            ]
+        else:
+            pool_lengths = list(full_lengths)
         masking = {"applied": False, "notes": []}
         labels = [None] * len(texts)
         if request.get("train_on_completions") and final_format != "raw_text" and any(texts):
@@ -274,6 +326,9 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         except Exception:
             example_text = None
 
+    max_row_tokens = max(pool_lengths) if pool_lengths else None
+    recommended_max_seq_length = _recommend_max_seq_length(pool_lengths, tokenizer)
+
     return {
         "samples": samples,
         "masking": masking,
@@ -283,6 +338,8 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         "bos_token": getattr(tokenizer, "bos_token", None),
         "eos_token": getattr(tokenizer, "eos_token", None),
         "example_text": example_text,
+        "max_row_tokens": max_row_tokens,
+        "recommended_max_seq_length": recommended_max_seq_length,
     }
 
 
