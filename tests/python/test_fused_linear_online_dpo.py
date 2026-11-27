@@ -3,7 +3,7 @@
 """TRL Online DPO ``_forward`` scored from hidden states by unsloth_zoo's fused linear op: TRL's own ``_forward``
 (and Unsloth's right-align rewrite of it) against the full RL_FUNCTIONS["online_dpo_trainer"] chain on a float64
 tiny Qwen3 (per-position log-probs, padding positions included, and their gradients), the kill switches, and the
-paths that must keep TRL's math (vision inputs, a forward that ignores the flag)."""
+paths that must keep TRL's math (unknown model inputs, a forward that ignores the flag)."""
 
 from __future__ import annotations
 
@@ -253,18 +253,76 @@ def test_online_dpo_forward_ignoring_the_flag_keeps_trl_math(monkeypatch):
     torch.testing.assert_close(got[0], want[0], atol = 0, rtol = 0)
 
 
-def test_online_dpo_head_declines_vision_inputs(monkeypatch):
+def test_online_dpo_head_takes_trl_vision_inputs_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_FUSED_LINEAR", raising = False)
     trainer = _trainer(None)
     model = _model()
-    batch = {"attention_mask": torch.ones(1, 2), "pixel_values": torch.zeros(1)}
+    mask = torch.ones(1, 2)
+    for key in ("pixel_values", "pixel_attention_mask", "image_sizes", "image_grid_thw"):
+        batch = {"attention_mask": mask, key: torch.zeros(1)}
+        assert rl._unsloth_odpo_chunked_head(trainer, model, batch, "_forward") is not None, key
+    batch = {"attention_mask": mask, "labels": torch.zeros(1)}
     assert rl._unsloth_odpo_chunked_head(trainer, model, batch, "_forward") is None
-    assert (
-        rl._unsloth_odpo_chunked_head(
-            trainer, model, {"attention_mask": batch["attention_mask"]}, "_forward"
-        )
-        is not None
-    )
+    assert trainer._unsloth_dpo_chunked_fallbacks == {"extra model inputs": 1}
+
+
+def _vision_model(dtype = torch.float64):
+    """The tiny Qwen3 with an image input: each row's pixel_values shift its embeddings, so a pass that dropped
+    them scores differently. The hidden-states wrapper sits outside, as Unsloth's forward does."""
+    inner = _model(dtype, honour = False)
+    original = inner.forward
+    seen = []
+
+    def forward(
+        input_ids = None,
+        pixel_values = None,
+        image_grid_thw = None,
+        **kwargs,
+    ):
+        assert pixel_values is not None and image_grid_thw is not None
+        seen.append(tuple(pixel_values.shape))
+        embeds = inner.get_input_embeddings()(input_ids) + pixel_values[:, None, :].to(dtype)
+        return original(inputs_embeds = embeds, **kwargs)
+
+    inner.forward = forward
+    inner.seen = seen
+    return _honour_hidden_states(inner)
+
+
+def test_online_dpo_vision_batch_is_fused_and_matches_trl_fp64(monkeypatch):
+    module, text = _odpo_module()
+    source = _source(text)
+    if "vision_inputs" not in source.split(")", 1)[0]:
+        pytest.skip(reason = "this TRL's Online DPO _forward takes no image inputs")
+    monkeypatch.delenv("UNSLOTH_FUSED_LINEAR", raising = False)
+    _, base = _bind(module, source, _chain(False))
+    _, head = _bind(module, source, _chain(True))
+    inputs = _inputs()
+    hidden = _BASE["m"].config.hidden_size if "m" in _BASE else _model().config.hidden_size
+    g = torch.Generator().manual_seed(3)
+    vision = {
+        "pixel_values": torch.randn(inputs[0].shape[0], hidden, generator = g, dtype = torch.float64),
+        "image_grid_thw": torch.ones(inputs[0].shape[0], 3, dtype = torch.long),
+    }
+    results = []
+    for forward in (base, head):
+        model = _vision_model()
+        trainer = _trainer(forward)
+        model.zero_grad(set_to_none = True)
+        calls = fused_linear.CALLS["logprobs"]
+        logps = forward(trainer, model, *inputs, vision_inputs = vision)
+        used = fused_linear.CALLS["logprobs"] - calls
+        w = torch.linspace(-1.0, 1.0, logps.numel(), dtype = torch.float64).view_as(logps)
+        (logps.double() * w).sum().backward()
+        grads = {
+            n: p.grad.double().clone() for n, p in model.named_parameters() if p.grad is not None
+        }
+        results.append(((logps.detach().double(), grads), used, model.seen))
+    (want, want_used, want_seen), (got, got_used, got_seen) = results
+    assert want_used == 0 and got_used == 1
+    assert want_seen == got_seen == [tuple(vision["pixel_values"].shape)]
+    lp, gr = _max_err(want, got)
+    assert lp <= 1e-5 and gr <= 1e-4, (lp, gr)
 
 
 def test_online_dpo_rewrite_is_anchored_and_idempotent():

@@ -11066,8 +11066,22 @@ def _unsloth_odpo_chunked_head(self, model, batch, method):
         reason = "UNSLOTH_FUSED_LINEAR=0"
     elif _unsloth_preference_chunked_off():
         reason = "UNSLOTH_PREFERENCE_CHUNKED=0"
-    elif any(k != "attention_mask" and k != "input_ids" for k in batch):
-        # Vision rows (pixel_values, image_grid_thw, ...) keep TRL's layout.
+    elif any(
+        k
+        not in (
+            "attention_mask",
+            "input_ids",
+            # TRL's vision kwargs: the forward places image tokens by position, so the final hidden states line up
+            # with prompt_completion_ids and TRL's completion slice reads them as it reads logits.
+            "pixel_values",
+            "pixel_attention_mask",
+            "image_sizes",
+            "image_grid_thw",
+            "token_type_ids",
+            "mm_token_type_ids",
+        )
+        for k in batch
+    ):
         reason = "extra model inputs"
     if reason is not None:
         try:
