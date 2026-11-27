@@ -77,6 +77,14 @@ export function nameGuide(names: readonly NameSpelling[] | undefined): string {
 }
 
 const LETTER = /[\p{L}\p{M}\p{N}]/u;
+const WORD_TAIL = /[\p{L}\p{M}\p{N}]+$/u;
+// Arabic, Hebrew and Amharic write short prepositions and articles onto the next word.
+const PROCLITICS = /^(?:[وفبلكا]{1,3}|[בהוכלמש]{1,2}|[በከለየ]|ስለ|እንደ)$/u;
+
+function startsWord(text: string, at: number): boolean {
+  const before = WORD_TAIL.exec(text.slice(Math.max(0, at - 4), at))?.[0];
+  return !before || (before.length < 4 && PROCLITICS.test(before));
+}
 
 /** Adds "(original)" after the first mention of each name; a spelling the model did not use is left alone. */
 export function annotateNames(
@@ -100,7 +108,7 @@ export function annotateNames(
       at = text.indexOf(target, at + 1)
     ) {
       const end = at + target.length;
-      if (LETTER.test(text[end] ?? "")) continue;
+      if (LETTER.test(text[end] ?? "") || !startsWord(text, at)) continue;
       if (claimed.some(([from, to]) => at < to && end > from)) continue;
       claimed.push([at, end]);
       if (annotated.has(source)) continue;

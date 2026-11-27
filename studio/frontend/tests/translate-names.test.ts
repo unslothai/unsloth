@@ -82,6 +82,19 @@ test("two names with one spelling are both left alone rather than guessed", () =
   );
 });
 
+test("a spelling ending another word is not that name", () => {
+  const mali = [{ source: "Mali", target: "马里" }];
+  assert.equal(
+    annotateNames("我住在索马里，而不是马里。", mali, new Set()),
+    "我住在索马里，而不是马里。",
+  );
+  const li = [{ source: "Li", target: "ली" }];
+  assert.equal(
+    annotateNames("मैंने कली देखी। ली आए।", li, new Set()),
+    "मैंने कली देखी। ली (Li) आए।",
+  );
+});
+
 test("a spelling inside a longer word is skipped, an attached prefix is not", () => {
   const klopp = [{ source: "Jürgen Klopp", target: "يورغن كلوب" }];
   assert.equal(
@@ -91,6 +104,11 @@ test("a spelling inside a longer word is skipped, an attached prefix is not", ()
   assert.equal(
     annotateNames("رأيت يورغن كلوبه", klopp, new Set()),
     "رأيت يورغن كلوبه",
+  );
+  const toronto = [{ source: "Toronto", target: "ቶሮንቶ" }];
+  assert.equal(
+    annotateNames("ከቶሮንቶ ተቀላቀለች።", toronto, new Set()),
+    "ከቶሮንቶ (Toronto) ተቀላቀለች።",
   );
 });
 
