@@ -50,7 +50,7 @@ class _FP8Linear(torch.nn.Linear):
     def dense(self):
         scale = getattr(self, self._scale_name).double()
         w = self.weight.double()
-        if scale.shape[1] == 1:
+        if getattr(self, "block_size", None) is None:  # per-row
             return w * scale
         bm, bn = self.block_size
         full = scale.repeat_interleave(bm, 0)[: w.shape[0]].repeat_interleave(bn, 1)[
@@ -67,9 +67,12 @@ class _Model(torch.nn.Module):
         super().__init__()
         self.q_proj = _FP8Linear(48, 32, (16, 16), **kw)
         self.v_proj = _FP8Linear(40, 24, (16, 16), **kw)  # 40 does not tile into 16
+        self.k_proj = _FP8Linear(16, 32, (16, 16), **kw)  # one block column: (2, 1) block scales
 
     def forward(self, x):
-        return self.q_proj(x).sum() + self.v_proj(x[..., :40]).sum()
+        return (
+            self.q_proj(x).sum() + self.v_proj(x[..., :40]).sum() + self.k_proj(x[..., :16]).sum()
+        )
 
 
 _DEVICES = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
@@ -82,14 +85,14 @@ def test_dora_on_native_fp8_uses_the_dequantized_weight(kw, device):
     from unsloth.models import loader_utils
 
     model = _Model(**kw)
-    refs = {name: getattr(model, name).dense() for name in ("q_proj", "v_proj")}
+    refs = {name: getattr(model, name).dense() for name in ("q_proj", "v_proj", "k_proj")}
     model.to(device)
     # What FastLanguageModel / FastModel.get_peft_model now run first (missing before: the raw-fp8 crash).
     patch = getattr(loader_utils, "_patch_peft_for_native_fp8", None)
     if patch is not None:
         assert patch(model)
     peft_model = get_peft_model(
-        model, LoraConfig(r = 4, target_modules = ["q_proj", "v_proj"], use_dora = True)
+        model, LoraConfig(r = 4, target_modules = ["q_proj", "v_proj", "k_proj"], use_dora = True)
     )
     for name, ref in refs.items():
         layer = getattr(peft_model.base_model.model, name)

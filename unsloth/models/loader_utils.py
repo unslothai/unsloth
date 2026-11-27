@@ -3268,7 +3268,8 @@ def _native_fp8_dense_weight(module):
     )
 
     block_size = getattr(module, "block_size", None)
-    if block_size is not None and scale.ndim == 2 and scale.shape[1] > 1:
+    # Block scales by the module's block_size, also a single block column ((256, 128) with 128x128 blocks).
+    if block_size is not None and scale.ndim == 2 and scale.numel() > 1:
         block_size = [int(block_size[0]), int(block_size[1])]
         # The Triton kernel is CUDA / ROCm only; a CPU-resident (offloaded) weight takes the torch expansion.
         dequant = (
