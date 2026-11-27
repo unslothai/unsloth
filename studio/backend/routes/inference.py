@@ -32165,8 +32165,6 @@ async def _proxy_to_external_provider(
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break
-                if truncation is None:
-                    break
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
