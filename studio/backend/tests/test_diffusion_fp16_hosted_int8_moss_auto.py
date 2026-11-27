@@ -213,7 +213,7 @@ def test_forced_small_host_engages_where_the_dense_load_fits():
 
 
 def test_auto_hosted_moss_load_forces_the_small_host_route_for_its_encoders():
-    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text()
+    src = (BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     branch = src.index("elif fam.name == MOSS_IMAGE_FAMILY_NAME:")
     call = src.index("self._small_host_decision(", branch)
     end = src.index("pipe = load_moss_image_pipeline(", call)
