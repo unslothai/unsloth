@@ -631,6 +631,18 @@ def test_fused_install_can_leave_a_wan_encoder_stock(monkeypatch):
     assert 0 < n_decoder < n_both
 
 
+def test_fused_install_leaves_the_qwen_image_encoder_stock(monkeypatch):
+    """Edits follow their input latents: the fused encoder moved Qwen-Image-Edit renders (LPIPS up to 0.195 against
+    a bit-identical rerun), so only the decoder is fused, whatever the caller asks."""
+    diffusers = pytest.importorskip("diffusers")
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    torch.manual_seed(0)
+    vae = diffusers.AutoencoderKLQwenImage(base_dim = 32, z_dim = 4, num_res_blocks = 1).eval()
+    assert F.install(vae) > 0
+    assert sorted(n for n, m in vae.encoder.named_modules() if "forward" in m.__dict__) == []
+    assert any("forward" in m.__dict__ for m in vae.decoder.modules())
+
+
 @pytest.mark.parametrize("frames", [1, 2, 4])
 def test_causal_cache_is_a_compact_two_frame_copy(frames):
     # a view would pin the whole (frames + 2)-frame conv input per cache slot until the next chunk
