@@ -94,7 +94,7 @@ def _locate(
 
 
 def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float, rotation_matrix):
-    """Union matched words per line into normalized, displayed-page rectangles."""
+    """Union matched words per (block, line) into normalized rects on the displayed (rotated) page."""
     import pymupdf
 
     lines: dict[tuple, list[float]] = {}
@@ -111,8 +111,7 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
 
     out: list[dict[str, Any]] = []
     for box in lines.values():
-        # Text extraction uses unrotated coordinates; the preview and page.rect
-        # follow the PDF's rotation. Transform each line before normalizing.
+        # Words are in unrotated space; page.rect and the preview are rotated.
         x0, y0, x1, y1 = pymupdf.Rect(box) * rotation_matrix
         w = x1 - x0
         h = y1 - y0
