@@ -319,3 +319,29 @@ def test_an_overflow_after_a_replayed_summary_resends_with_its_results_shortened
     )
     assert not [c for c in chunks if "error" in c]
     assert len(json.dumps(recorded[-1]["messages"])) <= _OVERFLOW_CHARS
+
+
+def test_a_cjk_tool_result_keeps_the_longest_excerpt_that_fits():
+    import routes.inference as ri
+    from models.inference import ChatCompletionRequest
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "q"}], provider_type = "openrouter", model = "m"
+    )
+    count = ri._external_token_counter(payload, None)
+    call = {"id": "c", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+
+    def chat(result):
+        return [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "c", "content": result},
+        ]
+
+    text = "港口账本运河" * 1_400
+    target = count(chat(text[:5_100]))
+    messages = chat(text)
+    assert ri._clip_turn_tool_results(messages, 1, set(), target, count)
+    assert count(messages) <= target
+    assert len(messages[-1]["content"]) > 4_500

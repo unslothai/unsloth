@@ -30648,8 +30648,6 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
 
 _CLIPPED_RESULT_MIN_CHARS = 400
 _CLIP_NOTICE_CHARS = 128
-# Token estimates round per message: a cut sized to the exact overshoot can land a token over.
-_CLIP_SLACK_TOKENS = 16
 
 
 def _clip_text(text: str, keep: int) -> str:
@@ -30668,8 +30666,6 @@ def _clip_turn_tool_results(
     count_tokens: Callable[[list[dict]], int],
 ) -> bool:
     # Shortens only when that fits the turn, in place: eviction and the archive match by identity.
-    from core.inference.context_window import estimate_message_tokens_without_unpriced_media
-
     turn = [dict(m) for m in messages[start:]]
     floor = [
         m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
@@ -30681,14 +30677,23 @@ def _clip_turn_tool_results(
         text = message.get("content")
         if message.get("role") != "tool" or not isinstance(text, str):
             continue
-        per_token = len(text) / max(1, estimate_message_tokens_without_unpriced_media(message))
-        keep = max(
-            _CLIPPED_RESULT_MIN_CHARS,
-            len(text) - int((over + _CLIP_SLACK_TOKENS) * per_token) - _CLIP_NOTICE_CHARS,
-        )
-        if len(text) - keep > _CLIP_NOTICE_CHARS:
-            message["content"] = _clip_text(text, keep)
-            over = count_tokens(floor) - target
+        if len(text) - _CLIPPED_RESULT_MIN_CHARS <= _CLIP_NOTICE_CHARS:
+            continue
+        # Searched with the caller's counter: per-character rates differ by script (CJK vs Latin).
+        low, high = _CLIPPED_RESULT_MIN_CHARS, len(text) - _CLIP_NOTICE_CHARS
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+        if over > 0:
+            continue
+        while high - low > 64:
+            middle = (low + high) // 2
+            message["content"] = _clip_text(text, middle)
+            if count_tokens(floor) <= target:
+                low = middle
+            else:
+                high = middle
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
     if over > 0:
         return False
     for original, clipped in zip(messages[start:], turn):
