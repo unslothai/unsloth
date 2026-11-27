@@ -3277,6 +3277,55 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("spliced", [0, 255])
+def test_mlx_vlm_usage_counts_the_columns_an_image_was_spliced_into(monkeypatch, spliced):
+    """FastVLM fills an image's features in place of its one placeholder id; mlx-vlm counts the ids."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    model = SimpleNamespace(config = SimpleNamespace())
+    extra = {27: spliced, 10: spliced // 5}  # a part of the prompt holds a part of the media
+    width = lambda ids: ids.shape[1] + extra.get(ids.shape[1], 0)  # noqa: E731
+    model.get_input_embeddings = embed = lambda input_ids, *a, **k: SimpleNamespace(
+        inputs_embeds = SimpleNamespace(shape = (1, width(input_ids), 8))
+    )
+
+    def _stream_generate(model, _processor, _prompt, _images, **_kw):
+        model.get_input_embeddings(SimpleNamespace(shape = (1, 10)))  # a part of the prompt
+        model.get_input_embeddings(SimpleNamespace(shape = (1, 27)))  # the whole prompt
+        model.get_input_embeddings(SimpleNamespace(shape = (1, 1)))  # a decode step
+        response = _Resp("red", 10)
+        response.__dict__.update(
+            prompt_tokens = 27, prompt_tps = 270.0, generation_tokens = 1, generation_tps = 1.0
+        )
+        yield response
+
+    mlx_vlm_pkg = types.ModuleType("mlx_vlm")
+    mlx_vlm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm_pkg)
+    backend = MLXInferenceBackend()
+    backend._model = model
+    backend._processor = SimpleNamespace(
+        all_special_tokens = [], apply_chat_template = lambda *_a, **_k: "prompt"
+    )
+    backend._is_vlm = backend._reads_vision = True
+
+    list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "colour?"}], image = object(), max_new_tokens = 4
+        )
+    )
+    stats = backend.last_generation_stats
+    assert stats["usage"]["prompt_tokens"] == 27 + spliced
+    assert stats["timings"]["prompt_per_second"] == pytest.approx((27 + spliced) * 10.0)
+    assert model.get_input_embeddings is embed, "the model's own embedding is put back"
+
+
 def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
     """The VLM snapshot path must derive channel state from its rendered prompt too."""
     from core.inference.mlx_inference import MLXInferenceBackend
