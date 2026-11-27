@@ -23,6 +23,7 @@ const {
   SAVED_VOICE_MISSING,
   SAVED_VOICE_NO_TRANSCRIPT,
   chatterboxExpressivenessLogic,
+  cloneDescriptionLogic,
   cosyVoiceModeLogic,
   emotionSourceProblem,
   f5SpeedDialectLogic,
@@ -30,6 +31,7 @@ const {
   qwen3TimbreLogic,
   speakVoiceLogic,
   speakVoiceStored,
+  supertonicLanguageLogic,
   vibeVoiceDialogueLogic,
   voiceOptionName,
 } = await import("../src/features/audio/tools/panel-logic.ts");
@@ -71,6 +73,84 @@ test("each clone family gets its one panel, only on Clone", () => {
   assert.deepEqual(shown("f5_tts"), ["f5-speed-dialect"]);
   assert.deepEqual(shown("voxcpm2"), []);
   assert.deepEqual(shown("qwen3_tts", "speak"), []);
+  assert.deepEqual(shown("voxcpm2", "clone", { cloneDescription: true }), [
+    "clone-description",
+  ]);
+  assert.deepEqual(shown("voxcpm2", "speak", { cloneDescription: true }), []);
+});
+
+test("Clone's description shows only when the model's clone path reads one", () => {
+  assert.equal(
+    panelApplies(
+      cloneDescriptionLogic,
+      "clone",
+      ctx({ cloneDescription: true }),
+    ),
+    true,
+  );
+  assert.equal(
+    panelApplies(
+      cloneDescriptionLogic,
+      "clone",
+      ctx({ cloneDescription: false }),
+    ),
+    false,
+  );
+  assert.equal(panelApplies(cloneDescriptionLogic, "clone", ctx()), false);
+  assert.equal(
+    panelApplies(
+      cloneDescriptionLogic,
+      "speak",
+      ctx({ cloneDescription: true }),
+    ),
+    false,
+  );
+});
+
+test("Clone's description is trimmed and sent only when written", () => {
+  assert.deepEqual(cloneDescriptionLogic.initial([]), { instructions: "" });
+  assert.deepEqual(
+    cloneDescriptionLogic.toRequest({ instructions: "  Calm and slow \n" }),
+    { instructions: "Calm and slow" },
+  );
+  assert.deepEqual(cloneDescriptionLogic.toRequest({ instructions: "" }), {});
+  assert.deepEqual(
+    cloneDescriptionLogic.toRequest({ instructions: " \t\n " }),
+    {},
+  );
+  const { patch, error } = collectToolRequest(
+    [cloneDescriptionLogic] as never,
+    { "clone-description": { instructions: " Warm and bright " } },
+    { text: "hi" },
+    ctx({ cloneDescription: true }),
+  );
+  assert.deepEqual(patch, { instructions: "Warm and bright" });
+  assert.equal(error, null);
+  assert.deepEqual(
+    collectToolRequest(
+      [cloneDescriptionLogic] as never,
+      {},
+      { text: "hi" },
+      ctx({ cloneDescription: true }),
+    ).patch,
+    {},
+  );
+});
+
+test("Clone's description panel reuses the shared description field", () => {
+  const panels = readSrc("features/audio/tools/clone-panels.tsx");
+  assert.match(panels, /<InstructionsField\s+instructionsKind="voice"/);
+  assert.match(panels, /cloning=\{true\}\s+disabled=\{disabled\}/);
+  const field = readSrc("features/audio/components/instructions-fields.tsx");
+  // Locked while a clone runs, like the other Clone panels.
+  assert.match(field, /disabled=\{disabled\}/);
+  assert.ok(
+    field.includes(
+      "Optional. How the cloned voice should deliver the text, such as its mood, pace or tone.",
+    ),
+  );
+  assert.ok(field.includes("Calm and warm, speaking a little slowly…"));
+  assert.doesNotMatch(field, /(?<!Unsloth )\bStudio\b/);
 });
 
 test("the Voice panel shows on Speak for models that clone or declare a voice", () => {
@@ -118,6 +198,36 @@ test("the Voice panel shows on Speak for models that clone or declare a voice", 
     ),
     true,
   );
+});
+
+test("Supertonic's Language panel shows on Speak and sends only a code it reads", () => {
+  const supertonic = ctx({
+    audioFamily: "supertonic",
+    audioWorkflows: ["speak"],
+  });
+  assert.equal(
+    panelApplies(supertonicLanguageLogic, "speak", supertonic),
+    true,
+  );
+  assert.equal(
+    panelApplies(
+      supertonicLanguageLogic,
+      "speak",
+      ctx({ audioFamily: "kokoro_tts", audioWorkflows: ["speak"] }),
+    ),
+    false,
+  );
+  const request = (stored: unknown) =>
+    collectToolRequest(
+      [{ ...supertonicLanguageLogic, Component: () => null }],
+      stored === undefined ? {} : { "supertonic-language": stored },
+      { text: "Hallo" },
+      supertonic,
+    ).patch;
+  assert.deepEqual(request("de"), { language: "de" });
+  assert.deepEqual(request(""), {});
+  assert.deepEqual(request(undefined), {});
+  assert.deepEqual(request("German"), {});
 });
 
 test("collectToolRequest merges every panel's part and returns the first error", () => {
@@ -244,7 +354,6 @@ test("IndexTTS2 emotion from text and from audio", () => {
     ),
     EMOTION_AUDIO_MISSING,
   );
-  // A replacement still uploading, a failed one, or an expired clip blocks the run.
   for (const status of [
     { phase: "uploading" as const, name: "y", progress: 0.5 },
     { phase: "error" as const, message: "Upload failed." },
@@ -286,7 +395,6 @@ test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requir
     panelError: null,
   });
   assert.equal(blocked, null);
-  // A failed replacement hides the kept clip, so it blocks until dismissed.
   const failed = cloneBlocker({
     reference: { kind: "input", id: "i", name: "a.wav", durationS: 4 },
     referenceBusy: false,
@@ -398,7 +506,6 @@ test("a saved voice deleted on Clone holds Speak's Generate", () => {
     speakVoiceLogic.validate?.(saved, { text: "hi" }, ctx({ savedVoiceIds }));
   assert.equal(check(["v2"]), SAVED_VOICE_DELETED);
   assert.equal(check(["v1", "v2"]), null);
-  // Not loaded yet, or the list failed: nothing to compare against.
   assert.equal(check(null), null);
 });
 
@@ -457,6 +564,20 @@ test("the status context reads the clone fields defensively", () => {
   const none = audioModelContextFor(null, page);
   assert.deepEqual(none.audioWorkflows, []);
   assert.equal(none.referenceTextMode, null);
+  assert.equal(none.cloneDescription, false);
+  const cloneDescription = (audio_clone: unknown) =>
+    audioModelContextFor({ audio_clone }, page).cloneDescription;
+  assert.equal(
+    cloneDescription({ reference_text: "required", description: true }),
+    true,
+  );
+  assert.equal(cloneDescription({ description: "yes" }), false);
+  assert.equal(cloneDescription({ description: false }), false);
+  assert.equal(cloneDescription({}), false);
+  assert.equal(cloneDescription(null), false);
+  assert.equal(cloneDescription(true), false);
+  assert.equal(cloneDescription([{ description: true }]), false);
+  assert.equal(audioModelContextFor({}, page).cloneDescription, false);
   assert.equal(
     audioModelContextFor({ audio_reference_text: "bogus" }, page)
       .referenceTextMode,

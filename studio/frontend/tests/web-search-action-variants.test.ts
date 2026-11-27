@@ -14,20 +14,17 @@ import {
 const CARD = readSrc("components/assistant-ui/tool-ui-web-search.tsx");
 
 test("the card tells the three action types apart", () => {
-  // Reading only `action.query` rendered open_page and find_in_page as an empty
-  // `Searching ""`, which is the bug this branch exists for.
+  // open_page and find_in_page carry no `action.query`.
   assert.match(
     CARD,
     /actionType === "find_in_page" \|\| \(!!url && !!pattern\.trim\(\)\)/,
   );
   assert.match(CARD, /const isUrlFetch = !!url && !isFindInPage;/);
-  // and an image-only call is still none of the above
   assert.match(CARD, /!isUrlFetch && !isFindInPage && !query\.trim\(\)/);
 });
 
 test("a finished find_in_page does not claim it found the pattern", () => {
-  // The action names the pattern the model looked for and nothing about whether
-  // it matched, so a completed call is not evidence that it did.
+  // The action names the pattern, not whether it matched.
   const finished = webSearchToolName({
     isRunning: false,
     isFindInPage: true,
@@ -44,9 +41,7 @@ test("a finished find_in_page does not claim it found the pattern", () => {
 });
 
 test("the url variants show the page they read, whatever else the card has", () => {
-  // open_page and find_in_page report no text of their own. The link also has to
-  // survive the terminal citation backfill replacing this card's result with the
-  // run's sources, which would otherwise take the sources branch and drop it.
+  // The link must survive the citation backfill replacing this card's result with sources.
   const body = CARD.slice(
     CARD.indexOf("      <ToolFallbackContent>"),
     CARD.indexOf("</ToolFallbackContent>"),
@@ -71,9 +66,7 @@ test("the url variants show the page they read, whatever else the card has", () 
 });
 
 test("the read-page link opens in Desktop, not just the browser", () => {
-  // A bare target="_blank" does nothing in the Tauri webview. Every external
-  // link in the app pairs it with an opener; the Source pills in this same card
-  // use openLink, so this one does too or Desktop users get a dead link.
+  // A bare target="_blank" does nothing in the Tauri webview; use openLink.
   assert.match(CARD, /import \{ openLink \} from "@\/lib\/open-link";/);
   const anchor = CARD.slice(
     CARD.indexOf("href={safeUrl}"),
@@ -163,7 +156,6 @@ test("the image header only claims images that came back", () => {
     name({ isImageOnly: true, imageLabel: "otters" }),
     "No images for “otters”",
   );
-  // Same rule on the combined query + images header.
   assert.equal(
     name({ query: "otters", imageLabel: "otters", foundImages: true }),
     'Searched "otters" · images for otters',
@@ -172,7 +164,6 @@ test("the image header only claims images that came back", () => {
     name({ query: "otters", imageLabel: "otters" }),
     'Searched "otters"',
   );
-  // Images can come back for a plain query that named none of its own.
   assert.equal(
     name({ query: "otters", foundImages: true }),
     'Searched "otters"',

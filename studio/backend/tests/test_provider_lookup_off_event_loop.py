@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolving a saved provider must not read providers from the event loop thread.
-
-Every chat routed to a saved external provider looks the row up, so on a stalled store
-that read parks the loop and the server stops answering anything, /api/liveness included.
-
-Asserts which thread the read ran on rather than timing it.
-"""
+"""Saved-provider lookups run off the event loop thread, so a stalled store cannot park the server."""
 
 from __future__ import annotations
 
@@ -53,7 +47,6 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 
-    # run_until_complete drives the loop on this thread.
     loop_thread = threading.get_ident()
     with pytest.raises(HTTPException) as excinfo:
         asyncio.new_event_loop().run_until_complete(
@@ -121,6 +114,41 @@ def test_the_saved_provider_target_and_key_are_one_snapshot(monkeypatch):
     assert state["key"] == "new-secret"
 
 
+def test_a_model_the_owner_disabled_while_the_request_waited_is_refused(monkeypatch):
+    rows = [
+        {
+            "id": "saved-1",
+            "provider_type": "openai",
+            "display_name": "Shared",
+            "base_url": "https://owner.example/v1",
+            "is_enabled": True,
+            "shared_by_owner": True,
+            "models": models,
+        }
+        for models in (["kept", "dropped"], ["kept"])
+    ]
+    observed = []
+
+    def _get_provider(_provider_id):
+        return dict(rows.pop(0) if len(rows) > 1 else rows[0])
+
+    def _resolve_key(*_args, **_kwargs):
+        observed.append("key")
+        return "owner-secret"
+
+    monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
+    monkeypatch.setattr(inference_routes, "resolve_provider_api_key_or_400", _resolve_key)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_routes._proxy_to_external_provider(
+                _payload(external_model = "dropped"), _request(), current_subject = "t"
+            )
+        )
+    assert excinfo.value.status_code == 403
+    assert observed == []
+
+
 @pytest.mark.parametrize(
     "handler",
     [
@@ -139,12 +167,7 @@ def _container_body():
 
 
 def test_the_container_resolver_reads_on_the_event_loop_thread(monkeypatch):
-    """The container routes resolve the row and the credential as one snapshot.
-
-    _resolve_openai_cloud_client reads the provider row for the base URL and then reads the
-    saved key. Run in a worker, an edit landing between the two pairs the old base URL with
-    the new key, so the routes call it on the loop where nothing interleaves.
-    """
+    """Resolve URL and key on the loop, so an edit cannot pair the old base URL with the new key."""
     threads: list[int] = []
 
     def _get_provider(_provider_id):

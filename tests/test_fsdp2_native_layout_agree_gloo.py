@@ -12,7 +12,9 @@
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import importlib  # noqa: E402
@@ -66,7 +68,6 @@ def _unequal_worker(rank, world, port, out):
     try:
         native = _load_native()
         perf = importlib.import_module("unsloth.models.fsdp2_perf")
-        # Rank 0 sees a huge device (the model fits), rank 1 a tiny one (it does not).
         big = 1 << 40 if rank == 0 else 1 << 10
         perf._device_bytes = lambda device = None: big
         local = perf.plan_fsdp2_layout(_build(REPO_ID, "AutoModelForCausalLM")).as_dict()

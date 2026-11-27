@@ -18,8 +18,7 @@ SIDECAR = REPO_ROOT / "studio" / "backend" / "core" / "inference" / "stt_ggml_si
 
 
 def _is_runnable():
-    """Exec the real function alone: importing the module pulls in the whole
-    backend (structlog, fastapi), which this check does not need."""
+    """Exec the function alone; importing the module pulls in the backend (structlog, fastapi)."""
     tree = ast.parse(SIDECAR.read_text(encoding = "utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_is_runnable":
@@ -30,8 +29,7 @@ def _is_runnable():
 
 
 def _can_deny() -> bool:
-    """Probe rather than infer. Guessing from euid silently drops the only
-    behavioural test in any root container, which is most CI images."""
+    """Probe rather than infer from euid, or the only test vanishes in root CI containers."""
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         locked = Path(tmp) / "locked"

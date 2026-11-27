@@ -13,15 +13,10 @@ let pendingResolver: Resolver | null = null;
 
 interface StopRunningChatsDialogStore {
   open: boolean;
-  /** How many conversations the pending action would stop. */
   count: number;
-  /** Titles of those conversations, when known, for the dialog body. */
   titles: string[];
-  /** What the user is about to do, e.g. "Loading a different model". */
   action: string;
-  /** The set includes an embeddings/completions/audio request, which is not a chat. */
   hasNonChat: boolean;
-  /** Ejecting leaves no model loaded, so it must not be described as a reload. */
   effect: StopRunningChatsEffect;
   requestConfirm: (args: {
     count: number;

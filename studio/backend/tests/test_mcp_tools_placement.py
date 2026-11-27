@@ -12,6 +12,7 @@ from studio_mcp import forward, model_downloads
 
 from .mcp_harness import (  # noqa: F401
     bodies,
+    media_load_bodies,
     fake_studio,
     fast_polls,
     run_tool,
@@ -88,7 +89,7 @@ def test_a_plan_that_refuses_the_knobs_is_asked_without_them(monkeypatch, fast_p
     )
     plans = bodies(studio, "/api/inference/video/download-plan")
     assert plans == [{"model_path": "a/v", "h3_task": "fl2va"}, {"model_path": "a/v"}]
-    assert bodies(studio, "/api/inference/video/load") == [
+    assert media_load_bodies(studio, "/api/inference/video/load") == [
         {"model_path": "a/v", "h3_task": "fl2va"}
     ]
 
@@ -141,15 +142,15 @@ def test_cpu_needs_a_confirmed_gguf(monkeypatch, listing, args, refusal):
         (OUTETTS, "tts", "cpu", {"audio_device": "cpu", **CPU}),
         # A chat GGUF must never be sent audio_device, which the route refuses for it.
         (QWEN, "llm", "cpu", CPU),
-        (OUTETTS, "audio", "gpu", {"audio_device": "gpu"}),
-        (QWEN, "llm", "gpu", {}),
+        (OUTETTS, "audio", "gpu", {"audio_device": "gpu", "gpu_memory_mode": "auto"}),
+        (QWEN, "llm", "gpu", {"gpu_memory_mode": "auto"}),
     ],
 )
 def test_device_maps_to_the_load_fields(monkeypatch, model, kind, device, expected):
     routes = {**PAYLOADS, ("GET", "/api/hub/gguf-variants"): GGUF_FILES}
     args = {"model": model, "kind": kind, "device": device}
     _result, _studio, (body,) = _load(monkeypatch, args, routes)
-    base = {"model_path": model, "load_in_4bit": True, "max_seq_length": 0}
+    base = {"model_path": model, "use_saved_settings": True}
     assert body == {**base, **expected}
 
 
@@ -397,8 +398,7 @@ def test_cpu_tts_falls_back_to_the_name_when_the_listing_cannot_be_read(monkeypa
     )
     assert body == {
         "model_path": OUTETTS,
-        "load_in_4bit": True,
-        "max_seq_length": 0,
+        "use_saved_settings": True,
         "audio_device": "cpu",
         **CPU,
     }

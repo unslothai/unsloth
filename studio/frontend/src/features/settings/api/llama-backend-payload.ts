@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Import-free payload types and parsers for the llama.cpp backend picker. */
-
-/** Backends a user can ask for. "auto" means hardware detection. */
 export const LLAMA_BACKENDS = [
   "auto",
   "cpu",
@@ -13,7 +10,7 @@ export const LLAMA_BACKENDS = [
 ] as const;
 export type LlamaBackend = (typeof LLAMA_BACKENDS)[number];
 
-/** Backends an install can report running on. Metal is macOS-only and not selectable. */
+/** Metal is macOS-only and not selectable. */
 export type LlamaEffectiveBackend = Exclude<LlamaBackend, "auto"> | "metal";
 
 export function isLlamaBackend(value: unknown): value is LlamaBackend {
@@ -26,7 +23,10 @@ export function isLlamaBackend(value: unknown): value is LlamaBackend {
 export interface LlamaBackendOption {
   backend: LlamaBackend;
   available: boolean;
-  /** For "auto", the backend detection picks right now, so it can be labelled. */
+  unavailableReason: string | null;
+  unavailableHint: string | null;
+  /** This host has a GPU the backend runs on, so an unavailable one is shown greyed, not hidden. */
+  appliesToHost: boolean;
   resolvedBackend: LlamaEffectiveBackend | null;
   releaseTag: string | null;
   downloadSizeBytes: number | null;
@@ -45,17 +45,14 @@ export interface LlamaBackendJob {
 }
 
 export interface LlamaBackendStatus {
-  /** Whether this install's backend can be switched from here at all. */
   supported: boolean;
-  /** Why switching is unavailable. */
   reason: string | null;
-  /** Backend pinned by the environment, which overrides anything chosen here. */
+  /** Pinned by the environment; overrides anything chosen here. */
   envBackend: LlamaBackend | null;
-  /** What the install runs on now. */
   backend: LlamaEffectiveBackend | null;
-  /** The recorded choice; null when this client does not recognize it. */
+  /** Null when this client does not recognize the recorded choice. */
   backendRequest: LlamaBackend | null;
-  /** Whether that choice resolves to the installed bundle and paired sidecars. */
+  /** The choice resolves to the installed bundle and paired sidecars. */
   selectionApplied: boolean;
   installedTag: string | null;
   options: LlamaBackendOption[];
@@ -64,7 +61,6 @@ export interface LlamaBackendStatus {
 
 export interface LlamaBackendSwitchStarted {
   started: boolean;
-  /** already_running | already_selected | not_prebuilt | unknown_backend | ... */
   reason: string | null;
   message: string | null;
   job: LlamaBackendJob;
@@ -104,12 +100,14 @@ export function parseLlamaBackendJob(value: unknown): LlamaBackendJob {
 function parseOption(value: unknown): LlamaBackendOption | null {
   const option = (value ?? {}) as ApiObject;
   if (!isLlamaBackend(option.backend)) {
-    // Older clients cannot label or submit unknown backends.
     return null;
   }
   return {
     backend: option.backend,
     available: option.available === true,
+    unavailableReason: asString(option.unavailable_reason),
+    unavailableHint: asString(option.unavailable_hint),
+    appliesToHost: option.applies_to_host === true,
     resolvedBackend:
       (asString(option.resolved_backend) as LlamaEffectiveBackend | null) ??
       null,
@@ -148,8 +146,7 @@ export function llamaBackendSelectionNeedsApply(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
 ): boolean {
-  // A null backendRequest is a choice written by a newer Unsloth. Untouched it is
-  // not dirty, but picking a backend over it is an explicit replacement.
+  // A null backendRequest was written by a newer Unsloth; picking over it is an explicit replace.
   const requested = selected ?? status?.backendRequest ?? null;
   if (!status || requested === null) {
     return false;
@@ -169,7 +166,7 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Show installable options and preserve the selected value if it became unavailable. */
+/** Installable backends, greyed ones this host's GPUs could run, and the selection: a Select whose value has no item renders blank. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
@@ -177,7 +174,46 @@ export function visibleLlamaBackendOptions(
   if (!status) {
     return [];
   }
-  return status.options.filter(
-    (option) => option.available || option.backend === selected,
+  const visible = status.options.filter(
+    (option) =>
+      option.available || option.appliesToHost || option.backend === selected,
   );
+  if (selected && !visible.some((option) => option.backend === selected)) {
+    visible.push({
+      backend: selected,
+      available: false,
+      unavailableReason: null,
+      unavailableHint: null,
+      appliesToHost: false,
+      resolvedBackend: selected === "auto" ? status.backend : null,
+      releaseTag: null,
+      downloadSizeBytes: null,
+    });
+  }
+  return visible;
+}
+
+const UNAVAILABLE_REASONS = {
+  rocm_not_installed: "rocmNotInstalled",
+  rocm_no_access: "rocmNoAccess",
+  other_release: "otherRelease",
+  error: "checkFailed",
+} as const;
+
+export type LlamaBackendUnavailableKey =
+  | (typeof UNAVAILABLE_REASONS)[keyof typeof UNAVAILABLE_REASONS]
+  | "noBuild";
+
+/** The short reason a greyed option shows; null for an option that can be picked. */
+export function llamaBackendUnavailableKey(
+  option: LlamaBackendOption,
+): LlamaBackendUnavailableKey | null {
+  // No reason = never diagnosed (the placeholder for the recorded selection), not a missing build.
+  const reason = option.unavailableReason;
+  if (option.available || reason === null) {
+    return null;
+  }
+  return Object.hasOwn(UNAVAILABLE_REASONS, reason)
+    ? UNAVAILABLE_REASONS[reason as keyof typeof UNAVAILABLE_REASONS]
+    : "noBuild";
 }

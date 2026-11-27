@@ -14,10 +14,14 @@ export type FrameMessage =
       body?: string;
     }
   | { type: "external"; url: string }
+  | { type: "download"; name: string; blob: Blob; askFirst?: true }
+  | { type: "download"; name: string; url: string; askFirst?: true }
   | { type: "loaded"; title: string; favicon: string | null }
   | { type: "title"; title: string }
   | { type: "url"; url: string }
-  | { type: "reload" }
+  | { type: "reload" | "back" | "forward" }
+  | { type: "scroll"; x: number; y: number }
+  | { type: "history"; back: boolean; forward: boolean }
   | { type: "upload" }
   | { type: "scriptNavigation" }
   | { type: "needsBrowser" }
@@ -27,7 +31,6 @@ export type FrameMessage =
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
   | { type: "snapshot"; html: string | null }
   | { type: "shortcut"; key: string; shift: boolean }
-  /** A zoom key or Ctrl+wheel in the page: a step in (1), out (-1), or back to 100% (0). */
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent }
   /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */
@@ -43,9 +46,12 @@ export type FrameMessage =
       value: string | null;
       url: string | null;
       seq: number | null;
+      sameSite?: SameSite;
     };
 
 export type RedirectMode = "follow" | "error" | "manual";
+
+export type CredentialsMode = "omit" | "same-origin" | "include";
 
 export type PageRequest = {
   url: string;
@@ -55,9 +61,14 @@ export type PageRequest = {
   redirect: RedirectMode;
   /** Fetch's integrity metadata, checked against the body. */
   integrity: string;
+  credentials: CredentialsMode;
 };
 
 const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
+const CREDENTIALS_MODES = new Set<unknown>(["omit", "same-origin", "include"]);
+
+export type SameSite = "strict" | "lax" | "none";
+const SAME_SITES = new Set<unknown>(["strict", "lax", "none"]);
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -175,8 +186,15 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   if (body !== null && !(body instanceof ArrayBuffer && body.byteLength <= MAX_REQUEST_BODY_BYTES)) return null;
   const redirect = message.redirect ?? "follow";
   const integrity = text(message.integrity ?? "", 4096);
-  if (!REDIRECT_MODES.has(redirect) || integrity === null) return null;
-  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
+  const credentials = message.credentials ?? "same-origin";
+  if (!REDIRECT_MODES.has(redirect) || integrity === null || !CREDENTIALS_MODES.has(credentials)) return null;
+  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity, credentials: credentials as CredentialsMode };
+}
+
+function fileName(value: unknown): string | null {
+  if (typeof value !== "string" || value.length <= MAX_TITLE_CHARS) return text(value, MAX_TITLE_CHARS);
+  const extension = /\.[^./\\]{1,32}$/.exec(value.slice(-33))?.[0] ?? "";
+  return value.slice(0, MAX_TITLE_CHARS - extension.length).replace(/[\uD800-\uDBFF]$/, "") + extension;
 }
 
 /** A message from a page, checked field by field: pages can post anything. */
@@ -202,12 +220,29 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       const url = text(message.url, MAX_URL_CHARS);
       return url ? { type: message.type, url } : null;
     }
+    case "download": {
+      const name = fileName(message.name);
+      if (message.blob === undefined) {
+        const url = text(message.url, MAX_URL_CHARS);
+        return url && name !== null ? { type: "download", name, url } : null;
+      }
+      return name && message.blob instanceof Blob ? { type: "download", name, blob: message.blob } : null;
+    }
     case "loaded":
       return { type: "loaded", title: title(message.title), favicon: text(message.favicon, MAX_URL_CHARS) };
     case "title":
       return { type: "title", title: title(message.title) };
     case "reload":
-      return { type: "reload" };
+    case "back":
+    case "forward":
+      return { type: message.type };
+    case "scroll": {
+      const x = coord(message.x);
+      const y = coord(message.y);
+      return x === null || y === null ? null : { type: "scroll", x, y };
+    }
+    case "history":
+      return { type: "history", back: message.back === true, forward: message.forward === true };
     case "upload":
     case "scriptNavigation":
     case "needsBrowser":
@@ -257,9 +292,9 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       if (key === null) return { type: "storage", area: area as PageStorageArea, key: null, value: null, url, seq };
       const name = text(key, MAX_STORAGE_CHARS);
       const stored = value === null ? null : text(value, MAX_STORAGE_CHARS);
-      return name === null || (value !== null && stored === null)
-        ? null
-        : { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq };
+      if (name === null || (value !== null && stored === null)) return null;
+      const sameSite = area === "cookie" && stored !== null && SAME_SITES.has(message.sameSite) ? (message.sameSite as SameSite) : undefined;
+      return { type: "storage", area: area as PageStorageArea, key: name, value: stored, url, seq, ...(sameSite && { sameSite }) };
     }
     default:
       return null;
@@ -271,3 +306,24 @@ export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser"
   id: `browser-${type}-${tabId}`,
   ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
 });
+
+const isUserAction = (message: FrameMessage) =>
+  (message.type === "navigate" && message.newTab === true) ||
+  message.type === "external" ||
+  message.type === "download" ||
+  message.type === "shortcut";
+
+// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
+const USER_ACTION_INTERVAL_MS = 1000;
+
+export function userActionGate(): (message: FrameMessage, active: boolean, now: number) => FrameMessage | null {
+  let lastUserAction = Number.NEGATIVE_INFINITY;
+  return (message, active, now) => {
+    if (!isUserAction(message)) return message;
+    if (active && now - lastUserAction >= USER_ACTION_INTERVAL_MS) {
+      lastUserAction = now;
+      return message;
+    }
+    return message.type === "download" ? { ...message, askFirst: true } : null;
+  };
+}

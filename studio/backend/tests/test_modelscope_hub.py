@@ -27,6 +27,7 @@ from hub.modelscope.router import build_router
 
 SHA = "a" * 40
 TAG = "b" * 40
+GONE = "f" * 40
 
 
 def _pkt(line: str) -> bytes:
@@ -73,6 +74,8 @@ def _upstream(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content = REFS)
     if path.endswith(".git/info/refs"):
         return httpx.Response(500 if "boom" in path else 404)
+    if request.url.params.get("Revision") == GONE:
+        return httpx.Response(404)
     if path == "/api/v1/models/Qwen/Tiny/repo/files":
         return httpx.Response(200, json = {"Data": {"Files": MODEL_FILES}})
     if path == "/api/v1/datasets/org/ds/repo/tree":
@@ -208,7 +211,8 @@ def test_modelscope_dataset_metadata_is_hidden_from_datasets(hub):
 
 
 def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
-    assert upstream.upstream_id("model", "minimaxai/minimax-music3") == "MiniMax/MiniMax-Music3"
+    assert upstream.upstream_id("dataset", "OpenAI/GSM8K") == "AI-ModelScope/gsm8k"
+    assert upstream.upstream_id("dataset", "Rowan/hellaswag") == "evalscope/hellaswag"
     monkeypatch.setattr(
         upstream,
         "_ALIAS_INDEX",
@@ -224,6 +228,21 @@ def test_an_aliased_repo_is_served_under_its_hugging_face_id(hub, monkeypatch):
         hub.get("/datasets/hf/ds").headers["location"]
         == "https://www.modelscope.cn/datasets/org/ds"
     )
+
+
+def test_an_org_alias_maps_its_models_except_aliased_and_kept_ones(hub, monkeypatch):
+    assert upstream.upstream_id("model", "ZAI-ORG/New-Model") == "ZhipuAI/New-Model"
+    assert upstream.upstream_id("dataset", "nvidia/New-Set") == "nvidia/New-Set"
+    assert upstream.upstream_id("model", "zai-org/cogvlm-chat-hf") == "zai-org/cogvlm-chat-hf"
+    assert upstream.upstream_id("model", "tencent/Hy3-preview") == "Tencent-Hunyuan/Hy3-preview"
+    assert upstream.upstream_id("model", "zai-org") == "zai-org"
+    links = upstream.page_links()
+    assert links["orgs"]["zai-org"] == "ZhipuAI"
+    assert links["aliases"]["model"]["zai-org/cogvlm-chat-hf"] == "zai-org/cogvlm-chat-hf"
+    monkeypatch.setattr(upstream, "_ORG_INDEX", {"hf": "Qwen"})
+    body = hub.get("/api/models/HF/Tiny").json()
+    assert (body["id"], body["sha"]) == ("HF/Tiny", SHA)
+    assert hub.get("/HF/Tiny").headers["location"] == "https://www.modelscope.cn/models/Qwen/Tiny"
 
 
 def test_a_listed_hugging_face_pin_is_served_from_the_matching_modelscope_commit(hub, monkeypatch):
@@ -266,6 +285,37 @@ def test_every_error_reader_names_a_repo_missing_on_modelscope(hub, monkeypatch)
     assert modelscope_missing(lost, "org/ds") is None
     monkeypatch.setenv("UNSLOTH_STUDIO_HUB_SOURCE", "modelscope")
     assert modelscope_missing(lost, "org/ds") == not_on_modelscope("org/ds")
+
+
+def test_a_commit_modelscope_lacks_is_a_missing_revision_not_a_missing_repo(hub):
+    from huggingface_hub.errors import RevisionNotFoundError
+    from huggingface_hub.utils import _http as hf_http, hf_raise_for_status
+    from hub.utils.hf_errors import modelscope_missing
+
+    for path in (
+        f"/Qwen/Tiny/resolve/{GONE}/config.json",
+        f"/api/models/Qwen/Tiny/revision/{GONE}",
+        f"/api/datasets/org/ds/tree/{GONE}",
+    ):
+        answer = hub.head(path) if "/resolve/" in path else hub.get(path)
+        assert (answer.status_code, answer.headers["x-error-code"]) == (404, "RevisionNotFound")
+    response = hf_http.httpx.Response(
+        answer.status_code,
+        headers = answer.headers,
+        content = answer.content,
+        request = hf_http.httpx.Request("GET", str(answer.url)),
+    )
+    missing = pytest.raises(RevisionNotFoundError, hf_raise_for_status, response)
+    assert modelscope_missing(missing.value) is None
+    gone = hub.get(f"/api/models/no/one/revision/{GONE}")
+    assert (gone.status_code, gone.headers["x-error-code"]) == (404, "RepoNotFound")
+
+
+def test_every_decision_gguf_pin_has_its_modelscope_commit():
+    from core.systemone.catalog import GGUF_COMPANIONS
+    for name, companion in GGUF_COMPANIONS.items():
+        mapped = upstream.upstream_commit("model", companion.repo, companion.revision)
+        assert mapped != companion.revision, f"{name}: add its ModelScope commit to _PINNED_COMMITS"
 
 
 def test_writes_bad_ids_and_upstream_failures(hub):

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isAccountOwner } from "@/features/auth";
 import {
@@ -76,6 +77,7 @@ import {
   sttSidecarKeyFor,
   usesNativeAudioRuntime,
 } from "../catalog";
+import { useAudioTranscribeStore } from "../stores/audio-transcribe-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import {
   type AudioWorkflowId,
@@ -484,13 +486,13 @@ export function useAudioModelSlot({
               void retryLoad("cpu");
             },
           });
-          toast.error((error as Error).message, {
+          modelErrorToast((error as Error).message, {
             id: toastId,
             duration: 12000,
             action: action && { label: action.label, onClick: action.onClick },
           });
         } else if (isCurrent()) {
-          toast.error(
+          modelErrorToast(
             error instanceof Error ? error.message : "Model load failed.",
             { id: toastId },
           );
@@ -873,8 +875,7 @@ export function useAudioModelSlot({
       return;
     }
 
-    // A pick queued behind a settling load, held back because the page went away before the load
-    // finished. Now that Audio is visible again the attempt is cancellable.
+    // Replay a pick held back while the page was away; now visible, the attempt is cancellable.
     replayQueuedTtsPick();
 
     const deferred = deferredSttLoad.current;
@@ -893,8 +894,7 @@ export function useAudioModelSlot({
             deferred.sidecarKey,
             deferred.engine,
           )?.download;
-          // `model` is null once the download thread has stopped, so a cancellation made while this page
-          // was hidden matched nothing here and the deferred load restarted the whole download.
+          // `model` is null once the download stopped, so a cancel made while hidden matched nothing.
           if (
             download?.cancelled &&
             (download.model ?? download.cancelled_model) === deferred.sidecarKey
@@ -951,6 +951,7 @@ export function useAudioModelSlot({
           sttGgufVariants.current.delete(id.toLowerCase());
         }
         deferredSttLoad.current = null;
+        useAudioTranscribeStore.setState({ connectionModel: null });
         selectedSttRepoRef.current = id;
         setSelectedSttRepo(id);
         void ensureSttLoaded(id, sidecarKey, engine);
@@ -1145,8 +1146,7 @@ export function useAudioModelSlot({
           return;
         }
 
-        // An old managed completion must not immediately replace the model the user just ejected. The
-        // global download may continue for later use.
+        // An old managed completion must not replace the model the user just ejected.
         invalidatePendingStagedTts();
         stageTtsDownload([]);
 
@@ -1282,6 +1282,7 @@ export function useAudioModelSlot({
     reloadOnCpu,
     setLoadFailureHandlers,
     handleEject,
+    invalidatePendingTtsSelection,
     trainedTtsModels,
   };
 }

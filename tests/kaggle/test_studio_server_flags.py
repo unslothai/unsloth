@@ -60,8 +60,7 @@ def test_a_one_card_run_says_the_two_card_split_was_not_exercised():
 
 
 def test_the_check_reads_the_applied_values_not_the_request():
-    """The whole point. A check on the request is a check on a dict this file
-    just built."""
+    """A check on the request only checks a dict this file built, so read the applied status."""
     body = _body()
     assert '"/api/inference/status"' in body
     assert 'applied.get("cache_type_kv")' in body
@@ -80,8 +79,7 @@ def test_no_branch_in_the_check_is_wired_to_a_constant():
 
 
 def test_the_cache_rules_append_a_failure_on_both_paths():
-    """Both the missing-value path and the silent-downgrade path must be able
-    to fail, and each is reached through its own branch."""
+    """Missing values and silent downgrades must each append a failure via their own branch."""
     tree = ast.parse(_body())
     messages = [
         ast.unparse(node)
@@ -94,17 +92,13 @@ def test_the_cache_rules_append_a_failure_on_both_paths():
 
 
 def test_the_context_pin_is_checked_against_the_requested_value():
-    """llama-server admits a prompt on n_ctx alone, so a server at the model
-    default behaves differently from one at 2048 and the difference does not
-    show in a chat response."""
+    """Unpinned, llama-server admits prompts on n_ctx alone and differs silently from 2048."""
     body = _body()
     assert "int(ctx) > self.args.studio_ctx" in body
 
 
 def test_gpu_residency_is_confirmed_after_the_split():
-    """A tensor_split that fell back to CPU reports a healthy server and proves
-    nothing about either card. Checked structurally: the threshold comparison
-    must exist, not merely the message about it."""
+    """A tensor_split on CPU still reports healthy; the threshold comparison must exist."""
     tree = ast.parse(_body())
     compares = [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, ast.Compare)]
     assert any(
@@ -135,9 +129,7 @@ def test_it_is_skipped_rather_than_passed_when_the_model_is_not_on_the_gpu():
 
 
 def test_it_runs_between_gpu_inference_and_training():
-    """It reloads the chat model with different flags. Earlier would change the
-    model the inference checks measured; later would put a reload between the
-    adapter and the export."""
+    """Server flags reload the model, so they must sit between GPU inference and training."""
     infer_at = SRC.index("gpu_ok = self.assert_gpu_inference()")
     flags_at = SRC.index("self.assert_server_flags()")
     train_at = SRC.index("trained = self.assert_training()")
@@ -197,9 +189,7 @@ def test_a_pinned_payload_does_not_see_both_cards(monkeypatch):
 
 
 def test_an_unpinned_payload_still_sees_every_card(monkeypatch):
-    """The other direction, and it is the one the two-card claim depends on: a
-    leg that is deliberately NOT pinned must still report both cards, or real
-    multi-GPU coverage would be reported as single-card."""
+    """Unpinned legs must still see every GPU, or multi-GPU coverage reads as single-card."""
     module = _payload_module()
     _with_smi(module, monkeypatch, TWO_ROWS, None)
     assert len(module.gpu_inventory()) == 2

@@ -5,6 +5,8 @@
 
 import json
 import os
+import subprocess
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,7 +28,7 @@ def _backend(monkeypatch, is_mlx, tmp_path):
 
 
 def _peft_writer(model):
-    # The real zoo converter refuses an existing destination and publishes a fresh one.
+    # the real zoo converter refuses an existing destination
     def _save(
         path,
         adapter_config = None,
@@ -102,6 +104,94 @@ def test_cuda_hub_push_unchanged(monkeypatch, tmp_path):
     backend.current_model.push_to_hub.assert_called_once_with("u/r", token = "t", private = False)
 
 
+@pytest.mark.parametrize("stale", [None, "old", "recent"])
+def test_gguf_lora_export_rejects_missing_artifact(monkeypatch, tmp_path, stale):
+    backend = _backend(monkeypatch, False, tmp_path)
+    backend.current_model.peft_config = {}
+    backend._write_export_metadata = MagicMock()
+    out = tmp_path / "out"
+    if stale:
+        out.mkdir()
+        (out / "model-lora-q8_0.gguf").write_bytes(b"old GGUF")
+        if stale == "old":
+            os.utime(out / "model-lora-q8_0.gguf", (1000, 1000))
+
+    def _save(directory, tokenizer, save_method, **kwargs):
+        os.makedirs(directory, exist_ok = True)
+        with open(os.path.join(directory, "adapter_model.safetensors"), "wb") as f:
+            f.write(b"adapter")
+        return os.path.join(directory, "model-lora-q8_0.gguf")
+
+    backend.current_model.save_pretrained_gguf = _save
+    ok, message, path = backend.export_lora_adapter(str(out), gguf = True)
+
+    assert not ok
+    assert "conversion reported success but wrote no" in message
+    assert ".gguf" in message
+    assert path is None
+    backend._write_export_metadata.assert_not_called()
+    if stale:
+        assert (out / "model-lora-q8_0.gguf").read_bytes() == b"old GGUF"
+
+
+@pytest.mark.parametrize("stale", [None, "old", "recent"])
+def test_gguf_lora_export_accepts_new_artifact(monkeypatch, tmp_path, stale):
+    backend = _backend(monkeypatch, False, tmp_path)
+    backend.current_model.peft_config = {}
+    backend._write_export_metadata = MagicMock()
+    out = tmp_path / "out"
+    if stale:
+        out.mkdir()
+        (out / "model-lora-q8_0.gguf").write_bytes(b"old GGUF")
+        if stale == "old":
+            os.utime(out / "model-lora-q8_0.gguf", (1000, 1000))
+
+    saved = []
+
+    def _save(directory, tokenizer, save_method, **kwargs):
+        saved.append(directory)
+        with open(os.path.join(directory, "model-lora-q8_0.gguf"), "wb") as f:
+            f.write(b"new GGUF")
+
+    backend.current_model.save_pretrained_gguf = _save
+    ok, message, path = backend.export_lora_adapter(str(out), gguf = True)
+
+    assert ok, message
+    assert path == str(out.resolve())
+    assert (out / "model-lora-q8_0.gguf").read_bytes() == b"new GGUF"
+    assert len(saved) == 1
+    backend._write_export_metadata.assert_called_once_with(str(out))
+
+
+@pytest.mark.parametrize("link", [os.link, os.symlink])
+def test_mlx_gguf_lora_reexport_leaves_linked_originals_alone(monkeypatch, tmp_path, link):
+    backend = _backend(monkeypatch, True, tmp_path)
+    _peft_writer(backend.current_model)
+    backend.current_model.peft_config = {}
+    backend._write_export_metadata = MagicMock()
+
+    def _convert(directory, outtype, token):
+        with open(os.path.join(directory, f"model-lora-{outtype}.gguf"), "wb") as f:
+            f.write(b"GGUF")
+
+    backend._convert_peft_dir_to_gguf = _convert
+    out = tmp_path / "out"
+    out.mkdir()
+    original = tmp_path / "original.safetensors"
+    original.write_text("user adapter")
+    try:
+        link(original, out / "adapter_model.safetensors")
+    except OSError as exception:  # Windows without the symlink privilege
+        pytest.skip(f"{link.__name__} unavailable: {exception}")
+
+    ok, message, _ = backend.export_lora_adapter(str(out), gguf = True)
+
+    assert ok, message
+    assert original.read_text() == "user adapter"
+    assert (out / "adapter_model.safetensors").read_text() == "peft"
+    assert (out / "model-lora-q8_0.gguf").read_bytes() == b"GGUF"
+
+
 def test_outdated_zoo_hard_error(monkeypatch, tmp_path):
     backend = _backend(monkeypatch, True, tmp_path)
 
@@ -175,6 +265,8 @@ def _converter_harness(monkeypatch, tmp_path, with_converter):
         **kwargs,
     ):
         calls.append((cmd, env))
+        with open(cmd[cmd.index("--outfile") + 1], "wb") as f:
+            f.write(b"GGUF")
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
     monkeypatch.setattr(subprocess, "run", _run)
@@ -190,6 +282,17 @@ def _converter_harness(monkeypatch, tmp_path, with_converter):
     adapter.mkdir()
     (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": "o/m"}))
     return backend, str(adapter), calls
+
+
+def test_gguf_converter_rejects_missing_outfile(monkeypatch, tmp_path):
+    backend, adapter, _calls = _converter_harness(monkeypatch, tmp_path, True)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode = 0),
+    )
+    with pytest.raises(RuntimeError, match = "conversion reported success but wrote no .gguf"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
 
 
 @pytest.mark.parametrize("token,expect", [(False, None), ("hf_x", "hf_x")])
@@ -343,7 +446,7 @@ def test_parse_adapter_features(tmp_path):
         (d / "adapter_config.json").write_text(json.dumps(cfg))
         return str(d)
 
-    assert parse_adapter_features(str(tmp_path)) is None  # no config
+    assert parse_adapter_features(str(tmp_path)) is None
     base = parse_adapter_features(_dir({"r": 8}))
     assert base == {
         "dora": False,
@@ -393,7 +496,7 @@ def test_local_dir_never_format_mixed(monkeypatch, tmp_path):
     backend = _backend(monkeypatch, True, tmp_path)
     out = tmp_path / "out"
     out.mkdir()
-    (out / "adapter_model.safetensors").write_bytes(b"x")  # other format
+    (out / "adapter_model.safetensors").write_bytes(b"x")
     ok, message, _ = backend.export_lora_adapter(str(out))
     assert not ok and "mix" in message
     backend.current_model.save_lora_adapters.assert_not_called()
@@ -425,7 +528,7 @@ def test_gguf_converter_honors_scripts_dir(monkeypatch, tmp_path):
     pinned = tmp_path / "pinned"
     pinned.mkdir()
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", str(pinned))
-    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = None  # must not be called
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = None
     with pytest.raises(RuntimeError, match = "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR"):
         backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     (pinned / "convert_lora_to_gguf.py").write_text("")

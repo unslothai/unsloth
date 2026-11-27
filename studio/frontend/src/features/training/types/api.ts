@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ParallelModeChoice } from "./parallel";
 import type { ModelInventoryFormat } from "@/features/hub";
 import type { S3Config } from "@/types/training";
 
@@ -17,7 +18,7 @@ export interface TrainingStartRequest {
   load_in_4bit: boolean;
   max_seq_length: number;
   vision_image_size?: number | null;
-  /** Allow loading models with custom code. Only enable for repos you trust. */
+  /** Only enable for repos you trust. */
   trust_remote_code?: boolean;
   /** sha256 fingerprint pinning user approval of this exact custom-code version. */
   approved_remote_code_fingerprint?: string | null;
@@ -33,13 +34,12 @@ export interface TrainingStartRequest {
   dataset_slice_end: number | null;
   local_datasets: string[];
   local_eval_datasets: string[];
-  /** S3 bucket configuration; only sent when the dataset source is "s3". */
   s3_config?: S3Config | null;
   format_type: string;
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;
   learning_rate: string;
-  /** Optional CPT embedding LR. If omitted, backend uses lr/10; typical range is 2x-10x smaller than main LR. */
+  /** If omitted, the backend uses lr/10. */
   embedding_learning_rate?: number | null;
   batch_size: number;
   gradient_accumulation_steps: number;
@@ -65,6 +65,10 @@ export interface TrainingStartRequest {
   offload_layers: number | "auto";
   offload_vram_gb: number | null;
   offload_vram_gb_per_device: (number | null)[] | null;
+  /** Multi-GPU hosts only; absent = the backend's legacy single / layer-split choice. */
+  parallel_mode?: ParallelModeChoice;
+  parallel_spec?: string;
+  gpu_ids?: number[];
   prefetch_depth: number | "auto";
   use_rslora: boolean;
   use_loftq: boolean;

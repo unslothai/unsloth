@@ -136,8 +136,7 @@ class TestSigningAWheel:
                 assert mod.is_signed(z.read(name)), name
 
     def test_an_already_signed_binary_is_left_alone(self, mod, tmp_path, fake_signer):
-        """delvewheel vendors Microsoft's redistributables into pyarrow already signed by
-        Microsoft. Re-signing one replaces their signature with ours."""
+        """Vendored Microsoft DLLs arrive signed; re-signing would replace their signature."""
         original = _pe(signed = True)
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
@@ -238,8 +237,7 @@ class TestTheRecordIsRegenerated:
         ), "the fixture did not really change the bytes, so this proves nothing"
 
     def test_record_names_itself_without_a_digest(self, mod, tmp_path, fake_signer):
-        """PEP 376: RECORD cannot hash itself, and a tool that writes one anyway makes the
-        file self-contradictory."""
+        """RECORD cannot hash itself (PEP 376); a digest makes the file contradict itself."""
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
             {
@@ -292,8 +290,7 @@ class TestItRefusesRatherThanShipSomethingWrong:
             mod.sign_wheel(wheel, tmp_path / "out", failing)
 
     def test_a_signer_that_silently_does_nothing_fails_the_run(self, mod, tmp_path):
-        """Exit 0 with the file untouched is the dangerous case: it would publish an unsigned
-        wheel while every log line says it was signed."""
+        """A signer that exits 0 but leaves the file untouched would publish an unsigned wheel."""
         wheel = _wheel(
             tmp_path / "demo-1.0-cp313-cp313-win_arm64.whl",
             {

@@ -24,7 +24,7 @@ def test_an_interrupted_split_quant_is_still_offered_from_its_folder(cache_locat
     (snap / f"Model-{quant}-00001-of-00002.gguf").write_bytes(b"0" * 256)
     inventory_scan.invalidate_hf_cache_scans()
 
-    # Listed by the scan but excluded as incomplete, so it is the fallback that carries it.
+    # Excluded by the scan as incomplete, so the fallback carries it.
     source = cached_gguf_sources(repo_id)[quant.lower()]
     assert source.snapshot == snap
 
@@ -80,14 +80,13 @@ def test_duplicate_ranking_honors_current_companion_readiness(cache_locations):
     inventory_scan.invalidate_hf_cache_scans()
     active_snap = next(path.parent for repo, path in expected.values() if repo.parent == active)
     remembered_snap = next(path.parent for repo, path in expected.values() if repo.parent != active)
-    # The active copy satisfies every local rule but its scoped Hub answer does not.
     readiness = {active_snap: False, remembered_snap: True}
     chosen = cached_gguf_sources(
         repo_id, scoped_ready = lambda snapshot, _quant: readiness.get(snapshot)
     )[quant.lower()].snapshot
     assert chosen == remembered_snap
 
-    # The reverse verdict keeps the active copy: ranking is the comparison, not a bias.
+    # Ranking compares readiness; it is not biased toward the active copy.
     readiness = {active_snap: True, remembered_snap: False}
     kept = cached_gguf_sources(
         repo_id, scoped_ready = lambda snapshot, _quant: readiness.get(snapshot)
@@ -96,8 +95,7 @@ def test_duplicate_ranking_honors_current_companion_readiness(cache_locations):
 
 
 def test_the_merged_default_prefers_a_ready_row(cache_locations):
-    """An offline merge that offers a complete Q8_0 must not recommend a torn remembered
-    quant just because that quant ranks higher."""
+    """An offline merge must not recommend a torn remembered quant merely for ranking higher."""
     repo_id, expected = cache_locations
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     active_repo = next(repo for repo, _ in expected.values() if repo.parent == active)
@@ -118,9 +116,7 @@ def test_the_merged_default_prefers_a_ready_row(cache_locations):
 
 
 def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeypatch):
-    """A remembered partial's resume affordance has to describe the root a resume will really
-    continue in. A download lands in the ACTIVE cache, so judging the row against the folder it
-    happens to sit in would promise a byte-for-byte restart the continuation cannot honour."""
+    """Resume metadata must describe the ACTIVE cache where downloads land, not a partial's folder."""
     from hub.utils import download_manifest
 
     repo_id, expected = cache_locations
@@ -142,7 +138,6 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
         repo_cache_dir = None,
     ):
         roots.append(repo_cache_dir)
-        # Only the remembered folder holds a resumable partial; the active root has none.
         return repo_cache_dir is not None and repo_cache_dir.parent == repo.parent
 
     monkeypatch.setattr(gguf_variants, "_partial_resumable_for_variant", _resumable)
@@ -155,18 +150,15 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
     )
     variant = next(v for v in response.variants if v.quant == quant)
     assert variant.partial and not variant.downloaded
-    # The row still names the copy it was listed from, which is what delete and load resolve.
+    # Delete and load resolve via the copy the row was listed from.
     assert variant.cache_path == str(repo)
-    # The active root holds no marker or manifest for this quant, so there is no transport to
-    # name and nothing a resume could reuse: the neutral label, not a promise of "http".
+    # No marker or manifest in the active root, so there is no transport to name.
     assert variant.partial_transport is None
-    # Judged against the ACTIVE root's repo dir: this partial's own folder is where the resume
-    # will NOT go.
+    # Judged against the active root: the partial's own folder is not where the resume goes.
     assert roots and all(root.parent == active for root in roots), roots
     assert variant.partial_resumable is False
     assert variant.download_remaining_bytes == 4096
 
-    # The other way round: a partial in the ACTIVE cache is judged by the copy a resume continues.
     quant, (repo, _path) = next(
         (q, value) for q, value in expected.items() if value[0].parent == active
     )
@@ -189,9 +181,7 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
 
 
 def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations, monkeypatch):
-    """A quant the current revision no longer lists has no scoped answer to consult, so the
-    merge has to fall back to the copy's own per-snapshot verdict instead of trusting the
-    synthesized row and advertising a cancelled download as loadable."""
+    """Unlisted quant: no scoped answer, so its own snapshot verdict decides, or a cancel shows loadable."""
     from hub.utils import gguf_sources
     from hub.utils.gguf import GgufVariantInfo
 
@@ -208,7 +198,6 @@ def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations,
         path.parent,
         False,
     )
-    # The current revision cannot describe this quant, so its scoped answer returns no row.
     monkeypatch.setattr(
         gguf_sources, "cached_gguf_sources", lambda *a, **k: {quant.lower(): source}
     )
@@ -224,9 +213,7 @@ def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations,
 
 
 def test_the_delete_preview_follows_the_copy_the_row_carries(cache_locations, cache_client):
-    """The listing hands each row the copy it resolved, and the confirm dialog must preview
-    that same copy: without the reference the preview measures the active duplicate and
-    describes a delete the user did not ask for."""
+    """The delete preview must measure the copy the row resolved, not the active duplicate."""
     repo_id, expected = cache_locations
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     quant = "Q4_K_M"

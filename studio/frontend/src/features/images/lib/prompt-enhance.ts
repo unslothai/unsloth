@@ -18,6 +18,21 @@ export const ENHANCE_PROMPT_LABEL = "Enhance prompt";
 export const ENHANCE_PROMPT_HINT =
   "Rewrites your prompt into a detailed caption with FLUX.3's prompt upsampler before generating. Fixes most broken poses and hands. Turn off to use your prompt exactly as typed.";
 
+/** MiniMax-H3-Image runs its reference workflow's own enhancer (Qwen3.5-9B), not FLUX.3's upsampler. */
+export const H3_IMAGE_FAMILY = "minimax-h3-image";
+export const H3_IMAGE_ENHANCE_PROMPT_HINT =
+  "Rewrites your prompt into a detailed caption with Qwen3.5-9B before generating, as MiniMax-H3-Image's reference workflow does (on by default there). Edits show it the reference pictures. Turn off to use your prompt exactly as typed.";
+
+/** The hint for the loaded family's enhancer. */
+export function enhancePromptHint(family: string | null | undefined): string {
+  return family === H3_IMAGE_FAMILY ? H3_IMAGE_ENHANCE_PROMPT_HINT : ENHANCE_PROMPT_HINT;
+}
+
+/** A route for one family's enhancer. With no family the backend reads the loaded one. */
+export function upsamplerRouteFor(route: string, family: string | null | undefined): string {
+  return family ? `${route}?family=${encodeURIComponent(family)}` : route;
+}
+
 export type PromptEnhancement = "applied" | "off" | "unavailable" | "failed";
 
 /** Same shape as the speech-to-text model download status (SttDownloadStatus). */
@@ -43,6 +58,11 @@ export interface PromptUpsamplerStatus {
   size_bytes: number;
   mmproj_size_bytes: number;
   mmproj_downloaded: boolean;
+  // False while an earlier quant serves (downloaded above); an older backend without it reads downloaded && mmproj.
+  current_downloaded: boolean;
+  current_missing_bytes: number;
+  // "" from an older backend.
+  current_filename: string;
   // Local files from the env overrides: no repo download is offered beside them.
   override: boolean;
   download: PromptUpsamplerDownload;
@@ -52,6 +72,7 @@ export interface PromptUpsamplerPreviewRequest {
   prompt: string;
   reference_images?: string[];
   variant?: "distilled" | "base";
+  family?: string;
 }
 
 const IDLE_DOWNLOAD: PromptUpsamplerDownload = {
@@ -92,18 +113,39 @@ export function parsePromptUpsamplerStatus(raw: unknown): PromptUpsamplerStatus 
     size_bytes: num(body.size_bytes) ?? 0,
     mmproj_size_bytes: num(body.mmproj_size_bytes) ?? 0,
     mmproj_downloaded: body.mmproj_downloaded === true,
+    current_downloaded:
+      typeof body.current_downloaded === "boolean"
+        ? body.current_downloaded
+        : body.downloaded === true && body.mmproj_downloaded === true,
+    current_missing_bytes: num(body.current_missing_bytes) ?? 0,
+    current_filename: str(body.current_filename) ?? "",
     override: body.override === true,
     download,
   };
 }
 
-/** The model or its vision projector (edits) is missing, so the Download control stays offered. */
+/** The model, its vision projector (edits) or the current default quant is missing. */
 export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
-  return status.supported && !status.override && (!status.downloaded || !status.mmproj_downloaded);
+  return (
+    status.supported &&
+    !status.override &&
+    (!status.downloaded || !status.mmproj_downloaded || !status.current_downloaded)
+  );
+}
+
+/** An earlier quant serves; a model with no projector counts when it is not the default file (the Download then
+ * fetches both, not the projector alone). */
+export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
+  if (!status.downloaded || status.current_downloaded) return false;
+  return (
+    status.mmproj_downloaded ||
+    (status.current_filename !== "" && status.filename !== "" && status.filename !== status.current_filename)
+  );
 }
 
 /** Bytes the Download button fetches: whichever of the model and the vision projector is still missing. */
 export function upsamplerDownloadBytes(status: PromptUpsamplerStatus): number {
+  if (upsamplerServesEarlierQuant(status)) return status.current_missing_bytes;
   return (
     (status.downloaded ? 0 : status.size_bytes) +
     (status.mmproj_downloaded ? 0 : status.mmproj_size_bytes)
@@ -281,17 +323,10 @@ export function previewSignature(body: PromptUpsamplerPreviewRequest): string {
   return JSON.stringify([body.prompt.trim(), body.variant ?? null, refs]);
 }
 
-/** Non-blocking notice after a run that asked for enhancement and did not get it, else null. */
+/** Notice when the upsampler failed, else null; "unavailable" stays silent. */
 export function enhancementNotice(
   outcome: string | null | undefined,
 ): { title: string; description: string } | null {
-  if (outcome === "unavailable") {
-    return {
-      title: "Prompt used as typed",
-      description:
-        "The prompt upsampler could not run (not downloaded yet, or llama.cpp is unavailable), so the prompt ran unchanged.",
-    };
-  }
   if (outcome === "failed") {
     return {
       title: "Prompt used as typed",

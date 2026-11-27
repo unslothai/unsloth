@@ -2,6 +2,8 @@
 """head_dim 256 routes to flex only until SDPA reaches cuDNN with a mask (torch 2.14, sm100).
 Above 256 no cuDNN build helps, so it routes on every version."""
 
+import inspect
+
 import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
@@ -102,11 +104,10 @@ def test_gate_is_off_below_blackwell(monkeypatch):
 
 
 def _plain_sdpa(monkeypatch):
-    # The SM100 cuDNN head_dim 256 detour wraps SDPA at import on a B200; these test plain SDPA.
+    # Import-time wrappers (the SM100 cuDNN head_dim 256 detour, the torch 2.6 - 2.13 cuDNN grad
+    # layout fix on top of it) can stack on a B200; these test plain SDPA, so unwrap them all.
     sdpa = u.torch.nn.functional.scaled_dot_product_attention
-    monkeypatch.setattr(
-        u.torch.nn.functional, "scaled_dot_product_attention", getattr(sdpa, "__wrapped__", sdpa)
-    )
+    monkeypatch.setattr(u.torch.nn.functional, "scaled_dot_product_attention", inspect.unwrap(sdpa))
 
 
 def _blackwell_torch_2_14(monkeypatch):
@@ -121,6 +122,29 @@ def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
     _plain_sdpa(monkeypatch)
     _blackwell_torch_2_14(monkeypatch)
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is True
+
+
+def test_plain_sdpa_strips_both_stacked_sdpa_wrappers(monkeypatch):
+    # A B200 on torch 2.13 installs the d256 detour, then the grad-layout wrapper over it.
+    from unsloth import import_fixes
+
+    F = u.torch.nn.functional
+    monkeypatch.setattr(
+        F, "scaled_dot_product_attention", u.torch._C._nn.scaled_dot_product_attention
+    )
+    monkeypatch.delenv("UNSLOTH_ALLOW_CUDNN_SDPA_D256", raising = False)
+    monkeypatch.delenv("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", raising = False)
+    monkeypatch.setattr(import_fixes, "_sdpa_cudnn_d256_sm100_devices", lambda: {0})
+    monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(u.torch, "__version__", "2.13.0+cu130")
+    monkeypatch.setattr(u.torch.backends.cudnn, "version", lambda: 92000)
+    import_fixes.fix_cudnn_sdpa_d256_masked_backward()
+    import_fixes.fix_cudnn_sdpa_backward_grad_layout()
+    sdpa = F.scaled_dot_product_attention
+    assert getattr(sdpa, import_fixes._SDPA_GRAD_LAYOUT_FLAG, False)
+    assert getattr(sdpa.__wrapped__, "_unsloth_avoids_cudnn_d256_masked_backward", False)
+    test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch)
 
 
 def test_gate_is_off_while_the_cudnn_d256_detour_is_installed(monkeypatch):

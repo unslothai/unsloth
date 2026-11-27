@@ -200,6 +200,14 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     assert [a.name for n in taken for a in n.names] == ["*"]
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_checks_rows_without_a_model(clef):
+    assert FastDecisionModel.rows_problem([{"state": "s"}, _row(0)], clef) is None
+    assert FastDecisionModel.rows_problem([{"state": "s"}], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+
+
 @pytest.fixture
 def clef_checkpoint(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -403,6 +411,67 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
     assert picked == [True, "billing", 2] and answers["team"]["choice"] == "billing"
     with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "non-empty"):
         FastDecisionModel.predict(model, tokenizer, "s", {})
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, "true")
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
+
+
+JSON_TEXT = '{"b": 1, "a": [2, {"d": 3, "c": 4}]}'
+
+
+def test_clef_reads_a_json_text_state_as_written(clef_checkpoint, monkeypatch, capsys):
+    from unsloth._vendor.clef.joint_schema_model import render
+
+    model, tokenizer = FastDecisionModel.from_pretrained(str(clef_checkpoint))
+    seen, item = [], unsloth._decision_mlx._clef_item
+
+    def spy(zoo, pipeline, state, *args):
+        seen.append(state)
+        return item(zoo, pipeline, state, *args)
+
+    monkeypatch.setattr(unsloth._decision_mlx, "_clef_item", spy)
+    value = json.loads(JSON_TEXT)
+    states = ["plain text", JSON_TEXT, value, render(value)]
+    rows = [{**_row(i), "state": state} for i, state in enumerate(states)]
+    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model)
+    assert report["json_text_states"] == 1
+    FastDecisionModel.predict(model, tokenizer, JSON_TEXT, QUESTIONS)
+    assert seen == states + [JSON_TEXT]
+    # An object reads as its sorted compact JSON; JSON text in another form reads apart from it.
+    ids = [item["input_ids"] for item in items]
+    assert ids[2] == ids[3] != ids[1]
+    assert "1 of 4 states are JSON text" in capsys.readouterr().out
+
+
+def test_laya_predict_decodes_a_json_text_state(checkpoint, monkeypatch):
+    model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    common, seen = unsloth._decision_mlx._laya().common, []
+    build = common.build_sequence
+    spy = lambda tokenizer, state, *args: seen.append(state) or build(tokenizer, state, *args)
+    monkeypatch.setattr(common, "build_sequence", spy)
+    FastDecisionModel.predict(model, tokenizer, JSON_TEXT, QUESTIONS)
+    assert seen == [json.loads(JSON_TEXT)] * len(QUESTIONS)
+    # Every model's report has the count Unsloth Studio reads.
+    row = {**_row(0), "state": JSON_TEXT}
+    assert FastDecisionModel.build_dataset([row], tokenizer, model)[1]["json_text_states"] == 0
 
 
 def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(

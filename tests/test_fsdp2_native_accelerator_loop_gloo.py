@@ -19,7 +19,9 @@ scheduler, before any FP8 conversion; non-native objects still prepare."""
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import datetime  # noqa: E402
@@ -179,8 +181,7 @@ def _case_custom(native, rank, tmp):
 
 
 def _case_fp8(native, tmp):
-    """accelerate converts to FP8 in prepare before prepare_model: refused before any conversion,
-    on a custom accelerator and on a Trainer's."""
+    """accelerate converts to FP8 in prepare before prepare_model, so refused up front."""
     from accelerate import Accelerator
 
     model = native.shard_model(_lora(1), native.FSDP2Config(param_dtype = torch.float32))

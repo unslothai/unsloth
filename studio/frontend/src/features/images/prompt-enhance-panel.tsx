@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Cancel01Icon, Copy01Icon, Download04Icon, SparklesIcon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { Cancel01Icon, SparklesIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -26,12 +27,13 @@ import {
   warmPromptUpsampler,
 } from "./prompt-upsampler-api";
 import {
-  ENHANCE_PROMPT_HINT,
   ENHANCE_PROMPT_LABEL,
+  enhancePromptHint,
   type PromptUpsamplerPreviewRequest,
   type PromptUpsamplerStatus,
   upsamplerDownloadBytes,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   clearPreviewDigests,
   previewSignature,
   upsamplerDownloadFraction,
@@ -42,7 +44,7 @@ import {
 } from "./lib/prompt-enhance";
 
 /** Upsampler status, polled every second while a download runs and once otherwise. */
-function usePromptUpsamplerStatus(active: boolean) {
+function usePromptUpsamplerStatus(active: boolean, family?: string | null) {
   const [status, setStatus] = useState<PromptUpsamplerStatus | null>(null);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
@@ -50,11 +52,11 @@ function usePromptUpsamplerStatus(active: boolean) {
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    getPromptUpsamplerStatus(controller.signal)
+    getPromptUpsamplerStatus(controller.signal, family)
       .then(setStatus)
       .catch(() => {});
     return () => controller.abort();
-  }, [active, tick]);
+  }, [active, tick, family]);
   useEffect(() => {
     if (!active || !downloading) return;
     const id = window.setInterval(refresh, 1000);
@@ -85,9 +87,11 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 function UpsamplerDownloadNotice({
   status,
+  family,
   onChanged,
 }: {
   status: PromptUpsamplerStatus;
+  family?: string | null;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -100,7 +104,7 @@ function UpsamplerDownloadNotice({
   const start = async () => {
     setBusy(true);
     try {
-      await startPromptUpsamplerDownload(hfApiToken(getHfToken()));
+      await startPromptUpsamplerDownload(hfApiToken(getHfToken()), family);
     } catch (err) {
       toast.error("Could not download the prompt upsampler", {
         description: err instanceof Error ? err.message : undefined,
@@ -112,7 +116,7 @@ function UpsamplerDownloadNotice({
   };
   const cancel = async () => {
     try {
-      await cancelPromptUpsamplerDownload();
+      await cancelPromptUpsamplerDownload(family);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not cancel the download");
     } finally {
@@ -122,7 +126,7 @@ function UpsamplerDownloadNotice({
   return (
     <div
       data-testid="prompt-upsampler-download"
-      className="flex flex-col gap-1.5 rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
+      className="flex flex-col gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-2.5 py-2 text-ui-11"
     >
       {download.downloading ? (
         <>
@@ -152,7 +156,9 @@ function UpsamplerDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {status.downloaded
+            {upsamplerServesEarlierQuant(status)
+              ? `Prompts are enhanced with an earlier upsampler quant (${status.filename})${status.mmproj_downloaded ? "" : ", edits from the text alone"}. Download the current one${size ? ` (${size})` : ""} for better captions.`
+              : status.downloaded
               ? `The prompt upsampler's vision projector${size ? ` (${size})` : ""} is not downloaded. Until it is, edits are enhanced from the text alone.`
               : `The prompt upsampler${size ? ` (${size})` : ""} is not downloaded. Until it is, prompts run as typed.`}
           </span>
@@ -164,11 +170,11 @@ function UpsamplerDownloadNotice({
               type="button"
               size="sm"
               variant="secondary"
-              className="h-7 gap-1.5 self-start text-xs"
+              className="gap-1.5 self-start text-xs"
               disabled={busy}
               onClick={() => void start()}
             >
-              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download04Icon} className="size-3.5" />}
+              {busy ? <Spinner className="size-3.5" /> : <HugeiconsIcon icon={Download01Icon} className="size-3.5" />}
               {size ? `Download (${size})` : "Download"}
             </Button>
           ) : (
@@ -185,11 +191,14 @@ export function EnhancePromptControls({
   enabled,
   onEnabledChange,
   modelKey,
+  family,
   prompt,
   previewRequest,
   onUseCaption,
 }: {
   enabled: boolean;
+  /** The loaded family: MiniMax-H3-Image has its own enhancer model, status and download. */
+  family?: string | null;
   /** The resident model and its load; a switch or reload warms the upsampler for it. */
   modelKey: string;
   onEnabledChange: (on: boolean) => void;
@@ -199,7 +208,7 @@ export function EnhancePromptControls({
   /** Put the caption in the prompt box and turn enhancement off. */
   onUseCaption: (caption: string) => void;
 }) {
-  const { status, refresh } = usePromptUpsamplerStatus(true);
+  const { status, refresh } = usePromptUpsamplerStatus(true, family);
   // Re-read once a download ends, so the notice clears without a reload.
   const wasDownloading = useRef(false);
   useEffect(() => {
@@ -281,7 +290,7 @@ export function EnhancePromptControls({
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ENHANCE_PROMPT_LABEL}
-          <InfoHint>{ENHANCE_PROMPT_HINT}</InfoHint>
+          <InfoHint>{enhancePromptHint(family)}</InfoHint>
         </span>
         <div className="flex items-center gap-1.5">
           <Button
@@ -299,11 +308,13 @@ export function EnhancePromptControls({
           <Switch checked={enabled} onCheckedChange={onEnabledChange} aria-label={ENHANCE_PROMPT_LABEL} />
         </div>
       </div>
-      {needsDownload && status ? <UpsamplerDownloadNotice status={status} onChanged={refresh} /> : null}
+      {needsDownload && status ? (
+        <UpsamplerDownloadNotice status={status} family={family} onChanged={refresh} />
+      ) : null}
       {preview ? (
         <div
           data-testid="enhanced-prompt-preview"
-          className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-xs"
+          className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-xs"
         >
           <div className="flex items-center justify-between gap-2">
             <button
@@ -313,7 +324,7 @@ export function EnhancePromptControls({
               className="flex items-center gap-1 font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               Enhanced prompt{stale ? " (for an earlier request)" : ""}
-              <ChevronDown className={cn("size-3 transition-transform", previewOpen && "rotate-180")} />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className={cn("size-3 transition-transform", previewOpen && "rotate-180")} />
             </button>
             <button
               type="button"
@@ -335,7 +346,7 @@ export function EnhancePromptControls({
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="h-7 px-2 text-xs"
+                  className="text-xs"
                   onClick={() => {
                     onUseCaption(preview.caption);
                     setPreview(null);
@@ -364,7 +375,7 @@ export function EnhancedPromptRecipeRow({ caption }: { caption: string }) {
         className="flex items-start gap-0.5 text-left text-muted-foreground hover:text-foreground"
       >
         Enhanced prompt
-        <ChevronDown className={cn("mt-0.5 size-3 shrink-0 transition-transform", open && "rotate-180")} />
+        <HugeiconsIcon icon={ChevronDownStandardIcon} className={cn("mt-0.5 size-3 shrink-0 transition-transform", open && "rotate-180")} />
       </button>
       <div className="flex min-w-0 flex-col gap-1">
         <span

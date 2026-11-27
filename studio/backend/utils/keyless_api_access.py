@@ -159,7 +159,22 @@ def _settings() -> tuple[str, bool]:
     return scope, tools
 
 
+def _fresh_settings() -> Optional[tuple[str, bool, int]]:
+    """``_settings_once``'s answers that need no SQLite read (a write in flight, a fresh cache), or None."""
+    now = time.monotonic()
+    with _cache_lock:
+        if _settings_write_inflight is not None:
+            return KEYLESS_SCOPE_OFF, False, _settings_generation
+        cached = _cached_settings
+        if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
+            return cached[1], cached[2], _settings_generation
+    return None
+
+
 async def _settings_async() -> tuple[str, bool, int]:
+    fresh = _fresh_settings()
+    if fresh is not None:
+        return fresh
     return await asyncio.shield(_async_settings_task())
 
 
@@ -380,6 +395,11 @@ def _full_scope_transport_allowed(request: Any, app_state: Any) -> bool:
 
     if not request_is_loopback(request):
         return False
+    from utils.client_ip import names_a_forwarded_client
+
+    # The loopback socket is a same-host proxy's when it marks the request as relayed.
+    if names_a_forwarded_client(request):
+        return False
     bind_host = getattr(app_state, "bind_host", None)
     scope = getattr(request, "scope", {})
     server = scope.get("server")
@@ -497,8 +517,12 @@ def keyless_transport_allowed(request: Any, scope: str) -> bool:
         return _full_scope_transport_allowed(request, app_state)
     if scope != KEYLESS_SCOPE_INFERENCE:
         return False
+    from utils.client_ip import names_a_forwarded_client
     from utils.lan_access_settings import request_is_loopback, request_on_lan_access
 
+    # a relaying proxy cannot vouch for its caller: neither grant covers it
+    if names_a_forwarded_client(request):
+        return False
     if request_on_lan_access(request):
         return True
     if _public_tunnel_active(app_state):
@@ -512,10 +536,7 @@ def keyless_request_allowed(request: Any) -> bool:
 
 
 async def keyless_request_may_load_models(request: Any) -> bool:
-    """Whether keyless access would admit this request's transport on ``POST /api/inference/load``.
-
-    Reads settings like admission (``_settings_async``): the sync read fails closed to ``off`` during a concurrent cache refresh.
-    """
+    """Uses the async settings read like admission; the sync read fails closed during a cache refresh."""
     from starlette.concurrency import run_in_threadpool
 
     scope, _tools, _generation = await _settings_async()
@@ -578,7 +599,11 @@ class KeylessToolPolicyMiddleware:
 
         scope, tools, generation = await _settings_async()
         settings = (scope, tools)
-        admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
+        # Off admits nobody, so no worker-thread hop.
+        if scope == KEYLESS_SCOPE_OFF:
+            admitted = False
+        else:
+            admitted = await run_in_threadpool(asgi_request_is_keyless, asgi_scope, settings)
         with _cache_lock:
             if _settings_write_inflight is not None or generation != _settings_generation:
                 settings = (KEYLESS_SCOPE_OFF, False)

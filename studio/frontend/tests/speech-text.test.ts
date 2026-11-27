@@ -114,3 +114,61 @@ test("HTML tags keep the word boundaries the page shows", () => {
   );
   assert.equal(markdownToSpeechText("<div>H<sub>2</sub>O</div>"), "H2O");
 });
+
+test("read-aloud skips emoji sequences but preserves surrounding words", () => {
+  const spoken = markdownToSpeechText(
+    "Japan 🇯🇵 developer 👩‍💻 thumbs 👍🏽 heart ❤️",
+  );
+
+  assert.match(spoken, /Japan\s+developer\s+thumbs\s+heart/);
+
+  for (const emoji of ["🇯🇵", "👩‍💻", "👍🏽", "❤️"]) {
+    assert.equal(spoken.includes(emoji), false);
+  }
+});
+
+test("read-aloud handles emoji-only messages", () => {
+  assert.equal(markdownToSpeechText("😀 👨‍💻 🇯🇵").trim(), "");
+  for (const input of [
+    "# 😀",
+    "- 😀\n- 👍",
+    "1. 😀",
+    "| 😀 | 😘 |\n| --- | --- |\n| 🥰 | ❤️ |",
+  ]) {
+    assert.equal(markdownToSpeechText(input), "", input);
+  }
+});
+
+test("read-aloud preserves word boundaries around emojis", () => {
+  for (const input of [
+    "Hello😀world",
+    "Hello😀😀world",
+    "Hello👩‍💻👍🏽world",
+  ]) {
+    assert.equal(markdownToSpeechText(input), "Hello world", input);
+  }
+});
+
+test("read-aloud cleans the reported German and English replies", () => {
+  assert.equal(
+    markdownToSpeechText("Hallo! 🥰❤️ Schön, dass du da bist. 😘"),
+    "Hallo! Schön, dass du da bist.",
+  );
+  assert.equal(
+    markdownToSpeechText("Hello! 🥰❤️ It's wonderful to see you. 😘"),
+    "Hello! It's wonderful to see you.",
+  );
+});
+
+test("read-aloud preserves ordinary symbols and whitespace without emojis", () => {
+  assert.equal(
+    markdownToSpeechText("© 2026 ® ™ ℹ 123 # *"),
+    "© 2026 ® ™ ℹ 123 # *",
+  );
+  assert.equal(markdownToSpeechText("`two  spaces`"), "two  spaces");
+  assert.equal(markdownToSpeechText("word🥰❤️, next"), "word, next");
+  assert.equal(markdownToSpeechText("$A ↔ B$"), "A ↔ B");
+  assert.equal(markdownToSpeechText("Sex: ♀ / ♂"), "Sex: ♀ / ♂");
+  assert.equal(markdownToSpeechText("Watch ⌚\uFE0E"), "Watch ⌚\uFE0E");
+  assert.equal(markdownToSpeechText("©️ ®️ ™️ ℹ️"), "");
+});

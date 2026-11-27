@@ -132,3 +132,50 @@ def test_changed_style_definition_is_preserved():
     )
     assert result[0]["content"] == STYLE
     assert result[1] == {"role": "user", "content": f"Hello\n{note(updated)}"}
+
+
+def claude_code_system(billing):
+    return [
+        {"type": "text", "text": f"x-anthropic-billing-header: {billing}"},
+        {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "Base instructions.", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    [
+        (
+            "cc_version=2.1.312.492; cc_entrypoint=cli;",
+            "cc_version=2.1.312.9cc; cc_entrypoint=cli;",
+        ),
+        (
+            "cc_version=2.1.30.abc; cc_entrypoint=cli; cch=a1b2c;",
+            "cc_version=2.1.30.abc; cc_entrypoint=cli; cch=f9e8d;",
+        ),
+    ],
+)
+def test_claude_code_billing_header_does_not_reach_the_model(first, second):
+    messages = [{"role": "user", "content": "Hello"}]
+    before = converted({"system": claude_code_system(first), "messages": messages})
+    after = converted({"system": claude_code_system(second), "messages": messages})
+    assert before == after
+    assert before[0] == {"role": "system", "content": "You are Claude Code.\nBase instructions."}
+    header_only = converted({"system": claude_code_system(first)[:1], "messages": messages})
+    assert header_only == converted({"messages": messages})
+    flat = f"x-anthropic-billing-header: {first}\nYou are Claude Code.\nBase instructions."
+    expected = {"role": "system", "content": "You are Claude Code.\nBase instructions."}
+    assert converted({"system": flat, "messages": messages})[0] == expected
+    one_block = [{"type": "text", "text": flat}]
+    assert converted({"system": one_block, "messages": messages})[0] == expected
+
+
+def test_billing_text_later_in_the_prompt_is_kept():
+    text = "Quote: x-anthropic-billing-header: is a Claude Code line."
+    result = converted(
+        {
+            "system": [{"type": "text", "text": text}],
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+    )
+    assert result[0] == {"role": "system", "content": text}

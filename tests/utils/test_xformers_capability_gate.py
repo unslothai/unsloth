@@ -159,12 +159,91 @@ def test_probe_syncs_and_fails_on_deferred_async_error(monkeypatch):
         },
     )
     monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
-    monkeypatch.setattr(ad.torch, "zeros", lambda *a, **k: object())
     monkeypatch.setattr(ad, "xformers", type("X", (), {"attn_bias": _bias}))
-    monkeypatch.setattr(ad, "xformers_attention", lambda *a, **k: None)
+    monkeypatch.setattr(ad, "xformers_attention", lambda q, k, v, attn_bias = None: q * 1)
 
     def deferred_cuda_error():
         raise RuntimeError("CUDA error: an illegal memory access was encountered")
 
     monkeypatch.setattr(ad.torch.cuda, "synchronize", deferred_cuda_error)
-    assert ad._xformers_runs_on_device() is False
+    assert ad._xformers_runs_on_device("cpu") is False
+
+
+_MASK_ONLY_BIAS = type(
+    "B",
+    (),
+    {
+        "BlockDiagonalCausalMask": type(
+            "M", (), {"from_seqlens": staticmethod(lambda seqlens: None)}
+        )
+    },
+)
+
+
+def _fake_xformers(monkeypatch, backward_error = None):
+    """A fake xformers whose forward always runs and whose backward raises backward_error."""
+    calls = {"forward": 0, "backward": 0}
+
+    class _Attention(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, q, k, v):
+            calls["forward"] += 1
+            return q.clone()
+
+        @staticmethod
+        def backward(ctx, grad):
+            calls["backward"] += 1
+            if backward_error is not None:
+                raise backward_error
+            return grad, None, None
+
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad, "xformers", type("X", (), {"attn_bias": _MASK_ONLY_BIAS}))
+    monkeypatch.setattr(
+        ad, "xformers_attention", lambda q, k, v, attn_bias = None: _Attention.apply(q, k, v)
+    )
+    monkeypatch.setattr(ad.torch.cuda, "synchronize", lambda *a, **k: None)
+    return calls
+
+
+def test_probe_fails_when_only_the_backward_kernel_is_missing(monkeypatch):
+    # A build with the forward kernel for a card but no backward one passed a forward-only
+    # probe and then failed on the first training step; the probe must reject it.
+    calls = _fake_xformers(
+        monkeypatch, RuntimeError("CUDA error: no kernel image is available for execution")
+    )
+    assert ad._xformers_runs_on_device("cpu") is False
+    assert calls == {"forward": 1, "backward": 1}
+    # The capability gate then drops xformers on that card.
+    assert ad._xformers_disabled_for_capability(
+        (12, 0), probe = lambda: ad._xformers_runs_on_device("cpu"), fa3_enabled = lambda: True
+    )
+
+
+def test_probe_passes_when_forward_and_backward_run(monkeypatch):
+    calls = _fake_xformers(monkeypatch)
+    assert ad._xformers_runs_on_device("cpu") is True
+    assert calls == {"forward": 1, "backward": 1}
+
+
+def test_probe_runs_backward_under_inference_mode(monkeypatch):
+    # The per-device probe is lazy and can first run inside generate()'s inference_mode.
+    calls = _fake_xformers(monkeypatch)
+    with torch.inference_mode():
+        assert ad._xformers_runs_on_device("cpu") is True
+    with torch.no_grad():
+        assert ad._xformers_runs_on_device("cpu") is True
+    assert calls == {"forward": 2, "backward": 2}
+
+
+def test_per_device_probe_runs_once_per_device(monkeypatch):
+    probed = []
+
+    def probe(device, supports_bf16 = None):
+        probed.append(device)
+        return device != "cuda:1"
+
+    monkeypatch.setattr(ad, "_xformers_runs_on_device", probe)
+    monkeypatch.setattr(ad, "_XFORMERS_PROBED", {})
+    assert [ad._xformers_runs_on(i) for i in (0, 1, 0, 1)] == [True, False, True, False]
+    assert probed == ["cuda:0", "cuda:1"]

@@ -38,7 +38,6 @@ export function DotTag({
   label: string;
   className?: string;
   dotClassName?: string;
-  /** Wraps the label, e.g. to sr-only it and keep just the dot. */
   labelClassName?: string;
 }) {
   return (
@@ -56,7 +55,7 @@ export function DotTag({
           dotClassName,
         )}
       />
-      {labelClassName ? <span className={labelClassName}>{label}</span> : label}
+      <span className={cn("cap-centered", labelClassName)}>{label}</span>
     </span>
   );
 }

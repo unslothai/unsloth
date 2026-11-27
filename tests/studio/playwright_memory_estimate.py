@@ -17,6 +17,8 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     dump_diagnostics,
+    expand_collapsed_model_picker,
+    RUN_SETTINGS_CONTEXT_LABEL,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
@@ -37,8 +39,7 @@ GGUF_REPO = os.environ.get("GGUF_REPO", "unsloth/gemma-3-270m-it-GGUF")
 GGUF_VARIANT = os.environ.get("GGUF_VARIANT", "UD-Q4_K_XL")
 # From GGUF_REPO: a family-name hint can match a non-GGUF sibling first, which has no memory row.
 MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT") or GGUF_REPO.rsplit("/", 1)[-1]
-# Typing the value already displayed commits no onChange and no re-price, so choose a value that
-# differs from the box at typing time.
+# Retyping the shown value fires no onChange or re-price, so pick a different value.
 CTX_CANDIDATES = [
     int(part)
     for part in os.environ.get("STUDIO_CTX_CANDIDATES", "6144,5120,4096,3072,2048,1536").split(",")
@@ -427,6 +428,9 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
+            popover.wait_for(state = "visible", timeout = 30_000)
+            # A loaded model opens the picker collapsed to its own row: no tabs, search or rows.
+            expand_collapsed_model_picker(popover)
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -438,8 +442,7 @@ with sync_playwright() as p:
             pass
 
     def reveal_on_device_row(popover, hint):
-        """Bring the row into view without clicking it: a single-quant row loads its
-        quant on click and closes the picker, taking the gear with it."""
+        """Reveal the row unclicked; clicking a single-quant row closes the picker and gear."""
         od = page.get_by_role("tab", name = "On Device").first
         if _count(od):
             od.click()
@@ -470,7 +473,13 @@ with sync_playwright() as p:
         try:
             wait_until(
                 lambda: not popover.is_visible()
-                or _count(popover.locator('button[aria-label^="Inference settings for" i]')) > 0,
+                or _count(
+                    popover.locator(
+                        'button[aria-label^="Inference settings for" i], '
+                        'button[aria-label^="Run settings for" i]'
+                    )
+                )
+                > 0,
                 timeout_s = 10,
                 what = "the row click to close the picker or show its gears",
                 interval_s = 0.1,
@@ -487,7 +496,8 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
-        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        # The header picker says "Inference settings", the composer picker "Run settings".
+        pattern = f"^(?:Inference|Run) settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role("button", name = re.compile(pattern, re.IGNORECASE)).first
@@ -540,10 +550,11 @@ with sync_playwright() as p:
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
-            loc = popover.get_by_role(role, name = "Context Length").first
+            # Exact: "Context" is a prefix of other run settings names.
+            loc = popover.get_by_role(role, name = RUN_SETTINGS_CONTEXT_LABEL, exact = True).first
             if _count(loc):
                 return loc
-        loc = popover.locator('input[aria-label="Context Length"]').first
+        loc = popover.locator(f'input[aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"]').first
         return loc if _count(loc) else None
 
     # Row helpers anchor on the toggle button: its parent is the header, aria-controls names the breakdown.
@@ -570,8 +581,7 @@ with sync_playwright() as p:
         return None
 
     def estimate_button():
-        """Finds the toggle by role first, which proves a screen reader can reach it; markup is a
-        fallback."""
+        """Role lookup first, proving screen-reader reach; markup text is a fallback."""
         found = _first_visible(page.get_by_role("button", name = ESTIMATE_LABEL), "role=button")
         if found is not None:
             return found
@@ -632,8 +642,7 @@ with sync_playwright() as p:
         since: int,
         timeout_ms: int = ESTIMATE_WAIT_MS,
     ):
-        """Reads the recorded transcript rather than expect_request, since the gates check what was
-        asked."""
+        """Reads the recorded transcript, not expect_request, as gates check what was asked."""
         deadline = time.monotonic() + timeout_ms / 1000
         while time.monotonic() < deadline:
             for record in exchanges[since:]:

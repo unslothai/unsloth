@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The model routes must agree with the training resolver about cached snapshots.
-
-Two ways they disagreed, both reachable from resume:
-
-* ``_model_config_inspection_target`` probed only the snapshot root, so a cached
-  Spark-TTS/BiCodec copy (everything trainable under ``LLM/``) made ``/api/models/config``
-  answer "Selected cached model is no longer available" for a cache the training
-  resolver happily accepts.
-* the ``model_snapshot_repo_id`` guard used an ``owner/repo``-only regex, so resuming or
-  scanning a namespace-less Hub model such as ``gpt2`` returned 400 before the snapshot
-  could be inspected, even though the shared validator and the picker both allow the
-  one-segment form.
-"""
+"""Routes must accept what the training resolver accepts: nested LLM/ snapshots and gpt2-style ids."""
 
 import json
 

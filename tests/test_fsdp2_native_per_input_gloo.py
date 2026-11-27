@@ -16,7 +16,9 @@ once.
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import importlib  # noqa: E402
@@ -83,7 +85,6 @@ def _case_moshi(rank):
     steps = (
         ("both_everywhere", {"user_input_values": audio(), "moshi_input_values": audio()}),
         ("user_everywhere", {"user_input_values": audio()}),
-        # rank 0 encodes twice, rank 1 once
         (
             "both_vs_user",
             {"user_input_values": audio(), "moshi_input_values": audio()}

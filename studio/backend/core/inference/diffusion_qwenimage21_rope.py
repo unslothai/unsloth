@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 RoPE in real arithmetic under ``torch.compile``, bit-identical to the complex form.
-
-Inductor cannot fuse complex multiply; ATen's fma placement differs per card (B200 vs A100), so
-``install`` probes the card and mirrors it via ``addcmul`` (one ``fma``). Kill switch:
-``UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0``.
-"""
+"""Real-arithmetic Qwen-Image-2.1 RoPE, bit-identical to the complex form (Inductor cannot fuse
+complex mul); kill UNSLOTH_DIFFUSION_Q21_REAL_ROPE=0"""
 
 from __future__ import annotations
 
@@ -17,6 +13,7 @@ import threading
 from typing import Any, Optional
 
 from .diffusion_autoopt.patches import source_digest
+from .rocm_bf16 import is_rocm_torch
 
 REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
@@ -58,7 +55,7 @@ def _addcmul_lowering() -> tuple:
         import torch
         from torch._inductor import lowering
 
-        if getattr(torch.version, "hip", None):
+        if is_rocm_torch(torch):
             return False, False
         src = inspect.getsource(lowering.addcmul)
         return (
@@ -227,6 +224,23 @@ def install(logger: Any = None, device: Any = None) -> bool:
             "diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks"
         )
     return True
+
+
+def probe_split_cards(cards: Any) -> tuple:
+    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
+    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
+    card (the patch is not in use). Returns the cards whose probe passed."""
+    if real_rope_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    for index in cards:
+        if index not in _FUSION:
+            try:
+                _FUSION[index] = probe_fusion(torch.device("cuda", int(index)))
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(index) is not None)
 
 
 def uninstall() -> None:

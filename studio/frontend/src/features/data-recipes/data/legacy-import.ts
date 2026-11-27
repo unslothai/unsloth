@@ -6,9 +6,7 @@ import { normalizeNonEmptyName } from "@/utils";
 import Dexie from "dexie";
 import { RecipeApiError, recipeRequest } from "./recipes-api";
 
-// One-time copy of the browser-only stores into studio.db. The server import is insert-only and
-// honours deletions, so a retry after a partial run (or a cleared flag) cannot clobber or revive
-// anything; the IndexedDB stores are left in place.
+// One-time copy into studio.db; the server import is insert-only, so retries are safe.
 const RECIPES_DB = "unsloth-data-recipes";
 const EXECUTIONS_DB = "unsloth-data-recipe-executions";
 const BATCH_BYTES = 8 * 1024 * 1024;

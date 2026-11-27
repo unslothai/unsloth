@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""training_progress must carry trainer speed, not just step and loss.
-
-Dropping HF's tqdm bar and per-step print removes the only place training
-throughput appeared ("1.84s/it" on the bar, "train_tokens_per_second" in the raw
-dict). Both were raw stdout rather than structured, so the replacement is to put
-the number on the structured line: throughput measured over the interval between
-two logged lines, and the run average on the first one.
-"""
+"""training_progress must carry throughput, since dropping tqdm removed the only speed figure."""
 
 from __future__ import annotations
 
@@ -34,15 +27,12 @@ def _throughput(step, prev_step, elapsed, prev_elapsed, tokens, prev_tokens):
 
 
 def test_the_first_line_reports_no_throughput():
-    # elapsed_seconds is wall time since the worker started, so it also covers the
-    # imports, the model download and load and the dataset build; and on a resumed run
-    # the step and token counters predate this process. Neither is a training rate.
+    # elapsed_seconds includes imports and load, and resumed counters predate this process.
     assert _throughput(4, -1, 8.0, None, 4000, None) == (None, None)
     assert _throughput(1010, -1, 20.0, None, 4_000_000, None) == (None, None)
 
 
 def test_later_lines_report_the_interval_not_the_average():
-    # 10 steps and 20000 tokens in the 20s since the last line, after a slow start.
     s_per_step, tok_per_s = _throughput(30, 20, 120.0, 100.0, 60000, 40000)
     assert s_per_step == 2.0
     assert tok_per_s == 1000.0

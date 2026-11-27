@@ -29,8 +29,7 @@ from unsloth import import_fixes as IF  # noqa: E402
 
 
 def test_it_is_valid_python():
-    """A syntax error breaks every subprocess on the machine, which is far
-    worse than the bug being fixed."""
+    """A syntax error breaks every subprocess on the machine, which is far worse than the bug."""
     compile(IF._subprocess_sitecustomize_source(), "<sitecustomize>", "exec")
 
 
@@ -61,9 +60,8 @@ def test_it_does_not_overwrite_existing_torch_symbols():
 
 
 def test_the_child_never_imports_unsloth():
-    """Importing unsloth at the start of every subprocess would pay the full
-    import cost each time and could recurse back through
-    propagate_torchao_fix_to_subprocesses, so the logic is inlined."""
+    """The child must not import unsloth: that pays the full import cost in every subprocess and
+    could recurse through propagate_torchao_fix_to_subprocesses, so logic is inlined."""
     src = IF._subprocess_sitecustomize_source()
     assert "import unsloth" not in src
     assert "from unsloth" not in src
@@ -117,8 +115,7 @@ def _torchao_is_broken_here() -> bool:
 
 
 def test_it_is_a_noop_on_a_healthy_environment():
-    """Nothing is written and PYTHONPATH is untouched unless the fix is
-    actually needed."""
+    """Nothing is written and PYTHONPATH is left untouched unless the fix is actually needed."""
     if _torchao_is_broken_here():
         pytest.skip("this environment genuinely needs the fix")
     before = os.environ.get("PYTHONPATH")
@@ -136,8 +133,7 @@ def test_it_uses_the_platform_path_separator():
 
 
 def test_it_writes_atomically():
-    """A truncated sitecustomize read by a concurrent subprocess is a
-    SyntaxError at startup."""
+    """A truncated sitecustomize read by a concurrent subprocess is a SyntaxError at startup."""
     import inspect
 
     src = inspect.getsource(IF._write_hook_atomically)
@@ -145,8 +141,7 @@ def test_it_writes_atomically():
 
 
 def test_the_temporary_file_cannot_be_pre_empted():
-    """A predictable temporary name can be pre-created as a symlink by anyone
-    who could write into the directory before it was tightened."""
+    """A predictable temp name lets anyone who could write the directory pre-create a symlink."""
     import inspect
 
     src = inspect.getsource(IF._write_hook_atomically)
@@ -163,9 +158,7 @@ def test_it_is_idempotent_on_pythonpath():
 
 
 def test_the_directory_is_private_to_this_user():
-    """The temp dir is shared and everything on PYTHONPATH runs in every
-    subprocess, so a fixed name there is code execution for whoever creates it
-    first."""
+    """A fixed name in the shared temp dir hands code execution to whoever creates it first."""
     directory = IF._subprocess_fix_directory()
     if hasattr(os, "getuid"):
         assert directory.endswith("-%d" % os.getuid()), directory
@@ -216,8 +209,7 @@ def test_an_existing_loose_directory_is_tightened(monkeypatch, tmp_path, mode):
 
 
 def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
-    """Some network and FUSE mounts accept chmod and change nothing; handing
-    back a world-writable PYTHONPATH entry anyway is the whole bug."""
+    """Some FUSE and network mounts ignore chmod, so a still world-writable dir is refused."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX permissions only")
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
@@ -243,8 +235,7 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
 
 @pytest.fixture
 def staged(tmp_path):
-    """The generated sitecustomize on a PYTHONPATH dir, plus a fake torch and
-    a fake torchao 0.18 that reproduces the real import error."""
+    """Fake torch and torchao 0.18 reproduce the real import error for the staged hook."""
     site = tmp_path / "hook"
     site.mkdir()
     (site / "sitecustomize.py").write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
@@ -324,8 +315,7 @@ def test_the_hook_fixes_a_process_we_never_launched(staged):
 
 
 def test_it_does_not_import_torch_until_torchao_is(staged):
-    """Most Python descendants never use torchao, and importing torch there
-    costs seconds of startup and torch's memory."""
+    """Most children never use torchao; importing torch there costs seconds and memory."""
     site, fake = staged
     p = _child("import sys; print('TORCH', 'torch' in sys.modules)", [site, fake])
     assert "TORCH False" in p.stdout, p.stdout + p.stderr
@@ -365,8 +355,7 @@ def test_the_placeholder_still_refuses_to_be_used(staged):
 
 
 def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
-    """The shadowing hazard is real: this machine already has a sitecustomize
-    at /etc/unslothai/python/, and ours must chain to it."""
+    """Shadowing hazard: an existing sitecustomize at /etc/unslothai/python/ must still run."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
@@ -470,6 +459,9 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     """The gate must not trust hasattr, because the in-process fix installs placeholders that pass it."""
     import torch.nn.functional as F
 
+    if IF.TORCHAO_DISABLED_FOR_OLD_TORCH:
+        pytest.skip("import unsloth disabled torchao for this torch; there is no torchao to shim")
+
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 
@@ -525,8 +517,7 @@ def _plant(directory, kind, source):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_not_trusted(tmp_path, kind):
-    """Contents equal to ours are what an attacker arranges to skip the
-    rewrite; only a private regular file of ours makes them evidence."""
+    """Matching contents let an attacker skip the rewrite; only a private regular file counts."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     directory = tmp_path / "dir"
@@ -536,8 +527,7 @@ def test_a_planted_hook_is_not_trusted(tmp_path, kind):
 
 
 def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
-    """A file created while the directory was world-writable stays theirs to
-    rewrite after the directory is tightened."""
+    """A file made while the dir was world-writable stays theirs to rewrite after tightening."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership only")
     target = tmp_path / "sitecustomize.py"
@@ -561,9 +551,7 @@ def test_our_own_hook_file_is_trusted(tmp_path):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, kind):
-    """End to end: a once-world-writable directory already holds a hook whose
-    contents match ours. Tightening the directory does not revoke write access
-    to that file, so leaving it is code execution in every subprocess."""
+    """Keeping a matching hook writable after tightening would run code in every subprocess."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     import torch.nn.functional as F
@@ -605,9 +593,8 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
 
 
 def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
-    """The other half of a once-world-writable directory: the temporary file
-    the hook is staged through. A predictable name lets someone leave a
-    symlink behind, and os.replace would install that link as the hook."""
+    """A predictable temp name lets someone leave a symlink behind, and os.replace would install
+    that link as the hook, so the staged temp file must not be followed."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX symlinks only")
     import stat as _stat
@@ -695,8 +682,7 @@ def test_a_chained_package_stays_importable(staged, tmp_path):
 
 
 def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
-    """The handover only happens on success: one that raised half-way through
-    must not be left behind under the name."""
+    """Handover happens only on success: a chained module that raised must not keep our name."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
@@ -724,9 +710,7 @@ _COUNT_HOOKS = (
 
 
 def test_a_symlink_alias_of_our_own_directory_is_not_chained(staged, tmp_path):
-    """A string compare treats an alias as somebody else's sitecustomize, so
-    the two spellings load and execute one another until the stack runs out.
-    Every unwound level then installs another finder."""
+    """A string compare misses symlink aliases, so the hooks chain until the stack runs out."""
     if not hasattr(os, "symlink"):
         pytest.skip("symlinks only")
     site, _fake = staged

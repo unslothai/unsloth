@@ -27,8 +27,8 @@ FONTSIZE_STYLE_ALLOWLIST = {
 # Sizes a container query's em breakpoint, not text (--ui-space-scale derives
 # from --ui-font-scale); children reset to the 1rem they would inherit.
 CSS_FONTSIZE_LAYOUT_RULES = {
-    (".browser-panel", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
-    (".browser-panel > *", "font-size: 1rem;"),
+    (".browser-panel-body", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
+    (".browser-panel-body > *", "font-size: 1rem;"),
 }
 
 
@@ -118,9 +118,8 @@ def test_radix_select_viewport_owns_the_scroll_state():
 
 
 def test_cn_knows_the_ui_typography_tokens():
-    """Stock tailwind-merge classifies text-ui-* as a text color and deletes
-    it whenever a real color class follows in the same cn() call, so the
-    element falls back to the unscaled inherited font size."""
+    """Stock tailwind-merge treats the text-ui- prefixed classes as text colors and drops them when
+    a real color follows in the same cn() call, falling back to the unscaled font size."""
     assert "extendTailwindMerge" in UTILS
     assert '"font-size": [{ text: [isUiToken] }]' in UTILS
     assert "leading: [{ leading: [isUiToken] }]" in UTILS

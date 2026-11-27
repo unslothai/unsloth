@@ -10,12 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Dream's greedy diffusion_generate (generation_utils.py `_sample`, alg entropy / maskgit_plus / topk_margin,
-alg_temp 0), with logits only for the generated region and the transfer schedule worked out up front.
-
-The reference projects every position to the vocabulary each step and reads the masked count back to the host.
-The masked count drops by exactly the scheduled amount unless the model proposes the mask token itself, so the
-schedule is worked out before the loop; a run where that happened returns None and the caller falls back."""
+"""Dream greedy diffusion_generate with precomputed transfer schedule; returns None (caller falls
+back) if the model proposes the mask token."""
 
 import math
 

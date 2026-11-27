@@ -47,3 +47,15 @@ test("metadata selection uses a non-train split when it is the available choice"
     null,
   );
 });
+
+test("metadata selection prefers a train split over a test split listed first", () => {
+  assert.deepEqual(
+    nextHfDatasetOptionSelection({
+      subsets: ["default"],
+      splits: ["test_prefs", "train_prefs"],
+      selectedSubset: "default",
+      selectedSplit: null,
+    }),
+    { type: "split", value: "train_prefs" },
+  );
+});

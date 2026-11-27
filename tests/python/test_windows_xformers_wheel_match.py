@@ -17,8 +17,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 WHEEL_INDEX_BASE = "https://download.pytorch.org/whl"
 
-# (CUDA family, torch release) -> xFormers version published by that index.
-# Keep in step with wheel_utils._XFORMERS_WHEEL_VERSIONS and install.ps1 (enforced below).
+# (CUDA family, torch) -> xFormers version; sync with wheel_utils and install.ps1 (enforced).
 XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu126", "290"): "0.0.33.post1",
     ("cu128", "290"): "0.0.33.post1",
@@ -138,8 +137,7 @@ def test_windows_extra_documents_the_cuda_matched_route():
 
 
 def test_xformers_matrix_agrees_with_wheel_utils():
-    """One matrix, three consumers (pyproject, wheel_utils, install.ps1). Drift here is
-    exactly the bug: a runtime resolver that disagrees with the packaged pin."""
+    """One matrix, three consumers (pyproject, wheel_utils, install.ps1); drift is the bug."""
     source = (REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py").read_text(
         encoding = "utf-8"
     )

@@ -1,5 +1,5 @@
 {
- "lock_sha256": "24629a84a947fbf4023be494e8ce399a2a8dc37891e8a3b1fe9dd869bf6b00bf",
+ "lock_sha256": "5a65c280fff1892a8ce70516c467b4e1bfff0c4ce4e113b145d7279023c56c77",
  "requires": {
   "agent-detector": [
    ">=1.1.0"
@@ -42,6 +42,9 @@
   "attrs": [
    ">=17.3.0",
    ">=22.2.0"
+  ],
+  "bitsandbytes": [
+   ">=0.48.1"
   ],
   "certifi": [
    ">=2023.5.7"
@@ -646,7 +649,7 @@
   "blake3": 382499,
   "cachetools": 16918,
   "cbor2": 460420,
-  "certifi": 136983,
+  "certifi": 136464,
   "cffi": 221824,
   "charset-normalizer": 254660,
   "click": 125251,
@@ -825,6 +828,7 @@
   "uvicorn": 87427,
   "uvloop": 4480449,
   "vllm": 314883777,
+  "vllm-bnb-plugin": 24315,
   "watchfiles": 458353,
   "websockets": 224611,
   "xgrammar": 1311293,

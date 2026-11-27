@@ -5,12 +5,11 @@ import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.
 
 /** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
  *  distinguish unsupported accelerators. */
-export type HostClass = "unknown" | "gguf-only" | "accelerated" | "dense-quant";
+/** "cpu-only": a "gguf-only" host with backend cpu; families with a GGUF row offer only GGUF rows. */
+export type HostClass = "unknown" | "gguf-only" | "cpu-only" | "accelerated" | "dense-quant";
 
-/** Backends whose diffusion pipelines the media pages can place. */
 const ACCELERATED_BACKENDS = new Set(["cuda", "rocm", "xpu"]);
 
-/** Backends that can only run the native GGUF engine. */
 const GGUF_ONLY_BACKENDS = new Set(["mlx", "cpu"]);
 
 export function classifyHost({
@@ -18,60 +17,75 @@ export function classifyHost({
   deviceBackend,
   budgetKnown,
   denseQuantSupported,
+  appleSilicon,
 }: {
   deviceType?: string | null;
   deviceBackend?: string | null;
   budgetKnown?: boolean;
-  /** Backend-reported dense quant capability. */
   denseQuantSupported?: boolean;
+  appleSilicon?: boolean;
 }): HostClass {
   const backend = (deviceBackend ?? "").trim().toLowerCase();
-  // Backend outranks the OS: no Mac reports one of these, but deviceType can be the BROWSER's platform (config/env.ts).
+  // Backend outranks the OS: deviceType can be the browser's platform (config/env.ts).
   if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
-  // No Mac can place a Modular Diffusers workflow: it needs mem_get_info, which torch.mps lacks.
+  // Outranks the Mac fallback: an Intel Mac has no MPS. Apple Silicon reports cpu while its MLX stack is
+  // unusable, yet diffusers still runs dense rows on MPS there, so it keeps "gguf-only".
+  if (backend === "cpu" && budgetKnown && !appleSilicon) return "cpu-only";
+  // Modular Diffusers needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
-  // An unrecognised backend is a new accelerator, not a CPU. Show what we show today.
+  // An unrecognised backend is a new accelerator, not a CPU.
   return "unknown";
 }
 
-/** Whether the host can place a diffusion pipeline. */
+export function hostIsGgufOnly(host: HostClass): boolean {
+  return host === "gguf-only" || host === "cpu-only";
+}
+
 export function hostIsAccelerated(host: HostClass): boolean {
   return host === "accelerated" || host === "dense-quant";
 }
 
-/** Whether the dense torchao transformer quant can engage on this host. */
 export function hostRunsDenseQuant(host: HostClass): boolean {
   return host === "dense-quant";
 }
 
-/** The H3 group, whose two rows differ by roughly 10x in throughput. */
+/** The two H3 rows differ by roughly 10x in throughput. */
 const H3_PIPELINE_ID = "minimaxai/minimax-h3";
 
-/** The curated artifacts a host without an accelerator is refused at load, by repo id. Keyed on
- *  the id, NOT on `format !== "gguf"`: everything else in the catalogs loads here, since the
- *  diffusion pipelines run on MPS, video_capability() certifies Apple Silicon, and the STT rows
- *  run through the whisper.cpp sidecar. Only MiniMax-H3's Modular Diffusers workflow is
- *  genuinely unplaceable, since enable_auto_cpu_offload needs mem_get_info. */
-const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID]);
+/** Refused without an accelerator, keyed by id: MiniMax-H3's Modular workflow is unplaceable
+  *  (enable_auto_cpu_offload needs mem_get_info), and the MiniMax-H3-Image pipeline streams through
+  *  CUDA / ROCm; its GGUF row runs there instead. */
+const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID, "minimaxai/minimax-h3-image"]);
 
-/** Whether a curated artifact is worth offering on this host. Only browse rows are filtered. A
- *  model already on disk keeps its row wherever it came from. */
+/** Structural, so this module imports no catalog types. */
+export interface OfferableGroup {
+  scope: string;
+  artifacts: ReadonlyArray<{ repoId: string; format: string }>;
+  nativeGgufRoute?: boolean;
+}
+
+/** Only browse rows are filtered; a model already on disk keeps its row. On a CPU-only host a family with a GGUF row
+ *  (or ``nativeGgufRoute``) offers only GGUF rows; the backend refuses dense loads there. */
 export function curatedArtifactIsOfferable(
   repoId: string,
   host: HostClass,
+  group?: OfferableGroup | null,
 ): boolean {
-  if (host !== "gguf-only") return true;
-  return !UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase());
+  if (!hostIsGgufOnly(host)) return true;
+  if (UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase())) return false;
+  if (host !== "cpu-only" || !group || (group.scope !== "image" && group.scope !== "video")) return true;
+  const id = repoId.trim().toLowerCase();
+  const artifact = group.artifacts.find((a) => a.repoId.trim().toLowerCase() === id);
+  if (!artifact || artifact.format === "gguf") return true;
+  return !(group.nativeGgufRoute || group.artifacts.some((a) => a.format === "gguf"));
 }
 
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
 
-/** The speed qualifier for a dense-quant row, naming the precision that will run. An empty list (an
- *  older backend) falls back to a bare "Fast". Only the first, best entry is read. */
 /** Dense 8-bit schemes that share the one user-facing label; see ``densePerfSuffix``. */
 const DENSE_EIGHT_BIT = new Set(["int8", "fp8", "mxfp8"]);
 
@@ -80,28 +94,20 @@ export function densePerfSuffix(
 ): string {
   const scheme = normalizeDenseQuantSchemes(denseQuantSchemes)[0];
   if (!scheme) return "Fast";
-  // The row names the fast TIER, not the scheme the load settles on: int8 and mxfp8 render as FP8,
-  // the name users know for the 8-bit fast path, so reordering the ladder does not rename the model.
-  // The loaded-models card's resolved record still names the real scheme. A 4-bit scheme names
-  // itself, being a different quality tier.
+  // Names the fast tier, not the scheme: 8-bit schemes all render as FP8 so reordering does not rename.
   return DENSE_EIGHT_BIT.has(scheme) ? "Fast FP8" : `Fast ${scheme.toUpperCase()}`;
 }
 
-/** Speed qualifier for a GGUF diffusion row. A GGUF runs the native engine, which has no
- *  low-precision tensor-core path and no compiled dense transformer, so it is the slow row wherever
- *  a dense row sits beside it. Null off an accelerator, where it is the only row that runs. */
+/** A GGUF runs the native engine and is the slow row beside a dense one; null off an accelerator. */
 export function ggufPerfSuffix(host: HostClass): string | null {
   return hostIsAccelerated(host) ? "Slow" : null;
 }
 
-/** Whether the Precision control should offer the dense low-precision schemes. A Mac or CPU-only host
- *  is refused them at load. An "unknown" host keeps the full list, since an older backend reporting
- *  no capability must not lose controls it can honour. */
+/** An "unknown" host keeps the full list so an older backend does not lose controls. */
 export function hostOffersDensePrecision(host: HostClass): boolean {
-  return host !== "gguf-only";
+  return !hostIsGgufOnly(host);
 }
 
-/** Speed qualifier for H3 artifacts, naming its precision from the same host scheme list. */
 export function h3PerfSuffix(
   repoId: string,
   host: HostClass,

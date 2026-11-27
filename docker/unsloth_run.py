@@ -24,10 +24,7 @@ if compat is not None:
     _install_lines = compat._install_lines
     _pin_from = compat.pin_from
 else:
-    # compat is also what turns a scan result into a sidecar, so with it gone there is
-    # nothing either half of the scan could select (see main, where sidecar stays None
-    # and the tier lookup is skipped). Degrade to no scan rather than keep a second
-    # copy of the rules here, which is the drift this move exists to prevent.
+    # Without compat nothing could select a sidecar, so skip scanning rather than duplicate it.
     _PIN_RE = _INSTALL_RE = None
     _strip_comment = _live_source = _install_lines = _pin_from = None
 
@@ -36,11 +33,8 @@ DEFAULT_FETCH_TIMEOUT = int(os.environ.get("UNSLOTH_NOTEBOOK_FETCH_TIMEOUT", "60
 
 
 def _load(path_or_url, fetch_timeout = None):
-    """Parsed notebook. A URL is fetched with a socket timeout: --timeout only ever
-    reached nbconvert, so a host that accepted the connection and then went quiet hung
-    the run before a single cell had executed. This bounds each blocking socket
-    operation, not the total transfer, which is what that failure needs; a server
-    trickling bytes forever is a different problem and not one seen here."""
+    """Returns the parsed notebook; URLs use a socket timeout because --timeout only reached
+    nbconvert and a host that went quiet hung the run; total transfer time is not bounded."""
     if path_or_url.startswith(("http://", "https://")):
         if fetch_timeout is None:
             fetch_timeout = DEFAULT_FETCH_TIMEOUT
@@ -63,9 +57,7 @@ def _scan(nb):
             continue
         src = _live_source("".join(cell.get("source", [])))
         if pin is None:
-            # the shared helper, not _PIN_RE directly: the pattern now matches any
-            # requirement name and the PEP 503 comparison that picks transformers out
-            # of it lives with it, so reading the match here would drop that half
+            # The shared helper: it also does the PEP 503 name comparison.
             pin = _pin_from(src)
         if model is None:
             m = _MODEL_RE.search(src) or _MODEL_NAME_RE.search(src)
@@ -108,9 +100,8 @@ def _stage_metadata(
     dest,
     owner_ids = None,
 ):
-    """Give the staged output the metadata the destination must end up with: mkstemp()
-    creates 0600, nbconvert truncates that same inode, and os.replace carries it onto
-    the destination. Best effort."""
+    """Gives the staged output the destination's metadata: mkstemp() creates 0600, nbconvert
+    truncates that same inode, and os.replace carries it onto the destination; best effort."""
     try:
         st = os.stat(dest)
     except OSError:

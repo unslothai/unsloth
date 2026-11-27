@@ -114,7 +114,9 @@ def test_flash_receives_noncausal_without_mutating_config(monkeypatch, backend):
     monkeypatch.setattr(ad, "flash_attn_func", fake_kernel)
     monkeypatch.setattr(ad, "flash_attn_varlen_func", fake_kernel)
     kwargs = {"causal": True}
-    _run(_context(), _qkv(), backend, flash_dense_kwargs = kwargs, flash_varlen_kwargs = kwargs)
+    # Flash takes 16-bit inputs; fp32 q/k/v without autocast now stay fp32 on SDPA.
+    qkv = tuple(tensor.detach().bfloat16() for tensor in _qkv())
+    _run(_context(), qkv, backend, flash_dense_kwargs = kwargs, flash_varlen_kwargs = kwargs)
     assert captured == [False]
     assert kwargs == {"causal": True}
 

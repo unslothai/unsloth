@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Production settings, preview, preferences and assistant-ui input. No backend.
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -11,7 +10,11 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { ComposerSettings } from "@/features/settings/components/composer-settings";
+import {
+  ComposerFormatRows,
+  ComposerSettings,
+  ContextWindowUsageRow,
+} from "@/features/settings/components/composer-settings";
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
@@ -80,6 +83,8 @@ function App() {
       <TooltipProvider>
         <main className="mx-auto max-w-4xl px-5 py-12">
           <ComposerSettings />
+          <ComposerFormatRows />
+          <ContextWindowUsageRow />
           <Draft />
         </main>
       </TooltipProvider>

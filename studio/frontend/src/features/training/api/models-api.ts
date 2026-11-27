@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { hubTokenHeader } from "@/features/hub";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -90,14 +90,14 @@ export interface ModelConfigResponse {
   decision_checkpoints?: DecisionCheckpoint[] | null;
   decision_layout?: DecisionLayout | null;
   is_audio: boolean;
-  // False when the repo's tokenizer_config.json was unreadable (gated, offline,
-  // upstream error), so is_audio false means unknown rather than "not audio".
+  // False when tokenizer_config.json was unreadable, so is_audio false means unknown.
   audio_type_known?: boolean;
   is_lora: boolean;
   base_model?: string | null;
   model_type?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   max_position_embeddings?: number | null;
   model_size_bytes?: number | null;
+  bnb_4bit?: boolean;
 }
 
 // laya: a Laya checkpoint. clef: Cloudflare Clef. llm: a text or vision LLM trained with a Clef decision head.
@@ -133,7 +133,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/** GET /api/models/check-vision; pass the token so a gated/private VLM is not misread as non-vision. */
+/** Pass the token so a gated/private VLM is not misread as non-vision. */
 export async function checkVisionModel(
   modelName: string,
   hfToken?: string | null,
@@ -151,7 +151,6 @@ export async function checkVisionModel(
   return data.is_vision;
 }
 
-/** GET /api/models/check-embedding; pass the token for gated/private repos. */
 export async function checkEmbeddingModel(
   modelName: string,
   hfToken?: string | null,
@@ -161,7 +160,6 @@ export async function checkEmbeddingModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;

@@ -5,6 +5,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   CHAT_PROJECTS_UPDATED_EVENT,
+  type SaveChatProjectOptions,
 } from "../api/chat-api";
 import type { ProjectRecord } from "../types";
 import {
@@ -12,9 +13,11 @@ import {
   deleteStoredChatProject,
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
+  listStoredChatThreads,
   moveStoredChatItemToProject,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 import { readFullListProjectActivity } from "./use-sidebar-row-pages";
@@ -26,6 +29,9 @@ let projectsRefreshPending = false;
 let lastProjectsUpdateEvent: Event | null = null;
 const projectSubscribers = new Set<() => void>();
 const ACTIVITY_REFRESH_DEBOUNCE_MS = 2000;
+// Mounts refetch only past this age: a gallery mounts a project menu per tile.
+const MOUNT_REVALIDATE_AFTER_MS = 5000;
+let projectsLoadedAt = 0;
 let activityRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onChatActivity(): void {
@@ -46,6 +52,7 @@ function getProjectsSnapshot(): ProjectRecord[] {
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
+  projectsLoadedAt = Date.now();
   if (projectsLoaded && JSON.stringify(projects) === JSON.stringify(cachedProjects)) return;
   cachedProjects = projects;
   projectsLoaded = true;
@@ -102,6 +109,7 @@ export function useChatProjects(): {
   projects: ProjectRecord[];
   isLoading: boolean;
   hasLoaded: boolean;
+  loadFailed: boolean;
 } {
   const projects = useSyncExternalStore(
     subscribeToProjects,
@@ -110,6 +118,7 @@ export function useChatProjects(): {
   );
   const [isLoading, setIsLoading] = useState(!projectsLoaded);
   const [hasLoaded, setHasLoaded] = useState(projectsLoaded);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +128,10 @@ export function useChatProjects(): {
       if (!cancelled && !projectsLoaded) setIsLoading(true);
       try {
         await loadProjects(force, followUpIfPending);
+        if (!cancelled) setLoadFailed(false);
+      } catch (error) {
+        console.warn("Could not load projects", error);
+        if (!cancelled) setLoadFailed(true);
       } finally {
         if (!cancelled) {
           setHasLoaded(true);
@@ -136,7 +149,9 @@ export function useChatProjects(): {
     // browser tab or API client.
     // one function per consumer: a shared reference is one DOM listener the first unmount would remove
     const onActivity = () => onChatActivity();
-    void refresh(projectsLoaded);
+    void refresh(
+      projectsLoaded && Date.now() - projectsLoadedAt > MOUNT_REVALIDATE_AFTER_MS,
+    );
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onActivity);
     return () => {
@@ -146,15 +161,26 @@ export function useChatProjects(): {
     };
   }, []);
 
-  return { projects, isLoading, hasLoaded };
+  return { projects, isLoading, hasLoaded, loadFailed };
+}
+
+/** Newest chat or own last edit: `updatedAt` alone moves only on a rename or instructions change. */
+export function projectActivityAt(project: ProjectRecord): number {
+  return Math.max(project.lastActivityAt ?? 0, project.updatedAt);
+}
+
+/** Most recently used first, the order the sidebar shows. */
+export function sortProjectsByActivity(projects: readonly ProjectRecord[]): ProjectRecord[] {
+  return [...projects].sort((a, b) => projectActivityAt(b) - projectActivityAt(a));
 }
 
 export async function createChatProject(
   name: string,
   nativePathLease?: string,
   id?: string,
+  options?: SaveChatProjectOptions,
 ): Promise<ProjectRecord> {
-  return createStoredChatProject(name, nativePathLease, id);
+  return createStoredChatProject(name, nativePathLease, id, options);
 }
 
 export async function renameChatProject(
@@ -177,10 +203,11 @@ export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
+  // A failed lookup only leaves stale bookmarks; it must not block the delete.
+  const members = await listStoredChatThreads({ projectId }).catch(() => []);
   const kept = await deleteStoredChatProject(projectId, args);
-  // The member chats went with the project, so their own sandboxes are reachable from nothing: the
-  // same offer an ordinary chat delete makes, and a sandbox the backend could not remove is kept
-  // even when asked to go.
+  useBookmarkedTurnsStore.getState().forgetThreads(members.map((thread) => thread.id));
+  // Member chats went with the project, so offer to delete their kept sandboxes.
   offerToDeleteKeptSandboxes(kept);
 }
 

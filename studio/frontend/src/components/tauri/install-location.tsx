@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { useEffect, useState } from "react";
 
 interface StudioInstallLocation {
@@ -12,6 +13,7 @@ interface StudioInstallLocation {
 
 // Windows Desktop only: elsewhere, or on an older shell, nothing renders.
 export default function InstallLocation({ disabled }: { disabled: boolean }) {
+  const t = useT();
   const [location, setLocation] = useState<StudioInstallLocation | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,7 +55,8 @@ export default function InstallLocation({ disabled }: { disabled: boolean }) {
   return (
     <div className="flex max-w-[min(560px,90vw)] flex-col items-center gap-1 text-center text-ui-12 text-muted-foreground">
       <p className="break-all">
-        Install location: <span className="text-foreground">{location.path}</span>
+        {t("desktopStartup.installLocation")}{" "}
+        <span className="text-foreground">{location.path}</span>
       </p>
       <div className="flex items-center gap-3">
         <Button
@@ -62,7 +65,7 @@ export default function InstallLocation({ disabled }: { disabled: boolean }) {
           disabled={disabled || busy}
           onClick={() => void run("choose_studio_install_location")}
         >
-          Change
+          {t("desktopStartup.changeLocation")}
         </Button>
         {!location.is_default && (
           <Button
@@ -71,7 +74,7 @@ export default function InstallLocation({ disabled }: { disabled: boolean }) {
             disabled={disabled || busy}
             onClick={() => void run("reset_studio_install_location")}
           >
-            Use default
+            {t("desktopStartup.useDefaultLocation")}
           </Button>
         )}
       </div>

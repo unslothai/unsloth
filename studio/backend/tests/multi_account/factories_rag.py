@@ -13,7 +13,6 @@ FILENAME = "rag-matrix-sentinel.txt"
 KB_NAME = "rag-matrix-kb-name"
 EDITED = "rag-matrix-edited"
 CONTENT = b"rag matrix sentinel document body\n"
-# Unsigned, so verify_native_path_lease rejects it before any folder is created.
 BAD_LEASE = {"nativePathLease": "rag-matrix-invalid-lease"}
 
 

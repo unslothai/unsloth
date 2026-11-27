@@ -27,7 +27,6 @@ const detailStep: TourStep = {
   ),
 };
 
-/** Outside split view an open model detail covers the catalog, so describe what is on top. */
 export function buildHubTourSteps({
   catalogCovered,
 }: {

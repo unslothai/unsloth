@@ -15,7 +15,9 @@
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import ast  # noqa: E402
@@ -125,8 +127,7 @@ class _AudioModel(torch.nn.Module):
 
 
 class _AudioText(torch.nn.Module):
-    """PeAudioVideoModel-like: `audio_model` (with its own forward taking input_values) runs only
-    when audio is given; the text path otherwise."""
+    """PeAudioVideoModel-like: audio_model runs only when audio is given; else the text path."""
 
     def __init__(self):
         super().__init__()

@@ -2,15 +2,15 @@
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #
-# 0.41.0 is the first release with Qwen-Image-2.1 (0.40.0: MiniMax-H3 / Music 3). Exact pin, so
-# installs are reproducible without a source build from GitHub.
+# 0.42.1: FLUX.3 Image Klein (0.42.0) plus the fix stopping a model repo naming a module for
+# from_pretrained to import. Exact pin: reproducible, no source build.
 #
 # Why it is installed from its own file, in its own step: base.txt is applied near the
 # start of the dependency pass. This step runs late, after every other requirements file,
 # so nothing can re-resolve diffusers back to a release behind it.
 #
-# python < 3.10 has no candidate: diffusers dropped 3.9 in 0.38, so pinning 0.41.0
-# outright would leave the resolver nothing at all on a 3.9 host. Those hosts get the
-# newest release they can take and the H3 guard refuses the model with a clear message.
-diffusers==0.41.0 ; python_version >= "3.10"
+# One line per Python floor (0.42.0 needs 3.11, 0.38 dropped 3.9): an unmarked pin leaves older
+# hosts nothing to resolve. The family version gate refuses what their release lacks.
+diffusers==0.42.1 ; python_version >= "3.11"
+diffusers==0.41.0 ; python_version == "3.10"
 diffusers==0.36.0 ; python_version < "3.10"

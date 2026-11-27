@@ -160,9 +160,9 @@ def test_training_start_prepares_token_once_before_transport():
         "async function checkSelectedDataset", 1
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
-    assert (
-        "buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo())"
-        in submit_attempt
+    assert re.search(
+        r"buildTrainingStartPayload\(\s*attempt\.config,\s*hfToken,\s*getCachedSystemInfo\(\)",
+        submit_attempt,
     )
     assert "payload.hf_token = hfToken" not in submit_attempt
     assert submit_attempt.index("attempt.enterTransport()") < submit_attempt.index(
@@ -275,7 +275,7 @@ def test_accepted_training_start_stays_locked_during_preparation():
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in completion_watch
     assert "isTrainingStartPending(useTrainingRuntimeStore.getState())" in unload_guard
 
-    assert "initialStudioTab(selectedHistoryRunId, trainingRunActive)" in navigation
+    assert "studioTabFor(null, currentJobId, trainingRunActive)" in navigation
     assert "activeStudioTab(" in navigation
     assert 'trainingRunActive && requestedTab !== "history"' in navigation
     assert "jobId !== previousJobId && trainingRunActive" in navigation

@@ -123,9 +123,8 @@ def unpatched(monkeypatch):
         _point_references_at(monkeypatch, wrappers, original)
     assert masking_utils.create_chunked_causal_mask is original
     yield original
-    # monkeypatch only restores what existed at setup. A module first imported during the test (the
-    # tiny Llama-4 imports modeling_llama4) bound the stock function, and the fix may have rewritten
-    # it to a wrapper made by this test; give it what a normal import would have bound instead.
+    # monkeypatch only restores what existed at setup, so a module first imported during the test
+    # (e.g. modeling_llama4) must be given what a normal import would bind, not this test's wrapper.
     for name, namespace in _mask_importer_namespaces().items():
         if name in already_imported:
             continue

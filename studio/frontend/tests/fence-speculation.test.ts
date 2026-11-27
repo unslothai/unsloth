@@ -254,3 +254,52 @@ test("a settle for a fence that is no longer in flight is ignored and ranking re
   h.runIdle();
   assert.ok(h.settled.has(b));
 });
+
+test("fences beyond the horizon wait, and a rerank that brings them closer resumes speculation", () => {
+  let horizon = 250;
+  const h = harness({ maxDistance: () => horizon });
+  h.warmed.add("js");
+  const near = h.make("near", 100);
+  const far = h.make("far", 900);
+  h.speculator.add(near);
+  h.speculator.add(far);
+  h.runIdle();
+  assert.deepEqual([...h.settled.keys()].map((gate) => gate.name), ["near"]);
+  h.settled.get(near)?.(true);
+  h.settled.delete(near);
+  h.runIdle();
+  assert.equal(h.settled.size, 0, "the far fence is past the horizon");
+  assert.equal(h.idle.length, 0, "and nothing polls for it");
+  horizon = 1000;
+  h.speculator.rerank();
+  assert.equal(h.waits.length, 1, "a rerank looks again after a short wait, not on every scroll event");
+  assert.equal(h.waits[0].ms, 200);
+  h.speculator.rerank();
+  assert.equal(h.waits.length, 1, "further reranks while it waits add nothing");
+  h.waits.shift()?.callback();
+  assert.deepEqual([...h.settled.keys()].map((gate) => gate.name), ["far"]);
+});
+
+test("without a horizon a rerank only refreshes the order", () => {
+  const h = harness();
+  h.warmed.add("js");
+  h.speculator.add(h.make("only", 100));
+  h.runIdle();
+  h.speculator.rerank();
+  assert.equal(h.idle.length, 0);
+  assert.equal(h.waits.length, 0);
+});
+
+test("a removed fence leaves the distance cache, so an unmounted message is not kept alive", () => {
+  const h = harness();
+  h.warmed.add("js");
+  const a = h.make("a", 0);
+  const b = h.make("b", 5);
+  h.speculator.add(a);
+  h.speculator.add(b);
+  h.runIdle();
+  assert.equal(h.speculator.snapshot().distanced, 2);
+  h.speculator.remove(a);
+  h.speculator.remove(b);
+  assert.equal(h.speculator.snapshot().distanced, 0);
+});

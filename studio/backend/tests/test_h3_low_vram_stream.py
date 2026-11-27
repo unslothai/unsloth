@@ -20,9 +20,6 @@ def _h3_family():
     return detect_video_family("minimax-h3")
 
 
-# ── VRAM floors ─────────────────────────────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("budget_gb", [24.0, 16.0, 12.0])
 def test_a_streamed_conditioner_and_denoiser_floor_fits_small_cards(budget_gb):
     """The old floor was the 27.2 GB conditioner + 1.8 = 29.0 GB at every size: 24 / 16 / 12 GB were all refused.
@@ -70,9 +67,6 @@ def test_the_floor_still_grows_with_the_clip():
     assert floor(1344, 768, 345) > 24.0
 
 
-# ── conditioner streaming ───────────────────────────────────────────────────────────────────────────────────────────
-
-
 def test_the_conditioner_stream_kill_switch(monkeypatch):
     from core.inference.video_minimax_h3_te import h3_te_stream_enabled, stream_h3_text_encoder
 
@@ -102,10 +96,9 @@ def test_pinning_in_place_replaces_tensors_and_releases_the_originals():
             self.b = torch.nn.Linear(16, 8, bias = False)
             self.register_buffer("q", torch.arange(64, dtype = torch.int8).view(8, 8))
             self.c = torch.nn.Linear(16, 8, bias = False)
-            self.c.weight = self.b.weight  # tied
+            self.c.weight = self.b.weight
 
     m = M()
-    # Views of one flat base, like safetensors tensors over a single mapping.
     base = torch.randn(16 * 8 + 16)
     m.a.weight = torch.nn.Parameter(base[: 16 * 8].view(16, 8))
     m.a.bias = torch.nn.Parameter(base[16 * 8 :])
@@ -131,14 +124,9 @@ def test_pinning_in_place_replaces_tensors_and_releases_the_originals():
     assert isinstance(m.a.weight, torch.nn.Parameter) and not isinstance(m.q, torch.nn.Parameter)
 
 
-# ── denoiser residency ──────────────────────────────────────────────────────────────────────────────────────────────
-
-
 class _Group:
     def __init__(self, nbytes):
-        self.modules = [
-            torch.nn.Linear(1, nbytes // 4, bias = False)
-        ]  # nbytes/4 fp32 weights -> nbytes
+        self.modules = [torch.nn.Linear(1, nbytes // 4, bias = False)]
         self.parameters = []
         self.buffers = []
         self.stream = None
@@ -172,7 +160,7 @@ def _residency(top_bytes, block_bytes):
 def test_residency_spends_the_budget_on_the_top_level_then_a_block_prefix():
     r = _residency(400, [100] * 10)
     assert r.plan(0) == (False, 0)
-    assert r.plan(399) == (False, 3)  # the top does not fit; blocks still use what is there
+    assert r.plan(399) == (False, 3)
     assert r.plan(400) == (True, 0)
     assert r.plan(750) == (True, 3)
     assert r.plan(10_000) == (True, 10)
@@ -186,13 +174,11 @@ def test_residency_demotes_the_tail_for_a_bigger_request_and_promotes_it_back(mo
     r.fit(1000, initial = True)
     assert r.resident_blocks() == 6 and res.is_resident(r.top)
     assert [g.where for g in r.blocks] == ["cuda"] * 6 + ["cpu"] * 4
-    # A resident group's hooks are no-ops: the streaming hook cannot move it.
     r.blocks[0].offload_()
     assert r.blocks[0].where == "cuda"
     r.fit(600)
     assert r.resident_blocks() == 2
     assert [g.where for g in r.blocks] == ["cuda"] * 2 + ["cpu"] * 8
-    # demoted groups stream again
     r.blocks[3].onload_()
     assert r.blocks[3].where == "cuda"
     r.blocks[3].offload_()
@@ -213,7 +199,7 @@ def test_a_fit_that_fails_partway_releases_what_it_promoted(monkeypatch):
     r = _residency(400, [100] * 10)
 
     def oom():
-        r.blocks[2].where = "cuda"  # partly onloaded
+        r.blocks[2].where = "cuda"
         raise RuntimeError("CUDA out of memory")
 
     r.blocks[2].onload_ = oom
@@ -223,7 +209,6 @@ def test_a_fit_that_fails_partway_releases_what_it_promoted(monkeypatch):
     res.release_all(r)
     assert r.resident_bytes() == 0
     assert r.top.where == "cpu" and all(g.where == "cpu" for g in r.blocks)
-    # streaming hooks are live again
     r.blocks[0].onload_()
     assert r.blocks[0].where == "cuda"
 
@@ -244,7 +229,6 @@ def test_the_phase_need_leaves_room_on_a_12gb_card():
     floor = h3_phase_need_gb(960, 544, 124, te_streamed_gb = H3_TE_STREAMED_GB, fragmentation = False)
     assert floor < 11.0
     assert h3_phase_need_gb(1344, 768, 345, te_streamed_gb = H3_TE_STREAMED_GB) > 24.0
-    # The residency plan keeps fragmentation slack free; the refusal floor does not ask for it.
     assert h3_phase_need_gb(1344, 768, 124, te_streamed_gb = H3_TE_STREAMED_GB) > h3_phase_need_gb(
         1344, 768, 124, te_streamed_gb = H3_TE_STREAMED_GB, fragmentation = False
     )
@@ -293,9 +277,7 @@ def _tiny_qwen3_vl():
 
 
 def test_an_image_prompt_encodes_through_the_streamed_conditioner(monkeypatch):
-    """Keyframe / reference prompts run the Qwen3-VL vision tower inside the streamed conditioner. Its position
-    interpolation reads the offloaded embedding's device (CPU under group offload; transformers 5.5), which raised a
-    cuda / cpu device mismatch. The streamed encode must match the whole-module one."""
+    """Qwen3-VL's vision tower reads the offloaded device; streamed encode must match whole-module."""
     import copy
     import inspect
 
@@ -344,8 +326,92 @@ def test_pinning_is_budgeted_on_the_whole_payload_not_one_arena(monkeypatch):
     monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
     monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 20 * 1024)
-    assert h3_te_pin_allowed()  # one arena fits
-    assert h3_te_pin_allowed(5 * 2**30)  # the VAEs
-    assert not h3_te_pin_allowed(27 * 2**30)  # the conditioner does not
+    assert h3_te_pin_allowed()
+    assert h3_te_pin_allowed(5 * 2**30)
+    assert not h3_te_pin_allowed(27 * 2**30)
     monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
     assert h3_te_pin_allowed(27 * 2**30)
+
+
+def test_pinning_in_place_copies_on_a_pool_with_the_same_placement(monkeypatch):
+    """The copies run on a thread pool (a to_thread worker copies on one torch thread), with the serial placement:
+    largest first, first fit, same offsets, same values, ties kept, every owner replaced."""
+    import threading
+
+    from core.inference import video_minimax_h3_te as te
+
+    def make():
+        torch.manual_seed(0)
+        g = torch.Generator().manual_seed(0)
+        m = torch.nn.Sequential(
+            *[torch.nn.Linear(16 + 8 * i, 24, bias = i % 2 == 0) for i in range(6)]
+        )
+        m.register_buffer("q", torch.randint(-128, 127, (40, 8), dtype = torch.int8, generator = g))
+        m.register_buffer("h", torch.randn(33, generator = g).to(torch.bfloat16))
+        m.tied = torch.nn.Linear(24, 32, bias = False)
+        m.tied.weight = m[2].weight
+        m.register_buffer("q_alias", m.q)
+        return m
+
+    def run(m, threads):
+        monkeypatch.setattr(te, "_PIN_COPY_THREADS", threads)
+        arenas = []
+
+        def factory(size):
+            arenas.append(torch.full((size,), 0xA5, dtype = torch.uint8))
+            return arenas[-1]
+
+        names = []
+        real_copy = torch.Tensor.copy_
+
+        def spy(self, *a, **k):
+            names.append(threading.current_thread().name)
+            return real_copy(self, *a, **k)
+
+        monkeypatch.setattr(torch.Tensor, "copy_", spy)
+        try:
+            n = te.pin_module_in_place(m, arena_bytes = 4096, _arena_factory = factory)
+        finally:
+            monkeypatch.setattr(torch.Tensor, "copy_", real_copy)
+        return n, arenas, names
+
+    m_serial, m_pool = make(), make()
+    expect = {k: v.detach().clone() for k, v in m_pool.state_dict().items()}
+    n1, a1, names1 = run(m_serial, 1)
+    n2, a2, names2 = run(m_pool, 8)
+    assert n1 == n2 > 0
+    assert len(names2) == len(names1) > 1
+    assert all(name.startswith("unsloth-h3-te-pin") for name in names2), names2
+    assert not any(name.startswith("unsloth-h3-te-pin") for name in names1)
+    # Same arenas, byte for byte (same offsets, same alignment padding).
+    assert [a.numel() for a in a1] == [a.numel() for a in a2]
+    assert all(torch.equal(x, y) for x, y in zip(a1, a2))
+    for k, v in m_pool.state_dict().items():
+        assert torch.equal(v, expect[k]), k
+        assert v.untyped_storage().data_ptr() in {a.untyped_storage().data_ptr() for a in a2}, k
+    assert m_pool.tied.weight is m_pool[2].weight and m_pool.q_alias is m_pool.q
+    assert isinstance(m_pool[0].weight, torch.nn.Parameter) and not isinstance(
+        m_pool.q, torch.nn.Parameter
+    )
+
+
+def test_pinning_in_place_replaces_nothing_when_a_pooled_copy_fails(monkeypatch):
+    from core.inference import video_minimax_h3_te as te
+
+    m = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 4))
+    before = {k: v for k, v in m.state_dict(keep_vars = True).items()}
+    real_copy = torch.Tensor.copy_
+    calls = []
+
+    def flaky(self, *a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("pinned host RAM refused")
+        return real_copy(self, *a, **k)
+
+    monkeypatch.setattr(torch.Tensor, "copy_", flaky)
+    with pytest.raises(RuntimeError, match = "refused"):
+        te.pin_module_in_place(m, _arena_factory = lambda n: torch.zeros(n, dtype = torch.uint8))
+    monkeypatch.setattr(torch.Tensor, "copy_", real_copy)
+    after = m.state_dict(keep_vars = True)
+    assert all(after[k] is before[k] for k in before)

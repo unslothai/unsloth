@@ -48,6 +48,7 @@ def _compressed_backend(
     export_module = sys.modules["test_llm_compressor_consent_backend"]
     monkeypatch.setattr(export_module, "_has_nvidia_gpu", lambda: True)
     monkeypatch.setattr(export_module, "_compressed_export_supported", lambda: True)
+    monkeypatch.setattr(export_module, "hf_env_offline", lambda: False)
 
     us = sys.modules["unsloth.save"]
     us._normalize_torchao_method = lambda method: None
@@ -63,7 +64,6 @@ def _compressed_backend(
 
     tv.llmcompressor_shadow_pythonpath = llmcompressor_shadow_pythonpath
     tv._llmcompressor_main_disabled = lambda: shadow_disabled
-    tv._env_offline = lambda: False
     monkeypatch.setitem(sys.modules, "utils.transformers_version", tv)
     return backend
 
@@ -73,17 +73,15 @@ def _compressed_backend(
     [
         (False, False, None, False),
         (False, True, None, False),
-        # Workspace consent (shadow disabled) authorizes the library install.
         (True, True, None, True),
         (True, False, "/shadow", True),
-        # Shadow consent whose provisioning failed must not install into the Studio interpreter.
         (True, False, None, False),
     ],
 )
 def test_compressed_export_states_consent_explicitly(
     tmp_path, monkeypatch, consented, shadow_disabled, shadow_pp, expected
 ):
-    # unsloth.save defaults install_missing_dependencies to True, so an unconsented export must pass False.
+    # unsloth.save defaults install_missing_dependencies=True; must pass False.
     shadow_calls: list = []
     backend = _compressed_backend(monkeypatch, shadow_calls, shadow_disabled, shadow_pp)
 

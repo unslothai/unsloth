@@ -89,8 +89,7 @@ def test_failures_are_not_swallowed_by_a_fallback_message():
 
 
 def test_the_native_exit_code_is_inspected():
-    # $ErrorActionPreference does not trap a native non-zero exit, so
-    # $LASTEXITCODE has to be read explicitly.
+    # Native non-zero exits bypass $ErrorActionPreference, so read $LASTEXITCODE explicitly.
     run = _verify_step()["run"]
     assert "$LASTEXITCODE" in run
 

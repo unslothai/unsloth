@@ -36,8 +36,7 @@ def _clear_offline_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.delenv("UV_OFFLINE", raising = False)
-    # A CUDA torch with nothing published for it unless a test says otherwise: the host's own
-    # torch and the network must not decide the tests.
+    # Assume CUDA torch with nothing published, so the host's torch and network never decide.
     monkeypatch.setattr(
         worker,
         "probe_torch_wheel_env",
@@ -96,11 +95,7 @@ def _missing_flash_attn_import():
 
 
 def _flash_attn_import_until_installed(state: dict[str, bool]):
-    """Import stub for a flash_attn that appears only once ``state['installed']`` is set.
-
-    The installers verify the import, so a mock that keeps failing models a broken wheel,
-    not a working one: "the wheel worked" means flipping the flag when install_wheel runs.
-    """
+    """Stub flash_attn that imports only once state['installed'] is set, as installers verify imports."""
     real_import = builtins.__import__
 
     def fake_import(
@@ -113,8 +108,7 @@ def _flash_attn_import_until_installed(state: dict[str, bool]):
         if name == "flash_attn":
             if not state.get("installed"):
                 raise ImportError
-            # A stub, not a real import: flash_attn is not installed in the test env, and
-            # whether it happens to be is not what these tests are about.
+            # Fake module, not a real import, so the host's flash_attn cannot decide.
             return types.ModuleType("flash_attn")
         return real_import(name, globals, locals, fromlist, level)
 
@@ -179,12 +173,7 @@ class TestIsImportableIsolated:
 
 
 class TestNoExitLeavesAnUnusableInstall:
-    """Every unsuccessful exit discards the distribution, not just the ones with a call.
-
-    The metadata gate in unsloth/models/_utils.py imports the extension in process, so
-    anything left behind is loaded anyway. Four rounds of review found four separate exits
-    that forgot to clean up, which is why this is enforced in one place.
-    """
+    """Every failed exit must discard the flash-attn distribution, since the metadata gate imports it."""
 
     def _run(self, monkeypatch, *, run_side_effect):
         removals: list[list[str]] = []
@@ -338,7 +327,6 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
-    # The post-install probe runs in a child; model it off the same flag.
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
     monkeypatch.setattr(
         worker,
@@ -361,11 +349,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 @linux_only
 @pytest.mark.parametrize("uv_path", ["/usr/bin/uv", None], ids = ["uv", "pip"])
 def test_runtime_flash_attn_rejected_wheel_is_removed_without_source_build(monkeypatch, uv_path):
-    """A wrong-arch/ABI wheel installs with rc=0 and then will not load.
-
-    The Blackwell shape (#5420, #6961): trusting the exit code left a flash_attn that
-    raised on import mid-training. It must be treated as not installed.
-    """
+    """Wrong-arch wheels exit 0 yet fail to import; rejected ones count as uninstalled."""
     statuses: list[str] = []
     calls: list[list[str]] = []
     state = {"installed": False}
@@ -381,7 +365,6 @@ def test_runtime_flash_attn_rejected_wheel_is_removed_without_source_build(monke
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
-    # Never becomes importable, however the install exits.
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
     monkeypatch.setattr(worker, "_flash_attn_gpu_below_floor", lambda: False)
@@ -427,8 +410,7 @@ def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
-    # The discard is state-based, so the installed-but-broken state has to be stated here.
-    # Without this the test only passes on a machine that happens to have flash-attn.
+    # The discard is state-based, so state installed-but-broken explicitly.
     monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
     monkeypatch.setattr(
         worker,
@@ -465,7 +447,6 @@ def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch
     )
 
     assert installed is False
-    # and it is removed, not left where _package_available would advertise it.
     assert "flash-attn is not usable on this GPU; removed it" in statuses
 
 
@@ -477,7 +458,6 @@ def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
-    # State the installed-but-broken state explicitly; see the note above.
     monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
     monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
@@ -710,11 +690,7 @@ class _FakeQueue(list):
 
 
 def _make_fake_gate(initial_return: bool):
-    """Callable mimicking transformers' lru_cache-decorated gates.
-
-    Tracks call count and exposes `cache_clear`. Flip `.next_return` to
-    mimic install-then-True behaviour.
-    """
+    """Stands in for transformers' lru_cache-decorated gates, which callers reset through cache_clear."""
 
     class Gate:
         def __init__(self, initial: bool) -> None:
@@ -777,7 +753,6 @@ def test_hook_installs_when_gate_returns_false(monkeypatch):
 
     from transformers.utils import import_utils as _iu
 
-    # Gate wrapped; calling it should drive the install.
     assert _iu.is_causal_conv1d_available() is True
     conv_install.assert_called_once()
 
@@ -821,7 +796,6 @@ def test_hook_idempotent_on_repeat_call(monkeypatch):
 
     from transformers.utils import import_utils as _iu
 
-    # First call: hook fires. Later calls: must not re-trigger the installer.
     _iu.is_causal_conv1d_available()
     _iu.is_causal_conv1d_available()
     _iu.is_causal_conv1d_available()
@@ -845,7 +819,6 @@ def test_hook_handles_install_failure_gracefully(monkeypatch):
 
     from transformers.utils import import_utils as _iu
 
-    # Must not raise; returns False so transformers uses the torch loop.
     assert _iu.is_causal_conv1d_available() is False
 
 
@@ -864,7 +837,6 @@ def test_hook_can_be_disabled_via_env(monkeypatch):
 
     from transformers.utils import import_utils as _iu
 
-    # Hook not installed; the gate remains the fake.
     assert _iu.is_causal_conv1d_available is conv_gate
     conv_install.assert_not_called()
 
@@ -883,15 +855,11 @@ def test_hook_clears_lru_cache_before_first_check(monkeypatch):
     from transformers.utils import import_utils as _iu
 
     _iu.is_causal_conv1d_available()
-    # Wrapper called cache_clear at least once before delegating.
     assert conv_gate.cache_clear_count >= 1
 
 
 def test_hook_rewrites_previously_imported_module_bindings(monkeypatch):
-    """Modeling files bind is_causal_conv1d_available locally via
-    `from ... import is_X`. Reassigning the attribute on import_utils alone
-    misses those; the hook installer sweeps sys.modules and rebinds them.
-    """
+    """Rebinding import_utils alone misses modules that did a from-import, so sys.modules is swept too."""
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gate(monkeypatch, conv_gate)
 
@@ -913,9 +881,7 @@ def test_hook_rewrites_previously_imported_module_bindings(monkeypatch):
         model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
     )
 
-    # The fake module's local binding is rewritten to the wrapper.
     assert fake_mod.is_causal_conv1d_available is not conv_gate
-    # Calling through the fake module's reference triggers install.
     assert fake_mod.is_causal_conv1d_available() is True
 
     del sys.modules["_test_fake_modeling_falcon_h1"]
@@ -934,7 +900,6 @@ def test_hook_skips_when_import_utils_unavailable(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
 
-    # Should not raise.
     worker._install_fast_path_hooks(
         event_queue = _FakeQueue(),
         model_name = "tiiuae/Falcon-H1-0.5B-Instruct",
@@ -942,15 +907,12 @@ def test_hook_skips_when_import_utils_unavailable(monkeypatch):
 
 
 def test_hook_trusts_installer_bool_not_metadata(monkeypatch):
-    """If pip exits 0 but deep imports fail, the installer returns False; the hook
-    must propagate that False even though the metadata-only gate flipped True, so
-    transformers takes the torch fallback.
-    """
+    """The hook trusts the installer's bool, not the metadata gate, so a broken import falls back."""
     conv_gate = _make_fake_gate(initial_return = False)
     _patch_iu_gate(monkeypatch, conv_gate)
 
     def _bad_install(**kw):
-        conv_gate.next_return = True  # metadata says yes after pip
+        conv_gate.next_return = True
         return False  # but deep import is broken
 
     fake_install = mock.Mock(side_effect = _bad_install)
@@ -970,10 +932,7 @@ def test_hook_trusts_installer_bool_not_metadata(monkeypatch):
 
 
 def test_rebind_does_not_trigger_module_getattr(monkeypatch):
-    """The rebind sweep must use __dict__, not getattr(), to avoid invoking
-    transformers' lazy module __getattr__ which spits out hundreds of
-    "Accessing X from .models..." warnings.
-    """
+    """The rebind sweep reads __dict__, not getattr, so the lazy __getattr__ emits no warnings."""
     original = object()
     replacement = object()
 
@@ -1002,16 +961,11 @@ def test_rebind_does_not_trigger_module_getattr(monkeypatch):
 
 
 def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
-    """SSM modeling files use lazy_load_kernel and never call
-    is_causal_conv1d_available(), so the hook won't fire; the orchestrator must
-    always run the eager installer. Reads the worker source and asserts the eager
-    install happens before the hooks are wired.
-    """
+    """The eager causal_conv1d install must run in normal mode, as SSM files never reach the hook."""
     import inspect
 
     src = inspect.getsource(worker.run_training_process)
-    # Orchestration block. Match the call, not its formatting, so wrapping the args over
-    # several lines or adding a keyword does not break this.
+    # Match the calls, not their formatting, so wrapping or a new keyword cannot break this.
     assert "_ensure_causal_conv1d_fast_path(" in src
     assert "_install_fast_path_hooks(" in src
     eager_pos = src.find("_ensure_causal_conv1d_fast_path(")
@@ -1085,8 +1039,7 @@ def test_no_install_path_pips_flash_linear_attention_or_tilelang(monkeypatch, uv
         assert package not in flat, f"{package} must never be pip installed: {calls}"
 
 
-# The only worker.py strings allowed to name the stack: these prose log lines, plus the
-# sole argument of an import probe. A bare "tilelang" anywhere else is an unpinned pip spec.
+# Only these log lines and an import probe may name the stack; a bare tilelang is unpinned.
 _FLA_PROSE_LOG_LINES = (
     "flash-linear-attention fast path importable: %s",
     "flash-linear-attention is not importable; continuing on the pure-torch path: %s",
@@ -1308,8 +1261,7 @@ def test_install_fast_path_hooks_does_not_set_fla_tilelang_on_cuda(monkeypatch):
 
 
 def _isdir_for_layout(*existing: str):
-    """os.path.isdir replacement treating only the given absolute paths as
-    directories, to simulate which gcc runtime / C++ header dirs exist."""
+    """Fake os.path.isdir that reports only the given absolute paths as directories."""
     valid = set(existing)
 
     def fake_isdir(path: str) -> bool:
@@ -1329,10 +1281,10 @@ def test_hipcc_gcc_install_dir_picks_highest_with_headers(monkeypatch):
         worker.os.path,
         "isdir",
         _isdir_for_layout(
-            "/usr/lib/gcc/x86_64-linux-gnu/14/include",  # runtime present
-            # but no /usr/include/c++/14 — typical Ubuntu 24.04 default
+            "/usr/lib/gcc/x86_64-linux-gnu/14/include",
+            # no /usr/include/c++/14 (typical Ubuntu 24.04 default)
             "/usr/lib/gcc/x86_64-linux-gnu/13/include",
-            "/usr/include/c++/13",  # libstdc++-13-dev installed
+            "/usr/include/c++/13",
         ),
     )
     assert worker._hipcc_gcc_install_dir() == "/usr/lib/gcc/x86_64-linux-gnu/13"
@@ -1356,8 +1308,7 @@ def test_hipcc_gcc_install_dir_picks_14_when_headers_exist(monkeypatch):
 
 
 def test_hipcc_gcc_install_dir_returns_none_when_no_match(monkeypatch):
-    """No gcc dir has both halves → return None and skip env injection
-    rather than guessing wrong and causing a confusing build failure."""
+    """No gcc dir has both halves: return None rather than guess and break the build."""
     monkeypatch.setattr(sys, "platform", "linux")
     import platform as _platform
 
@@ -1474,8 +1425,7 @@ def test_install_appends_to_existing_hipcc_compile_flags(monkeypatch):
 
 
 def test_install_respects_user_gcc_install_dir(monkeypatch):
-    """User explicitly set --gcc-install-dir=… already → don't touch it.
-    Avoids two competing --gcc-install-dir flags on the clang command line."""
+    """Leave a user --gcc-install-dir alone, or two competing flags reach the clang command."""
     monkeypatch.setenv(
         "HIPCC_COMPILE_FLAGS_APPEND",
         "--gcc-install-dir=/opt/custom/gcc-13",
@@ -1522,7 +1472,6 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     monkeypatch.setattr(worker, "direct_wheel_url", lambda **kw: None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
     monkeypatch.setattr(worker, "_send_status", lambda *a, **k: None)
-    # _hipcc_gcc_install_dir must not be called on CUDA.
     monkeypatch.setattr(
         worker,
         "_hipcc_gcc_install_dir",
@@ -1828,8 +1777,7 @@ def test_optional_mamba_ssm_is_skipped_below_the_setup_floor(monkeypatch):
 
 
 def test_a_required_hybrid_on_a_t4_still_installs_mamba_ssm(monkeypatch):
-    # As before setup stopped provisioning: Nemotron-H / Falcon-H1 / Granite-4.0-H install it on
-    # any GPU (the runtime never applied setup's floor to them).
+    # Hybrids (Nemotron-H, Falcon-H1, Granite-4.0-H) need mamba_ssm on any GPU, floor or not.
     install = mock.Mock()
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(
@@ -1970,8 +1918,7 @@ def test_no_stop_for_optional_families_or_a_non_cuda_torch(monkeypatch, essentia
 
 
 def test_the_eager_install_and_the_hook_share_one_failed_attempt(monkeypatch):
-    # A failed (possibly 30-minute HIP) build is never repeated in one worker, nor after a chat
-    # load in the same process already failed it.
+    # A failed (possibly 30-minute HIP) build is never retried in the same worker or process.
     attempts = []
     monkeypatch.setattr(worker, "_is_importable", lambda name: False)
     monkeypatch.setattr(

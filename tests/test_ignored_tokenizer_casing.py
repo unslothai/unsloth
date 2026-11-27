@@ -26,7 +26,6 @@ class _Tok:
 
 
 def _fake_auto_tokenizer():
-    # Distinguishable slow and fast stand-ins show which one is returned.
     def from_pretrained(name, **kwargs):
         return _Tok("slow" if kwargs.get("from_slow") else "fast")
 

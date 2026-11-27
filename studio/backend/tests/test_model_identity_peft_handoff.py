@@ -1,28 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The pinned-snapshot path must not reach PEFT through ``name_or_path``.
+"""PEFT copies the instance name_or_path into adapter_config.json, so the local snapshot path leaks."""
 
-``restore_hf_cache_repo_identity`` runs in ``UnslothTrainer.load_model`` *before*
-``get_peft_model``, so at that point there is no ``peft_config`` for its adapter branch
-to repair. PEFT then derives the adapter's ``base_model_name_or_path`` from
-``model.__dict__["name_or_path"]``:
-
-    # peft/mapping_func.py
-    new_name = model.__dict__.get("name_or_path", None)
-    peft_config.base_model_name_or_path = new_name
-
-``PreTrainedModel.__init__`` copies ``config.name_or_path`` onto the instance, so
-restoring only ``config._name_or_path`` leaves that slot holding the machine-local
-snapshot path. It then travels into ``adapter_config.json``, every
-``checkpoint-*/adapter_config.json``, the run card, ``export_metadata.json`` and the
-model card uploaded by ``push_to_hub`` -- none of which are loadable on another machine.
-
-The existing coverage in ``test_model_identity.py`` asserts the *call site* via AST,
-which stays green even when the call cannot do anything, so these are behavioural.
-"""
-
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from utils.models.model_identity import restore_hf_cache_repo_identity
 
@@ -32,6 +16,15 @@ _SNAPSHOT = (
     "/home/user/.cache/huggingface/hub/"
     "models--unsloth--Llama-3.2-1B-Instruct/snapshots/0123456789abcdef"
 )
+
+
+@pytest.fixture(autouse = True)
+def _snapshot_is_in_a_known_hub_cache(monkeypatch):
+    # With no expected_repo_id, the id is restored only for a path in a known Hub cache.
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [Path("/home/user/.cache/huggingface/hub")],
+    )
 
 
 def _loaded_model(**overrides):

@@ -14,7 +14,9 @@
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import importlib  # noqa: E402
@@ -188,7 +190,6 @@ def _case_bnb_instance(native, tmp):
             res[f"{name}.trainer"] = ""
         except Exception as exc:
             res[f"{name}.trainer"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-    # A Trainer's accelerator (marked) with the sharded model registered.
     fake_accelerator = types.SimpleNamespace(_models = [model])
     setattr(fake_accelerator, native._TRAINER_ACCELERATOR, True)
     try:

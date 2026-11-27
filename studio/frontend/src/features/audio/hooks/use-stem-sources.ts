@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 import { fetchAudioBlob } from "../api";
 import { computePeaks } from "../components/waveform-peaks";
 
-// Outlives groups so going back redraws at once; insertion order is the LRU order.
 const PEAKS_CAP = 64;
 const peaksByClip = new Map<string, readonly number[]>();
 
@@ -76,7 +75,6 @@ export function useStemSources(
       return { clipId, url };
     });
     let cancelled = false;
-    // Sized to the group, so prune is never called.
     const cache = new BlobUrlCache(Number.POSITIVE_INFINITY);
     const peaksById: Record<string, readonly number[]> = {};
     const failedIds: string[] = [];

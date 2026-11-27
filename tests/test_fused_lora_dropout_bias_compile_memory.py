@@ -67,7 +67,6 @@ def _peft_block(
 
 
 def _emulate_torch_before_2_11(monkeypatch):
-    # What importing fast_lora does on torch < 2.11.
     def _apply(function, *args):
         return function.apply(*args)
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// With a repo default the picker recommends that default (UD-Q4_K_XL, else Q4_K_M, else Q4_K_S)
-// wherever it loads, and steps down only when it cannot. Ranking by "largest that fits" starred
-// the 13.25 GiB F16 of Qwen-Image-2.1-GGUF on any large card. Without a default it still ranks by
-// the largest quant the device holds with room to spare.
+// Recommend the repo default where it loads; "largest that fits" starred a 13 GiB F16.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -18,7 +15,6 @@ import {
 const GB = 1024 ** 3;
 const variant = (quant: string, gb: number) => ({ quant, size_bytes: gb * GB });
 
-/** The quants on the Qwen3.8-27B listing, in the order the picker holds them. */
 const QUANTS = [
   variant("UD-Q2_K_XL", 9.8),
   variant("UD-IQ1_S", 6.2),
@@ -34,7 +30,6 @@ const fitOn = (gpuGb: number, systemRamGb: number) => (sizeBytes: number) =>
 test("a comfortable verdict is one that keeps its reserve", () => {
   assert.ok(ggufFitIsComfortable("fits"));
   assert.ok(ggufFitIsComfortable("ram"));
-  // These load, but at the edge, so they are not what to suggest.
   assert.ok(!ggufFitIsComfortable("marginal"));
   assert.ok(!ggufFitIsComfortable("partial"));
   assert.ok(!ggufFitIsComfortable("oom"));
@@ -74,32 +69,27 @@ test("more memory never recommends a smaller quant", () => {
   }
 });
 
-// A vision repo fetches an mmproj beside the weights, so download_size_bytes runs ahead of
-// size_bytes. Scoring the checkpoint alone recommended a quant that OOMs once the projector lands.
+// A vision repo fetches an mmproj too, so download_size_bytes is what must fit.
 test("companion weights count against the budget", () => {
   const vision = [
     { quant: "UD-Q4_K_XL", size_bytes: 18 * GB, download_size_bytes: 22 * GB },
     { quant: "UD-Q6_K_XL", size_bytes: 25 * GB, download_size_bytes: 29 * GB },
   ];
   const fit = fitOn(0, 64);
-  // 64 GiB of RAM offloads 32 GiB. The larger quant needs 29.75 GiB on its weights but 34.35 GiB
-  // with the projector, so only the smaller one actually loads.
+  // 64 GiB RAM offloads 32 GiB; the larger quant needs 34.35 GiB with its projector.
   assert.equal(fit(25 * GB), "ram");
   assert.equal(fit(29 * GB), "oom");
   assert.equal(recommendedQuantForDevice(vision, fit)?.quant, "UD-Q4_K_XL");
 });
 
-// A listing with no size metadata reports zero, which prices as the bare context allowance and so
-// reads comfortable on any device. Ranked by weights it sorts last, but the comfortable pass would
-// still reach it once every real quant was only marginal or partial.
+// Unknown size reports zero and prices as comfortable, so it must not outrank real quants.
 test("a variant of unknown size does not outrank one that runs", () => {
   const listing = [
     { quant: "UD-Q8_K_XL", size_bytes: 22 * GB },
     { quant: "UD-Q6_K_XL", size_bytes: 20.5 * GB },
     { quant: "UD-IQ2_XXS", size_bytes: 0 },
   ];
-  // A 24 GiB card with 16 GiB of RAM offloads both of these, neither with room to spare: the
-  // comfortable ceiling here is 19.4 GiB. An unpriced zero clears it, so it used to win.
+  // Comfortable ceiling here is 19.4 GiB, which an unpriced zero clears.
   const fit = fitOn(24, 16);
   assert.equal(fit(0), "fits");
   for (const size of [22, 20.5]) {
@@ -132,14 +122,10 @@ test("nothing to choose from is not a choice", () => {
   );
 });
 
-// Companions are picked per checkpoint, so download size does not have to rise
-// with weights. When nothing runs, ranking the fallback by weights can hand
-// back the variant furthest from fitting.
+// Download size need not rise with weights, so the fallback ranks by footprint.
 test("when nothing runs, the fallback is the smallest footprint", () => {
   const perVariantCompanions = [
-    // Heavier weights, light dependency.
     { quant: "UD-Q6_K_XL", size_bytes: 12 * GB, download_size_bytes: 14 * GB },
-    // Lighter weights, but it drags a much larger text encoder along.
     { quant: "UD-Q4_K_XL", size_bytes: 10 * GB, download_size_bytes: 40 * GB },
   ];
   const pick = recommendedQuantForDevice(perVariantCompanions, () => "oom");
@@ -197,7 +183,6 @@ test("a large card is recommended the repo default, not F16", () => {
 
 test("the default stays recommended while it loads at all", () => {
   const preferred = byQuant(QWEN_IMAGE_21, "Q4_K_M");
-  // Only runs by spilling to RAM, but it runs.
   const fit = (size: number) => (size <= 3.91 * GB ? "partial" : "oom");
   assert.equal(
     recommendedQuantForDevice(QWEN_IMAGE_21, fit, preferred)?.quant,
@@ -207,13 +192,11 @@ test("the default stays recommended while it loads at all", () => {
 
 test("a default the device cannot load steps down, never up", () => {
   const preferred = byQuant(QWEN_IMAGE_21, "Q4_K_M");
-  // Q4_K_S and smaller fit; the default and everything above it do not.
   const fit = (size: number) => (size <= 3.7 * GB ? "fits" : "oom");
   assert.equal(
     recommendedQuantForDevice(QWEN_IMAGE_21, fit, preferred)?.quant,
     "Q4_K_S",
   );
-  // Only a spill fits below the default: the largest of those, not a larger quant that is OOM.
   const tight = (size: number) => (size <= 3.0 * GB ? "partial" : "oom");
   assert.equal(
     recommendedQuantForDevice(QWEN_IMAGE_21, tight, preferred)?.quant,

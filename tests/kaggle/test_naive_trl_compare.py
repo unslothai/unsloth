@@ -49,8 +49,7 @@ def test_a_non_finite_loss_fails_and_short_circuits():
 
 
 def test_the_arms_must_have_run_the_same_number_of_steps():
-    """A control that quietly ran fewer steps is printed beside a full unsloth
-    trace as though the two were the same experiment."""
+    """Arms must run the same steps, or a short control is printed as the same experiment."""
     broken = comparison_failures(_trace(9.0, 5.0, 2.0), [{"loss": 1.0}] * 10)
     assert broken and "different numbers of steps" in broken[0]
 
@@ -118,8 +117,7 @@ def test_an_oom_is_still_a_failure_when_the_leg_did_not_opt_in():
 
 
 def test_an_oom_after_training_started_is_still_a_failure():
-    """The narrowness is the point. An OOM DURING training is a finding about
-    the run; only a failure to load is a fact about the card."""
+    """Only a failure to load is about the card; an OOM during training still fails the run."""
     oom = {
         "error": "OutOfMemoryError: CUDA out of memory",
         "metrics": [{"step": 1, "loss": 3.0}],

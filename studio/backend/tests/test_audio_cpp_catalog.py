@@ -297,7 +297,12 @@ def test_a_community_repo_several_specs_download_from_is_not_listed(env):
             "family": family,
             "tasks": ["tts" if family == "glm_tts" else "asr"],
             "packages": [
-                {"format": "gguf", "files": files, "download": {"repo": "Mixed/audio.cpp"}}
+                {
+                    "id": family,
+                    "format": "gguf",
+                    "files": files,
+                    "download": {"repo": "Mixed/audio.cpp"},
+                }
             ],
         }
         (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
@@ -306,18 +311,21 @@ def test_a_community_repo_several_specs_download_from_is_not_listed(env):
     assert rows["Jmica/Drama-3-GGUF"].family == "fish_drama3"
     targets = catalog._spec_targets(
         {
-            "a": {"packages": [{"format": "gguf", "download": {"repo": "Same/Repo"}}]},
-            "b": {"packages": [{"format": "gguf", "download": {"repo": "same/repo"}}]},
-            "c": {"packages": [{"format": "gguf", "download": {"repo": "One/Repo"}}]},
+            name: {
+                "packages": [
+                    {"id": name, "format": "gguf", "files": ["m.gguf"], "download": {"repo": repo}}
+                ]
+            }
+            for name, repo in (("a", "Same/Repo"), ("b", "same/repo"), ("c", "One/Repo"))
         },
         [],
     )
     assert targets == ({}, {"One/Repo": "c"})
 
 
-def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
+def test_a_community_package_is_offered_with_every_file_it_reads(env, monkeypatch):
     # trklou/audio.cpp (F5/Habibi) reads vocab.txt beside its GGUF; ampixa/sanoTTS a config.json.
-    for family, repo, files in (
+    packages = (
         (
             "f5_tts",
             "trklou/audio.cpp",
@@ -331,7 +339,20 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
             "dignome/kitten_tts2",
             ["kitten.gguf", "LICENSE", "NOTICE", "native/LICENSE", "SHA256SUMS", "README.md"],
         ),
-    ):
+        # Its repo does not publish the config its package reads.
+        ("half_tts", "Half/TTS", ["half-q8_0.gguf", "config.json"]),
+    )
+    published = {repo: files for _family, repo, files in packages}
+    published["Half/TTS"] = ["half-q8_0.gguf"]
+    listing = acm._hub_listing
+
+    def repo_listing(repo_id, folder, token):
+        if repo_id in published:
+            return [RepoFile(name, 100) for name in published[repo_id] if "LICENSE" not in name]
+        return listing(repo_id, folder, token)
+
+    monkeypatch.setattr(acm, "_hub_listing", repo_listing)
+    for family, repo, files in packages:
         spec = {
             "family": family,
             "tasks": ["tts", "clone"],
@@ -340,15 +361,19 @@ def test_a_community_repo_whose_package_needs_sidecars_is_withheld(env):
         }
         (env["specs"] / f"{family}.json").write_text(json.dumps(spec))
     rows = _rows(catalog.audio_catalog_payload())
-    for repo in ("trklou/audio.cpp", "ampixa/sanoTTS"):
-        assert rows[repo].workflows == [] and rows[repo].unsupported_reason == catalog._SIDECARS
-    assert rows["Voices/TTS"].unsupported_reason is None and rows["Voices/TTS"].workflows
+    for repo in ("trklou/audio.cpp", "ampixa/sanoTTS", "Voices/TTS"):
+        assert rows[repo].unsupported_reason is None and rows[repo].workflows, repo
+        # The download is the GGUF and the file beside it.
+        assert rows[repo].size_bytes == 200, repo
+    assert rows["Half/TTS"].workflows == []
+    assert rows["Half/TTS"].unsupported_reason == acm.PACKAGE_INCOMPLETE
     assert rows["dignome/kitten_tts2"].unsupported_reason is None
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
 
 
-def test_a_community_repo_whose_gguf_is_not_audio_cpp_is_withheld(env, monkeypatch):
-    # SenseVoice and Echo-TTS publish GGUFs whose architecture is not "audiocpp": resolve() is None.
+def test_a_community_repo_the_runtime_spec_names_needs_no_audiocpp_header(env, monkeypatch):
+    # SenseVoice and Echo-TTS publish GGUFs whose architecture is not "audiocpp", yet the runtime
+    # whose spec names their repo loads them: the spec vouches, so no header is probed.
     spec = {
         "family": "sense_asr",
         "tasks": ["asr"],
@@ -376,10 +401,11 @@ def test_a_community_repo_whose_gguf_is_not_audio_cpp_is_withheld(env, monkeypat
     monkeypatch.setattr(acm, "read_remote_header", header)
     rows = _rows(catalog.audio_catalog_payload())
     sense = rows["FunAudioLLM/SenseVoiceSmall-GGUF-audiocpp"]
-    assert sense.workflows == [] and sense.unsupported_reason == catalog._NOT_AUDIO_CPP
+    assert sense.workflows == ["transcribe"] and sense.unsupported_reason is None
     assert rows["Jmica/Drama-3-GGUF"].workflows == ["speak", "clone"]
-    # The spec's recommended file is the one probed.
-    assert ("Jmica/Drama-3-GGUF", "drama-3-Q4_K_S.gguf") in seen
+    assert not [repo for repo, _name in seen if repo != AUDIO_CPP_REPO]
+    assert acm.spec_vouched_family("funaudiollm/sensevoicesmall-gguf-audiocpp") == "sense_asr"
+    assert acm.spec_vouched_family("Nobody/Else") is None
 
 
 def test_a_spec_dir_read_is_capped_and_ignores_bad_files(env, monkeypatch):
@@ -430,3 +456,31 @@ def test_a_build_with_a_late_family_probe_is_retried_sooner(env, monkeypatch):
     clock[0] += catalog._DEGRADED_TTL_SECONDS + 1
     catalog.audio_catalog_payload()
     assert env["calls"]["hub"] == hub_calls + 1
+
+
+def test_a_package_row_is_sized_by_every_file_it_loads():
+    sizes = {
+        "sidecars/yue2-model-config.json": 1_000,
+        "sidecars/yue2-generation-config.json": 1_000,
+        "sidecars/yue2-qwen.tiktoken": 2_000_000,
+        "sidecars/yue2-vae-config.json": 1_000,
+        "yue2-3b-q8_0.gguf": 4_264_195_616,
+        "yue2-3b-q4_0.gguf": 2_666_000_000,
+        "yue2-vae-f16.gguf": 265_000_000,
+    }
+    files = [RepoFile(path, size) for path, size in sizes.items()]
+    q8 = {"id": "q8", "format": "gguf", "default": True, "files": ["yue2-3b-q8_0.gguf"]}
+    q4 = {"id": "q4", "format": "gguf", "files": ["yue2-3b-q4_0.gguf"]}
+    repo = "audio-cpp/Yue2-3B-GGUF"
+    row = catalog._row(repo, repo, "", "yue2", {"packages": [q8, q4]}, files)
+    assert row.size_bytes == sum(size for path, size in sizes.items() if "q4_0" not in path)
+    assert row.smallest_size_bytes == sum(
+        size for path, size in sizes.items() if "q8_0" not in path
+    )
+
+
+def test_the_smallest_variant_skips_quants_a_gpu_cannot_run():
+    files = [RepoFile("kitten-tq2_1.gguf", 10_000_000), RepoFile("kitten-q8_0.gguf", 40_000_000)]
+    repo = "someone/Kitten-GGUF"
+    row = catalog._row(repo, repo, "", "kokoro_tts", {}, files)
+    assert row.smallest_size_bytes == 40_000_000

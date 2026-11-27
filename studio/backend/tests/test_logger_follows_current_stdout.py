@@ -17,7 +17,7 @@ def test_a_cached_logger_writes_to_the_stdout_of_the_moment(monkeypatch):
 
     first, second = io.StringIO(), io.StringIO()
     monkeypatch.setattr(sys, "stdout", first)
-    logger.info("first-line")  # first use: the bound logger is cached from here on
+    logger.info("first-line")
     monkeypatch.setattr(sys, "stdout", second)
     logger.info("second-line")
 

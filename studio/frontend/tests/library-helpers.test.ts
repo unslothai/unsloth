@@ -26,6 +26,7 @@ import {
   DEFAULT_LIBRARY_SETTINGS,
   type LibrarySortKey,
   SORT_STATES,
+  activityBeforeVisit,
   compareBySort,
   includedBySettings,
   lastActivity,
@@ -169,7 +170,6 @@ table("Reveal is named by the server's file manager, else by its platform", reve
   [[undefined, "linux"], "library.reveal.files"],
 ]);
 
-// Thumbnail URLs: one a card still loads or shows is never revoked under it.
 const revoked = new Set<string>();
 const realRevoke = URL.revokeObjectURL.bind(URL);
 URL.revokeObjectURL = (url: string) => {
@@ -285,6 +285,14 @@ table("last activity is the later of modified and opened", lastActivity, [
   [[{ updatedAt: 9, openedAt: 5 }], 9],
 ]);
 
+test("an item opened during the visit keeps its earlier activity", () => {
+  const openedBefore = new Map<string, number | null>([["a", 3], ["b", null]]);
+  assert.equal(activityBeforeVisit({ id: "a", updatedAt: 1, openedAt: 50 }, openedBefore), 3);
+  assert.equal(activityBeforeVisit({ id: "b", updatedAt: 2, openedAt: 50 }, openedBefore), 2);
+  assert.equal(activityBeforeVisit({ id: "a", updatedAt: 40, openedAt: 50 }, openedBefore), 40);
+  assert.equal(activityBeforeVisit({ id: "c", updatedAt: 1, openedAt: 50 }, openedBefore), 50);
+});
+
 test("every column order has a ?sort value that reads back the same", () => {
   for (const key of ["name", "modified", "size"] as const) {
     for (const desc of [true, false]) assert.deepEqual(SORT_STATES[sortParam({ key, desc })], { key, desc });
@@ -313,20 +321,28 @@ test("the Images tab shows by default, and for settings saved before that", () =
   assert.equal((migrateLibrarySettings({ tabs: saved }, 3).tabs as typeof saved).images, "always");
   const hidden = { ...saved, images: "hidden" };
   assert.equal((migrateLibrarySettings({ tabs: hidden }, 3).tabs as typeof saved).images, "hidden");
-  // The v1 media switch left on auto lands on always too.
   assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).images, "always");
   assert.equal((migrateLibrarySettings({ mediaTabs: "auto" }, 1).tabs as typeof saved).videos, "auto");
+});
+
+test("the info stamp is off by default, and for settings saved before that", () => {
+  assert.equal(DEFAULT_LIBRARY_SETTINGS.imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ imageInfoStamp: true }, 4).imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ mediaTabs: "auto" }, 1).imageInfoStamp, false);
+  assert.equal(migrateLibrarySettings({ imageInfoStamp: true }, 5).imageInfoStamp, true);
 });
 
 test("a card's date shows on hover, on keyboard focus and always on touch", () => {
   const date = /"([^"]*)",\s*\)}\s*>\s*\{formatCardTime/.exec(readSrc("features/library/components/library-cards.tsx"))?.[1].split(" ");
   for (const reveal of [
     "group-hover/library-card:opacity-100",
-    "group-has-[:focus-visible]/library-card:opacity-100",
+    // keyboard focus: the card sets --card-time-opacity with its own has-[:focus-visible]
+    "opacity-[var(--card-time-opacity,0)]",
     "pointer-coarse:opacity-100",
   ]) {
     assert.ok(date?.includes(reveal), reveal);
   }
+  assert.match(readSrc("features/library/components/library-cards.tsx"), /className="group\/library-card has-\[:focus-visible\]:\[--card-time-opacity:1\] relative"/);
 });
 
 test("a moved folder's files are read again by the galleries and the Library", () => {

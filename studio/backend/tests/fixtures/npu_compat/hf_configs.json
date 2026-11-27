@@ -1,0 +1,84 @@
+{
+ "Qwen3-0.6B-NPU2": {
+  "model_type": "qwen3",
+  "num_hidden_layers": 28,
+  "hidden_size": 1024
+ },
+ "Qwen3-8B-NPU2": {
+  "model_type": "qwen3",
+  "num_hidden_layers": 36,
+  "hidden_size": 4096
+ },
+ "Qwen3-VL-4B-Instruct-NPU2": {
+  "model_type": "qwen3",
+  "num_hidden_layers": 36,
+  "hidden_size": 2560
+ },
+ "Qwen3.5-9B-NPU2": {
+  "model_type": "qwen3_5_text",
+  "num_hidden_layers": 32,
+  "hidden_size": 4096
+ },
+ "Qwen3.6-35B-A3B-NPU2": {
+  "model_type": "qwen3_5_moe",
+  "num_hidden_layers": 40,
+  "hidden_size": 2048,
+  "num_experts": 256
+ },
+ "Qwen3.8-27B-NPU2": {
+  "model_type": "qwen3_5",
+  "num_hidden_layers": 64,
+  "hidden_size": 5120
+ },
+ "Qwen3.8-27B-DFlash2-NPU2": {
+  "model_type": "qwen3",
+  "num_hidden_layers": 5,
+  "hidden_size": 5120
+ },
+ "D3-Turbo-NPU2": {
+  "model_type": "qwen3_5_text",
+  "num_hidden_layers": 64,
+  "hidden_size": 5120
+ },
+ "LFM3-1.7B-NPU2": {
+  "model_type": "lfm3",
+  "num_hidden_layers": 24,
+  "hidden_size": 2048
+ },
+ "Llama-3.1-8B-NPU2": {
+  "model_type": "llama",
+  "num_hidden_layers": 32,
+  "hidden_size": 4096
+ },
+ "Gemma4-E4B-IT-NPU2": {
+  "model_type": "gemma4_text",
+  "num_hidden_layers": 42,
+  "hidden_size": 2560
+ },
+ "Gemma4-12B-IT-NPU2": {
+  "model_type": "gemma4_unified",
+  "num_hidden_layers": 48,
+  "hidden_size": 3840
+ },
+ "GPT-OSS-20B-NPU2": {
+  "model_type": "gpt_oss",
+  "num_hidden_layers": 24,
+  "hidden_size": 2880,
+  "num_experts": 32
+ },
+ "Embedding-Gemma-300M-NPU2": {
+  "model_type": "gemma3_text",
+  "num_hidden_layers": 24,
+  "hidden_size": 768
+ },
+ "Whisper-V3-Turbo-NPU2": {
+  "model_type": "whisper",
+  "num_hidden_layers": 32,
+  "hidden_size": null
+ },
+ "Qwen2.5-VL-3B-Instruct-NPU2": {
+  "model_type": "qwen2_5_vl",
+  "num_hidden_layers": 36,
+  "hidden_size": 2048
+ }
+}

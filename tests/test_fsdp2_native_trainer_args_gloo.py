@@ -7,16 +7,21 @@
 * an optimizer passed positionally (Trainer's own order) is refused like a keyword one;
 * `model_init` (and with it hyperparameter_search) is refused instead of training unsharded;
 * `save_on_each_node=True` across nodes is refused (only global rank 0 holds the gathered state);
-* a resume of a non-default active PEFT adapter reads `<ckpt>/<adapter>/`, never the root adapter.
+* a resume of a non-default active PEFT adapter reads `<ckpt>/<adapter>/`, never the root adapter;
+* UNSLOTH_FSDP2=1 on an XPU install with TrainingArguments(use_cpu = True) still shards natively
+  (accelerate runs a CPU Trainer as MULTI_CPU, which drops its FSDP plugin).
 Plus the launcher env: an explicit native backend turns accelerate's FSDP launch env off."""
 
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import ast  # noqa: E402
+import builtins  # noqa: E402
 import importlib.util  # noqa: E402
 import sys  # noqa: E402
 import types  # noqa: E402
@@ -61,7 +66,25 @@ def _install_wrapped_trainer_init():
         "_replan_auto_offload_safely": noop,
         "_block_swap_for_trainer_backend": noop,
         "_enable_ddp_batched_grad_copy": noop,
+        # _utils.py's module logger; the wrapper warns through it when a best-effort step fails.
+        "logger": types.SimpleNamespace(warning_once = noop, warning = noop, info = noop, debug = noop),
     }
+    # Stub every helper the wrapper calls, so a new one (#14404) cannot NameError on all ranks.
+    bound = {
+        name.id
+        for name in ast.walk(fn)
+        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+    } | {
+        (alias.asname or alias.name).split(".")[0]
+        for node in ast.walk(fn)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            name = node.func.id
+            if name not in ns and name not in bound and not hasattr(builtins, name):
+                ns[name] = noop
     exec(compile(ast.Module(body = [fn], type_ignores = []), path, "exec"), ns)
     Trainer.__init__ = ns["_unsloth_trainer_init"]
     Trainer._test_wrapped = True
@@ -123,7 +146,13 @@ def _worker(rank, world, port, out, case, tmp, env):
     try:
         native = _load_native()
         _stub_unsloth_save()
-        _install_wrapped_trainer_init()
+        if case == "xpu_install_use_cpu_import_time":
+            # Only `import unsloth` ran: no loader has wrapped the Trainer yet.
+            utils = types.ModuleType("unsloth.models._utils")
+            utils.patch_gradient_accumulation_fix = lambda cls: _install_wrapped_trainer_init()
+            sys.modules["unsloth.models._utils"] = utils
+        else:
+            _install_wrapped_trainer_init()
         from transformers import Trainer
 
         res = {}
@@ -132,8 +161,6 @@ def _worker(rank, world, port, out, case, tmp, env):
             optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad])
             targs = _targs(os.path.join(tmp, "out"))
             try:
-                # Trainer's positional order: model, args, data_collator, train_dataset, eval_dataset,
-                # processing_class, model_init, compute_loss_func, compute_metrics, callbacks, optimizers.
                 trainer = Trainer(
                     model, targs, None, None, None, None, None, None, None, None, (optimizer, None)
                 )
@@ -162,6 +189,30 @@ def _worker(rank, world, port, out, case, tmp, env):
                 res["optimizer_keys"] = sorted(state)
             except RuntimeError as exc:
                 res["error"] = str(exc)
+        elif case == "xpu_install_use_cpu":
+            # XPU: UNSLOTH_FSDP2=1 routes to accelerate; use_cpu Trainer reclaims native FSDP2.
+            torch.version.cuda = None
+            torch.version.hip = None
+            torch.version.xpu = "20250101"
+            launch = sys.modules["unsloth.fsdp2_launch"]
+            res["routed"] = launch.apply_unsloth_fsdp2_launch_env()
+            trainer = Trainer(model = _lora(1), args = _targs(os.path.join(tmp, "out")))
+            res["sharded"] = native.is_native_fsdp2(trainer.model)
+            res["accelerate_fsdp"] = os.environ.get("ACCELERATE_USE_FSDP")
+            res["distributed_type"] = str(trainer.accelerator.distributed_type)
+        elif case == "xpu_install_use_cpu_import_time":
+            torch.version.cuda = None
+            torch.version.hip = None
+            torch.version.xpu = "20250101"
+            launch = sys.modules["unsloth.fsdp2_launch"]
+            # The two import-time steps of unsloth/__init__.py, in its order.
+            res["routed"] = launch.apply_unsloth_fsdp2_launch_env()
+            launch.install_native_fsdp2_trainer_init()
+            trainer = Trainer(model = _lora(1), args = _targs(os.path.join(tmp, "out")))
+            res["wrapped"] = bool(getattr(Trainer, "_test_wrapped", False))
+            res["sharded"] = native.is_native_fsdp2(trainer.model)
+            res["accelerate_fsdp"] = os.environ.get("ACCELERATE_USE_FSDP")
+            res["distributed_type"] = str(trainer.accelerator.distributed_type)
         elif case == "named_adapter":
             cfg = native.FSDP2Config(param_dtype = torch.float32)
             ckpt = os.path.join(tmp, "ckpt")
@@ -249,6 +300,26 @@ def test_resume_reads_named_adapter_from_its_subdirectory(tmp_path):
         assert r["n_other"] > 0 and r["other_diff"] == 0.0, (rank, r)
 
 
+def test_xpu_install_cpu_trainer_shards_natively(tmp_path):
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+    for rank, r in _run("xpu_install_use_cpu", tmp_path).items():
+        assert r["routed"] is True, (rank, r)
+        assert r["sharded"] is True and r["accelerate_fsdp"] is None, (rank, r)
+        assert "MULTI_CPU" in r["distributed_type"], (rank, r)
+
+
+def test_xpu_install_cpu_trainer_shards_natively_without_a_loader(tmp_path):
+    # The import-time installer used to skip the wrapper (and its CPU reclaim) on non-CUDA installs.
+    pytest.importorskip("transformers")
+    pytest.importorskip("peft")
+    for rank, r in _run("xpu_install_use_cpu_import_time", tmp_path).items():
+        assert r["routed"] is True, (rank, r)
+        assert r["wrapped"] is True, (rank, r)
+        assert r["sharded"] is True and r["accelerate_fsdp"] is None, (rank, r)
+        assert "MULTI_CPU" in r["distributed_type"], (rank, r)
+
+
 # ---- launcher env (no process group) ----------------------------------------------------------
 
 
@@ -283,7 +354,6 @@ def test_explicit_native_backend_turns_accelerate_fsdp_env_off(clean_env, monkey
     assert launch.apply_unsloth_fsdp2_launch_env() is False
     assert os.environ.get("ACCELERATE_USE_FSDP", "false").lower() != "true"
     assert "FSDP_VERSION" not in os.environ
-    # Still native once the accelerate variables are gone, and the second call is a no-op.
     assert launch.unsloth_fsdp2_native_requested()
     assert launch.apply_unsloth_fsdp2_launch_env() is False
     assert capsys.readouterr().out.count("UNSLOTH_FSDP2_BACKEND") == 1

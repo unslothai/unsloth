@@ -8,8 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { en } from "../src/i18n/locales/en.ts";
 
-// agents-tab.tsx reaches the chat barrel and cannot be imported here, so this
-// asserts on source, like ~50 sibling tests.
+// agents-tab.tsx imports the chat barrel and cannot be imported here, so assert on source.
 const TAB = readFileSync(
   fileURLToPath(
     new URL("../src/features/settings/tabs/agents-tab.tsx", import.meta.url),
@@ -27,7 +26,6 @@ test("--reasoning is listed with the other start flags", () => {
   assert.ok(rows.includes("settings.agents.options.reasoning"));
   assert.ok(rows.includes('flag: "--reasoning-effort"'));
   assert.ok(rows.includes("settings.agents.options.reasoningEffort"));
-  // Next to --serve: both only mean anything for a server this command starts.
   assert.ok(
     rows.indexOf("--serve") < rows.indexOf("--reasoning"),
     "the row follows --serve",
@@ -36,12 +34,8 @@ test("--reasoning is listed with the other start flags", () => {
 
 test("both reasoning rows are there, and say what each one does", () => {
   const { reasoning, reasoningEffort } = en.settings.agents.options;
-  // --reasoning is the on/off/auto switch, and auto (the model's template)
-  // is what an agent session gets unless it is set.
   assert.ok(reasoning.includes("on, off, or auto"));
   assert.ok(reasoning.includes("chat template"));
-  // The level is a separate flag. The accepted values are the model's own, so
-  // the row gives an example rather than a list that would be wrong elsewhere.
   assert.ok(reasoningEffort.includes("e.g. medium"));
   assert.ok(reasoningEffort.includes("per model"));
   assert.ok(reasoningEffort.includes("chat template"));
