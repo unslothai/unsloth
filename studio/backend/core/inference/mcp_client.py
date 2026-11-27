@@ -38,6 +38,7 @@ from utils.account_context import (
 )
 
 from core.inference import mcp_images
+from core.inference.tool_call_parser import TOOL_ERROR_PREFIXES
 
 logger = get_logger(__name__)
 
@@ -2278,7 +2279,10 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
     if structured is not None and structured is not _MIRRORED:
-        body = f"{structured}\n{body}" if body else str(structured)
+        if body.lstrip().startswith(TOOL_ERROR_PREFIXES):
+            body = f"{body}\n{structured}"
+        else:
+            body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted or unshown:
         notes = []
         if images:

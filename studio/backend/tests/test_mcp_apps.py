@@ -75,7 +75,7 @@ def test_envelope_carries_template_seed_and_meta_and_the_model_never_sees_it():
         "structuredContent": {"cpu": 12},
         "content": [{"type": "text", "text": "cpu 12%"}],
     }
-    assert strip_result_for_model(flat) == "cpu 12%"
+    assert strip_result_for_model(flat) == "{'cpu': 12}\ncpu 12%"
 
 
 def test_every_block_is_seeded_in_order_and_images_carry_no_second_copy():

@@ -431,6 +431,12 @@ def test_independent_structured_content_is_kept_beside_status_text():
     assert flat == "{'total': 42}\n[resource: <file:///out/gen.png>]\ndone"
 
 
+def test_structured_content_keeps_the_tool_error_prefix():
+    flat = _flatten_result(_result(_text("Error: request failed"), structured = {"code": "E_FAIL"}))
+    assert flat == "Error: request failed\n{'code': 'E_FAIL'}"
+    assert is_tool_error(flat)
+
+
 def test_json_text_mirror_is_not_duplicated():
     flat = _flatten_result(
         _result(_text('{ "total": 42 }'), _text("done"), structured = {"total": 42})
