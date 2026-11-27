@@ -5483,7 +5483,7 @@ class BrowserPrefsPayload(BaseModel):
 
     openLinksInBrowser: Optional[bool] = None
     openFilesInBrowser: Optional[bool] = None
-    searchEngine: Optional[Literal["duckduckgo", "google", "bing", "brave"]] = None
+    searchEngine: Optional[Literal["yandex", "duckduckgo", "google", "bing", "brave"]] = None
     showFullUrl: Optional[bool] = None
     bookmarksToolbar: Optional[Literal["always", "newtab", "never"]] = None
     showBookmarkEditor: Optional[bool] = None
