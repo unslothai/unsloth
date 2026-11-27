@@ -189,6 +189,8 @@ _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
+    # Qwen2-VL / Qwen2.5-VL / Qwen3-VL: one (t, h, w) row per image; TRL < 0.29 DPO drops it.
+    "image_grid_thw",
 )
 
 torch_compile_options = {
@@ -656,7 +658,12 @@ def dpo_trainer_vision_process_row(
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
-    if "pixel_values" in processed_features:
+    if "image_grid_thw" in processed_features:
+        # Grid processors return every image's patch rows flattened into one (patches, dim) array, not one
+        # array per row: [0] would keep a single patch row and the vision tower would see too few patches.
+        output["pixel_values"] = processed_features["pixel_values"]
+        output["image_grid_thw"] = processed_features["image_grid_thw"]
+    elif "pixel_values" in processed_features:
         output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
@@ -783,8 +790,17 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
+        "        if all('image_grid_thw' in example for example in examples):\n"
+        # Flattened patch rows: concatenate along patches (what the vision tower and image_grid_thw expect),
+        # never pad per row into a (batch, patches, dim) block.
+        "            output['pixel_values'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['pixel_values']) for example in examples], dim=0\n"
+        "            )\n"
+        "            output['image_grid_thw'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['image_grid_thw']).reshape(-1, 3) for example in examples], dim=0\n"
+        "            )\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
+        "            if _k == 'image_grid_thw' or not all(_k in example for example in examples):\n"
         "                continue\n"
         "            _is_position_key = _k.endswith('position_ids')\n"
         "            _padding_value = -1 if _is_position_key else 0\n"
