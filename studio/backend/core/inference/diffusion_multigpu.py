@@ -2505,7 +2505,7 @@ def _trusted_hook(fn: Any) -> bool:
 
 
 def _named_modules(module: Any) -> list:
-    """``list(module.named_modules())`` without nested generators (hot on large DiTs); same order and de-duplication."""
+    """``list(module.named_modules())`` without nested generators: same order and de-duplication."""
     base = _torch().nn.Module.named_modules
     if type(module).named_modules is not base or "named_modules" in module.__dict__:
         return list(module.named_modules())
@@ -2540,7 +2540,6 @@ def _named_modules(module: Any) -> list:
 
 
 def _plain_lookup(cls: Any) -> bool:
-    """True when ``cls`` uses torch's ``Module`` attribute lookup and defines none of ``_HOOK_SLOTS``."""
     torch = _torch()
     return (
         cls.__getattr__ is torch.nn.Module.__getattr__
@@ -2553,7 +2552,7 @@ _HOOK_SLOTS = ("_hf_hook", "_forward_hooks", "_forward_pre_hooks")
 
 
 def _nothing_to_report(state: dict) -> bool:
-    """True when :func:`_hooks_present` provably finds nothing in this ``__dict__``; False just runs the full checks."""
+    """True only when :func:`_hooks_present` provably finds nothing in this ``__dict__``."""
     if (
         state.get("_diffusers_hook") is not None
         or "_hf_hook" in state
@@ -2852,7 +2851,7 @@ _TRAVERSAL_METHODS = ("named_modules", "named_parameters", "named_buffers", "_na
 
 
 def _stock_traversal(module: Any) -> bool:
-    """True when the root replaces none of torch's traversal methods, so :func:`_named_modules` is equivalent."""
+    """No traversal override on the root, so :func:`_named_modules` is equivalent."""
     base = _torch().nn.Module
     cls = type(module)
     return all(
@@ -2862,9 +2861,7 @@ def _stock_traversal(module: Any) -> bool:
 
 
 def _stock_fingerprint_parts(named: list) -> list:
-    """The parts :func:`weights_fingerprint` hashes, from one pass over the already walked ``named_modules`` list
-    instead of three walks: every ``named_parameters()`` entry, then every ``named_buffers()`` entry (torch's
-    ``Module._named_members``: same order, names and de-duplication), then the adapter attributes."""
+    """:func:`weights_fingerprint`'s parts in one pass, with torch's ``_named_members`` order and de-duplication."""
     params: list = []
     buffers: list = []
     adapters: list = []
@@ -3383,10 +3380,10 @@ _STATE_MARK = "\0" + _STATE_PREFIX
 
 
 def _may_hold_state(state: dict) -> bool:
-    """False only when no key starts with ``_unsloth_``; True means run the exact per-key scan."""
+    """False only when no key starts with ``_unsloth_``."""
     try:
         joined = "\0".join(state)
-    except TypeError:  # a non-string key: scan it
+    except TypeError:
         return True
     return joined.startswith(_STATE_PREFIX) or _STATE_MARK in joined
 

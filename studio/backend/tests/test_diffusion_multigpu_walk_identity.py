@@ -177,7 +177,7 @@ def test_fingerprint_identical_through_every_mutation():
 
     step()
     step()
-    dit.blocks[0].attn.weight = torch.nn.Parameter(torch.randn(4, 4))  # parameter replaced
+    dit.blocks[0].attn.weight = torch.nn.Parameter(torch.randn(4, 4))
     step()
     with torch.no_grad():
         dit.blocks[1].ff[0].bias.add_(1.0)
@@ -185,25 +185,23 @@ def test_fingerprint_identical_through_every_mutation():
     with torch.no_grad():
         dit.scale.mul_(2.0)
     step()
-    dit.blocks[2].attn.scaling = {"default": 1.0}  # PEFT-like adapter state
+    dit.blocks[2].attn.scaling = {"default": 1.0}
     dit.blocks[2].attn._active_adapter = ["default"]
     dit.blocks[2].attn.merged_adapters = []
     dit.blocks[2].attn._disable_adapters = False
     step()
-    dit.blocks[2].attn.scaling["default"] = 0.5  # adapter scale changed
+    dit.blocks[2].attn.scaling["default"] = 0.5
     step()
     dit.blocks[2].attn._active_adapter = ["other"]
     step()
     pinned = torch.tensor(1.0)
     dit.blocks[0].ff[2].scaling = {"default": pinned}  # a pinned 0-d scale tensor
     step()
-    pinned.mul_(0.25)  # in-place write to the pinned scale
+    pinned.mul_(0.25)
     step()
     dit.blocks[0].disable_adapters = lambda: None  # a callable is not state
     step()
-    dit.blocks[1].lora_A = torch.nn.ModuleDict(
-        {"default": torch.nn.Linear(4, 2)}
-    )  # adapter injected
+    dit.blocks[1].lora_A = torch.nn.ModuleDict({"default": torch.nn.Linear(4, 2)})
     step()
     dit.blocks[1].register_buffer("packed", torch.zeros(3, dtype = torch.uint8))
     step()
