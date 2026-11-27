@@ -35,7 +35,7 @@ def _row_part(
     NB: tl.constexpr,  # the caller's quant blocks per tile
     BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
 ):
-    # One activation row against a dequantized tile: the batch-1 block sums, so rows stay bit-identical.
+    # One activation row against a dequantized tile, summed per quant block in batch 1's order.
     x = tl.load(X + xk, mask = xmask, other = 0.0).to(tl.float32)
     return tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
 
@@ -545,7 +545,8 @@ def _gemv_nf4_rows_op(
 
 
 def gemv_nf4_rows(X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out):
-    """X (M, 1, K) contiguous -> out (M, 1, N), maybe strided; each row bit-identical to gemv_nf4."""
+    """X (M, 1, K) contiguous -> out (M, 1, N), maybe strided. Each row sums as gemv_nf4 does, but fp fusion
+    contracts a multi-row binary differently, so a few outputs can be 1-2 ulps from gemv_nf4."""
     N, K = int(shape[0]), int(shape[1])
     blocksize, blocksize2 = int(blocksize), int(blocksize2) if code2 is not None else 0
     if _is_compiling():

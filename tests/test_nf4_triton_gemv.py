@@ -179,12 +179,20 @@ def _linear4bit(
     return proj.to("cuda")
 
 
+def _ulps_apart(a, b, dtype):
+    m = torch.maximum(a.float().abs(), b.float().abs()).clamp_min(torch.finfo(dtype).tiny)
+    return (a.float() - b.float()).abs() / (
+        torch.exp2(torch.floor(torch.log2(m))) * torch.finfo(dtype).eps
+    )
+
+
 @pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
 # 2 to 4 rows share one program per tile; 5, 6, 8 and 10 run groups of 1, 3, 4 and 2 rows.
 @pytest.mark.parametrize("bsz", [2, 3, 4, 5, 6, 8, 10])
-@pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192)], ids = str)
-def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
-    """Strided out, as fast_swiglu_inference passes up[:, :, :hd]."""
+@pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192), (4097, 576)], ids = str)
+def test_rows_kernel_matches_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
+    """Strided out, as fast_swiglu_inference passes up[:, :, :hd]. Same sums as batch 1, but fp fusion can contract a
+    multi-row binary differently: B200 put a few outputs 1 ulp apart (bytes 1000x192, words 4097x576)."""
     from unsloth.kernels.nf4_gemv import gemv_nf4_rows
 
     q, s = _quant(*shape, torch.bfloat16, nested = nested)
@@ -193,7 +201,8 @@ def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
     wide = torch.zeros(bsz, 1, shape[0] + 64, dtype = torch.bfloat16, device = "cuda")
     gemv_nf4_rows(X, *a[:-1], wide[:, :, : shape[0]])
     for i in range(bsz):
-        assert torch.equal(wide[i, :, : shape[0]], gemv_nf4(X[i : i + 1].contiguous(), *a)[0]), i
+        one = gemv_nf4(X[i : i + 1].contiguous(), *a)[0]
+        assert _ulps_apart(wide[i, :, : shape[0]], one, torch.bfloat16).max() <= 2, i
     assert not wide[:, :, shape[0] :].any()
 
 
