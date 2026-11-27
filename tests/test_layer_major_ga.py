@@ -50,6 +50,7 @@ def ga(monkeypatch):
     monkeypatch.setattr(
         transformers.Trainer, "get_batch_samples", transformers.Trainer.get_batch_samples
     )
+    monkeypatch.setattr(transformers.Trainer, "train", transformers.Trainer.train)
     mod.patch_layer_major_gradient_accumulation(transformers.Trainer)
     assert getattr(transformers.Trainer.training_step, "_unsloth_layer_major", False)
     torch.set_num_threads(min(4, torch.get_num_threads()))
@@ -816,3 +817,96 @@ def test_auto_list_covers_the_dense_families(ga):
         False,
         "OlmoDecoderLayer",
     )
+
+
+# ---------------------------------------------------------------- round 3 review fixes (each fails without its fix)
+def test_wrapped_training_step_overrides_are_ineligible(ga, tmp_path, monkeypatch):
+    """functools.wraps copies the patched method's marker onto a user's override: identity decides."""
+    import functools
+
+    mod, engine = ga
+
+    class Wrapped(transformers.Trainer):
+        @functools.wraps(transformers.Trainer.training_step)
+        def training_step(self, model, inputs, *args, **kwargs):
+            inputs["input_ids"] = (inputs["input_ids"] + 1) % 256  # the same dict, rewritten
+            return super().training_step(model, inputs, *args, **kwargs)
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", trainer_base = Wrapped)
+    assert _windows(engine) == 0
+
+
+def test_dropout_outside_the_decoder_is_ineligible(ga, tmp_path, monkeypatch, capsys):
+    mod, engine = ga
+
+    def head_dropout(model):
+        head = model.get_base_model().lm_head
+        head.drop = torch.nn.Dropout(0.3)  # as lora_dropout on a head adapter
+        head.register_forward_hook(lambda module, args, out: module.drop(out))
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", model_hook = head_dropout)
+    assert _windows(engine) == 0
+    assert "dropout p = 0.3" in capsys.readouterr().out
+
+
+def test_gradient_hooks_on_trainable_parameters_are_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+
+    def hook(model):
+        p = next(p for p in model.parameters() if p.requires_grad)
+        p.register_hook(lambda g: g * 1.5)
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", model_hook = hook)
+    assert _windows(engine) == 0
+
+
+def test_module_backward_hooks_are_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+
+    def hook(model):
+        model.get_base_model().lm_head.register_full_backward_hook(lambda m, gi, go: None)
+
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1", model_hook = hook)
+    assert _windows(engine) == 0
+
+
+def test_class_level_compiled_forward_is_ineligible(ga):
+    import types
+
+    mod, engine = ga
+    stub = types.SimpleNamespace(args = types.SimpleNamespace(optim = "adamw_torch", n_gpu = 1))
+    model = _model()
+    inner = model.get_base_model().model
+    layers = inner.layers
+    assert mod._window_blocker(stub, model, layers) is None
+    cls = type(inner)
+    inner.__class__ = type(
+        cls.__name__, (cls,), {"forward": torch.compile(cls.forward, backend = "eager")}
+    )
+    assert "torch.compile" in mod._window_blocker(stub, model, layers)
+
+
+def test_an_abort_does_not_outlive_its_train_call(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    real = mod.run_layer_major
+    calls = []
+
+    def once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return None, "simulated abort"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "run_layer_major", once)
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 0 and len(calls) == 1
+    trainer = _LAST[0]
+    assert not [k for k in trainer.__dict__ if k.startswith("_unsloth_layer_major_")]
+    trainer.train()
+    assert _windows(engine) == 2
+    _LAST.clear()

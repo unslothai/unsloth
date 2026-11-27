@@ -113,7 +113,8 @@ def _trainer_ok(trainer):
             return True
         for name in ("training_step", "compute_loss"):
             fn = cls.__dict__.get(name)
-            if fn is None or getattr(fn, "_unsloth_layer_major", False):
+            # Identity, not a marker: functools.wraps copies function attributes onto a user's override.
+            if fn is None or fn is vars(transformers.Trainer).get(name):
                 continue
             if cls not in audited and not _is_unsloth_trainer(cls):
                 return False
@@ -122,7 +123,8 @@ def _trainer_ok(trainer):
 
 def _compiled(module):
     optimized = getattr(getattr(torch, "_dynamo", None), "OptimizedModule", None)
-    forward = module.__dict__.get("forward")
+    # Through attribute lookup: a forward compiled on the instance or on the class.
+    forward = getattr(module, "forward", None)
     return (
         (optimized is not None and isinstance(module, optimized))
         or getattr(module, "_compiled_call_impl", None) is not None
@@ -181,6 +183,17 @@ def _window_blocker(
         for p in model.parameters()
     ):
         return "post-accumulate-grad hooks (an optimizer step inside backward)"
+    if any(p.requires_grad and getattr(p, "_backward_hooks", None) for p in model.parameters()):
+        # They run inside backward, where they would see the window's accumulation state, not their micro-batch's.
+        return "gradient hooks on trainable parameters"
+    from torch.nn.modules import module as nn_module
+
+    if (
+        getattr(nn_module, "_global_backward_hooks", None)
+        or getattr(nn_module, "_global_backward_pre_hooks", None)
+        or any(m._backward_hooks or m._backward_pre_hooks for m in model.modules())
+    ):
+        return "module backward hooks"
     if layers is not None and _compiled_around(model, layers):
         return "torch.compile over the whole model"
     state = trainer.__dict__
@@ -247,9 +260,10 @@ def layer_major_ineligible(trainer, model, layers, swapper):
         value = getattr(config, key, 0)
         if isinstance(value, (int, float)) and value > 0:
             return f"{key} = {value} (dropout draws differ by micro-batch order)"
-    for module in layers.modules():
+    # Anywhere in the model (lora_dropout on the head too): the window reorders the draws across micro-batches.
+    for name, module in model.named_modules():
         if isinstance(module, torch.nn.Dropout) and module.p > 0:
-            return f"dropout p = {module.p} in a decoder layer (lora_dropout)"
+            return f"dropout p = {module.p} in {name or type(module).__name__} (lora_dropout)"
     return None
 
 
@@ -466,6 +480,20 @@ def patch_layer_major_gradient_accumulation(Trainer):
         return
     get_batch_samples = Trainer.get_batch_samples
     training_step = Trainer.training_step
+    train = Trainer.train
+
+    def _clear_state(trainer):
+        for name in [k for k in trainer.__dict__ if k.startswith("_unsloth_layer_major_")]:
+            trainer.__dict__.pop(name, None)
+
+    @functools.wraps(train)
+    def _train(self, *args, **kwargs):
+        # Per train() call: an abort's switch-off, the auto probe and the pending window do not outlive it.
+        _clear_state(self)
+        try:
+            return train(self, *args, **kwargs)
+        finally:
+            _clear_state(self)
 
     @functools.wraps(get_batch_samples)
     def _get_batch_samples(self, *args, **kwargs):
@@ -503,5 +531,8 @@ def patch_layer_major_gradient_accumulation(Trainer):
 
     _get_batch_samples._unsloth_layer_major = True
     _training_step._unsloth_layer_major = True
+    _train._unsloth_layer_major = True
     Trainer.get_batch_samples = _get_batch_samples
     Trainer.training_step = _training_step
+    if not getattr(train, "_unsloth_layer_major", False):
+        Trainer.train = _train
