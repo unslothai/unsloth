@@ -910,6 +910,9 @@ _RACE_SOURCES = {
         # sustained winners re-timed in pairs with today's path (the clock a denoise step shares)
         "paired_enabled",
         "paired_for",
+        # which DiT classes pair their large-row winners too (a family moved in or out re-races)
+        "PAIRED_ROW_FAMILIES",
+        "paired_rows",
         "paired_cost_us",
         # how a race picks among its near-tied winners
         "_FILL_TIE",
@@ -1048,6 +1051,9 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 _today_tiles(index),
                 digest,
             )
+        ) + (
+            # a paired family's large-row verdicts are its own: no other family reads them back, or they its
+            "|paired_rows" if cut.paired_rows(index) else ""
         )
     except Exception:  # noqa: BLE001
         return None
@@ -3345,6 +3351,10 @@ def _swap_on(
     global _OP_HANDLE
     import torch
 
+    from . import diffusion_int8_cutlass as _cut
+
+    # before any plan of this swap: whether its races pair their large-row winners (``PAIRED_ROW_FAMILIES``)
+    _cut.set_paired_rows(index, transformer)
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
     recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]
