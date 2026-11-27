@@ -116,6 +116,9 @@ def device_environment(
         return got
     import torch
 
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
 
     props = torch.cuda.get_device_properties(index)

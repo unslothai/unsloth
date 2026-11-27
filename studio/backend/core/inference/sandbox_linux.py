@@ -246,9 +246,8 @@ _NETWORK_FILES = (
 )
 # Bound at the jail's own HOME with HF_HOME pinned to match.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
-# Excludes $HF_HOME/token and executable modules; the writable hub is a deliberate tradeoff (#5603).
-# datasets/ is excluded too: Studio memory-maps the prepared Arrow files there, and offsets
-# a tool call rewrote would be read past their buffers. The jail prepares its own under HF_HOME.
+# Excludes $HF_HOME/token and executable modules; the writable hub is a tradeoff (#5603); datasets/
+# is out since Studio mmaps Arrow files and tool-rewritten offsets would be read past them.
 _MODEL_CACHE_SUBDIRS = ("hub", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
@@ -691,7 +690,8 @@ def _runtime_read_paths(
         candidates.extend(os.path.join(prefix, "lib", multiarch) for prefix in prefixes)
 
     selected: list[str] = []
-    for candidate in candidates:
+    # sys.prefix == sys.exec_prefix in most venvs.
+    for candidate in dict.fromkeys(candidates):
         if not candidate or not os.path.isabs(candidate):
             continue
         # Check the candidate as WRITTEN, against both workdir spellings, or a symlinked venv/lib exposes its target.
@@ -776,8 +776,7 @@ def _inspect_cache_component(
 CACHE_MISSING = "does not exist"
 CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
 
-# Keeps timed-out workers until they finish, to prevent a thread leak on a wedged path; a later
-# launch joins one only until its give-up time.
+# Kept until finished to avoid thread leaks; later launches join one only until give-up.
 _cache_scan_pending: "dict[str, tuple[threading.Thread, list, float]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()

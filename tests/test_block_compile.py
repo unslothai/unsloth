@@ -706,6 +706,30 @@ def test_stop_recomputation_does_not_demote(monkeypatch):
     assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
 
 
+def test_checkpoint_error_does_not_demote(monkeypatch):
+    """A forward / recompute mismatch must surface, not rerun the block in a lower mode."""
+    from torch.utils.checkpoint import CheckpointError
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            raise CheckpointError(
+                "A different number of tensors was saved during the original forward and recomputation."
+            )
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    with pytest.raises(CheckpointError):
+        layer(torch.randn(2, 4, 8, requires_grad = True))
+    assert layer._unsloth_block_mode == M._FIRST_MODE
+    assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
+
+
 def test_cache_calls_keep_the_stock_forward(monkeypatch):
     from transformers.cache_utils import DynamicCache
 
@@ -3104,3 +3128,17 @@ def test_block_rebinds_hooked_layers_of_a_second_model(monkeypatch):
         layer = model.layers[0].train()
         torch.testing.assert_close(layer(x), layer.proj(x) + x)
         assert calls == [1]
+
+
+def test_mask_rebuilt_in_inference_mode_is_safe_for_training():
+    M = _load()
+    M._MATERIALISED[0] = None
+    layer = _MaskDecoderLayer().train()
+    hidden = torch.zeros(2, 6, 8)
+    M._normalise_mask(layer, hidden, {"attention_mask": torch.tensor([[1] * 6, [1] * 4 + [0] * 2])})
+    with torch.inference_mode():
+        M._normalise_mask(layer, hidden, {"attention_mask": None})
+    mask = M._normalise_mask(layer, hidden, {"attention_mask": None})["attention_mask"]
+    weight = torch.randn(8, 8, requires_grad = True)
+    (((hidden + 1) @ weight) * mask[:, :, None]).sum().backward()
+    assert weight.grad is not None and not mask.is_inference()

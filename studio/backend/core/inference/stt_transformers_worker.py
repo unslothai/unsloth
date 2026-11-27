@@ -83,6 +83,12 @@ def load_whisper(
 ) -> tuple:
     """Loads Whisper from the local Hub cache; local_files_only keeps the Model Hub the only download path, and a cache miss raises SttModelNotDownloadedError."""
     import torch
+
+    _ensure_backend_on_path()
+    from utils.transformers_backports import install as guard_transformers_parsing
+
+    # No unsloth here; back-ports load before tokenizer files so they cannot name a host file.
+    guard_transformers_parsing()
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     dtype = getattr(torch, dtype_name, None) or torch.float32
@@ -223,8 +229,7 @@ def _supports_segment_timestamps(generation_config) -> bool:
 
 
 def _error_response(exc: BaseException) -> dict:
-    """Sends the class name and message, since an unpicklable exception would cost the caller the
-    timeout."""
+    """Sends class name and message; an unpicklable exception would cost the caller a timeout."""
     from core.inference.stt_sidecar import _is_missing_local_model_error
 
     kind = type(exc).__name__
@@ -531,8 +536,7 @@ class WhisperWorker:
             self._cancel_event.set()
 
     def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
-        """A child that survives kill keeps its handle and pid record, so terminate_all can still
-        find it."""
+        """A child surviving kill keeps its handle and pid record for terminate_all to find."""
         process = self._process
         self.cancel()  # unblock a generation before asking the loop to exit
         if process is not None:

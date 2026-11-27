@@ -121,8 +121,7 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
 
 
 def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
-    """On Colab there is no venv interpreter, so the stdlib-only shim is asked via python; a version
-    grep alone reads a sidecar interrupted after transformers as current."""
+    """Colab has no venv, so ask the shim via python; grep alone trusts a partial sidecar."""
     text = SETUP_SH.read_text(encoding = "utf-8")
     start = text.index("_sidecar_current() {")
     body = text[start : text.index("\n}\n", start)]
@@ -135,8 +134,7 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
 
 
 def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
-    """Bounded process: a native exit 1 aborts under PowerShell's error preference; a stall must not
-    hang."""
+    """Bounded: PowerShell's error preference aborts on a native exit 1; stalls must not hang."""
     text = SETUP_PS1.read_text(encoding = "utf-8")
     start = text.index("function Test-SidecarCurrent {")
     body = text[start : text.index("\nfunction ", start + 1)]
@@ -169,8 +167,7 @@ def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
 
 
 def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
-    """An interrupted install can leave tiktoken dist-info without its package; the predicate
-    accepts it (tiktoken is optional), so the top-up must check the payload itself."""
+    """Orphaned dist-info passes the predicate since tiktoken is optional; check the payload."""
     sh = SETUP_SH.read_text(encoding = "utf-8")
     start = sh.index("_sidecar_top_up_tiktoken() {")
     assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]
@@ -207,8 +204,7 @@ def test_an_unreachable_pypi_still_updates_by_default(script: pathlib.Path):
 
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
 def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
-    """An installed version, a declared offline mode, and a verified tree. Any two of
-    them is a skip that ships a half-built venv or a venv that was never built."""
+    """Skip needs all of version, offline mode and verified tree; any two ship a broken venv."""
     text = script.read_text(encoding = "utf-8")
     if script.name.endswith(".ps1"):
         condition = (
@@ -234,8 +230,7 @@ def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
 
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
 def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
-    """The guard forces the pass when the tree is not verified and the offline rule keeps
-    it when it is. Two copies of that check is how they come to disagree."""
+    """Both callers must share one definition of complete, or the two copies disagree."""
     text = script.read_text(encoding = "utf-8")
     helper = (
         "function Test-StudioInstallVerified"
@@ -250,8 +245,7 @@ def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
 
 
 def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
-    """Same spelling UV_NO_CACHE accepts, because a user who set one expects the other
-    to be read the same way."""
+    """Reads the same boolish spellings UV_NO_CACHE accepts, as users expect both read alike."""
     import subprocess
 
     text = SETUP_SH.read_text(encoding = "utf-8")
@@ -558,8 +552,7 @@ def test_the_ps1_marker_reason_is_parsed_without_substring():
 
 
 def test_the_ps1_predicate_prefers_the_venv_interpreter():
-    """As setup.sh does. A PATH `python` on Windows can be the Store App Execution Alias
-    stub, whose failure reads as "audit died" and rebuilds all three tiers every run."""
+    """Like setup.sh, a PATH python may be a Store alias stub; its failure rebuilds every tier."""
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     start = ps1.index("function Test-SidecarCurrent {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]

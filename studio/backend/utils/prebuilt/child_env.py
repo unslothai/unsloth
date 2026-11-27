@@ -103,9 +103,7 @@ HOME_ENV_NAMES = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
 
 
 def isolate_home(env: dict[str, str], scratch_dir: str) -> dict[str, str]:
-    """Repoint home/profile vars at ``scratch_dir`` and drop credential-store
-    pointers so a compromised downloaded server cannot read token caches or cred
-    files through the environment. Mutates and returns ``env``."""
+    """Repoint home vars to scratch_dir; drop cred pointers so a rogue server can't read creds."""
     os.makedirs(scratch_dir, exist_ok = True)
     for name in HOME_ENV_NAMES:
         if name in env:

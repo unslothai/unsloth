@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Frozen W8A8 int8 LoRA base (prototype, UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8): numerics against the dense layer,
-quantize-once, streamed conversion, and the trainer gates."""
+"""Frozen W8A8 int8 LoRA base (the int8 default; UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps torchao): numerics
+against the dense layer, quantize-once, streamed conversion, and the trainer gates."""
 
 from __future__ import annotations
 
@@ -149,14 +149,104 @@ def test_compiles_without_graph_breaks():
 
 
 def test_trainer_gates(monkeypatch):
+    """W8A8 is the int8 default and compiles; the weight-only opt-out runs eager."""
     cfg = type("C", (), {"compile_transformer": "auto", "train_steps": 10})()
     monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    assert dit._int8_w8a8() is True
+    assert dit._should_compile(cfg, False, "cuda", "int8") is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
+    assert dit._int8_w8a8() is False
     assert dit._should_compile(cfg, False, "cuda", "int8") is False
     monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
-    assert dit._int8_w8a8() is True
     assert dit._should_compile(cfg, False, "cuda", "int8") is True
     cfg.compile_transformer = "off"
     assert dit._should_compile(cfg, False, "cuda", "int8") is False
+
+
+@pytest.mark.parametrize(
+    "raw, want",
+    [
+        (None, True),
+        ("", True),
+        ("w8a8", True),
+        ("W8A8", True),
+        ("1", True),
+        ("weight-only", False),
+        ("weight_only", False),
+        ("WO", False),
+        ("torchao", False),
+        ("0", False),
+        ("off", False),
+    ],
+)
+def test_int8_kernel_env(monkeypatch, raw, want):
+    from core.training import diffusion_block_swap as bs
+
+    if raw is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raw)
+    assert bs.int8_w8a8_requested() is want
+    assert dit._int8_w8a8() is want
+    assert bs.swap_lowp_mode("int8") == ("int8_w8a8" if want else None)
+
+
+@pytest.mark.parametrize(
+    "kernel, env, want",
+    [
+        ("w8a8", None, True),
+        ("weight-only", None, False),
+        (None, None, True),  # not an int8 bundle (or unreadable): the default
+        (
+            "weight-only",
+            "w8a8",
+            True,
+        ),  # explicit env wins (the identity check then refuses the switch)
+        ("w8a8", "weight-only", False),
+    ],
+)
+def test_resume_continues_the_recorded_int8_kernel(monkeypatch, kernel, env, want):
+    """Real bundles go through test_diffusion_int8_resume.py; this pins the precedence."""
+    from core.training import diffusion_checkpoint as ck
+
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", env)
+    monkeypatch.setattr(ck, "recorded_int8_resume_kernel", lambda p: kernel)
+    cfg = type("C", (), {"resume_from_checkpoint": "/some/run"})()
+    assert dit._int8_w8a8(cfg) is want
+    fresh = type("C", (), {"resume_from_checkpoint": None})()
+    assert dit._int8_w8a8(fresh) is (env != "weight-only")
+
+
+def test_recorded_int8_resume_kernel_never_raises(tmp_path):
+    from core.training import diffusion_checkpoint as ck
+    assert ck.recorded_int8_resume_kernel(tmp_path / "missing") is None
+    assert ck.recorded_int8_resume_kernel(None) is None
+
+
+def test_the_int8_probe_does_not_cache_an_out_of_memory(monkeypatch):
+    """A full card says nothing about the int8 GEMM: the next probe runs again instead of reading a cached no."""
+    calls = []
+
+    def flaky(a, b):
+        calls.append(1)
+        if len(calls) == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return torch.full((32, 32), 32, dtype = torch.int32)
+
+    real_ones = torch.ones
+    monkeypatch.setattr(dit, "_INT8_MM_PROBE_OK", {})
+    monkeypatch.setattr(torch, "_int_mm", flaky)
+    monkeypatch.setattr(torch, "ones", lambda *a, **k: real_ones(*a, **{**k, "device": "cpu"}))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    dev = torch.device("cuda", 0)
+    assert dit._int8_mm_probe_ok(dev) is False
+    assert dit._INT8_MM_PROBE_OK == {}
+    assert dit._int8_mm_probe_ok(dev) is True and len(calls) == 2
+    assert dit._INT8_MM_PROBE_OK == {"cuda:0": True}
 
 
 def test_apply_lands_the_base_and_reports(monkeypatch):
@@ -176,17 +266,21 @@ def test_apply_lands_the_base_and_reports(monkeypatch):
     assert "W8A8" in events[-1]["message"]
 
 
-def test_fp16_preflight_allows_int8_only_with_the_w8a8_gate(monkeypatch):
+def test_fp16_preflight_allows_int8_only_as_w8a8(monkeypatch):
     import core.training.diffusion_train_common as tc
 
     monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
     monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
     monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
-    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "weight-only")
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "int8") or "")
-    monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", "w8a8")
-    reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
-    assert reason is None or "fp16" not in reason
+    for env in (None, "w8a8"):
+        if env is None:
+            monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+        else:
+            monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_TRAIN", env)
+        reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
+        assert reason is None or "fp16" not in reason
     assert "fp16" in (tc.training_precision_preflight_error("flux.2-klein", "bf16") or "")
 
 
@@ -203,6 +297,84 @@ def test_fp16_preflight_refuses_w8a8_without_int8_tensor_cores(monkeypatch, cap,
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
     reason = tc.training_precision_preflight_error("flux.2-klein", "int8")
     assert ("7.5+" in (reason or "")) is refused
+
+
+@pytest.mark.parametrize(
+    "name, cap, declined",
+    [
+        ("NVIDIA GeForce GTX 1660 SUPER", (7, 5), True),
+        ("NVIDIA GeForce GTX 1650", (7, 5), True),
+        ("Tesla T4", (7, 5), False),
+        ("NVIDIA GeForce RTX 2080", (7, 5), False),
+        ("Tesla V100-SXM2-16GB", (7, 0), True),
+        ("NVIDIA L4", (8, 9), False),
+    ],
+)
+def test_fp16_preflight_and_trainer_decline_cards_without_int8_tensor_cores(
+    monkeypatch, name, cap, declined
+):
+    """GTX 16xx report sm75 like a T4 but have no tensor cores: explicit int8 (W8A8 on an fp16 card) is declined
+    with a clear reason before eviction, and the trainer's GEMM check declines the same cards."""
+    import core.training.diffusion_train_common as tc
+
+    monkeypatch.setattr(tc, "bf16_unsupported_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_accelerator_missing_reason", lambda fam: None)
+    monkeypatch.setattr(tc, "dit_fp16_fallback", lambda fam: True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_TRAIN", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
+    reason = tc.training_precision_preflight_error("flux.2-klein", "int8") or ""
+    assert ("tensor cores" in reason) is declined
+    if declined:
+        assert "nf4" in reason
+    decline = dit._int8_gemm_decline(torch.device("cuda", 0))
+    assert (decline is not None) is declined
+    if declined:
+        assert name in decline
+
+
+def test_int8_probe_runs_on_the_operands_card_and_skips_cards_without_tensor_cores(monkeypatch):
+    seen = []
+
+    def fake_int_mm(a, b):
+        seen.append(str(a.device))
+        return torch.full((32, 32), 32, dtype = torch.int32)
+
+    monkeypatch.setattr(dit, "_INT8_MM_PROBE_OK", {})
+    monkeypatch.setattr(torch, "_int_mm", fake_int_mm)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA L4")
+    real_ones = torch.ones
+    # The probe allocates on the card it names; record that, then build the tensor on the host.
+    monkeypatch.setattr(
+        torch, "ones", lambda *a, **k: real_ones(*a, **{**k, "device": "cpu"}).requires_grad_(False)
+    )
+    # "cuda" resolves to the current card (cuda:1), and the cache keys on it.
+    assert str(dit._concrete_device("cuda")) == "cuda:1"
+    assert dit._int8_mm_probe_ok("cuda") is True
+    assert list(dit._INT8_MM_PROBE_OK) == ["cuda:1"]
+    assert (
+        dit._int8_mm_probe_ok(torch.device("cuda", 1)) is True and len(seen) == 1
+    )  # cached per card
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA GeForce GTX 1660 Ti")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))
+    assert (
+        dit._int8_mm_probe_ok(torch.device("cuda", 0)) is False and len(seen) == 1
+    )  # declined, never run
+
+
+def test_a_card_without_int8_tensor_cores_falls_back_with_the_reason(monkeypatch):
+    model = nn.Module()
+    model.lin = nn.Linear(32, 32, bias = False).to(torch.bfloat16).requires_grad_(False)
+    monkeypatch.setattr(
+        dit, "_int8_gemm_decline", lambda dev: "int8 W8A8 needs int8 tensor cores, which X lacks"
+    )
+    events = []
+    assert dit._apply_int8_w8a8(model, events.append, None, device = "cuda:0") is False
+    assert "tensor cores" in events[-1]["message"] and "weight-only" in events[-1]["message"]
+    assert type(model.lin) is nn.Linear
 
 
 def test_conversion_keeps_the_fp32_island_on_an_untargeted_layer():
@@ -412,3 +584,21 @@ def test_an_oom_inside_fp8_quantization_is_not_recorded_as_fp8_or_bf16(monkeypat
     events = []
     assert dit._apply_fp8_training(model, events.append, None) is True
     assert any("1 layer(s) could not be converted" in e["message"] for e in events)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_declares_the_dense_compute_dtype_not_its_int8_storage(dtype):
+    # Callers that cast a projection's input to the dtype the layer computes in read ``compute_dtype``; the int8
+    # weight buffer is storage, and reading it truncated MOSS-Image's activations to integers.
+    m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
+    assert m.weight.dtype == torch.int8
+    assert m.compute_dtype == dtype
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_moss_casts_a_frozen_int8_projection_input_to_the_dense_dtype(dtype):
+    pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import _compute_dtype
+
+    m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
+    assert _compute_dtype(m) == dtype

@@ -85,7 +85,7 @@ def host(monkeypatch):
         lambda v: saved.__setitem__("grants", v),
     )
     monkeypatch.setattr(mxc_isolation_settings, "locked_by_environment", lambda _name: False)
-    monkeypatch.setattr(mxc_runtime, "installation_identity", lambda: "identity")
+    monkeypatch.setattr(mxc_runtime, "verified_installation_identity", lambda: "identity")
 
     def start():
         calls["start"] += 1
@@ -385,7 +385,7 @@ def test_prepare_without_the_runtime_is_refused(host, windows, monkeypatch):
     def missing():
         raise mxc_runtime.MxcRuntimeUnavailable("the managed MXC runtime is not installed")
 
-    monkeypatch.setattr(mxc_runtime, "installation_identity", missing)
+    monkeypatch.setattr(mxc_runtime, "verified_installation_identity", missing)
     calls, _saved = host
     with _client(OWNER) as client:
         assert client.post("/sandbox/prepare").status_code == 409
@@ -533,7 +533,7 @@ def test_windows_status_names_the_update_that_adds_the_builtin_container(
 ):
     from core.inference import mxc_runtime, sandbox_setup_plan
 
-    monkeypatch.setattr(mxc_runtime, "installation_identity", lambda: "identity")
+    monkeypatch.setattr(mxc_runtime, "verified_installation_identity", lambda: "identity")
     monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: [])
     monkeypatch.setattr(sandbox_setup_plan, "windows_runtime_unsupported", lambda: None)
     monkeypatch.setattr(sandbox_setup_plan, "windows_builtin_container_update", lambda: update)

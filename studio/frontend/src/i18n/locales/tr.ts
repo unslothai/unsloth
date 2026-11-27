@@ -974,11 +974,18 @@ export const tr = {
   chatMenu: {
     more: "Sohbet seçenekleri",
     copy: "Kopyala",
-    addScheduledTask: "Zamanlanmış görev ekle…",
+    addScheduledTask: "Zamanlanmış görev ekle",
     compact: "Konuşmayı sıkıştır",
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
+  },
+  chatFiles: {
+    title: "Bu sohbetteki dosyalar",
+    code: "Kod parçacıkları",
+    showInChat: "Sohbette göster",
+    download: "{name} dosyasını indir",
+    saveFailed: "{name} kaydedilemedi.",
   },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
@@ -1064,6 +1071,7 @@ export const tr = {
     saving: "Kaydediliyor...",
     search: "Ara",
     shutdown: "Kapat",
+    technicalDetails: "Teknik ayrıntılar",
   },
   shell: {
     helpMenu: {
@@ -2611,6 +2619,10 @@ export const tr = {
         confirmDescriptionChatOnly:
           "Sunucuyu durdurur ve yükleyiciyi yeniden çalıştırır. Bu bir Yalnızca sohbet kurulumu olduğundan yükleyici onu PyTorch ile tam kuruluma da yükseltir; toplamda birkaç gigabayt. Sohbetler ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Şimdi onar",
+        recommendedTorch:
+          "Onarım önerilir: bu kurulumda PyTorch {torch} var; bu, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski.",
+        recommendedDriver:
+          "PyTorch {torch}, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski, ancak bu GPU sürücüsü CUDA 13'ü desteklemiyor. Önce GPU sürücüsünü güncelleyin, ardından kurulumu onarın.",
       },
       resetPreferences: {
         sectionTitle: "Tehlikeli bölge",
@@ -2791,7 +2803,7 @@ export const tr = {
         oldWebkitWarning:
           "Wayland üzerinde WebKitGTK {version}: Kesirli ölçekleme kullanılan NVIDIA sistemlerinde GPU ile işleme başlatma sırasında çökebilir (WebKit hatası 280210). Böyle olursa Unsloth kendiliğinden CPU ile işlemeye geri döner. WebKitGTK 2.50.4 üzerinde ölçülebilir bir hızlanma sağlamadı (her iki durumda da 8 fps), bu nedenle burada Açık önerilmez.",
         oldDriverWarning:
-          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 610 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
+          "X11 üzerinde NVIDIA sürücüsü {version}: Sürücü 590 veya daha yeni olana kadar Unsloth GPU ile işlemeyi kapalı tutar. Eski sürücüler her karede bir dosya tanımlayıcısı sızdırır ve pencere birkaç dakika içinde çizim yapmayı durdurur.",
         fallbackNote:
           "GPU ile işleme bu sistemde başlatma sırasında çöktüğü için Unsloth CPU ile işleme kullanıyor.",
         tryAgain: "GPU'yu yeniden dene",
@@ -3069,6 +3081,15 @@ export const tr = {
         runningOn: "llama.cpp şu anda şu arka uçta çalışıyor: {backend}.",
         hint: "Bu arka uç için llama.cpp derlemesini kurar ve güncellemeler boyunca korur. Otomatik seçim çöktüğünde veya GPU sürücünüz onu desteklemediğinde kullanışlıdır. Yalnızca bu makine için derlemesi olan arka uçlar listelenir; eğitim etkilenmez.",
         autoWith: "Otomatik ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm yüklü değil",
+          rocmNoAccess: "GPU'ya erişim yok",
+          otherRelease: "llama.cpp güncellemesi gerekiyor",
+          checkFailed: "kontrol edilemedi",
+          noBuild: "bu makine için derleme yok",
+        },
         apply: "Uygula",
         applying: "Kuruluyor...",
         applyHint:
@@ -4374,6 +4395,54 @@ export const tr = {
       cachedDatasetGoneDescription:
         "Veri kümesi dosyaları artık bu cihazda değil, bu nedenle eğitim bunları yeniden indirecek.",
     },
+    gpus: {
+      title: "GPU'lar",
+      description: "Bu makinedeki GPU'lar ve eğitimin onları nasıl kullandığı",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB boş",
+      pickModel: "Eğitimin bu GPU'ları nasıl kullanacağını görmek için bir model seçin.",
+      planning: "Bu modelin nasıl sığdığı kontrol ediliyor...",
+      planFailed: "GPU planı kontrol edilemedi: {message}",
+      perGpu: "(GPU başına ~{gb} GB)",
+      alternative: "Bunun yerine deneyin: {alternative}",
+      override: "Mod ve GPU seç",
+      overrideHint: "Otomatik, sığan en hızlı modu seçer. Sohbet veya başka bir çalıştırma için boş bırakmak istediğiniz GPU'nun işaretini kaldırın.",
+      modeLabel: "Mod",
+      specLabel: "Düzen",
+      unavailable: "Burada kullanılamaz",
+      runChip: "{mode} · {count} GPU",
+      rankGpu: "Sıra {rank} · GPU {index}",
+      mode: {
+        auto: "Otomatik",
+        single: "Tek GPU",
+        layerSplit: "Katman bölme",
+        ddp: "Veri paralelliği (DDP)",
+        fsdp2: "Parçalı veri paralelliği (FSDP2)",
+        tp: "Tensör paralelliği",
+        pp: "Ardışık düzen paralelliği",
+        cp: "Bağlam paralelliği",
+        ep: "Uzman paralelliği",
+        custom: "Özel düzen",
+      },
+      summary: {
+        single: "Tek GPU'da eğitim",
+        layerSplit: "Model katman katman {count} GPU'ya bölünür",
+        ddp: "Her GPU tam bir kopya eğitir: {count} GPU'da veri paralelliği",
+        fsdp2: "Ağırlıklar ve optimizer durumu {count} GPU'ya parçalanır",
+        tp: "Her katman {count} GPU'ya bölünür",
+        pp: "Katmanlar, GPU başına bir tane olmak üzere {count} ardışık düzen aşaması olarak çalışır",
+        cp: "Her dizi {count} GPU'ya bölünür",
+        ep: "MoE uzmanları {count} GPU'ya dağıtılır",
+        custom: "{count} GPU'da özel düzen {spec}",
+      },
+      error: {
+        noGpu: "En az bir GPU seçin.",
+        singleNeedsOne: "Tek GPU tam olarak bir GPU kullanır. Diğerlerinin işaretini kaldırın.",
+        needsTwo: "Bu mod en az iki GPU gerektirir.",
+        customSpec: "Bir düzen girin, örneğin {example}.",
+      },
+    },
     preview: {
       title: "Çalıştırma önizlemesi",
       ready: "Hazır",
@@ -4399,8 +4468,10 @@ export const tr = {
       lr: "LR",
       hardware: "Donanım",
       vram: "VRAM",
+      vramTotal: "Toplam {size}",
       noGpu: "GPU algılanmadı",
       hfToken: "HF tokenı",
+      gpus: "GPU'lar",
       saved: "Kaydedildi",
       notSet: "Ayarlanmadı",
       files: "Dosyalar",
@@ -4768,6 +4839,12 @@ export const tr = {
       epochs: "Epoch",
       useMaxSteps: "Maksimum Adım kullan",
       useEpochs: "Epoch kullan",
+      stepGuidancePass: "Yaklaşık {steps} adım, {batch} etkin batch ile {rows} satırınız üzerinden bir geçiştir.",
+      stepGuidanceFloor: "{rows} satırınız üzerinden bir geçiş, {batch} etkin batch ile yalnızca {passSteps} adımdır; bu yüzden yaklaşık {steps} adım (birkaç geçiş) makul bir alt sınırdır.",
+      stepGuidanceCap: "{rows} satırınız üzerinden bir geçiş, {batch} etkin batch ile {passSteps} adımdır; {steps} adım bunun bir kısmında eğitir ve ilk çalıştırma için çoğu zaman yeterlidir.",
+      stepGuidanceEpoch: "Bir epoch, {batch} etkin batch ile {rows} satırınız üzerinden yaklaşık {passSteps} adımdır.",
+      stepGuidancePacking: "Paketleme kısa satırları birleştirir, bu yüzden bir geçiş daha az adım sürebilir.",
+      useSuggestedSteps: "{steps} kullan",
       maxStepsTooltip: "Toplam optimize edici adımı sayısını geçersiz kılar.",
       epochsTooltip: "Veri kümesi üzerinden yapılacak tam geçiş sayısı.",
       contextLength: "Bağlam",
@@ -5312,6 +5389,7 @@ export const tr = {
     model: {
       label: "Çeviri modeli",
       fast: "Hızlı",
+      balanced: "Dengeli",
       quality: "En iyi kalite",
       chat: "Sohbet modeli",
       recommended: "Önerilen",
@@ -5333,13 +5411,14 @@ export const tr = {
       toneFormal: "Resmi",
       toneCasual: "Samimi",
       auto: "Yazarken çevir",
-      autoDescription: "Model yüklendikten sonra başlar. Yazmak hiçbir zaman indirme başlatmaz.",
+      autoDescription: "Model yüklendiğinde otomatik olarak başlar.",
       saveHistory: "Geçmişi kaydet",
       saveHistoryDescription: "Yalnızca bu tarayıcıda saklanır.",
       showPrompt: "İstemi göster",
-      showPromptDescription: "Modele gönderilen talimatları aynen görün.",
+      showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
     },
     history: {
+      notSaved: "Geçmişe kaydedilmedi: tarayıcı depolama alanı dolu.",
       title: "Geçmiş",
       search: "Geçmişte ara",
       empty: "Çevirileriniz burada görünür.",
@@ -5439,6 +5518,11 @@ export const tr = {
       notifyNone: "Kapalı",
       archiveSuccessful: "Başarılı çalıştırmaları arşivle",
       webSearch: "Web araması",
+      mcpServers: "Bu görev için MCP araçlarına izin ver",
+      mcpServersHint: "Her çalıştırma, işaretli sunuculardaki araçları onay olmadan kullanabilir.",
+      mcpServersEmpty: "Etkin sunucu yok. Burada kullanmak için sohbette bir MCP sunucusunu etkinleştirin.",
+      mcpServersLoadError: "MCP sunucuları yüklenemedi.",
+      mcpServerUnavailable: "{name} (kullanılamıyor)",
       project: "Proje",
       projectNone: "Yok",
       model: "Model",
@@ -6362,6 +6446,12 @@ export const tr = {
     maximize: "Pencereyi ekranı kaplayacak şekilde büyüt",
     restore: "Pencereyi geri yükle",
     close: "Pencereyi kapat",
+    mediaCodecs: {
+      title: "Oluşturulan videolar oynatılamayabilir",
+      // {command}: an apt command line, never translated.
+      description: "Bu sistemde GStreamer video kod çözücüleri eksik. Şu komutla yükleyin: {command}",
+      copy: "Komutu kopyala",
+    },
   },
   runtimeUpdate: {
     installAudio: "Ses çalışma zamanını kur",

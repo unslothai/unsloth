@@ -56,8 +56,7 @@ class DeepSeekOCRDataCollator:
     ignore_index: int = -100
 
     def __call__(self, batch: List[dict]) -> dict:
-        """Each sample holds 'messages': a user turn and an assistant turn, with content as lists of
-        parts."""
+        """Samples hold 'messages': a user and an assistant turn, content as lists of parts."""
         from PIL import Image
 
         all_messages = []
@@ -148,7 +147,6 @@ class VLMDataCollator:
 
         labels = inputs["input_ids"].clone()
 
-        # Mask padding.
         if hasattr(self.processor, "tokenizer"):
             pad_token_id = self.processor.tokenizer.pad_token_id
         else:

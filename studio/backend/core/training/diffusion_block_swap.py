@@ -29,9 +29,8 @@ _OFF = ("", "0", "off", "none", "false", "no")
 _LOWP_CODE_BYTES = 1
 # Marks a FrozenFp8Linear / FrozenInt8Linear whose codes stream through a ring slot (diffusion_frozen_fp8 reads it).
 SWAPPED_WEIGHT_ATTR = "_studio_swapped_weight"
-# Headroom kept free besides the activation estimate: CUDA context, cuBLAS / compile workspaces, fragmentation. The
-# fraction is of the VRAM this run can use (free at install), not of the card: another process's share of a 96 GB
-# card is not this run's fragmentation, and reserving 12% of it swapped 32 of 34 Z-Image blocks with 16 GB free.
+# Headroom beyond activations (CUDA context, cuBLAS workspaces, fragmentation) is 12% of the VRAM
+# free at install, not of the card: 12% of a 96 GB card swapped 32 of 34 blocks with 16 GB free.
 _RESERVE_MIN_BYTES = 3 << 30
 _RESERVE_FRACTION = 0.12
 # Bytes per (token x hidden) element kept per block under full checkpointing, plus the one block being recomputed.
@@ -43,8 +42,7 @@ LAST_SWAPPERS: list = []
 
 
 def block_swap_request(cfg: Any) -> Optional[Union[int, str]]:
-    """None (off), "auto", or a block count. An unset cfg.block_swap (None or "") takes UNSLOTH_DIT_BLOCK_SWAP; an
-    explicit "off" or 0 is off even when the env asks for a swap."""
+    """None (off), auto or count; unset takes UNSLOTH_DIT_BLOCK_SWAP; explicit off or 0 wins."""
     raw = getattr(cfg, "block_swap", None)
     if raw is None or str(raw).strip() == "":
         raw = os.environ.get(BLOCK_SWAP_ENV, "")
@@ -65,18 +63,70 @@ def lowp_swap_enabled() -> bool:
     return os.environ.get(LOWP_SWAP_ENV, "1").strip().lower() not in _OFF
 
 
+# UNSLOTH_DIFFUSION_INT8_TRAIN values that keep the torchao weight-only int8 base (the pre-W8A8 default).
+INT8_WEIGHT_ONLY_VALUES = (
+    "weight-only",
+    "weight_only",
+    "weightonly",
+    "wo",
+    "torchao",
+    "0",
+    "off",
+    "false",
+    "no",
+)
+
+
+def int8_w8a8_env() -> Optional[bool]:
+    """The explicit UNSLOTH_DIFFUSION_INT8_TRAIN choice: False for weight-only, True for anything else set, None
+    when unset."""
+    raw = os.environ.get(_INT8_TRAIN_ENV, "").strip().lower()
+    if not raw:
+        return None
+    return raw not in INT8_WEIGHT_ONLY_VALUES
+
+
+ROCM_W8A8_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_W8A8_TRAIN"
+
+
+def rocm_w8a8_train_opt_in(mode: Optional[str], cfg: Any = None) -> bool:
+    """Opt-in: int8 trains the W8A8 base (torch._int_mm) on ROCm, never weight-only. Off until measured faster there."""
+    if (mode or "").strip().lower() != "int8":
+        return False
+    if os.environ.get(ROCM_W8A8_TRAIN_ENV, "").strip().lower() not in ("1", "true", "yes", "on"):
+        return False
+    return int8_w8a8_for_run(cfg)
+
+
 def int8_w8a8_requested() -> bool:
-    """int8 trains on the frozen W8A8 base (not torchao weight-only, whose tensor subclass cannot stream)."""
-    return os.environ.get(_INT8_TRAIN_ENV, "").strip().lower() == "w8a8"
+    """int8 trains on the frozen W8A8 base by default (not torchao weight-only, whose tensor subclass cannot stream
+    and cannot trace); UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps the weight-only base."""
+    explicit = int8_w8a8_env()
+    return True if explicit is None else explicit
 
 
-def swap_lowp_mode(base_precision: str) -> Optional[str]:
+def int8_w8a8_for_run(cfg: Any = None) -> bool:
+    """Whether this run's int8 base is W8A8: the explicit UNSLOTH_DIFFUSION_INT8_TRAIN choice, else the kernel a
+    resumed int8 bundle trained on (weight-only for one without the record), else W8A8."""
+    explicit = int8_w8a8_env()
+    if explicit is not None:
+        return explicit
+    resume = getattr(cfg, "resume_from_checkpoint", None) if cfg is not None else None
+    if resume:
+        from core.training.diffusion_checkpoint import recorded_int8_resume_kernel
+        kernel = recorded_int8_resume_kernel(resume)
+        if kernel is not None:
+            return kernel == "w8a8"
+    return True
+
+
+def swap_lowp_mode(base_precision: str, cfg: Any = None) -> Optional[str]:
     """The frozen low-precision base block swap streams for this precision ("fp8" / "int8_w8a8"), or None."""
     if not lowp_swap_enabled():
         return None
     if base_precision == "fp8":
         return "fp8"
-    if base_precision == "int8" and int8_w8a8_requested():
+    if base_precision == "int8" and int8_w8a8_for_run(cfg):
         return "int8_w8a8"
     return None
 
@@ -93,18 +143,19 @@ def block_swap_error(
     device: str,
     gradient_checkpointing: bool,
     integrated: bool = False,
+    cfg: Any = None,
 ) -> Optional[str]:
-    """Why this run cannot swap blocks, or None."""
+    """Why this run cannot swap blocks, or None. ``cfg`` lets a resume keep the int8 kernel its bundle recorded."""
     if request is None:
         return None
     if device != "cuda":
         return "block_swap needs a CUDA GPU."
-    if base_precision != "bf16" and swap_lowp_mode(base_precision) is None:
+    if base_precision != "bf16" and swap_lowp_mode(base_precision, cfg) is None:
         if base_precision == "int8" and lowp_swap_enabled():
             return (
-                "block_swap streams int8 only as the frozen W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN=w8a8); the "
-                "torchao weight-only int8 base cannot stream. Set it, use base_precision='bf16' or 'fp8', or turn "
-                "block_swap off."
+                "block_swap streams int8 only as the frozen W8A8 base; the torchao weight-only int8 base "
+                "(UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only) cannot stream. Unset it, use base_precision='bf16' or "
+                "'fp8', or turn block_swap off."
             )
         allowed = "'bf16'" if not lowp_swap_enabled() else "'bf16', 'fp8' or int8 W8A8"
         return (
@@ -163,6 +214,7 @@ def block_swap_start_error(cfg: Any, device_facts = None) -> Optional[str]:
         device,
         bool(getattr(cfg, "gradient_checkpointing", True)),
         integrated = integrated,
+        cfg = cfg,
     )
 
 
@@ -191,8 +243,7 @@ def _lowp_scale_bytes(linear) -> int:
 
 
 def _frozen_bytes(module, targets = frozenset()) -> int:
-    """Host bytes swapping ``module`` frees: its frozen parameters, plus the codes of an already converted frozen
-    fp8 / W8A8 Linear (a buffer until it is swapped). A Linear in ``targets`` (ids) counts as its converted codes."""
+    """Host RAM freed by swapping: frozen params + fp8/W8A8 codes; targets count as converted."""
     total = 0
     for m in module.modules():
         conv = id(m) in targets
@@ -237,8 +288,7 @@ def activation_reserve_bytes(
     n_blocks: int,
     batch: int = 1,
 ) -> int:
-    """VRAM kept free for one fully checkpointed step: saved block inputs, one block's recompute, fixed headroom.
-    ``total_vram`` is the VRAM the run can use (install passes min(free, total))."""
+    """Checkpointed-step VRAM reserve; total_vram is usable, install passes min(free, total)."""
     elems = max(1, tokens) * max(1, hidden) * max(1, batch)
     act = elems * (_SAVED_PER_BLOCK * max(1, n_blocks) + 2 * _RECOMPUTE_FACTOR)
     return int(max(_RESERVE_MIN_BYTES, _RESERVE_FRACTION * total_vram) + act)
@@ -294,9 +344,8 @@ def _place_rest(
     device,
     move = None,
 ) -> None:
-    """Everything except the swapped blocks' frozen weights to the card (their LoRA params BlockSwap moves). A frozen
-    fp8 / W8A8 block's codes are such weights once host_lowp_weight made them parameters; its scales are buffers and
-    go to the card. ``move(tensor, device)`` (tests) defaults to ``tensor.to(device)``."""
+    """Moves all but swapped blocks' frozen weights to the card (BlockSwap moves their LoRA params);
+    converted fp8/W8A8 codes count as those, scales go to the card; move is a test hook."""
     import torch
 
     if move is None:
@@ -372,10 +421,9 @@ def install_dit_block_swap(
     prefetch_depth: Union[int, str] = "auto",
     lowp: Optional[dict] = None,
 ) -> dict:
-    """The host-loaded transformer (LoRA attached) goes to the card except the planned blocks, which BlockSwap streams.
-    ``lowp`` = {"mode": "fp8" | "int8_w8a8", "targets": fqns, "convert": fn(model, names, device) -> (done, failed)}
-    converts the frozen base first (sized from the converted bytes, see host_lowp_weight). Returns a summary; the
-    swappers are kept in LAST_SWAPPERS and on transformer._unsloth_block_swaps."""
+    """Host-loaded transformer goes to the card except planned blocks that BlockSwap streams; lowp
+    {mode, targets, convert(model, names, device) -> (done, failed)} converts frozen base first;
+    returns a summary; swappers kept in LAST_SWAPPERS and transformer._unsloth_block_swaps."""
     import torch
 
     try:
@@ -479,8 +527,7 @@ def compile_swapped_blocks(
     dynamic: bool = True,
     options: Optional[dict] = None,
 ) -> int:
-    """Regional compile that leaves the swap hooks outside the graph: each repeated block's forward is compiled,
-    not its _call_impl (whose pre / post hooks would be a graph break, an error under fullgraph)."""
+    """Compile each block's forward, not _call_impl (whose swap hooks would break fullgraph)."""
     import torch
 
     n = 0
@@ -494,8 +541,7 @@ def compile_swapped_blocks(
 
 
 def reset_block_swaps(transformer) -> int:
-    """After an out-of-memory error mid-step: give every slot back and arm the first blocks, so the rerun starts from
-    a clean pool (no block left resident or marked as held by the failed graph). Returns the swappers reset."""
+    """OOM mid-step: free all slots, arm first blocks for clean rerun; returns swappers reset."""
     n = 0
     for s in getattr(transformer, "_unsloth_block_swaps", None) or ():
         try:

@@ -88,7 +88,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
-    # int8 is torchao weight-only or the W8A8 base (UNSLOTH_DIFFUSION_INT8_TRAIN): different base math, one name.
+    # int8 is the W8A8 base or torchao weight-only (UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only): different base math,
+    # one name.
     ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
@@ -126,8 +127,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "base_dit_revision",
     }
 )
-# Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
-# A bundle from before world_size was recorded trained on one GPU.
+# Bundle side only: None means cannot tell; a bundle predating world_size trained on one GPU.
 _LEGACY_IDENTITY_DEFAULTS: dict[str, Any] = {"bucketing": "off", "world_size": 1}
 
 
@@ -242,8 +242,7 @@ class CheckpointIdentity:
 
     @classmethod
     def from_dict(cls, data: Any) -> Optional["CheckpointIdentity"]:
-        """Rebuild an identity from a manifest. Returns None for anything unreadable, so a
-        hand-edited or truncated record reads as "no identity" instead of raising."""
+        """Rebuild identity from a manifest; None for anything unreadable instead of raising."""
         if not isinstance(data, dict):
             return None
         try:
@@ -306,8 +305,7 @@ class CheckpointIdentity:
                 a = _LEGACY_IDENTITY_DEFAULTS[field]
             if a in (None, "") and field == "base_dit" and b not in (None, ""):
                 a = default_base_dit(self)
-            # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
-            # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
+            # None or "" is cannot tell, not falsy: a 0.0 lora_dropout must not be skipped.
             if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
                 continue
             if field == "base_revision" and not (
@@ -346,8 +344,7 @@ def _optional_str(value: Any) -> Optional[str]:
 
 
 def _optional_float(value: Any) -> Optional[float]:
-    """A rounded float, or None for anything unreadable (including a manifest that predates the
-    field). None is the "cannot tell" the optional-field rule skips."""
+    """Rounded float, or None when unreadable or predating the field; None is cannot tell."""
     if value is None:
         return None
     try:
@@ -489,8 +486,7 @@ def default_base_dit(identity: "CheckpointIdentity") -> Optional[str]:
 def with_resolved_dit(
     identity: "CheckpointIdentity", repo: Any, subfolder: Any
 ) -> "CheckpointIdentity":
-    """Records the DiT the trainer actually loaded, and its revision: a dev and a distilled DiT (or two repos) have
-    the same shapes, so only this tells an adapter trained on one from the other."""
+    """Records the loaded DiT and revision; same-shape dev/distilled DiTs differ only here."""
     from core.training.diffusion_train_extras import source_revision
 
     revision = source_revision(repo)
@@ -859,8 +855,7 @@ def optimizer_key(optimizer: Any) -> str:
 
 
 def _save_tensors(save_file: Any, state: dict[str, Any], path: Path) -> None:
-    """safetensors refuses tensors that share storage, so detach/clone every entry onto CPU (a LoRA
-    state dict is megabytes, and this runs at most once per save_steps)."""
+    """safetensors rejects shared storage, so every entry is detached and cloned onto CPU."""
     payload = {
         str(k): v.detach().to("cpu", copy = True).contiguous()
         for k, v in (state or {}).items()
@@ -1121,7 +1116,6 @@ def resumed_into_this_dir(cfg: Any, output_dir: "str | os.PathLike[str]") -> boo
         candidate = Path(str(source)).expanduser().resolve()
     except OSError:
         return False
-    # The request names either the bundle itself or the directory holding it.
     return candidate == root or candidate.parent == root
 
 
@@ -1572,8 +1566,7 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         isinstance(saved_streams.get(name), (list, tuple)) for name in _TRAINER_RNG_STREAMS
     ):
         missing.append("the trainer's random-number streams")
-    # A CUDA bundle resumed on XPU (or reverse) leaves the generator freshly seeded. Only a KNOWN
-    # mismatch counts, so bundles predating this field still resume.
+    # CUDA/XPU swap reseeds RNG; only a known mismatch counts, so older bundles still resume.
     saved_accel = rng_manifest.get("accelerator") if isinstance(rng_manifest, dict) else None
     if isinstance(saved_accel, str) and saved_accel and saved_accel != _rng_accelerator():
         missing.append(
@@ -1676,6 +1669,28 @@ def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
     except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
         pass
     return False, None
+
+
+def recorded_int8_resume_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") a resumed bundle trained on, or None when it is unreadable or
+    did not train int8. A bundle without ``base_precision_effective`` counts as int8 when it requested int8, and one
+    without ``base_int8_kernel`` trained weight-only (both records postdate weight-only int8). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is None:
+                continue
+            effective = (saved.base_precision_effective or "").strip().lower()
+            requested = (saved.base_precision or "").strip().lower()
+            if effective == "int8" or (not effective and requested == "int8"):
+                return saved.base_int8_kernel or "weight-only"
+            return None
+    except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
+        pass
+    return None
 
 
 def recorded_bucketing(path_value: str) -> bool:
@@ -1791,8 +1806,7 @@ class LoadedCheckpoint:
 
     @property
     def optimizer_param_names(self) -> Optional[list[str]]:
-        """The trainable names in the order the optimizer held them, or None on a bundle from before
-        this was recorded (which skips the check rather than failing it)."""
+        """Trainable names in optimizer order; None on older bundles, which skip the check."""
         value = self.manifest.get("optimizer_param_names")
         if not isinstance(value, list) or not value:
             return None
@@ -1805,8 +1819,7 @@ class LoadedCheckpoint:
 
     @property
     def running_loss(self) -> float:
-        """The loss total accumulated up to ``step``, so a resumed run's reported average stays an
-        average over the WHOLE run rather than restarting at the resume point."""
+        """Loss total accumulated up to step, so a resumed run's average covers the whole run."""
         try:
             return float(self.progress.get("running_loss") or 0.0)
         except (TypeError, ValueError):
@@ -1842,8 +1855,7 @@ class LoadedCheckpoint:
         return load_file(str(path), device = device) if path is not None else {}
 
     def torch_state(self, role: str) -> Optional[Any]:
-        """Loads with weights_only = True: the resume path is client-supplied, so no pickled code
-        may execute."""
+        """Loads weights_only=True: resume path is client-supplied, so no pickled code may run."""
         import torch
 
         path = self._file(role)

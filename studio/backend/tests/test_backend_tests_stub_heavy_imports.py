@@ -634,10 +634,21 @@ def _reachable_body(body: list[ast.stmt]):
             return
 
 
+def _statements(tree: ast.Module):
+    """Every node except expressions and what lies below them. ImportFrom and Assign are
+    statements, and an expression never contains a statement, so this finds the same ones
+    as ast.walk while skipping the expression nodes that make up most of a module."""
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.expr))
+
+
 def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
     """Bare names bound to importorskip by from pytest import, so an aliased call is still recognised."""
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "pytest":
             for alias in node.names:
                 if alias.name == "importorskip":
@@ -652,23 +663,12 @@ def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
 def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[str, int]]:
     """Heavy importorskip targets; boundary is the call's line at module scope, else end of module."""
     bare_names = _importorskip_bare_names(tree)
-    module_scope = {
-        id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
-    }
-    reachable = {id(node) for node in _reachable_nodes(tree)}
-    end = max((statement.lineno for statement in tree.body), default = 0) + 1
-    called_at_import = _functions_called_at_import(tree)
-    # Calls belong to the innermost def; nested bodies are deferred.
-    in_function = {
-        id(node): name
-        for name, definitions in _module_functions(tree).items()
-        for definition in definitions
-        for statement in definition.body
-        for node in _reachable_import_time_nodes(statement)
-    }
-    calls: list[tuple[str, int]] = []
+    # The per-call checks need nothing but the call, so find the heavy importorskip calls first
+    # (in walk order) and build the reachability and scope maps only for a file that has one:
+    # most test files have none, and those maps were most of this guard's time.
+    candidates = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or id(node) not in reachable:
+        if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
@@ -687,11 +687,32 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
             and isinstance(target.value, str)
             and target.value in heavy
         ):
-            if id(node) in module_scope:
-                boundary = node.lineno
-            else:
-                boundary = called_at_import.get(in_function.get(id(node)), end)
-            calls.append((target.value, boundary))
+            candidates.append((node, target.value))
+    if not candidates:
+        return []
+    module_scope = {
+        id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
+    }
+    reachable = {id(node) for node in _reachable_nodes(tree)}
+    end = max((statement.lineno for statement in tree.body), default = 0) + 1
+    called_at_import = _functions_called_at_import(tree)
+    # Calls belong to the innermost def; nested bodies are deferred.
+    in_function = {
+        id(node): name
+        for name, definitions in _module_functions(tree).items()
+        for definition in definitions
+        for statement in definition.body
+        for node in _reachable_import_time_nodes(statement)
+    }
+    calls: list[tuple[str, int]] = []
+    for node, target in candidates:
+        if id(node) not in reachable:
+            continue
+        if id(node) in module_scope:
+            boundary = node.lineno
+        else:
+            boundary = called_at_import.get(in_function.get(id(node)), end)
+        calls.append((target, boundary))
     return calls
 
 

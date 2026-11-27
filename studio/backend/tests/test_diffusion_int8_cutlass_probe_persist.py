@@ -106,7 +106,10 @@ def test_stale_or_malformed_verdicts_probe_again(env, monkeypatch):
 def test_the_key_covers_the_library_and_the_code(monkeypatch):
     from core.inference import diffusion_int8_gemm as g8
 
-    assert set(cut.PROBE_PERSIST_SOURCES) == {"diffusion_int8_cutlass.py", "diffusion_int8_gemm.py"}
+    # diffusion_int8_gemm.py keys it through the race code digest (its tie_operands probe input), not byte for byte:
+    # an unrelated edit there must not drop every stored tile verdict
+    assert set(cut.PROBE_PERSIST_SOURCES) == {"diffusion_int8_cutlass.py"}
+    assert "tie_operands" in g8._RACE_SOURCES["diffusion_int8_gemm"]
     monkeypatch.setattr(cut, "library_path", lambda: "/lib/x.so")
     monkeypatch.setattr(g8, "_sources_digest", lambda lib: f"digest-of-{lib}")
     assert cut._probe_extra() == {"abi": cut.ABI_VERSION, "lib": "digest-of-/lib/x.so"}
@@ -153,10 +156,8 @@ def test_a_real_namespace_misses_on_another_fingerprint(monkeypatch, tmp_path):
 
 
 def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatch):
-    """Under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync a probe allocation's out-of-memory error leaves num_ooms
-    at 0 (that allocator fills none of the native stats), so the repeated failure looked like a real one and the empty
-    verdict persisted: every later process on that card skipped the CUTLASS tiles. The probe's own OOM keeps it from
-    persisting."""
+    """Under PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync a probe OOM leaves num_ooms at 0 and
+    looks real; its empty verdict must not persist, or later processes skip CUTLASS tiles."""
     store, probes, _ = env
     monkeypatch.setattr(cut, "_probe_tile", _REAL_PROBE_TILE)
     monkeypatch.setattr(cut, "has_kernel", lambda *a, **k: True)
@@ -171,8 +172,7 @@ def test_an_oom_the_allocator_stats_never_count_is_not_persisted(env, monkeypatc
 
 
 def test_an_oom_probe_is_not_kept_in_process_either(env, monkeypatch):
-    """A probe that ran out of memory was memoized in _PROBED, so a long-running Studio kept CUTLASS off after the
-    card freed up. The next call probes again and keeps the healthy verdict."""
+    """An OOM probe must not be memoized in _PROBED; the next call probes again."""
     store, probes, verdict = env
     healthy = cut._probe_tile
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
@@ -41,6 +42,11 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import {
+  pinnedCheckpoint,
+  servedCheckpoint,
+} from "@/features/hub/lib/model-identity";
 import { isTranslationHeldSlot, isTranslationOnlyRepo } from "@/lib/translation-models";
 import { isOtherCacheSnapshot } from "@/features/model-picker/inventory/local-cache-snapshot";
 import {
@@ -4880,7 +4886,14 @@ export function createOpenAIStreamAdapter(
           runtime.reasoningAlwaysOn ||
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
         const inferenceRequest = buildResearchInferenceRequest({
-          checkpoint: selectedCheckpoint,
+          checkpoint: pinnedCheckpoint(
+            servedCheckpoint(
+              runtime.loadedModels,
+              selectedCheckpoint,
+              runtime.activeGgufVariant,
+            ),
+            runtime.activeGgufVariant,
+          ),
           external:
             researchExternalSelection && researchExternalProvider
               ? {
@@ -7147,7 +7160,11 @@ export function createOpenAIStreamAdapter(
             !queuedRunSettings && !continuation,
           );
           return {
-            model: params.checkpoint,
+            model: servedCheckpoint(
+              useChatRuntimeStore.getState().loadedModels,
+              params.checkpoint,
+              runtime.activeGgufVariant,
+            ),
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
@@ -7632,6 +7649,7 @@ export function createOpenAIStreamAdapter(
                   if (deepResearchHandoff.question !== null) break;
                   continue;
                 }
+                notifyChatImageToolSettled(toolEvent);
                 // Answered in another tab or device: clear the prompt now, not at tool_end.
                 if (toolEvent.type === "tool_approved") {
                   const approvedBackendId =

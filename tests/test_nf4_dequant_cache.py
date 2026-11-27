@@ -173,8 +173,7 @@ def test_whole_model_compile_gets_no_budget(monkeypatch):
 
 
 def test_first_padded_batch_of_a_measured_shape_drops_the_cache(monkeypatch):
-    # Same [batch, sequence] as the measured steps, but padded: the forward builds a dense quadratic mask before
-    # any LoRA op, which the unpadded steps never measured.
+    # Padded batch of a measured shape: a dense quadratic mask is built before any LoRA op.
     _memory(monkeypatch, usable = 10 * GiB)
     ids = torch.zeros(2, 8, dtype = torch.long)
     full = torch.ones(2, 8, dtype = torch.long)
@@ -275,7 +274,6 @@ def test_dead_weight_dropped_on_gc(monkeypatch):
 
 
 def _admit_at_safe_point(monkeypatch, rows):
-    # One step with `rows`-row matmuls, then the safe point that measures it and sets the budget.
     _memory(monkeypatch, usable = 10 * GiB)
     W, absmax = _weight()
     dc._lookup(W, absmax, _decoder([]), torch.bfloat16, rows)
@@ -287,8 +285,7 @@ def _admit_at_safe_point(monkeypatch, rows):
 
 
 def test_longer_batch_than_measured_drops_cache(monkeypatch):
-    # The budget was measured on 128-row steps: a 4096-row batch (a long sequence late in training, a larger
-    # evaluation batch) has a transient nobody measured, so it runs with nothing cached, like the base code.
+    # Budget measured on 128-row steps; a 4096-row step's transient is unmeasured: no caching.
     W, absmax = _admit_at_safe_point(monkeypatch, rows = 128)
     calls = []
     dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 128)
@@ -300,7 +297,6 @@ def test_longer_batch_than_measured_drops_cache(monkeypatch):
     assert (
         calls == [False, False] and dc.cached_count() == 0
     )  # nothing re-admitted before the safe point
-    # The next safe point has measured the 4096-row step: caching resumes, also for 4096 rows.
     dc._on_optimizer_step(None, (), {})
     dc._lookup(W, absmax, _decoder(calls), torch.bfloat16, 4096)
     assert calls == [False, False, True] and dc.cached_count() == 1
@@ -377,8 +373,7 @@ def test_trainer_scope_hooks(monkeypatch):
 
 
 def test_admission_keeps_the_transient_reserve(monkeypatch):
-    # Memory taken after the safe point (a callback's tensor, a second model) is not in the budget: an
-    # admission must still leave 2 x transient + margin usable.
+    # After the safe point memory is unbudgeted: admission must leave 2 x transient + margin.
     _memory(monkeypatch, usable = 10 * GiB)  # transient 1 GiB (peak 4 - allocated 3)
     dc._SEEN.add(None)
     dc._on_optimizer_step(None, (), {})
@@ -394,8 +389,7 @@ def test_admission_keeps_the_transient_reserve(monkeypatch):
 
 
 def test_model_call_larger_than_measured_drops_cache_before_the_forward(monkeypatch):
-    # The pre-hook sees the input before the model allocates for it (a [1, 1, s, s] attention mask grows with
-    # the square of the sequence), so the cache is gone before that allocation, not at the first LoRA matmul.
+    # Cache drops in the pre-hook, before the [1, 1, s, s] mask (quadratic in s) is allocated.
     dc._model_pre_hook(None, (), {"input_ids": torch.zeros(4, 16, dtype = torch.long)})
     W, absmax = _admit_at_safe_point(monkeypatch, rows = 64)  # measured: 64 tokens, sequences of 16
     dc._model_pre_hook(None, (), {"input_ids": torch.zeros(4, 16, dtype = torch.long)})
@@ -446,8 +440,7 @@ def _fake_allocator(monkeypatch):
 
 
 def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
-    # The allocator's peak still holds cache bytes freed since: after a plain clear (evaluation) the last measured
-    # transient is kept and the cache refills; it used to count the freed cache as activations for good.
+    # The peak still holds freed cache after a clear; it must not count as activation memory.
     fake = _fake_allocator(monkeypatch)
     fake["allocated"] = 3 * GiB  # evaluation follows: the cache is dropped (2 GiB freed)
     dc.clear_dequant_cache()
@@ -460,8 +453,7 @@ def test_freed_cache_is_not_counted_as_activation_memory(monkeypatch):
 
 
 def test_stale_peak_after_a_size_drop_stays_conservative(monkeypatch):
-    # After a drop before a larger call, the larger step's transient is unknown while the peak has not risen:
-    # keeping the last estimate could refill the cache under a step that needs that memory.
+    # After a drop the transient is unknown; the old estimate could refill the cache.
     fake = _fake_allocator(monkeypatch)
     fake["allocated"] = 3 * GiB
     dc._drop_device(None, "shape_drops")
@@ -546,8 +538,7 @@ class _Training:
 
 
 def test_larger_step_while_the_cache_is_empty_stays_conservative(monkeypatch):
-    # Evaluation empties the cache, then a larger training step runs uncached below the old peak: keeping the
-    # small measured transient would refill the cache with too little room for that step's activations.
+    # Evaluation empties the cache; the small transient must not refill it for a larger step.
     fake = _fake_allocator(monkeypatch)
     dc._SHAPE_SEEN[:] = [128, 64]
     fake["allocated"] = 3 * GiB
@@ -595,3 +586,33 @@ def test_evaluation_rows_do_not_mark_growth(monkeypatch):
     dc._on_optimizer_step(None, (), {})
     assert dc._BUDGET[None] == 7 * GiB and dc.STATS["stale_peak_kept"] == 1
     assert dc._ROWS_SEEN.get(None, 0) < 4096
+
+
+def test_waits_for_a_safe_point_with_the_checkpoint_skip_plan_in_place(monkeypatch):
+    _memory(monkeypatch, usable = 10 * GiB)
+    dc._SEEN.add(None)
+    pending = [True]
+    monkeypatch.setattr(dc, "_checkpoint_skip_pending", lambda: pending[0])
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 0 and dc.STATS["gc_skip_wait"] == 1
+    pending[0] = False
+    dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    pending[0] = True
+    for _ in range(dc._GC_SKIP_WAIT_MAX + 2):
+        dc._on_optimizer_step(None, (), {})
+    assert dc._BUDGET[None] == 10 * GiB - 2 * GiB - GiB
+    assert dc.STATS["gc_skip_wait"] == dc._GC_SKIP_WAIT_MAX
+
+
+def test_checkpoint_skip_pending_reads_the_planner_module(monkeypatch):
+    import sys, types
+
+    fake = types.ModuleType("unsloth.models._utils")
+    fake.checkpoint_skip_pending = lambda: True
+    monkeypatch.setitem(sys.modules, "unsloth.models._utils", fake)
+    assert dc._checkpoint_skip_pending() is True
+    fake.checkpoint_skip_pending = lambda: False
+    assert dc._checkpoint_skip_pending() is False
+    monkeypatch.delitem(sys.modules, "unsloth.models._utils")
+    assert dc._checkpoint_skip_pending() is False

@@ -28,13 +28,13 @@ const MODEL_DEFAULTS: Array<{
   { match: "kontext", steps: 20, guidance: 2.5 },
   { match: "flux.1", steps: 20, guidance: 3.5 },
   { match: "flux1", steps: 20, guidance: 3.5 },
-  // FLUX.3 Image Klein (the BFL reference): base 50 steps at CFG 3.5, distilled 16 steps at CFG 1. Base first.
+  // FLUX.3 Image Klein (BFL reference): base 50 steps CFG 4, distilled 16 steps CFG 1. Base first.
   // Every alias the backend registers for the two families, and the canonical family names (an opaque path
   // resolves through the explicit family).
-  { match: "flux.3-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux-3-image-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux3-image-klein-base", steps: 50, guidance: 3.5 },
-  { match: "flux3-klein-base", steps: 50, guidance: 3.5 },
+  { match: "flux.3-klein-base", steps: 50, guidance: 4 },
+  { match: "flux-3-image-klein-base", steps: 50, guidance: 4 },
+  { match: "flux3-image-klein-base", steps: 50, guidance: 4 },
+  { match: "flux3-klein-base", steps: 50, guidance: 4 },
   { match: "flux.3-klein", steps: 16, guidance: 1 },
   { match: "flux-3-image-klein", steps: 16, guidance: 1 },
   { match: "flux3-image-klein", steps: 16, guidance: 1 },
@@ -102,8 +102,7 @@ export function maxStepsFor(family: string | null | undefined): number | null {
 export const STEPS_SLIDER_MAX = 50;
 export const STEPS_REQUEST_MAX = 100;
 
-/** Steps slider top: 50, widened to twice the model's default (Krea-2-raw ships 52) and to the
- *  current value (an import or restore), never past what the request accepts. */
+/** Slider top is max(50, twice the model default, current value), capped at the request max. */
 export function stepsSliderMax(modelDefault: number, current: number): number {
   const wanted = Math.max(STEPS_SLIDER_MAX, modelDefault * 2, current);
   return Math.min(STEPS_REQUEST_MAX, Number.isFinite(wanted) ? Math.ceil(wanted) : STEPS_SLIDER_MAX);
@@ -139,12 +138,10 @@ export function defaultSizeFor(repoId: string): { width: number; height: number 
   return hit ? { width: hit.width, height: hit.height } : null;
 }
 
-// Families whose explicit choice outranks the name: FLUX.3 base and distilled share names (BFL's ComfyUI base
-// files are flux3_image_klein_*.safetensors), and the backend refuses a checkpoint of the other variant.
+// FLUX.3 base/distilled share names: explicit pick wins; backend refuses a wrong variant.
 const FAMILY_NAMES_THE_VARIANT = new Set(["flux.3-klein", "flux.3-klein-base"]);
 
-// Keys naming one distilled checkpoint of a family, with the family's name: a selected file naming the family but not
-// the checkpoint is another checkpoint of it, whatever its Turbo / Flash folder or repo says.
+// Keys name one checkpoint; a family-only file is another checkpoint, whatever its folder.
 const DISTILLED_CHECKPOINT_FAMILY: Readonly<Record<string, string>> = {
   "hunyuanimage-2.1-distilled": "hunyuanimage",
   "hunyuanimage2.1-distilled": "hunyuanimage",
@@ -217,8 +214,7 @@ const NATIVE_CANVAS: Array<{ match: string; width: number; height: number }> = [
   { match: "sdxl-turbo", width: 512, height: 512 },
 ];
 
-// Quantised builds of activation-heavy families default to a smaller canvas so they fit 24 GB
-// (Qwen-Image-2.1: ~26 GB at 1024 vs ~19 GB at 512). Only a picked quant shrinks it; GGUF keeps 1024.
+// Quant picks of activation-heavy families use a smaller canvas to fit 24 GB; GGUF keeps 1024.
 const QUANTISED_CANVAS: Array<{
   match: string;
   schemes: readonly string[];

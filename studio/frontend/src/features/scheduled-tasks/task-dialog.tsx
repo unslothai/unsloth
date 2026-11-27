@@ -5,8 +5,9 @@ import { useTimeFormat } from "@/lib/time-format";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +35,8 @@ import {
   type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
+  listMcpServers,
+  type McpServerConfig,
   providerModelDisplayName,
   useChatProjects,
   useModelDisplayNamesVersion,
@@ -258,6 +261,27 @@ export function TaskDialog({
   const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
   const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
   const [webSearch, setWebSearch] = useState(task?.webSearch ?? false);
+  const [mcpServerIds, setMcpServerIds] = useState(task?.mcpServerIds ?? []);
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[] | "error" | null>(null);
+  const mcpOptions = Array.isArray(mcpServers)
+    ? mcpServers
+      .filter((server) => server.is_enabled || mcpServerIds.includes(server.id))
+      .map((server) => ({
+        id: server.id,
+        label: server.is_enabled
+          ? server.display_name
+          : t("scheduledTasks.form.mcpServerUnavailable", { name: server.display_name }),
+      }))
+    : [];
+  for (const id of mcpServerIds) {
+    if (!mcpOptions.some((server) => server.id === id)) {
+      mcpOptions.push({ id, label: t("scheduledTasks.form.mcpServerUnavailable", { name: id }) });
+    }
+  }
+
+  function toggleMcpServer(id: string, checked: boolean): void {
+    setMcpServerIds((ids) => (checked ? [...ids, id] : ids.filter((saved) => saved !== id)));
+  }
   const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? initialProjectId);
   const { projects } = useChatProjects();
   const openProjects = projects.filter((project) => !project.archived || project.id === projectId);
@@ -279,8 +303,18 @@ export function TaskDialog({
       : task.notify !== "all" ||
         task.archiveSuccessful ||
         task.projectId !== null ||
-        task.webSearch === true,
+        task.webSearch === true ||
+        Boolean(task.mcpServerIds?.length),
   );
+  useEffect(() => {
+    if (!advanced) return;
+    let active = true;
+    void listMcpServers().then(
+      (servers) => { if (active) setMcpServers(servers); },
+      () => { if (active) setMcpServers("error"); },
+    );
+    return () => { active = false; };
+  }, [advanced]);
   const [busy, setBusy] = useState(false);
   const timezone = task?.timezone ?? browserTimeZone();
   const valid = prompt.trim() !== "" && scheduleFormComplete(form);
@@ -317,6 +351,9 @@ export function TaskDialog({
         if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
         if (projectId !== task.projectId) patch.projectId = projectId;
         if (webSearch !== (task.webSearch ?? false)) patch.webSearch = webSearch;
+        if (mcpServerIds !== task.mcpServerIds && (mcpServerIds.length || task.mcpServerIds?.length)) {
+          patch.mcpServerIds = mcpServerIds;
+        }
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
         await create({
@@ -333,6 +370,7 @@ export function TaskDialog({
           projectId,
           // Only when on: an older server refuses fields it does not know.
           ...(webSearch ? { webSearch } : {}),
+          ...(mcpServerIds.length ? { mcpServerIds } : {}),
           ...(chat ? { threadId: chat.id } : {}),
         });
       }
@@ -708,6 +746,42 @@ export function TaskDialog({
                   </SelectContent>
                 </Select>
               </Row>
+              <div
+                role="group"
+                aria-labelledby={`${ids}-mcp-heading`}
+                aria-describedby={mcpOptions.length ? `${ids}-mcp-hint` : undefined}
+                className="space-y-2 border-t border-border px-5 py-3 dark:border-border/60"
+              >
+                <p id={`${ids}-mcp-heading`} className="text-ui-15 font-medium text-foreground">
+                  {t("scheduledTasks.form.mcpServers")}
+                </p>
+                {mcpOptions.map((server) => (
+                  <div key={server.id} className="flex min-h-8 items-center gap-3">
+                    <Checkbox
+                      id={`${ids}-mcp-${server.id}`}
+                      checked={mcpServerIds.includes(server.id)}
+                      onCheckedChange={(checked) => toggleMcpServer(server.id, checked === true)}
+                      disabled={busy}
+                    />
+                    <label
+                      htmlFor={`${ids}-mcp-${server.id}`}
+                      className="min-w-0 flex-1 break-words py-1 text-ui-15 text-foreground peer-enabled:cursor-pointer"
+                    >
+                      {server.label}
+                    </label>
+                  </div>
+                ))}
+                {mcpServers === "error" ? (
+                  <p className="text-ui-12 text-muted-foreground">{t("scheduledTasks.form.mcpServersLoadError")}</p>
+                ) : mcpServers && !mcpOptions.length ? (
+                  <p className="text-ui-12 text-muted-foreground">{t("scheduledTasks.form.mcpServersEmpty")}</p>
+                ) : null}
+                {mcpOptions.length > 0 && (
+                  <p id={`${ids}-mcp-hint`} className="text-ui-12 leading-snug text-muted-foreground">
+                    {t("scheduledTasks.form.mcpServersHint")}
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </div>

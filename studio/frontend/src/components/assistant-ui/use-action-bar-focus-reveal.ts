@@ -14,10 +14,9 @@ import { isTouchClick } from "@/components/ui/touch-click";
 const TOOLTIP_CONTENT = '[data-slot="tooltip-content"]';
 
 /**
- * Mounts an autohidden action bar while focus is inside the message, via the same
- * `message.setIsHovering` flag the library's mouseenter/mouseleave writes. Two writers share one
- * flag, so this covers both crossings: pointer leaving with focus inside (`reassert`), and focus
- * leaving with the pointer still over (defers to the library's mouseleave).
+ * Keeps the autohidden bar mounted while focus is inside, via message.setIsHovering shared with the
+ * library's mouseenter/mouseleave; covers pointer-out with focus inside (reassert) and focus-out
+ * with pointer still over (defers to library's mouseleave).
  */
 export function useActionBarFocusReveal() {
   const aui = useAui();
@@ -27,8 +26,7 @@ export function useActionBarFocusReveal() {
   const popupObserverRef = useRef<MutationObserver | null>(null);
   const onCardRef = useRef(false);
 
-  // The More menu is portaled outside the message, so focus in it counts as engaged. Scoped to the
-  // action bar: open disclosures also carry aria-expanded and would hold the bar every frame.
+  // Portaled More menu counts as engaged; other aria-expanded disclosures would hold the bar.
   const openPopupTrigger = useCallback(
     () =>
       rootRef.current?.querySelector(
@@ -131,8 +129,7 @@ export function useActionBarFocusReveal() {
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
-    // From an effect on purpose: it registers after the library's mouseleave, so both writes land in
-    // one dispatch and React never renders the intermediate `false`.
+    // Registers after mouseleave so one dispatch batches both writes; no intermediate false.
     let release: ((event: PointerEvent) => void) | null = null;
     const stopRelease = () => {
       if (release) document.removeEventListener("pointermove", release, true);
@@ -140,8 +137,7 @@ export function useActionBarFocusReveal() {
       onCardRef.current = false;
     };
     const reassert = (event: MouseEvent) => {
-      // A hoverable tooltip card (the reply stats) is portaled out of the message: keep the bar
-      // mounted while the pointer is on it, then clear once the pointer lands outside both.
+      // Hovering a portaled tooltip card keeps the bar; clears once the pointer leaves both.
       const into = event.relatedTarget as Element | null;
       if (!into?.closest?.(TOOLTIP_CONTENT)) {
         if (focusWithinRef.current && isEngaged()) aui.message().setIsHovering(true);

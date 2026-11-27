@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from loggers import get_logger
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -185,16 +186,6 @@ def _guardrail_cached() -> bool:
     return True
 
 
-def _hub_offline() -> bool:
-    try:
-        from huggingface_hub import constants
-        if getattr(constants, "HF_HUB_OFFLINE", False):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _probe_key(token: Any) -> str:
     import hashlib
     return hashlib.sha256(repr(token).encode("utf-8")).hexdigest()
@@ -213,7 +204,7 @@ def guardrail_access_preflight(
     offline mode and network errors all let the load go on as before."""
     if not safety_checker_requested() or not guardrail_installed():
         return None
-    if local_files_only or _hub_offline() or _guardrail_cached():
+    if local_files_only or hf_env_offline() or _guardrail_cached():
         return None
     if isinstance(hf_token, str):
         hf_token = hf_token.strip() or None
@@ -425,8 +416,7 @@ def _upright(image: Any, frame: Any) -> Any:
 
 
 def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
-    """Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
-    clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
+    """Drop or duplicate whole frames by presentation time for even VFR spacing; no-op at fps."""
     import collections
     import math
 

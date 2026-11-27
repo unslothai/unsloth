@@ -985,11 +985,18 @@ export const es419 = {
   chatMenu: {
     more: "Opciones del chat",
     copy: "Copiar",
-    addScheduledTask: "Agregar tarea programada…",
+    addScheduledTask: "Agregar tarea programada",
     compact: "Compactar conversación",
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
+  },
+  chatFiles: {
+    title: "Archivos en este chat",
+    code: "Fragmentos de código",
+    showInChat: "Mostrar en el chat",
+    download: "Descargar {name}",
+    saveFailed: "No se pudo guardar {name}.",
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
@@ -1074,6 +1081,7 @@ export const es419 = {
     saving: "Guardando...",
     search: "Buscar",
     shutdown: "Apagar",
+    technicalDetails: "Detalles técnicos",
   },
   shell: {
     helpMenu: {
@@ -2653,6 +2661,10 @@ export const es419 = {
         confirmDescriptionChatOnly:
           "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan los chats y la configuración. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
+        recommendedTorch:
+          "Se recomienda reparar: esta instalación tiene PyTorch {torch}, anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} es anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50, pero este controlador de GPU no admite CUDA 13. Actualiza primero el controlador de GPU y luego repara la instalación.",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
@@ -2834,7 +2846,7 @@ export const es419 = {
         oldWebkitWarning:
           "WebKitGTK {version} en Wayland: el renderizado por GPU puede fallar al iniciar en NVIDIA con escalado fraccionario (WebKit bug 280210). Si ocurre, Unsloth vuelve por sí solo al renderizado por CPU. En WebKitGTK 2.50.4 no mostró ninguna mejora medible (8 fps en ambos casos), así que no se recomienda Activado aquí.",
         oldDriverWarning:
-          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 610 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
+          "Controlador NVIDIA {version} en X11: Unsloth mantiene desactivado el renderizado por GPU hasta que el controlador sea 590 o posterior. Los controladores anteriores pierden un descriptor de archivo por fotograma y la ventana deja de dibujarse en pocos minutos.",
         fallbackNote:
           "El renderizado por GPU falló al iniciar en este sistema, así que Unsloth usa el renderizado por CPU.",
         tryAgain: "Volver a probar la GPU",
@@ -3115,6 +3127,15 @@ export const es419 = {
         runningOn: "llama.cpp se ejecuta actualmente en {backend}.",
         hint: "Instala la compilación de llama.cpp para este backend y la mantiene entre actualizaciones. Útil cuando la elección automática falla o el controlador de tu GPU no la admite. Solo se muestran los backends con una compilación para esta computadora; el entrenamiento no se ve afectado.",
         autoWith: "Automático ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm no está instalado",
+          rocmNoAccess: "sin acceso a la GPU",
+          otherRelease: "necesita una actualización de llama.cpp",
+          checkFailed: "no se pudo verificar",
+          noBuild: "no hay build para esta computadora",
+        },
         apply: "Aplicar",
         applying: "Instalando...",
         applyHint:
@@ -4441,6 +4462,54 @@ export const es419 = {
       cachedDatasetGoneDescription:
         "Los archivos del conjunto de datos ya no están en este dispositivo, por lo que el entrenamiento volverá a descargarlos.",
     },
+    gpus: {
+      title: "GPU",
+      description: "Las GPU de esta computadora y cómo las usa el entrenamiento",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB libres",
+      pickModel: "Elige un modelo para ver cómo usará el entrenamiento estas GPU.",
+      planning: "Revisando cómo cabe este modelo...",
+      planFailed: "No se pudo revisar el plan de GPU: {message}",
+      perGpu: "(~{gb} GB por GPU)",
+      alternative: "Prueba en su lugar: {alternative}",
+      override: "Elegir modo y GPU",
+      overrideHint: "Automático elige el modo más rápido que cabe. Desmarca una GPU para dejarla libre para el chat u otro entrenamiento.",
+      modeLabel: "Modo",
+      specLabel: "Distribución",
+      unavailable: "No disponible aquí",
+      runChip: "{mode} · {count} GPU",
+      rankGpu: "Rango {rank} · GPU {index}",
+      mode: {
+        auto: "Automático",
+        single: "Una sola GPU",
+        layerSplit: "División por capas",
+        ddp: "Paralelismo de datos (DDP)",
+        fsdp2: "Paralelismo de datos fragmentado (FSDP2)",
+        tp: "Paralelismo de tensores",
+        pp: "Paralelismo en pipeline",
+        cp: "Paralelismo de contexto",
+        ep: "Paralelismo de expertos",
+        custom: "Distribución personalizada",
+      },
+      summary: {
+        single: "Entrenando en una GPU",
+        layerSplit: "El modelo se divide capa por capa entre {count} GPU",
+        ddp: "Cada GPU entrena una copia completa: paralelismo de datos en {count} GPU",
+        fsdp2: "Pesos y estado del optimizador fragmentados entre {count} GPU",
+        tp: "Cada capa se divide entre {count} GPU",
+        pp: "Las capas se ejecutan como {count} etapas de pipeline, una por GPU",
+        cp: "Cada secuencia se divide entre {count} GPU",
+        ep: "Los expertos MoE se reparten entre {count} GPU",
+        custom: "Distribución personalizada {spec} en {count} GPU",
+      },
+      error: {
+        noGpu: "Selecciona al menos una GPU.",
+        singleNeedsOne: "Una sola GPU usa exactamente una GPU. Desmarca las demás.",
+        needsTwo: "Este modo necesita al menos dos GPU.",
+        customSpec: "Escribe una distribución, por ejemplo {example}.",
+      },
+    },
     preview: {
       title: "Vista previa de la ejecución",
       ready: "Listo",
@@ -4466,8 +4535,10 @@ export const es419 = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} en total",
       noGpu: "No se detectó ninguna GPU",
       hfToken: "Token de HF",
+      gpus: "GPU",
       saved: "Guardado",
       notSet: "Sin configurar",
       files: "Archivos",
@@ -4841,6 +4912,12 @@ export const es419 = {
       epochs: "Épocas",
       useMaxSteps: "Usar pasos máximos",
       useEpochs: "Usar épocas",
+      stepGuidancePass: "Unos {steps} pasos son una pasada por tus {rows} filas con un lote efectivo de {batch}.",
+      stepGuidanceFloor: "Una pasada por tus {rows} filas son solo {passSteps} pasos con un lote efectivo de {batch}, así que unos {steps} pasos (varias pasadas) es un mínimo razonable.",
+      stepGuidanceCap: "Una pasada por tus {rows} filas son {passSteps} pasos con un lote efectivo de {batch}; {steps} pasos entrenan con una parte, lo que suele alcanzar para una primera ejecución.",
+      stepGuidanceEpoch: "Una época son unos {passSteps} pasos por tus {rows} filas con un lote efectivo de {batch}.",
+      stepGuidancePacking: "El empaquetado une filas cortas, así que una pasada puede requerir menos pasos.",
+      useSuggestedSteps: "Usar {steps}",
       maxStepsTooltip: "Reemplaza el total de pasos del optimizador.",
       epochsTooltip: "Número de pasadas completas sobre el conjunto de datos.",
       contextLength: "Contexto",
@@ -5397,6 +5474,7 @@ export const es419 = {
     model: {
       label: "Modelo de traducción",
       fast: "Rápido",
+      balanced: "Equilibrado",
       quality: "Mejor calidad",
       chat: "Modelo de chat",
       recommended: "Recomendados",
@@ -5427,6 +5505,7 @@ export const es419 = {
         "Consulta las instrucciones exactas enviadas al modelo.",
     },
     history: {
+      notSaved: "No se guardó en el historial: el almacenamiento del navegador está lleno.",
       title: "Historial",
       search: "Buscar en el historial",
       empty: "Tus traducciones aparecen aquí.",
@@ -5530,6 +5609,11 @@ export const es419 = {
       notifyNone: "Desactivadas",
       archiveSuccessful: "Archivar ejecuciones correctas",
       webSearch: "Búsqueda web",
+      mcpServers: "Permitir herramientas MCP para esta tarea",
+      mcpServersHint: "Cada ejecución puede usar herramientas de los servidores marcados sin aprobación.",
+      mcpServersEmpty: "No hay servidores habilitados. Habilita un servidor MCP en el chat para usarlo aquí.",
+      mcpServersLoadError: "No se pudieron cargar los servidores MCP.",
+      mcpServerUnavailable: "{name} (no disponible)",
       project: "Proyecto",
       projectNone: "Ninguno",
       model: "Modelo",
@@ -6461,6 +6545,12 @@ export const es419 = {
     maximize: "Maximizar ventana",
     restore: "Restaurar ventana",
     close: "Cerrar ventana",
+    mediaCodecs: {
+      title: "Es posible que los videos generados no se reproduzcan",
+      // {command}: an apt command line, never translated.
+      description: "A este sistema le faltan los decodificadores de video de GStreamer. Instálalos con: {command}",
+      copy: "Copiar comando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instalar el runtime de audio",

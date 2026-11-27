@@ -145,6 +145,152 @@ def test_local_dataset_scores_literal_answers_and_formats_fewshot(
     assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
+def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    data.write_text("item code,label,id\n001,007,1\n010,042,2\n011,NA,3\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "item code", "label", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    first, _, last = task.test_docs()
+    assert task.doc_to_text(first) == "001"
+    assert task.doc_to_target(first) == "007"
+    assert task.process_results(first, ["007"])["exact_match"] == 1.0
+    assert task.process_results(first, ["7"])["exact_match"] == 0.0
+    assert task.doc_to_target(last) == "NA"
+    assert first["id"] == 1
+
+
+def test_csv_missing_values_across_reader_chunks(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    # Datasets reads 10,000 rows at a time. The first chunk establishes an integer id.
+    data.write_text("question,answer,id\n" + "001,NA,1\n" * 10_000 + ",,NA\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    docs = task.test_docs()
+    assert len(docs) == 10_001
+    assert docs[0] == {"question": "001", "answer": "NA", "id": 1}
+    assert docs[-1] == {"question": None, "answer": None, "id": None}
+    assert task.process_results(docs[-1], [""])["exact_match"] == 0.0
+
+
+def _score_generation(tmp_path, rows, generation):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    from lm_eval.api.instance import Instance
+
+    data = tmp_path / "qa.jsonl"
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    doc = task.test_docs()[0]
+    for stop in task.config.generation_kwargs["until"]:
+        generation = generation.split(stop)[0]
+    instance = Instance("generate_until", doc, ("", {}), 0)
+    instance.resps = [generation]
+    for ensemble in task._filters:
+        ensemble.apply([instance])
+    return task.process_results(doc, [instance.filtered_resps["strip"]])["exact_match"]
+
+
+@pytest.mark.parametrize(
+    "answer, generation, score",
+    [
+        ("red\nblue", "red\nblue", 1.0),
+        ("red\nblue", " red\nblue\n\nNext question?", 1.0),
+        ("red\nblue", "red", 0.0),
+        ("red\nblue\n", "red\nblue", 1.0),
+        (["blue\nred\n"], "blue\nred", 1.0),
+        ("    return 2", "return 2", 0.0),
+        ("    return 2", "    return 2", 1.0),
+        ("    return 2", "  return 2", 0.0),
+        ("\n    return 2", "\n    return 2", 1.0),
+        ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
+        (["red\nblue", "blue\nred"], "blue\nred", 1.0),
+        (["2", "two\nlines"], "2\nBecause 1+1 is 2.", 1.0),
+        (["2", "two\nlines"], "two\nlines", 1.0),
+        (["red", None], "None", 0.0),
+        ([2, 3], "3", 1.0),
+        ([["red", "blue"], ["green", "purple"]], "green", 1.0),
+        ([], "[]", 1.0),
+        ([["red"], [None]], "[None]", 0.0),
+        ([[], [None]], "[[], [None]]", 1.0),
+    ],
+)
+def test_local_dataset_scores_multiline_answers(tmp_path, answer, generation, score):
+    # the dataset loader needs one type per column
+    other = answer if isinstance(answer, list) else "2"
+    rows = [{"question": "Colors?", "answer": answer}, {"question": "1+1?", "answer": other}]
+    assert _score_generation(tmp_path, rows, generation) == score
+
+
+@pytest.mark.parametrize("other", ["4", "red\n\nblue"])
+@pytest.mark.parametrize("generation, score", [("2\nBecause 1+1 is 2.", 1.0), ("\n2", 0.0)])
+def test_single_line_answer_still_ends_at_the_first_newline(tmp_path, other, generation, score):
+    rows = [{"question": "1+1?", "answer": "2\n"}, {"question": "2+2?", "answer": other}]
+    assert _score_generation(tmp_path, rows, generation) == score
+
+
+def test_fewshot_examples_end_on_the_stop_sequence(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "First?", "answer": "def f():\n\n    return 1"},
+        {"question": "Second?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    task.set_fewshot_seed(0)
+    context = task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+    (stop,) = task.config.generation_kwargs["until"]
+    assert context == f"First? def f():\n\n    return 1{stop}Second?"
+
+
+def test_fewshot_examples_show_gold_as_written(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "def g():", "answer": "\n    return 2"},
+        {"question": "Next?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["qa"]
+    task.set_fewshot_seed(0)
+    assert (
+        task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+        == "def g(): \n    return 2\n\nNext?"
+    )
+
+
+def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
+    csv_file = tmp_path / "qa.csv"
+    csv_file.write_text(f'question,answer\n"{"x" * 200_000}","red\nblue"\n', encoding = "utf-8")
+    assert evalmod._stop_sequence(csv_file, "answer") == "\n\n"
+    jsonl = tmp_path / "qa.jsonl"
+    # trailing newlines do not widen the stop
+    rows = [{"question": "a\u2028b", "answer": "x\ny\n\n"}, {"question": "c", "answer": "3"}]
+    jsonl.write_text(
+        "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert evalmod._stop_sequence(jsonl, "answer") == "\n\n"
+
+
+def test_stop_sequence_names_the_bad_jsonl_line(tmp_path):
+    jsonl = tmp_path / "qa.jsonl"
+    jsonl.write_text('{"question": "a", "answer": "b"}\n{"question": oops}\n', encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"qa\.jsonl' line 2 is not valid JSON"):
+        evalmod._stop_sequence(jsonl, "answer")
+
+
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     (tmp_path / "gsm8k.jsonl").write_text("{}\n")
     (tmp_path / "sub").mkdir()
@@ -195,7 +341,7 @@ def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
     )
     spec = _read_dataset_task(generated / "suite_2.yaml")
     assert spec["task"] == "suite_2"
-    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert spec["dataset_kwargs"]["data_files"] == str(data.resolve())
 
 
 @pytest.mark.parametrize("dataset_first", [True, False])
@@ -214,7 +360,7 @@ def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_fi
     for name, path in zip(["qa_3", "qa_4"], data):
         spec = _read_dataset_task(tmp_path / "tmp" / "generated" / f"{name}.yaml")
         assert spec["task"] == name
-        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+        assert spec["dataset_kwargs"]["data_files"] == str(path.resolve())
 
 
 @pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])

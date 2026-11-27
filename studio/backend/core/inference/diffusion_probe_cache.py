@@ -26,6 +26,8 @@ _PROBE_SOURCES = (
     "diffusion_transformer_quant.py",
     "diffusion_torchao_patches.py",
     "diffusion_native_quant.py",
+    # The fp8 probe passes or fails on the unit-scale fallback this installs (no row-wise kernel on Windows builds).
+    "diffusion_fp8_unit_scale.py",
 )
 
 _LOCK = threading.Lock()
@@ -81,6 +83,28 @@ def _version(module: str) -> Optional[str]:
         return None
 
 
+# Distributions that install the ``triton`` module: Windows, ROCm and XPU wheels (current names and the older
+# pytorch-triton-* ones) are not named ``triton``, and kernels are chosen by the Triton version (the INT8 attention
+# rotation on 3.3), so verdicts must key on it there too.
+_TRITON_DISTS = (
+    "triton",
+    "triton-windows",
+    "triton-rocm",
+    "triton-xpu",
+    "pytorch-triton-rocm",
+    "pytorch-triton",
+    "pytorch-triton-xpu",
+)
+
+
+def _triton_version() -> Optional[str]:
+    for dist in _TRITON_DISTS:
+        found = _version(dist)
+        if found is not None:
+            return found if dist == "triton" else f"{dist}=={found}"
+    return None
+
+
 def _ordinal(card: str) -> Optional[int]:
     if card == "cuda":
         return None
@@ -93,9 +117,8 @@ def _ordinal(card: str) -> Optional[int]:
 
 
 def _nvidia_driver() -> Optional[str]:
-    """The NVIDIA driver build, without a CUDA context: the kernel module's version (Linux), else the loaded user-mode
-    driver library's name, size and mtime (WSL, containers without the proc file, Windows), plus the CUDA version
-    the driver supports. None when no build identity can be read."""
+    """Driver build (no CUDA context): kernel module version (Linux), else user-mode driver
+    library's name, size, mtime (WSL/Windows), plus the supported CUDA version; None if unknown."""
     import ctypes
 
     parts = []
@@ -190,7 +213,7 @@ def fingerprint(card: str) -> Optional[dict[str, Any]]:
             "torch_cuda": str(torch.version.cuda),
             "hip": str(hip),
             "torchao": _version("torchao"),
-            "triton": _version("triton"),
+            "triton": _triton_version(),
             "driver": driver,
             "gpu_name": str(props.name),
             "gpu_uuid": uuid,

@@ -2596,3 +2596,29 @@ def test_audio_beside_a_clip_is_refused_before_any_dispatch(monkeypatch):
     assert exc.value.status_code == 400
     assert exc.value.detail == inf._AUDIO_VIDEO_INPUT_DETAIL
     assert backend.calls == []
+
+
+def test_inkling_nudge_retry_keeps_literal_think_tags(monkeypatch):
+    from core.inference.chat_template_helpers import ThoughtSpans
+
+    def snap(text):
+        out = ThoughtSpans(text)
+        out.thought_spans = ()
+        return out
+
+    replies = iter(
+        [[snap('<tool_call>{"name": "lookup"')], [snap("Use <think>x</think>." + _CALL_XML)]]
+    )
+    backend = _ScriptedBackend(lambda messages, tools: next(replies))
+    backend.models["sf-model"]["chat_template_info"]["template"] = (
+        "<tool_call> <|content_thinking|>{{ r }}<|end_message|>"
+    )
+    payload = _request(
+        tools = [LOOKUP_TOOL], stream = False, nudge_tool_calls = True, reasoning_effort = "none"
+    )
+    message = _json_body(_call(payload, monkeypatch, backend, supports_reasoning = True))["choices"][
+        0
+    ]["message"]
+    assert len(backend.calls) == 2
+    assert message["tool_calls"][0]["function"]["name"] == "lookup"
+    assert (message["content"], message.get("reasoning_content")) == ("Use <think>x</think>.", None)

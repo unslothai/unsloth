@@ -94,9 +94,8 @@ def retrieve_web_chunks(
         if not doc_ids:
             return "", []
         hits = retrieval.retrieve_hybrid(
-            conn, scope, query, k = top_n, model_name = model, mode = "hybrid"
+            conn, scope, query, k = top_n, model_name = model, mode = "hybrid", min_score = min_score
         )
-        hits = retrieval.filter_min_score(hits, min_score)
         if not hits:
             return "", []
         rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])

@@ -200,7 +200,6 @@ class VideoFamily:
     pipeline_class: str
     transformer_class: str
     base_repo: str
-    # Pipeline kwarg carrying the guidance value.
     cfg_kwarg: str = "guidance_scale"
     # The pipe attribute holding the denoiser (all current video families are DiTs).
     denoiser_attr: str = "transformer"
@@ -311,10 +310,8 @@ class VideoFamily:
     # Fixed __call__ kwargs per request; keys missing from the pipeline signature are skipped.
     call_kwargs: tuple[tuple[str, object], ...] = field(default_factory = tuple)
     default_audio_flow_shift: Optional[float] = None
-    # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
-    # True: a keyframe keeps the chosen (or default) canvas instead of a source-aspect one, as MiniMax-H3's reference
-    # workflow does; the page then selects "Match source" only when asked.
+    # True: a keyframe keeps the chosen or default canvas, not source-aspect (as MiniMax-H3 does).
     keyframes_keep_canvas: bool = False
     # The page's Default preset size (a preset), when it is not resolution_presets[0]; requests without a size still
     # take resolution_presets[0].
@@ -716,8 +713,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         filter_reduction_configs = True,
     ),
-    # LTX-2 (diffusers >= 0.39): Gemma3-12B encoder is stored fp32 on the hub, ~49 GB download, ~24
-    # GB resident as bf16
+    # diffusers >= 0.39: Gemma3-12B encoder is fp32 on hub (~49 GB), ~24 GB resident as bf16.
     VideoFamily(
         name = "ltx-2",
         trainable = True,
@@ -750,8 +746,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
-        # fp8 by default. ComfyUI's LTX-2 / LTX-2.3 workflow templates (video_ltx2_t2v.json, video_ltx2_3_t2v.json) load
-        # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
+        # fp8 default; ComfyUI uses gemma_3_12B_it_fp4_mixed; hosted layerwise fp8 is nearest.
         te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         # Keyed on the 2.0 base so 2.3 never resolves it. fp8 only: LTX-2-INT8.safetensors predates
@@ -777,8 +772,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             scheme_deny = _NVFP4_GATE_FAILED,
-            # Image AUTO rule: INT8 1.18x faster than bf16 (RTX PRO 6000, both resident, compiled), so INT8.
-            auto_prequant_when_resident = frozenset({"int8"}),
+            # No auto_prequant_when_resident: Auto keeps bf16 where the DiT stays resident. Re-gate 2026-11-24 (RTX PRO
+            # 6000, Studio defaults, 8 clips): INT8 weights 0.213 mean / 0.376 max LPIPS vs bf16 (bf16 A/A 0.000), CI
+            # upper 0.289 against the 0.05 video bar, for 1.22x. INT8 stays where bf16 does not fit and on request.
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
             auto_static_skip = (
@@ -862,8 +858,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "wan2.2-t2v-a14b",
         profile = FamilyProfile(
-            # Auto leads with nvfp4 only after a passing accuracy-gate record; none exists yet, so
-            # int8.
+            # Auto leads with nvfp4 only after an accuracy-gate pass; none yet, so int8.
             auto_prefer = AutoPrefer(
                 floor = (10, 0),
                 schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
@@ -1033,9 +1028,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ui_default_resolution = (848, 480),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
-        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
-        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
-        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        # Qwen2.5-VL text tower pre-cast fp8 (ByT5 stays dense for glyphs); ComfyUI's template loads
+        # qwen_2.5_vl_7b_fp8_scaled; unchanged Instruct LM (Apache-2.0) in both repacks.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
         # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
@@ -1079,9 +1073,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # The pipeline's own size when none is given: the 16:9 bucket of target_size 960.
         ui_default_resolution = (1280, 720),
         bf16_components_gb = (16.6, 14.8, 2.4),
-        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
-        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
-        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        # Qwen2.5-VL text tower pre-cast fp8 (ByT5 stays dense for glyphs); ComfyUI's template loads
+        # qwen_2.5_vl_7b_fp8_scaled; unchanged Instruct LM (Apache-2.0) in both repacks.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
         te_quant_auto = "fp8",
         # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
@@ -1658,8 +1651,7 @@ def validate_video_request_shape(
     validate_video_fps(fam, fps)
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
     if presets and (width is not None or height is not None):
-        # A half-specified request resolves against the default preset, as generate() does. Keyed on None, not
-        # falsiness: an explicit 0 is refused rather than replaced (the request model bounds it at 32 anyway).
+        # Half-given size uses the default preset; keyed on None, so an explicit 0 is refused.
         want_w = presets[0][0] if width is None else int(width)
         want_h = presets[0][1] if height is None else int(height)
         if (want_w, want_h) not in presets:
@@ -1932,8 +1924,7 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("fastwan2.1-t2v-1.3b", 3, 1.0),
     ("cosmos3-nano", 35, 6.0),
     ("cosmos3-edge", 20, 6.0),
-    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
-    # are the family defaults). Its head bank was distilled for that partition.
+    # PDD baked: ComfyUI's 8 Euler steps, CFG 1, simple schedule; head bank distilled for this.
     ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
@@ -1991,8 +1982,7 @@ _LTX25_DISTILLED = re.compile(r"(?<![a-z0-9])distill")
 
 
 def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
-    """The first identifier naming a variant decides (selected file before repo); unnamed means distilled, which is
-    what the Diffusers pack's default ``transformer/`` and the reference workflow ship."""
+    """First identifier naming a variant decides (file before repo); unnamed means distilled."""
     for identifier in identifiers:
         leaf = _ltx_leaf(identifier).lower()
         if _LTX25_DISTILLED.search(leaf):

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-user approval cache skips only the dialog, honored only on matching fingerprint, rules
-version and SHA; gate always re-scans, never stores CRITICAL; errors mean ask again, never auto-
-approve."""
+"""Per-user approval cache that only skips the dialog, matched on fingerprint, rules version and
+SHA; the gate re-scans, CRITICAL is never stored, errors never approve."""
 
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ from utils.paths import storage_roots
 from hub.services.models import account_access
 from utils.account_context import current_account_id, is_owner_context
 from utils.security.remote_code_scan import CRITICAL, SCAN_RULES_VERSION
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -48,12 +48,6 @@ def _store_path():
     if is_owner_context():
         return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
     return storage_roots.account_path("security/remote_code_approvals.json")
-
-
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
 
 
 def approval_target_key(targets) -> str:
@@ -163,9 +157,8 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
 
 
 def approved_local_fingerprint(subject: str, approved_as, load_dir: str) -> Optional[str]:
-    """The consent fingerprint of *load_dir*'s remote code when *subject* approved that exact
-    code under any id in *approved_as* (one id or several) with the current ruleset, else None.
-    Only an external auto_map repo is fetched; the rest is read from disk."""
+    """Fingerprint of load_dir's remote code if subject approved that exact code under any
+    approved_as id with the current ruleset, else None; only external auto_map repos are fetched."""
     from utils.paths import is_local_path
     from utils.security.consent import _fingerprint_target_key
     from utils.security.remote_code_scan import (
@@ -263,7 +256,7 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     from utils.paths import is_local_path
 
     try:
-        if is_local_path(target) or _env_offline():
+        if is_local_path(target) or hf_env_offline():
             return None
         from huggingface_hub import HfApi
         return HfApi().model_info(target, token = hf_token).sha
@@ -273,9 +266,8 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
 
 
 def resolve_combined_sha(targets, hf_token: Optional[str] = None) -> Optional[str]:
-    """Combined SHA over the primary targets; None if ANY is unresolvable. A cheap secondary
-    gate only -- the fingerprint (which also covers external auto_map repos) stays
-    authoritative, so a None here just falls back to the fingerprint, never weakens it."""
+    """Combined SHA over primary targets, or None if any is unresolvable; a cheap secondary gate; a
+    None falls back to the fingerprint and never weakens it."""
     from utils.security.consent import _fingerprint_target_key
 
     parts = []

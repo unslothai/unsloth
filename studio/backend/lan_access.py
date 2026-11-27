@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Extra LAN listener on each detected address, not 0.0.0.0 (collides with loopback); lifespan=off
-so startup and shutdown stay with primary and never fire twice; settings listener IPv4 only;
-link-local IPv6 omitted."""
+"""Extra LAN listener per detected address, not 0.0.0.0 (collides with loopback); lifespan=off so
+startup/shutdown never fire twice; settings listener IPv4 only; link-local IPv6 omitted."""
 
 from __future__ import annotations
 
@@ -56,8 +55,7 @@ _bound_addresses: tuple[str, ...] = ()
 
 
 def detect_lan_addresses(ip_version: int = 4) -> list[str]:
-    """Loopback, link-local and multicast are dropped; public addresses are kept for the caller to
-    decide."""
+    """Drops loopback, link-local and multicast addresses; public ones are kept for the caller."""
     # WSL NAT addresses sit on a private Hyper-V network other devices cannot reach
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
@@ -90,9 +88,8 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
 
 
 def detect_host_only_addresses(ip_version: int = 4, carrier: bool = True) -> list[str]:
-    """Addresses on virtual switches (libvirt, Docker, ...) that detection skips: offered for an explicit
-    choice, e.g. serving VMs on virbr0 (#17017), never bound by Automatic. ``carrier=False`` adds
-    bridges no guest is attached to yet, whose assigned address still binds."""
+    """Virtual-switch addresses skipped by detection: explicit choice only, never by Automatic (VMs
+    on virbr0, #17017); carrier=False adds guest-less bridges, whose address still binds."""
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
     return _usable_addresses(
@@ -220,7 +217,6 @@ def _already_served(address: str, port: int) -> bool:
 
 
 def _bind_listener(address: str, port: int) -> socket.socket:
-    """A listening socket on exactly ``address:port``."""
     if sys.platform == "darwin" and _already_served(address, port):
         # BSD SO_REUSEADDR binds under another app's 0.0.0.0 listener and steals its LAN traffic.
         raise OSError(errno.EADDRINUSE, f"{address}:{port} is already served")
@@ -265,7 +261,6 @@ def _listener_config(app, host: str, port: int):
 
 
 def _running_on_event_loop() -> bool:
-    """True when the caller is already inside a running event loop."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -376,8 +371,7 @@ def start_lan_listener(
 
 
 def _sync_lan_trust() -> None:
-    """Derive the beyond-loopback flag from server and drain state rather than caller assignment;
-    caller must hold _lock; racing stops cannot clear it early"""
+    """Derive trust from server and drain state; hold _lock so racing stops cannot clear it."""
     set_lan_connector_active(_server is not None or _pending_drains > 0)
 
 
@@ -483,7 +477,6 @@ def stop_lan_listener() -> bool:
 
 
 def lan_listener_status() -> dict:
-    """Runtime view of the listener: whether it serves, where, and why not."""
     with _lock:
         return {
             "running": _server is not None,
@@ -501,8 +494,7 @@ def clear_lan_listener_error() -> None:
 
 
 def request_on_lan_listener(scope) -> bool:
-    """True if the request came in on a LAN listener rather than loopback; judged from the accepting
-    socket address in scope, never a client header"""
+    """True on a LAN listener; judged by the accepting socket address, never a client header."""
     addresses = _bound_addresses
     if not addresses:
         return False

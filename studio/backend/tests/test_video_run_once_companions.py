@@ -81,10 +81,14 @@ def test_kill_switch_and_other_tiers_keep_the_connectors_resident(monkeypatch):
 
     pipe = _pipe()
     monkeypatch.delenv(_ENV, raising = False)
+    monkeypatch.setenv("UNSLOTH_VIDEO_GROUP_RUN_ONCE_COMPANIONS", "0")
     assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
     assert _video_offload_vram_floor_mib(pipe, _plan("group", te = True)) == 3 + 6 + 4
+    monkeypatch.delenv("UNSLOTH_VIDEO_GROUP_RUN_ONCE_COMPANIONS")
     monkeypatch.setenv(_ENV, "0")
     assert _video_offload_vram_floor_mib(pipe, _plan("streaming")) == 3 + 6 + 4
+    # the streaming switch keeps them resident under group offload too
+    assert _video_offload_vram_floor_mib(pipe, _plan("group")) == 3 + 6 + 4
 
 
 def _stub_streaming(monkeypatch, budget_mib):
@@ -149,16 +153,28 @@ def test_streaming_offload_streams_the_connectors_when_they_pin(monkeypatch):
     assert pipe.vae.moved_to
 
 
-@pytest.mark.parametrize("why", ["budget", "kill_switch"])
-def test_connectors_stay_resident_unless_pinned_or_when_switched_off(monkeypatch, why):
-    if why == "kill_switch":
-        monkeypatch.setenv(_ENV, "0")
-        calls = _stub_streaming(monkeypatch, 1 << 20)
+@pytest.mark.parametrize("must_stream", [False, True])
+def test_short_pin_budget_keeps_connectors_resident_unless_the_plan_needs_them_off(
+    monkeypatch, must_stream
+):
+    monkeypatch.delenv(_ENV, raising = False)
+    calls = _stub_streaming(monkeypatch, 9)  # the 8 MiB DiT pins, the 6 MiB connectors would not
+    pipe = _pipe()
+    dm._apply_streaming_offload(pipe, "cuda", None, stream_companions_unpinned = must_stream)
+    hooked = {id(m): (t, low) for m, t, low in calls}
+    if must_stream:
+        # off the card all the same, without the copy stream or any pin
+        assert hooked[id(pipe.connectors)] == ("leaf_level", True)
+        assert pipe.connectors.moved_to == []
     else:
-        monkeypatch.delenv(_ENV, raising = False)
-        calls = _stub_streaming(
-            monkeypatch, 9
-        )  # the 8 MiB DiT pins, the 6 MiB connectors would not
+        # main's placement
+        assert id(pipe.connectors) not in hooked
+        assert pipe.connectors.moved_to
+
+
+def test_connectors_stay_resident_when_switched_off(monkeypatch):
+    monkeypatch.setenv(_ENV, "0")
+    calls = _stub_streaming(monkeypatch, 1 << 20)
     pipe = _pipe()
     dm._apply_streaming_offload(pipe, "cuda", None)
     assert all(m is not pipe.connectors for m, _t, _low in calls)

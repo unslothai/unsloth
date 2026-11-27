@@ -50,7 +50,6 @@ def _ci_imports_by_test():
 
 
 def test_the_scan_finds_the_hnsw_tier_imports():
-    # Control: the reader sees the CI-only import the ANN tests make today.
     found = _ci_imports_by_test()
     assert "usearch" in found.get("test_rag_vec_ann.py", set())
 
@@ -133,8 +132,7 @@ def test_the_import_scan_reads_function_local_imports():
 
 
 def test_every_rag_harness_import_is_installed_by_the_upload_requirements():
-    """Any import a harness test makes, at module level or inside a function, needs its wheel in
-    the venv: #18293 built PIL images at collection time and the whole file failed to collect."""
+    """Each harness import needs its wheel in the venv; #18293 built PIL images at collection."""
     upload = _pins(UPLOAD_REQS)
     missing = sorted(
         f"{test.name}: {module}"

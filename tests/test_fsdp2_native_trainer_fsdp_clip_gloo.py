@@ -53,8 +53,7 @@ def _case_trainer_fsdp(native, tmp):
         try:
             targs = _targs(os.path.join(tmp, "out"), fsdp = "full_shard")
             trainer = Trainer(model = model, args = targs)
-            # On CPU accelerate builds no FSDP state (MULTI_CPU), so is_fsdp_enabled stays False
-            # here; the plugin arguments show the Trainer took the FSDP request.
+            # On CPU (MULTI_CPU), is_fsdp_enabled stays False; plugin args show the request.
             res[backend or "none"] = {
                 "error": "",
                 "fsdp_plugin": getattr(trainer.args, "fsdp_plugin_args", None) is not None
@@ -310,7 +309,6 @@ def test_trainer_fsdp_args_refused_with_native_backend_and_win_without(tmp_path)
         assert native["error"].startswith("RuntimeError"), (rank, r)
         assert "UNSLOTH_FSDP2_BACKEND=accelerate" in native["error"], (rank, r)
         assert native["sharded"] is False, (rank, r)
-        # No explicit backend: the Trainer's FSDP request wins, the model is left to accelerate.
         assert r["none"]["sharded"] is False, (rank, r)
         assert r["none"]["error"] == "" and r["none"]["fsdp_plugin"], (rank, r)
 

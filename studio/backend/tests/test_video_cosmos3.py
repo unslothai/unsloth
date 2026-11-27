@@ -924,6 +924,8 @@ def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
 def test_nano_loads_by_default_without_the_guardrail(cosmos3_runtime, monkeypatch):
     """Off by default: no package, no access check, no refusal; the pipeline is built with the checker off."""
     _set_guardrail(monkeypatch, "default")
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the load starts.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     checked = []
     monkeypatch.setattr(vc3, "guardrail_access_preflight", lambda *a, **k: checked.append(a))
     started = []

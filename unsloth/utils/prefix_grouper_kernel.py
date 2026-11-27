@@ -70,6 +70,12 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 _flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
 
 
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
 def _rocm_static_flex_entry(query, key, value, **kwargs):
     # Its own code object, so static graphs keep their own recompile budget.
     return flex_attention(query, key, value, **kwargs)
@@ -77,14 +83,11 @@ def _rocm_static_flex_entry(query, key, value, **kwargs):
 
 # ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
 # calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
-_ROCM_FLEX_STATIC = bool(getattr(torch.version, "hip", None)) and (
-    os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0"
-)
+_ROCM_FLEX_STATIC = _is_rocm_torch() and (os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0")
 _flex_attention_static = (
     torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
 )
-# Inside an enclosing graph the dynamic = False compile above is inlined into the caller's graph, so the padded
-# length would stay symbolic there: unsloth_zoo specializes the Q / K / V sequence sizes at trace time instead.
+# Inlined into caller's graph, padded length is symbolic; unsloth_zoo specializes Q/K/V sizes.
 _specialize_flex_shapes = None
 if _ROCM_FLEX_STATIC:
     try:
@@ -415,8 +418,7 @@ _BLOCK_MASK_CACHE: Dict[Tuple, BlockMask] = {}
 
 
 def _make_mask_mod(group_of_kv, is_prefix, suffix_of_kv):
-    """Same group, and kv is a prefix token or in the same suffix as q; one kv <= q guard covers
-    both, since every prefix index precedes every suffix index; matches the SDPA oracle."""
+    """Same group; kv is prefix or q's suffix; kv <= q covers both, prefixes precede suffixes."""
 
     def mask_mod(b, h, q_idx, kv_idx):
         same_group = group_of_kv[q_idx] == group_of_kv[kv_idx]
@@ -562,8 +564,7 @@ def _keep_saved(tensor):
 
 
 def _detach_saved(tensor):
-    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
-    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    # detach() avoids a cycle gc cannot break, so failed probes do not keep Q / K / V alive.
     return tensor.detach()
 
 
@@ -581,7 +582,7 @@ def _record_compile_failure(key, reason):
 def _small_smem_skip_reason(q) -> Optional[str]:
     """NVIDIA small-smem GPU, 16-bit, head_dim >= 128, no opt-in: the default tiles cannot fit, so
     skip the failing compile (about 3 minutes on T4) and keep the packed path."""
-    if _SMALL_SMEM_OPT_IN or torch.version.hip is not None:
+    if _SMALL_SMEM_OPT_IN or _is_rocm_torch():
         return None
     # User tile overrides (PG_FLEX_BF16_BLOCK_M / _N) go through the real compile check instead.
     if (_BF16_BLOCK_M, _BF16_BLOCK_N) != (128, 64):

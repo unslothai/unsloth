@@ -183,14 +183,16 @@ def _offline_window_if_unreachable(step = "loading"):
     saved_marker: list = []  # [prior value] once this window marked HF offline as auto-set
     force_ctx = None
     try:
-        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        from utils.transformers_version import hf_endpoint_unreachable
+        from utils.utils import hf_env_offline
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         )
-        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+        if not hf_env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
             # Only the Hub is known to be down: mark this offline as ours so a required kernel
             # install (GitHub / PyPI) is still allowed; an operator's HF offline never enters here.
@@ -450,10 +452,10 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
-        from utils.transformers_version import latest_tier_active_for
+        from utils.transformers_version import latest_tier_forces_16bit
 
         # Plain token: the sentinel reads no cache offline, misses the sidecar and leaves 4-bit on.
-        if latest_tier_active_for(checkpoint_path, hf_token or None):
+        if latest_tier_forces_16bit(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -572,8 +574,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             and export_type in ("merged", "base", "gguf")
             and current_reap_key(backend) is not None
         ):
-            # The loaded model is the pruned one now; "no REAP" must not export it. Studio loads
-            # the checkpoint again for every export run; an API client has to do the same.
+            # Pruned model: "no REAP" must not export it; API clients must reload per export.
             _send_response(
                 resp_queue,
                 {
@@ -786,8 +787,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
-        # Runs before the Unsloth import (transformers captures kernel gates then); security gates
-        # run first, so a blocked checkpoint never triggers a kernel build.
+        # Pre-Unsloth (transformers captures kernel gates); security gates block kernel builds.
         if not _preflight_security_gates(config, resp_queue):
             return
         if not _provision_ssm_kernels(
@@ -887,8 +887,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
-                # Offline window covers this load's Hub preflights (re-probed per load). The
-                # security gates run before any SSM kernel is provisioned for the checkpoint.
+                # Offline window for Hub preflights; security gates precede SSM kernel builds.
                 with _offline_window_if_unreachable():
                     with remote_lora_base_scope():
                         if not _preflight_security_gates(cmd, resp_queue):

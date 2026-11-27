@@ -85,6 +85,19 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
     return path
 
 
+# Placement reads the host's total RAM (the pinned-host share, #19231). Pin one host so a launch decides the same on a
+# 16 GB runner as on a large one; the tests about host RAM set their own after this.
+_PINNED_HOST_TOTAL_MIB = 256 * 1024
+
+
+@pytest.fixture(autouse = True)
+def _pinned_host_ram(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_total_system_memory_mib", staticmethod(lambda: _PINNED_HOST_TOTAL_MIB)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_cgroup_memory_limit_mib", staticmethod(lambda: None))
+
+
 def _backend(tmp_path: Path, *, vulkan: bool, memory):
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
@@ -4137,7 +4150,7 @@ def _vulkan_cpu_replay_backend(tmp_path, monkeypatch, *, gguf_gb, free_mib, avai
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     # The real _prepare_cpu_fallback_launch and _cpu_isolated_replay run: the replay argv is real.
     backend._cpu_isolated_binary = lambda _binary: "/fake/llama-server"
-    backend._llama_server_env_for_binary = lambda _binary: {_loader_path_var(): ""}
+    backend._llama_server_env_for_binary = lambda _binary, **_kwargs: {_loader_path_var(): ""}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     monkeypatch.setattr(
@@ -5953,7 +5966,11 @@ def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto, **card)
     assert _load_mode(cmd) is None, "qwen3moe does not mark the table lazy"
 
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
+    # The prompt cache is off so only the table decides: a pinned load has to leave room for the
+    # cache it would grow into, and 12 GiB cannot hold the 8 GiB default beside the weights.
+    _b, cmd = _cache_launch(
+        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, cache_ram = 0, **card
+    )
     assert _load_mode(cmd) == "none", cmd
     # And "-lzm off" makes it an ordinary tensor again.
     _b, cmd = _cache_launch(
@@ -6042,7 +6059,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
     card = dict(memory = _EIGHT_GIB_CARD)
     _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
     assert _load_mode(cmd) is None, cmd
-    # An explicit "on" is read lazily on any device.
+    # An explicit "on" is read lazily on any device (prompt cache off, as above).
     _b, cmd = _cache_launch(
         tmp_path,
         ram_gib = 12,
@@ -6050,6 +6067,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         arch = "qwen4exp",
         caps = no_auto,
         extra_args = ["-lzm", "on"],
+        cache_ram = 0,
         **card,
     )
     assert _load_mode(cmd) == "none", cmd
@@ -6193,9 +6211,9 @@ def _apu_qwen38(
 def test_a_mixed_cuda_host_keeps_the_lazy_discount_through_the_preflight(
     tmp_path, _moe_cache_host, monkeypatch, load_kwargs
 ):
-    """No --device list."""
+    """No --device list. The prompt cache is off so only the lazy discount decides the pin."""
     _mixed_cuda_soc_host(monkeypatch)
-    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, **load_kwargs)
+    backend, cmd = _mixed_cuda_launch(tmp_path, host_guard = True, cache_ram = 0, **load_kwargs)
     assert _load_mode(cmd) == "none", cmd
     assert backend.last_load_warning is None, backend.last_load_warning
 
@@ -6376,7 +6394,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert src.index("_vulkan_igpu_ids = (") < src.index(
         "_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)"
     )
-    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 8
 
 
 def test_the_oversized_readings_share_their_preflights_ram_snapshot():

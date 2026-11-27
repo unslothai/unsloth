@@ -109,8 +109,7 @@ _HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from thi
 
 
 def binary_gpu_backends(binary: Path | str) -> Optional[set[str]]:
-    """GPU backend libraries beside the binary; empty for a split build with only CPU
-    libraries, None when the layout says nothing (a static build or a wrapper)."""
+    """GPU libs beside the binary; empty if only CPU libs, None for a static build or wrapper."""
     try:
         names = [p.name for p in Path(binary).resolve().parent.iterdir() if p.is_file()]
     except OSError:
@@ -142,12 +141,16 @@ def _amd_mask_hides_all() -> bool:
     return _mask_hides_all("CUDA_VISIBLE_DEVICES")
 
 
-def host_gpu_vendors() -> Optional[set[str]]:
-    """None means unknown and filters nothing; an empty set means GPUs exist but none is reachable."""
+def host_gpu_vendors(*, reachable: bool = True) -> Optional[set[str]]:
+    """None means unknown and filters nothing; an empty set means GPUs exist but none is reachable.
+    reachable=False keeps a GPU whose device nodes or masks shut it off (the card is there)."""
     vendors: set[str] = set()
     if sys.platform == "darwin":
         return {"apple"}
     if sys.platform == "win32":
+        if not reachable:
+            # The HIP SDK installs amdhip64.dll with no AMD card, so DLLs prove no device here.
+            return None
         system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
         for vendor, patterns in _WINDOWS_VENDOR_DLLS.items():
             if any(next(system32.glob(pattern), None) for pattern in patterns):
@@ -171,6 +174,8 @@ def host_gpu_vendors() -> Optional[set[str]]:
         wsl_nvidia = wsl and any(Path(_WSL_CUDA_LIB_DIR).glob("libcuda.so*"))
         vendors |= {v for v, on in (("amd", wsl_amd), ("nvidia", wsl_nvidia)) if on}
         detected = set(vendors)
+        if not reachable:
+            return detected or None
         # Hidden device nodes or a masking env var must not make a backend look runnable.
         if "nvidia" in vendors and (
             not (os.path.exists("/dev/nvidiactl") or wsl_nvidia)

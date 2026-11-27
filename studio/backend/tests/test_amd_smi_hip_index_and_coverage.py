@@ -77,8 +77,7 @@ def _fake_amd_smi(metric, enumeration = None):
 
 
 class TestTheAmdSmiIdIsTranslatedToHip:
-    """Defect A: the branch keyed rows by amd-smi's gpu id and compared that number
-    against HIP visibility tokens."""
+    """Defect A: rows keyed by amd-smi's gpu id were compared against HIP visibility tokens."""
 
     def test_a_reordered_host_reports_each_cards_memory_under_its_hip_id(self, rocm, monkeypatch):
         """amd-smi gpu 1 is HIP 0 here. Keyed by amd-smi's number, the 96 GiB card's

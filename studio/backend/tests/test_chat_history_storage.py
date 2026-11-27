@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import os
 import platform
 import shutil
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from routes import chat_history
 from storage import studio_db
 from utils.paths import studio_db_path
 
@@ -215,6 +217,25 @@ def test_chat_export_reads_one_snapshot_during_concurrent_delete(tmp_path, monke
     assert [item["id"] for item in projects] == [project["id"]]
     assert [item["id"] for item in threads] == [thread["id"]]
     assert [item["id"] for item in messages] == ["msg-1"]
+
+
+def test_chat_export_streams_one_message_per_line_and_filters_archived(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("open"))
+    studio_db.upsert_chat_thread({**_thread("archived"), "archived": True})
+    studio_db.upsert_chat_message(_message("msg-1", 1, "a\nb", "open"))
+    studio_db.upsert_chat_message(_message("msg-2", 2, "old", "archived"))
+
+    full = chat_history.export_history(archived = False, current_subject = "test").body
+    lines = full.split(b"\n")
+    assert json.loads(lines[0] + b"]}")["threadCount"] == 2
+    assert [json.loads(line.rstrip(b","))["id"] for line in lines[1:-1]] == ["msg-1", "msg-2"]
+    assert lines[-1] == b"]}"
+    assert [m["id"] for m in json.loads(full)["messages"]] == ["msg-1", "msg-2"]
+
+    archived = json.loads(chat_history.export_history(archived = True, current_subject = "test").body)
+    assert [t["id"] for t in archived["threads"]] == ["archived"]
+    assert [m["id"] for m in archived["messages"]] == ["msg-2"]
 
 
 def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
@@ -2186,3 +2207,35 @@ def test_the_reseat_clears_when_only_hidden_ancestors_survive(tmp_path, monkeypa
     )
 
     assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None
+
+
+def test_concurrent_chat_settings_patch_seeds_defaults_without_overwriting_another_window():
+    from storage import studio_db
+
+    import json
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute(
+            "CREATE TABLE chat_threads (id text, settings_json text, settings_seqs text)"
+        )
+        connection.execute("INSERT INTO chat_threads VALUES ('chat', NULL, NULL)")
+        assert studio_db._write_chat_thread_settings_in_conn(
+            connection, "chat", merge = {"systemPrompt": "new prompt"}, seq = 1, writer = "first"
+        )
+        assert studio_db._write_chat_thread_settings_in_conn(
+            connection,
+            "chat",
+            merge = {"temperature": 0.7},
+            defaults = {"systemPrompt": "stale prompt", "topP": 0.9},
+            seq = 1,
+            writer = "second",
+        )
+        settings = json.loads(
+            connection.execute("SELECT settings_json FROM chat_threads").fetchone()[0]
+        )
+        assert settings == {"systemPrompt": "new prompt", "temperature": 0.7, "topP": 0.9}
+    finally:
+        connection.close()

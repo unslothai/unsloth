@@ -30,6 +30,7 @@ from .pp_schedules import (
     compiled_blocks,
     non_reentrant_checkpointing_only,
     split_backward_keeps_function_nodes,
+    split_backward_scope,
     single_backward_kernels,
     resolve_stages_per_rank,
     schedule_spec,
@@ -60,10 +61,20 @@ _MOE_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe
 # Qwen4ExpForCausalLM: same router output (logits first) and load_balancing_loss_func as Qwen3-MoE.
 # ConditionalGeneration wrappers read num_experts / top-k / coef from text_config.
 _PP_MOE_AUX_WRAPPERS = ("Qwen3_5MoeForConditionalGeneration", "Qwen4ExpForConditionalGeneration")
-_PP_MOE_AUX_FAMILIES = ("Qwen3MoeForCausalLM", "Qwen4ExpForCausalLM", *_PP_MOE_AUX_WRAPPERS)
+_PP_MOE_AUX_FAMILIES = (
+    "Qwen3MoeForCausalLM",
+    "Qwen4ExpForCausalLM",
+    # Parity per family in test_pp_moe_aux_gloo.py; OLMoE / Qwen2-MoE / GraniteMoE record router logits from 5.x on.
+    "MixtralForCausalLM",
+    "OlmoeForCausalLM",
+    "Qwen2MoeForCausalLM",
+    "FlexOlmoForCausalLM",
+    "Ernie4_5_MoeForCausalLM",
+    "GraniteMoeForCausalLM",
+    *_PP_MOE_AUX_WRAPPERS,
+)
 _PP_MOE_AUX_SCHEDULES = ("gpipe", "1f1b")
-# Mixture-of-experts CausalLMs whose loss has no router auxiliary term (bias-based routing balance, nothing
-# updated from router statistics in training): a stage boundary cuts nothing, so there is nothing to carry.
+# MoE models with bias-based router balancing (no aux loss); nothing crosses a stage boundary.
 _PP_MOE_NO_AUX_FAMILIES = (
     "DeepseekV41ForCausalLM",
     "Gemma4ForCausalLM",
@@ -125,6 +136,14 @@ _MULTI_STAGE_DP = (
     "Unsloth: native FSDP2 data parallel over a pipeline with several stages per rank is not supported "
     "(each FSDP2 root must be one stage's module); use one stage per rank (schedule = 'gpipe' / '1f1b') "
     "with a dp mesh, or no dp mesh."
+)
+# Root mesh dimension names FSDP2 shards over (the base `dp`, the launcher's / torchtitan's `dp_shard`). A
+# replicated dp axis (dp_replicate: DDP-style gradient all-reduce) and model parallel axes under any name
+# compose with several stages per rank; FSDP2 under another name is still refused at shard_model.
+_SHARDED_DP_DIMS = (
+    "dp",
+    "dp_shard",
+    "fsdp",
 )
 _SIMPLE = (bool, int, float, str, type(None))
 
@@ -234,6 +253,39 @@ def pipeline_stage_of(model):
     return None
 
 
+@functools.lru_cache(maxsize = None)
+def _adjacent_stage_class(forward_only):
+    """A PipelineStage for two adjacent stages on one rank (V schedules, loop schedules at pp 1).
+    torch < 2.12 (no PipelineStage._is_same_rank) warms up with a send / recv to the neighbour stages' rank even
+    when it is this rank; gloo has no pair to itself ("Pair is not connected", 0xC0000005 on Windows), so those
+    are dropped (local stages hand over in process). forward_only: the in-place gradient hand-over is a no-op."""
+    from torch.distributed.pipelining import PipelineStage
+
+    class _AdjacentStage(PipelineStage):
+        if not hasattr(PipelineStage, "_is_same_rank"):
+
+            def _get_init_p2p_neighbors_ops(self):
+                return [
+                    op
+                    for op in super()._get_init_p2p_neighbors_ops()
+                    if getattr(op, "group_peer", None) != self.group_rank
+                ]
+
+        if forward_only:
+
+            def get_local_bwd_output(self, mb_index):
+                if not self.has_backward:
+                    return ()
+                return super().get_local_bwd_output(mb_index)
+
+            def set_local_bwd_input(self, next_stage_bwd_outputs, mb_index):
+                if not self.has_backward:
+                    return None
+                return super().set_local_bwd_input(next_stage_bwd_outputs, mb_index)
+
+    return _AdjacentStage
+
+
 # ------------------------------------------------------------------------------- composed meshes
 
 
@@ -251,10 +303,25 @@ def _root_mesh(mesh):
         return None
 
 
+def check_multi_stage_dp(pp_mesh, stages_per_rank):
+    """Several stages per rank do not compose with native FSDP2 data parallel: ValueError when the root mesh
+    of `pp_mesh` has an FSDP2 data parallel dimension (dp, dp_shard, fsdp) of size > 1 besides `pp_mesh`'s own
+    dimension (whatever its name). Run before the model is cut or a checkpoint is read; nothing is changed."""
+    if stages_per_rank <= 1 or pp_mesh is None:
+        return
+    root = _root_mesh(pp_mesh)
+    if root is None or root is pp_mesh:
+        return
+    own = set(getattr(pp_mesh, "mesh_dim_names", None) or ())
+    names = tuple(getattr(root, "mesh_dim_names", None) or ())
+    for i, name in enumerate(names):
+        if name in _SHARDED_DP_DIMS and name not in own and root.size(i) > 1:
+            raise ValueError(f"{_MULTI_STAGE_DP} (mesh dimension {name!r} of size {root.size(i)})")
+
+
 def check_mesh_composition(meshes, what = "pipeline parallel composition"):
-    """`meshes` ({name: 1-D DeviceMesh}) must be dimensions of one init_device_mesh covering every rank:
-    1-D, meeting only at this rank (orthogonal) and with sizes multiplying to the world size. Returns the
-    world size covered; ValueError otherwise (nothing is changed)."""
+    """meshes ({name: 1-D DeviceMesh}) must be orthogonal dims of one init_device_mesh with sizes
+    multiplying to the world size; returns that size, else ValueError with nothing changed."""
     import torch.distributed as dist
 
     world = dist.get_world_size() if dist.is_initialized() else 1
@@ -418,8 +485,7 @@ def _carry_layout(model, n):
 
 
 def _layer_tables(decoder, layers, layers_name):
-    """Decoder children holding one module per decoder layer, keyed by the layer index (DeepSeek-V4.1's
-    engram_tables: an n-gram table read at the model level for one layer): the owning stage keeps its own."""
+    """Layer-indexed ModuleDicts (DeepSeek-V4.1 engram_tables); owning stage keeps its own."""
     out = []
     n = len(layers)
     for name, child in decoder.named_children():
@@ -550,9 +616,8 @@ def _find_parts(model) -> _Parts:
         base = getattr(child, "original_module", child)  # PEFT modules_to_save wraps it
         norm_like = "norm" in name.lower() or "Norm" in type(base).__name__
         too_big = bool(hidden) and sum(p.numel() for p in base.parameters()) > 4 * hidden
-        # A learned position or token-type table before the layers (GPT-2 wpe, OPT/BART/Whisper
-        # embed_positions) is indexed by positions, so later stages need nothing from it;
-        # token-indexed tables stay refused.
+        # Learned position or token-type tables (GPT-2 wpe, OPT/BART/Whisper embed_positions) are
+        # indexed by positions, so later stages need nothing; token-indexed tables stay refused.
         positional = (
             isinstance(base, nn.Embedding)
             and isinstance(vocab, int)
@@ -581,8 +646,7 @@ def _find_parts(model) -> _Parts:
         if _owner(child, lm_head)[0] is not None:
             continue
         if _owner(child, decoder)[0] is not None:
-            # A wrapper around the decoder (OPTModel.decoder, BartDecoderWrapper.decoder): fine when it holds
-            # nothing else.
+            # Decoder wrapper (e.g. OPTModel.decoder): fine when it holds nothing else.
             if all(id(p) in inside for p in child.parameters()):
                 continue
             # A multimodal wrapper (Qwen3_5Model, Gemma4Model): the decoder plus towers beside it.
@@ -674,8 +738,7 @@ def _takes_media(inner):
 
 
 def _refuse_shared_across_stages(parts, bounds):
-    """A trainable parameter used by layers of two stages (a block shared by several layers, Zamba2 /
-    ALBERT style) would be trained as two independent copies."""
+    """A trainable parameter used by layers of two stages would be trained as two independent copies."""
     stage_of = {i: k for k, (start, end) in enumerate(bounds) for i in range(start, end)}
     owners = {}
     for i, layer in enumerate(parts.layers):
@@ -820,7 +883,11 @@ def _router_statistics(
         weights = torch.nn.functional.softmax(gate.to(device), dim = -1)
         _, selected = torch.topk(weights, top_k, dim = -1)
         if flat is None:
-            counts = counts + torch.bincount(selected.reshape(-1), minlength = num_experts).float()
+            # bincount syncs the host to size its output; float32 sums of ones are exact below 2**24.
+            index = selected.reshape(-1)
+            counts = counts + torch.zeros(
+                num_experts, dtype = torch.float32, device = device
+            ).scatter_add_(0, index, torch.ones_like(index, dtype = torch.float32))
             probs = probs + weights.float().sum(dim = 0)
             rows = rows + weights.shape[0]
         else:
@@ -839,14 +906,92 @@ def _router_statistics(
 
 def _load_balancing_from_statistics(stats, num_experts):
     counts, probs, rows = stats[:num_experts], stats[num_experts : 2 * num_experts], stats[-1]
+    # An all-masked micro-batch has no routed rows (counts and probs are 0 too): 0, not 0 / 0 = NaN.
+    rows = rows.clamp_min(1)
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
-def _statistics_match_transformers(module, num_experts, top_k):
+class _CarriedRouterAux:
+    """One step's router auxiliary loss over the whole batch when the pipeline splits it into micro-batches.
+
+    The load-balancing loss E * sum_e (C_e / R) (P_e / R) is a product of whole-batch sums (C, R carry no
+    gradient), so it is not the sum of the micro-batch losses. Under GPipe every forward runs before any backward:
+    the last stage records each micro-batch's statistics and adds a zero-valued term whose backward, run after all
+    forwards, hands its routing probabilities the whole-batch gradient W * E * C / R ** 2. The value W * aux is
+    added to the reported loss once (finish). Filler micro-batches (rows beyond `real`) are left out, as one
+    process never sees them."""
+
+    def __init__(self, n_microbatches, real_microbatches, num_experts):
+        self.m = int(n_microbatches)
+        self.real = int(real_microbatches)
+        self.num_experts = int(num_experts)
+        self.seen = 0
+        self.stats = []
+        self.weights = []
+        self.additive = True
+        self._grad = None
+
+    def total(self):
+        if not self.stats:
+            return None
+        return torch.stack([s.float() for s in self.stats]).sum(dim = 0)
+
+    def weight(self):
+        if not self.weights:
+            return 0.0
+        return sum(self.weights) if self.additive else self.weights[0]
+
+    def value(self):
+        """(aux over the whole batch, without its coefficient), or None."""
+        stats = self.total()
+        return None if stats is None else _load_balancing_from_statistics(stats, self.num_experts)
+
+    def grad(self, like):
+        if self.seen != self.m:
+            raise RuntimeError(
+                "Unsloth: the router auxiliary loss over the whole batch needs every micro-batch forward before "
+                f"the first backward (GPipe), but a backward ran after {self.seen} of {self.m} forwards."
+            )
+        if self._grad is None:
+            stats = self.total()
+            E = self.num_experts
+            grad = torch.zeros_like(stats)
+            rows = stats[-1].clamp_min(1)
+            weight = self.weight()
+            if torch.is_tensor(weight):
+                weight = weight.to(device = stats.device, dtype = stats.dtype)
+            grad[E : 2 * E] = weight * E * stats[:E] / (rows * rows)
+            self._grad = grad
+        return self._grad.to(device = like.device)
+
+
+class _CarriedRouterAuxTerm(torch.autograd.Function):
+    """0 in the forward; the whole-batch load-balancing gradient for this micro-batch's statistics in the
+    backward (_CarriedRouterAux)."""
+
+    @staticmethod
+    def forward(ctx, stats, carried, dtype):
+        ctx.carried = carried
+        ctx.device, ctx.dtype = stats.device, stats.dtype
+        return stats.new_zeros((), dtype = dtype)
+
+    @staticmethod
+    def backward(ctx, grad):
+        whole = ctx.carried.grad(grad)
+        return (whole * grad.float()).to(device = ctx.device, dtype = ctx.dtype), None, None
+
+
+def _statistics_match_transformers(
+    module,
+    num_experts,
+    top_k,
+    reference = None,
+):
     """The family's own load_balancing_loss_func equals the loss formed from per-stage statistics on random
     router logits (with and without a padding mask): a transformers change to the formula refuses instead of
-    training on a different loss."""
-    reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
+    training on a different loss. `reference` checks that function instead of the module's."""
+    if reference is None:
+        reference = getattr(sys.modules.get(module), "load_balancing_loss_func", None)
     if not callable(reference):
         return False
     g = torch.Generator().manual_seed(0)
@@ -866,12 +1011,8 @@ def _statistics_match_transformers(module, num_experts, top_k):
     return True
 
 
-def _moe_aux_plan(parts):
-    """_MoEAux for a family in _PP_MOE_AUX_FAMILIES whose decoder records router logits with a transformers
-    OutputRecorder and whose load_balancing_loss_func is the statistics form; None otherwise (refused)."""
-    inner = parts.inner
-    if type(inner).__name__ not in _PP_MOE_AUX_FAMILIES:
-        return None
+def _router_logits_recorder(parts):
+    """(router class, output index) of the decoder's transformers OutputRecorder for router_logits, else None."""
     recorder = (getattr(type(parts.decoder), "_can_record_outputs", None) or {}).get(
         "router_logits"
     )
@@ -883,6 +1024,19 @@ def _moe_aux_plan(parts):
         or getattr(recorder, "layer_name", None)
     ):
         return None
+    return router_class, index
+
+
+def _moe_aux_plan(parts):
+    """_MoEAux for a family in _PP_MOE_AUX_FAMILIES whose decoder records router logits with a transformers
+    OutputRecorder and whose load_balancing_loss_func is the statistics form; None otherwise (refused)."""
+    inner = parts.inner
+    if type(inner).__name__ not in _PP_MOE_AUX_FAMILIES:
+        return None
+    recorded = _router_logits_recorder(parts)
+    if recorded is None:
+        return None
+    router_class, index = recorded
     wrapper = type(inner).__name__ in _PP_MOE_AUX_WRAPPERS
     config = inner.config.get_text_config() if wrapper else inner.config
     if wrapper and not isinstance(getattr(config, "router_aux_loss_coef", None), (int, float)):
@@ -1019,7 +1173,9 @@ def _uncarried_moe_owner(model, parts = None):
     parts = parts if parts is not None else _find_parts(model)
     inner = parts.inner
     name = type(inner).__name__
-    if name in _PP_MOE_AUX_FAMILIES or name in _PP_MOE_NO_AUX_FAMILIES:
+    if name in _PP_MOE_NO_AUX_FAMILIES:
+        return None
+    if name in _PP_MOE_AUX_FAMILIES and _router_logits_recorder(parts) is not None:
         return None
     if _moe_marker(_text_config(model), parts.layers) is None:
         return None
@@ -1030,7 +1186,8 @@ def _uncarried_router_aux_message(inner, what):
     return (
         f"Unsloth: pipeline parallelism trains {type(inner).__name__} (mixture-of-experts) only with its router "
         f"auxiliary loss off, but {what}: the loss is carried between stages only for "
-        f"{', '.join(_PP_MOE_AUX_FAMILIES)}, so the last stage would add it over its own layers' routers only. "
+        f"{', '.join(_PP_MOE_AUX_FAMILIES)} (when the decoder records router logits: transformers 5.x for OLMoE, "
+        "Qwen2-MoE and GraniteMoE), so the last stage would add it over its own layers' routers only. "
         "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig, which TRL >= 1.x otherwise sets from the "
         "architecture; or model.config.output_router_logits = False with a plain Trainer), or use native FSDP2 "
         "(UNSLOTH_FSDP2=1)."
@@ -1050,13 +1207,16 @@ def _refuse_uncarried_router_aux(ctx, kwargs):
     if requested is None:
         requested = getattr(ctx, "output_router_logits", None)
     if not _router_aux_off(inner, text, requested):
-        raise ValueError(
-            _uncarried_router_aux_message(
-                inner,
-                "output_router_logits is on with router_aux_loss_coef = "
-                f"{_router_aux_coef_of(inner, text)}",
+        what = f"output_router_logits is on with router_aux_loss_coef = {_router_aux_coef_of(inner, text)}"
+        schedule = getattr(ctx, "uncarried_schedule", None)
+        if schedule is not None:
+            raise ValueError(
+                f"Unsloth: pipeline parallelism split {type(inner).__name__} (mixture-of-experts) with schedule = "
+                f"{schedule!r} and its router auxiliary loss off, but {what}: the loss is carried between stages "
+                f"with schedule = {' / '.join(map(repr, _PP_MOE_AUX_SCHEDULES))} (one stage per rank) only. "
+                "Turn it off (router_aux_loss_coef = 0.0 in SFTConfig) or use one of those schedules."
             )
-        )
+        raise ValueError(_uncarried_router_aux_message(inner, what))
     if hasattr(text, "output_router_logits"):
         kwargs["output_router_logits"] = False
 
@@ -1105,7 +1265,8 @@ def _refuse_unsupported(
                 "then apply_pipeline_parallel)"
                 if allow_moe is False and type(inner).__name__ in _PP_MOE_AUX_FAMILIES
                 else "the router auxiliary loss is carried between stages only for "
-                f"{', '.join(_PP_MOE_AUX_FAMILIES)} (transformers 5.x); {type(inner).__name__} is not proven"
+                f"{', '.join(_PP_MOE_AUX_FAMILIES)} when the decoder records router logits (transformers 5.x for "
+                f"OLMoE, Qwen2-MoE and GraniteMoE); {type(inner).__name__} is not proven"
             )
             raise ValueError(
                 f"Unsloth: pipeline parallelism v1 does not support this mixture-of-experts model ({marker}): "
@@ -1409,8 +1570,7 @@ class _PPPassThrough(_CheckpointLayer):
     pinned off), so the hidden states it hands out stay in this stage's autograd graph."""
 
     gradient_checkpointing = property(lambda self: False, lambda self, value: None)
-    # Read by _frozen_prefix: the hidden states this layer hands out come from the previous stage and carry its
-    # gradient, so they must never become the cut's detached leaf.
+    # Read by _frozen_prefix: previous-stage hidden states carry gradient; never detach them.
     _unsloth_pipeline_stand_in = True
 
     def __init__(self, index, ctx, source):
@@ -1655,26 +1815,34 @@ class _StageContext:
         self.carry = (
             carry  # [(trailing shape, dtype)] for layers carrying several tensors, else None
         )
-        # carry_at(boundary) -> that layout at the stage boundary before layer `boundary`, when it depends on the
-        # cut (Inkling 2: the block attention residual stack grows by one entry per block); None = `carry`.
+        # carry_at(boundary): layout before a layer when it depends on the cut; None = carry.
         self.carry_at = None
         # (decoder, causal LM, sequence_segments or None) when the model runs one stage's layers itself
         # (pipeline_stage_forward), else None: the whole model forward with pass-through layers.
         self.stage_forward = None
         self.active = False
         self.stage_input = None
-        # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
-        # a non-tensor kwarg reaches torch's split backward (zero bubble) as a stage input on torch < 2.13.
+        # Token count on ctx: non-tensor kwargs become split-backward inputs on torch < 2.13.
         self.num_items_in_batch = None
+        # The step's enabled GradScaler: the last stage's fused CE saves its gradients at this scale (as the loss
+        # the schedule backpropagates is scaled), so float16 gradients do not underflow.
+        self.loss_scaler = None
         # Mixture-of-experts router auxiliary loss carry (_MoEAux), the router logits of the running stage
         # forward, and the last stage's per-micro-batch auxiliary losses of the step.
         self.moe = None
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        # pp_env (Trainer): the real rows of the step's batch when the aux loss must be the one-process loss over
+        # the whole batch (summed statistics), not one per micro-batch; None keeps the per-micro-batch loss.
+        self.aux_batch_rows = None
+        self.carried_aux = None  # _CarriedRouterAux of the running step (more than one micro-batch)
         # Per-step request (None: config decides); pp_env._router_aux_request.
         self.output_router_logits = None
         self.uncarried_moe = None
+        self.uncarried_schedule = (
+            None  # an aux-off split on a schedule that does not carry the aux loss
+        )
         self.ple = None
         self.ple_input = None
         self.ple_output = None
@@ -1755,6 +1923,92 @@ class _WireDtypes:
         return dtypes
 
 
+# Last-stage loss routes: "fused" = chunked lm_head + CE (no [mb, seq, vocab] logits), "logits" = lm_head then
+# loss_function. UNSLOTH_PP_FUSED_CE=0 keeps the logits route.
+PP_FUSED_CE_STATS = {"fused": 0, "logits": 0}
+
+
+def _is_causal_lm_loss(fn):
+    """Stock ForCausalLMLoss or unsloth_zoo's drop-in for it: shifted token CE, ignore_index -100."""
+    return getattr(fn, "_unsloth_fused_loss", None) is not None or (
+        getattr(fn, "__name__", None) == "ForCausalLMLoss"
+        and str(getattr(fn, "__module__", "")).startswith("transformers.")
+    )
+
+
+def _fusable_head_weight(head, h):
+    """lm_head's weight when the head is a plain bias-free nn.Linear (or a PEFT layer over one with no live
+    adapter), else None: the fused CE projects with the weight alone."""
+    base = getattr(head, "base_layer", head)
+    if type(base) is not nn.Linear or base.bias is not None:
+        return None
+    if getattr(head, "_unsloth_vocab_parallel", False) or getattr(
+        base, "_unsloth_vocab_parallel", False
+    ):
+        return None  # a vocab-sharded head scores its own shard
+    if base is not head:
+        try:
+            from .fused_label_smoothing import output_head_not_fusable
+        except Exception:
+            return None
+        if output_head_not_fusable(head):
+            return None
+    weight = base.weight
+    if type(weight) not in (torch.Tensor, nn.Parameter) or not weight.is_floating_point():
+        return None
+    if any(
+        getattr(m, a, None) is not None
+        for m in (head, base)
+        for a in ("activation_fake_quantizer", "weight_fake_quantizer")
+    ):
+        return None
+    if h.dtype != weight.dtype and not torch.is_autocast_enabled(h.device.type):
+        return None  # lm_head(h) raises on the mismatch; keep that path's behaviour
+    return weight
+
+
+def _fused_stage_loss(
+    inner,
+    h,
+    labels,
+    num_items_in_batch,
+    loss_scaler = None,
+):
+    """The causal LM loss of lm_head(h) without materializing the logits, or None when it does not apply.
+
+    The fused CE computes its gradients in the forward: with an enabled GradScaler (`loss_scaler`) they are saved at
+    its scale, and the backward divides the scaled incoming gradient by it, as the trainer's fused CE path does."""
+    if os.environ.get("UNSLOTH_PP_FUSED_CE", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    head = getattr(inner, "lm_head", None)
+    if head is None or not _is_causal_lm_loss(inner.loss_function):
+        return None
+    weight = _fusable_head_weight(head, h)
+    if weight is None:
+        return None
+    try:
+        from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fused_ce_loss
+    except Exception:
+        return None
+    scaling = None
+    if loss_scaler is not None and torch.is_grad_enabled():
+        scaling = float(loss_scaler.get_scale())
+    PP_FUSED_CE_STATS["fused"] += 1
+    return unsloth_fused_ce_loss(
+        trainer = None,
+        hidden_states = h,
+        lm_head_weight = weight,
+        lm_head_bias = None,
+        labels = labels,
+        mask = None,
+        n_items = num_items_in_batch,
+        scaling = scaling,
+        target_gb = None,
+        torch_compile = True,
+        shift_labels = True,
+    )
+
+
 class _PPStageModule(nn.Module):
     """What PipelineStage runs: the whole model's forward on this stage's slice.
 
@@ -1795,8 +2049,8 @@ class _PPStageModule(nn.Module):
 
     def _model_stage_forward(self, input_ids, kwargs):
         """This stage's layers through the model's own pipeline_stage_forward (DeepSeek-V4.1): only the owned
-        layers run and only their engram tables are read. The last stage forms the causal LM loss exactly as the
-        model's forward does (lm_head, loss_function with num_items_in_batch)."""
+        layers run and only their engram tables are read. The last stage forms the causal LM loss as the model's
+        forward does (lm_head, loss_function with num_items_in_batch), through the chunked fused CE when it applies."""
         ctx = self._pp_ctx
         decoder, inner, segments = ctx.stage_forward
         mask = kwargs.get("attention_mask")
@@ -1825,6 +2079,12 @@ class _PPStageModule(nn.Module):
         labels = kwargs.get("labels")
         if labels is None:
             raise RuntimeError("Unsloth: the last pipeline stage needs labels to return a loss.")
+        loss = _fused_stage_loss(
+            inner, h, labels, ctx.num_items_in_batch, getattr(ctx, "loss_scaler", None)
+        )
+        if loss is not None:
+            return loss
+        PP_FUSED_CE_STATS["logits"] += 1
         extra = (
             {} if ctx.num_items_in_batch is None else {"num_items_in_batch": ctx.num_items_in_batch}
         )
@@ -1873,8 +2133,7 @@ class _PPStageModule(nn.Module):
                     )
                 t = t.to(want)
             if t.dim() != 3:
-                # A stage output must not be a view: split-backward schedules (zero bubble, DualPipeV) detach
-                # their outputs in place, which a view refuses. One copy of the stream at the boundary.
+                # Outputs must not be views: split-backward schedules detach them in place.
                 t = t.flatten(2).clone()
             elif torch.compiler.is_compiling() or t._is_view():
                 t = t.clone()  # compiled: always (Dynamo cannot trace _is_view, a bool)
@@ -1918,11 +2177,36 @@ class _PPStageModule(nn.Module):
             stats = stats.to(device)
         return stats + carry[0] if carry else stats
 
+    def _carried_router_aux(self, loss, stats, kwargs):
+        """Last stage, a step whose aux loss is over the whole batch (_CarriedRouterAux): record this micro-batch's
+        statistics and its weight, and add the zero-valued term that carries the whole-batch gradient."""
+        ctx = self._pp_ctx
+        moe, carried = ctx.moe, ctx.carried_aux
+        index = carried.seen
+        carried.seen += 1
+        if index >= carried.real:
+            # A filler micro-batch: no part of the one-process loss, but its received carry stays in the graph.
+            return loss + 0 * stats.sum().to(loss.device)
+        if ctx.trainer_aux is not None:
+            # TRL's compute_loss adds coef x aux / divisor once per batch.
+            coef, divisor = ctx.trainer_aux
+            weight, additive = coef / divisor, False
+        else:
+            # The rewritten forward weights the aux term by the batch's token share: linear in tokens, so the
+            # micro-batch shares add up to the batch's. Without a share it is the coefficient alone, once.
+            one = torch.ones((), device = loss.device, dtype = torch.float32)
+            share = _forward_aux_weighting(moe.owner, one, kwargs, ctx.num_items_in_batch)
+            additive = share is not one
+            weight = _router_aux_coef(moe) * (share.detach().float() if additive else 1.0)
+        carried.additive = additive
+        carried.stats.append(stats.detach())
+        carried.weights.append(weight)
+        return loss + _CarriedRouterAuxTerm.apply(stats, carried, loss.dtype).to(loss.device)
+
     def _stage_forward(self, x, *carry, **kwargs):
         ctx = self._pp_ctx
         moe = ctx.moe
-        # Every rank holds the batch: later stages get the real token ids too (the embedding stub ignores them),
-        # so model-level code reading input_ids (padding / pad-token masks, token types) sees what one GPU does.
+        # Later stages get real input_ids (stub ignores them), so model code matches one GPU.
         ids = kwargs.pop(_STAGE_IDS, None)
         if ctx.is_first:
             input_ids = x
@@ -2031,7 +2315,9 @@ class _PPStageModule(nn.Module):
             stats = self._router_statistics(
                 captured, carry, kwargs.get("attention_mask"), loss.device
             )
-            if stats is not None:
+            if stats is not None and ctx.carried_aux is not None:
+                loss = self._carried_router_aux(loss, stats, kwargs)
+            elif stats is not None:
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
@@ -2053,9 +2339,12 @@ class _PPStageModule(nn.Module):
 
 
 def _gradient_checkpointing_on(model):
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
     return any(
         getattr(m, "gradient_checkpointing", False) is True for m in model.modules()
-    ) or bool(getattr(_unwrap(model), "is_gradient_checkpointing", False))
+    ) or bool(_is_activation_checkpointing(_unwrap(model)))
 
 
 def _zoo_slot_lease_present():
@@ -2093,8 +2382,7 @@ def _refuse_aux_with_reentrant_checkpointing(
     config,
     on = None,
 ):
-    """Reentrant checkpointing (transformers' default, Unsloth smart) runs the first layer under
-    no_grad, so router logits carry no graph; the aux loss adds its value but no gradient."""
+    """Reentrant checkpointing runs the first layer under no_grad; aux loss gets no gradient."""
     if not (getattr(config, "output_router_logits", False) if on is None else on):
         return
     if non_reentrant_checkpointing_only(model) is False:
@@ -2163,8 +2451,7 @@ def _refuse_generate(*args, **kwargs):
 
 
 def _batch_kwargs(kwargs, bsz, device, what):
-    """Tensor kwargs with the batch dimension first: a size-1 batch dimension (broadcast position_ids) is
-    expanded so the schedule splits it per micro-batch like input_ids."""
+    """Size-1 batch dims (broadcast position_ids) are expanded so they split per micro-batch."""
     out = {}
     for key, value in kwargs.items():
         if isinstance(value, torch.Tensor):
@@ -2178,6 +2465,12 @@ def _batch_kwargs(kwargs, bsz, device, what):
             value = value.to(device)
         out[key] = value
     return out
+
+
+def _restore_grads(kept):
+    """Add gradients set aside by PipelineParallel._take_fsdp_grads back onto the step's own."""
+    for p, grad in kept:
+        p.grad = grad if p.grad is None else p.grad + grad
 
 
 class PipelineParallel:
@@ -2209,6 +2502,8 @@ class PipelineParallel:
         )  # this rank's pp index (its stage with one stage per rank)
         self.bounds = bounds  # [start, end) decoder layers of every stage (pp x stages_per_rank)
         self.spec = schedule_spec(schedule)
+        # A split (zero bubble) backward: each step runs with donated buffers off (split_backward_scope).
+        self.split_backward = False
         self.stages_per_rank = int(stages_per_rank)
         self.total_stages = self.num_stages * self.stages_per_rank
         if len(bounds) != self.total_stages:
@@ -2221,6 +2516,8 @@ class PipelineParallel:
         self.start, self.end = bounds[self.local_stages[0]]
         self.n_microbatches = n_microbatches
         self.schedule = self.spec.name
+        # Steps (on the last stage) whose router aux loss was formed over the whole split batch: engagement count.
+        self.carried_router_aux_steps = 0
         self.schedule_auto = False  # pp_env: the default 1F1B (UNSLOTH_PP_SCHEDULE unset)
         self.config = config
         self.parts = parts
@@ -2320,9 +2617,8 @@ class PipelineParallel:
         dp_mesh,
         mp_policy = None,
     ):
-        """After shard_model shards this stage, make the PipelineStage module the outer FSDP2 root
-        with no parameters of its own, so the reduce-scatter defers to perform_reduce_grad, as
-        torchtitan does."""
+        """After shard_model, make the PipelineStage the outer FSDP2 root with no own parameters so
+        reduce-scatter defers to perform_reduce_grad, as torchtitan does."""
         from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
         if self.stages_per_rank > 1:
@@ -2378,8 +2674,7 @@ class PipelineParallel:
     def _loss_fn(self, output, target):
         self._mb_losses.append(output.detach())
         if self._loss_multiplier != 1:
-            # FSDP2 averages gradients over dp: dp x (sum of this replica's token losses / global tokens)
-            # averages to the global batch gradient.
+            # FSDP2 averages grads over dp: scale by dp x (replica loss sum / global tokens).
             output = output * self._loss_multiplier
         return output if self._scaler is None else self._scaler.scale(output)
 
@@ -2393,7 +2688,7 @@ class PipelineParallel:
         from torch.distributed.pipelining import PipelineStage
 
         m = int(n_microbatches or self.n_microbatches)
-        key = (mb, seq, m, train)
+        key = self._shape_key(mb, seq, m, train)
         if key in self._shapes:
             self._shapes.move_to_end(key)
             return self._shapes[key]
@@ -2425,6 +2720,9 @@ class PipelineParallel:
                 (mb, seq, width), dtype = self.activation_dtype, device = "meta", requires_grad = True
             )
 
+        # Adjacent stages on this rank (V schedules, loop schedules at pp 1): see _adjacent_stage_class.
+        adjacent = any(k + 1 in self.local_stages for k in self.local_stages)
+        stage_cls = _adjacent_stage_class(not train) if adjacent else PipelineStage
         for index, module in zip(self.local_stages, self.stage_modules):
             if index == 0:
                 example_in = torch.empty((mb, seq), dtype = torch.long, device = "meta")
@@ -2457,7 +2755,7 @@ class PipelineParallel:
                 if index != self.total_stages - 1:
                     example_out = plus(example_out)
             stages.append(
-                PipelineStage(
+                stage_cls(
                     module,
                     index,
                     self.total_stages,
@@ -2471,8 +2769,7 @@ class PipelineParallel:
         if not self.spec.multi and (not train or self.step_schedule(m) == "gpipe"):
             from torch.distributed.pipelining import ScheduleGPipe
 
-            # forward only (eval_loss): no backward order to keep; the default 1F1B with fewer micro-batches
-            # than stages also runs as GPipe
+            # Forward-only (eval_loss) and 1F1B with m < stages run as GPipe.
             cls = ScheduleGPipe
         schedule = cls(
             stages if self.spec.multi else stages[0],
@@ -2503,7 +2800,8 @@ class PipelineParallel:
         A mixture-of-experts model with output_router_logits on (the trainer's request, else the config's) adds
         router_aux_loss_coef x the load-balancing loss of each micro-batch (over all stages' routers), as gradient
         accumulation over the same micro-batches does in one process; their sum (without the coefficient) is in
-        last_aux_loss.
+        last_aux_loss. Under the Trainer (pp_env sets ctx.aux_batch_rows) a split batch forms it once over the
+        whole batch instead, as one process does for that batch (GPipe only; _CarriedRouterAux).
 
         With FSDP2 over a dp mesh, each dp replica passes its own slice of the global batch (pp / tp peers the
         same one); num_items_in_batch is the token count of the whole global batch (default: this slice's
@@ -2565,7 +2863,6 @@ class PipelineParallel:
         dp_mesh = self.dp_mesh if self.dp_mesh is not None else self.ddp_mesh
         dp_group = dp_mesh.get_group() if dp_mesh is not None else None
         if num_items_in_batch is None:
-            # Tokens the loss averages over in one process: shifted labels that are not ignored.
             count = (labels[:, 1:] != -100).sum()
             if dp_group is not None:
                 # ... over the whole global batch: every dp replica's slice.
@@ -2579,6 +2876,7 @@ class PipelineParallel:
         num_items_in_batch = max(num_items_in_batch, 1)
         # FSDP2 / DDP-style dp average the gradients over dp: dp x (this replica's token loss sum / global tokens).
         self._loss_multiplier = (dp_mesh.size() if dp_mesh is not None else 1) * float(loss_scale)
+        fresh = self._shape_key(bsz // m, seq, m, True) not in self._shapes
         schedule = self._schedule_for(bsz // m, seq, m)
         step_kwargs = _batch_kwargs(kwargs, bsz, device, "step")
         step_kwargs["labels"] = labels.to(device)
@@ -2591,30 +2889,94 @@ class PipelineParallel:
             )  # every stage's scaler holds the scale (unscale_)
             self._scaler = scaler
             self._bind_scaler(scaler)
+            self.ctx.loss_scaler = scaler
         self._step_scaler = scaler if scaler is not None and scaler.is_enabled() else None
         self._mb_losses = []
         self.ctx.aux_losses = []
+        self._start_carried_router_aux(bsz, m)
+        if self.ctx.carried_aux is not None and (
+            self.spec.multi or self.step_schedule(m) != "gpipe"
+        ):
+            self.ctx.carried_aux = None
+            raise ValueError(
+                f"Unsloth: the router auxiliary loss over a batch split into {m} micro-batches needs the GPipe "
+                f"schedule (every forward before the first backward), not {self.schedule}: set "
+                "UNSLOTH_PP_SCHEDULE=gpipe (or leave it unset), or UNSLOTH_PP_MICROBATCHES=1."
+            )
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
         tables = self._size_frozen_table_memo(m)
+        # torch >= 2.12 sets every FSDP2 parameter's grad to None when a schedule runs its first step
+        # (_post_metadata_inference_cleanup): a new shape mid accumulation window would drop the earlier
+        # steps' gradients. Keep them aside and add them back.
+        kept = self._take_fsdp_grads() if fresh and self.dp_mesh is not None else None
         try:
-            schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
+            with split_backward_scope(getattr(self, "split_backward", False)):
+                schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
+            self.ctx.loss_scaler = None
             self.ctx.num_items_in_batch = None
+            if kept:
+                _restore_grads(kept)
         if tables is not None:
             self.last_table_memo = tables.frozen_table_step_stats()
         if self.dp_mesh is not None:
             self._average_replicated_grads()
-        total = self._batch_loss(m, device, dp_group)
+        try:
+            total = self._batch_loss(m, device, dp_group)
+        finally:
+            self.ctx.carried_aux = None
         return total * float(loss_scale) if loss_scale != 1 else total
+
+    def _take_fsdp_grads(self):
+        kept = []
+        for p in self.module.parameters():
+            if p.grad is not None:
+                kept.append((p, p.grad))
+                p.grad = None
+        return kept
 
     def step_schedule(self, m):
         """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
-        to GPipe when m < stages; an explicit schedule is always kept."""
-        if self.schedule_auto and self.schedule == "1f1b" and m < self.num_stages:
+        to GPipe when m < stages, or when a split batch forms the router aux loss over the whole batch (only
+        GPipe runs every forward before the first backward); an explicit schedule is always kept."""
+        if (
+            self.schedule_auto
+            and self.schedule == "1f1b"
+            and (m < self.num_stages or self.whole_batch_router_aux(m))
+        ):
             return "gpipe"
         return self.schedule
+
+    def whole_batch_router_aux(self, m):
+        """This step splits its batch into micro-batches and its router aux loss is the one over the whole batch
+        (pp_env set aux_batch_rows), with the auxiliary loss on."""
+        ctx = self.ctx
+        moe = ctx.moe
+        if int(m) <= 1 or moe is None or ctx.aux_batch_rows is None:
+            return False
+        if not _router_aux_requested(ctx, moe.config):
+            return False
+        try:
+            return bool(_router_aux_coef(moe))
+        except AttributeError:
+            return True
+
+    def _shape_key(self, mb, seq, m, train):
+        # The schedule class depends on the step (GPipe for a whole-batch router aux loss), not on the shape alone.
+        return (mb, seq, m, train, self.step_schedule(m) if train else None)
+
+    def _start_carried_router_aux(self, bsz, m):
+        """A _CarriedRouterAux for this step when its router aux loss is over the whole batch, else None."""
+        self.ctx.carried_aux = None
+        if not self.whole_batch_router_aux(m):
+            return
+        rows = int(self.ctx.aux_batch_rows)
+        per = bsz // m
+        self.ctx.carried_aux = _CarriedRouterAux(
+            m, min(m, -(-rows // per)), self.ctx.moe.num_experts
+        )
 
     def _in_flight(self, m):
         """Micro-batches this rank has forwarded but not yet backpropagated, at most."""
@@ -2623,9 +2985,8 @@ class PipelineParallel:
         return m  # GPipe: every forward before any backward; multi-stage schedules: bounded by m
 
     def _size_frozen_table_memo(self, m):
-        """One memo slot per in-flight micro-batch for the frozen lookup tables on this stage, so each micro-batch's
-        checkpoint recompute finds its rows instead of reading the table again; a new memo step per optimizer
-        step. Returns the frozen table module (None: no tables here, or an unsloth_zoo without bounded memos)."""
+        """One memo slot per in-flight micro-batch (reset each step) so checkpoint recomputes find
+        rows; returns table module, None if no tables or unsloth_zoo lacks bounded memos."""
         tables = sys.modules.get("unsloth_zoo.frozen_table_store")
         if tables is None or not hasattr(tables, "set_frozen_table_memo_slots"):
             return None
@@ -2651,7 +3012,17 @@ class PipelineParallel:
                 )
             total = torch.stack([l.float() for l in self._mb_losses]).sum().reshape(1).to(device)
             self._mb_losses = []
-            if self.ctx.moe is not None:
+            carried = self.ctx.carried_aux
+            if self.ctx.moe is not None and carried is not None:
+                # The whole batch's aux loss, added once (its micro-batch terms were 0-valued).
+                value = carried.value()
+                aux = torch.zeros((), device = device) if value is None else value.float().to(device)
+                weight = carried.weight()
+                if torch.is_tensor(weight):
+                    weight = weight.float().to(device)
+                total = torch.cat([total + weight * aux, aux.reshape(1)])
+                self.carried_router_aux_steps += 1
+            elif self.ctx.moe is not None:
                 aux = [a.float().reshape(1).to(device) for a in self.ctx.aux_losses]
                 aux = torch.cat(aux).sum() if aux else torch.zeros((), device = device)
                 total = torch.cat([total, aux.reshape(1)])
@@ -2711,17 +3082,27 @@ class PipelineParallel:
             False  # what schedule.eval() does; called directly for return_outputs
         )
         self.ctx.num_items_in_batch = max(int(num_items_in_batch), 1)
+        # Forward only: the whole-batch value needs no schedule order.
+        self._start_carried_router_aux(bsz, m)
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
+        except BaseException:
+            self.ctx.carried_aux = None
+            raise
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
-        return self._batch_loss(m, device, None)
+            # No backward pops forward caches; free them now, not at the next eval_loss.
+            for st in getattr(schedule, "_stages", None) or (schedule._stage,):
+                st.clear_runtime_states()
+        try:
+            return self._batch_loss(m, device, None)
+        finally:
+            self.ctx.carried_aux = None
 
     def _average_replicated_grads(self):
-        """Averages trainable FSDP2-replicated parameters over dp here, once: the schedule runs
-        micro-batch backwards with gradient sync off and reduces FSDP2 groups outside autograd;
-        re-averaging equal values is a no-op."""
+        """Averages FSDP2-replicated grads over dp once: the schedule runs backwards with gradient
+        sync off; re-averaging equal values is a no-op."""
         params = self.model.__dict__.get("_unsloth_replicated_grad_params")
         if not params:
             return
@@ -2739,9 +3120,7 @@ class PipelineParallel:
         )
 
     def _grad_copies(self, grad):
-        """(local tensor, number of ranks holding the same values) for this rank's gradient. Stages hold
-        disjoint parameters; inside a stage plain gradients are replicated over its world // pp ranks and
-        a DTensor's local shard repeats over that count divided by its shard dimensions."""
+        """Returns (local tensor, copy count): world/pp copies; DTensor divides by shard dims."""
         stage_ranks = torch.distributed.get_world_size() // self.num_stages if self.composed else 1
         try:
             from torch.distributed.tensor import DTensor, Replicate
@@ -2773,12 +3152,10 @@ class PipelineParallel:
         parameters = None,
         eps = 1e-6,
     ):
-        """Clip by the global 2-norm over every stage (squares summed over pp). Returns the norm.
-        Composed with dp / tp: every gradient element counted once over the world (a local square sum
-        divided by the ranks holding a copy of it, summed over every rank)."""
+        """Clips by global 2-norm over stages and returns it; dp/tp count each element once."""
         import torch.distributed as dist
 
-        from .tp_native import _square_sum
+        from .tp_native import _scale_tensors_, _square_sum
 
         self._check_unscaled()
         params = self.parameters() if parameters is None else list(parameters)
@@ -2798,9 +3175,7 @@ class PipelineParallel:
         elif self.num_stages > 1:
             dist.all_reduce(sq, group = self.group)
         total = sq.sqrt()
-        coef = torch.clamp(float(max_norm) / (total + eps), max = 1.0)
-        for g in grads:
-            g.mul_(coef.to(g.dtype))
+        _scale_tensors_(grads, total, float(max_norm), eps)
         return total.float()
 
     def unscale_(self, scaler, optimizer):
@@ -2810,8 +3185,7 @@ class PipelineParallel:
         scaler.unscale_(optimizer)
 
     def _bind_scaler(self, scaler):
-        """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.
-        Bound until scaler.update(), so the scaler pickles again where torch.amp allows it and holds no pipeline."""
+        """unscale_ and step agree on found_inf across stages; bound until scaler.update()."""
         import weakref
 
         bound = scaler.__dict__.get("_unsloth_pp_agree")
@@ -2917,8 +3291,7 @@ class PipelineParallel:
             from .tp_native import _full, _is_dtensor, _param_layouts
 
             full = self.model.state_dict(keep_vars = True)
-            # PEFT selects over local shards: PEFT >= 0.22 gathers selected DTensors into new tensors itself,
-            # which would lose the fused tp layout lookup below, so each selection maps back to its DTensor.
+            # PEFT >= 0.22 gathers DTensors and drops the tp layout; map each selection back.
             raw = {k: v.to_local() if _is_dtensor(v) else v for k, v in full.items()}
             back = {id(raw[k]): v for k, v in full.items()}
             layouts = _param_layouts(self.model)
@@ -2937,7 +3310,7 @@ class PipelineParallel:
                     save_embedding_layers = kwargs.get("save_embedding_layers", "auto"),
                 )
                 local[adapter] = {
-                    k: (gather(v) if gather is not None else v).detach().cpu().clone()
+                    k: (gather(v) if gather is not None else v).detach().to("cpu", copy = True)
                     for k, v in selected.items()
                     if not k.startswith(self._foreign_prefixes)
                 }
@@ -2970,6 +3343,7 @@ class PipelineParallel:
         from . import frozen_table_provenance as provenance
 
         provenance.install()
+        cast_lora = kwargs.pop("_unsloth_cast_lora", False)
         # Each stage holds its own frozen tables: the file next to the adapter lists every stage's.
         tables = provenance.table_provenance(self.model)
         if self.num_stages > 1:
@@ -2977,37 +3351,53 @@ class PipelineParallel:
             dist.all_gather_object(parts, tables, group = self.group)
             tables = provenance.merge_provenance(parts)
         merged = self.adapter_state_dict(**kwargs)
-        if merged is not None:
-            import peft.peft_model as peft_model
 
-            selection = peft_model.get_peft_model_state_dict
+        def write():
+            nonlocal merged
+            if merged is not None and cast_lora:
+                # model.save_lora: the LoRA tensors in the input embedding dtype (the writer is the first stage).
+                dtype = self.model.get_input_embeddings().weight.dtype
+                merged = {
+                    adapter: {k: (v.to(dtype) if "lora_" in k else v) for k, v in tensors.items()}
+                    for adapter, tensors in merged.items()
+                }
+            if merged is not None:
+                import peft.peft_model as peft_model
 
-            def gathered(
-                model,
-                state_dict = None,
-                adapter_name = "default",
-                **unused,
-            ):
-                return merged[adapter_name]
+                selection = peft_model.get_peft_model_state_dict
 
-            kwargs.pop("state_dict", None)
-            kwargs.setdefault("is_main_process", True)
-            # PEFT's own writer (files, config, card), fed the merged selection of every stage.
-            peft_model.get_peft_model_state_dict = gathered
-            try:
-                peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
-            finally:
-                peft_model.get_peft_model_state_dict = selection
-            if kwargs.get("is_main_process", True):
-                # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
-                # replacing the writer stage's own record that PEFT's save wrote there.
-                provenance.write_adapter_provenance(
-                    self.model, save_directory, tables, kwargs.get("selected_adapters")
-                )
+                def gathered(
+                    model,
+                    state_dict = None,
+                    adapter_name = "default",
+                    **unused,
+                ):
+                    return merged[adapter_name]
+
+                kwargs.pop("state_dict", None)
+                kwargs.setdefault("is_main_process", True)
+                # PEFT's own writer (files, config, card), fed the merged selection of every stage.
+                peft_model.get_peft_model_state_dict = gathered
+                try:
+                    peft_model.PeftModel.save_pretrained(self.model, save_directory, **kwargs)
+                finally:
+                    peft_model.get_peft_model_state_dict = selection
+                if kwargs.get("is_main_process", True):
+                    # Every stage's tables, next to each adapter PEFT wrote ("default" here, others in <name>/),
+                    # replacing the writer stage's own record that PEFT's save wrote there.
+                    provenance.write_adapter_provenance(
+                        self.model, save_directory, tables, kwargs.get("selected_adapters")
+                    )
+
         if self.composed:
-            dist.barrier()
+            group = None
         elif self.num_stages > 1:
-            dist.barrier(group = self.group)
+            group = self.group
+        else:
+            return write()
+        from .tp_native import _agree_write
+
+        _agree_write(write, group)
 
 
 def _default_activation_dtype(model, parts):
@@ -3024,8 +3414,7 @@ def _default_activation_dtype(model, parts):
 
 
 def _local_stage_modules(pp_stage, parts, owned):
-    """One _PPStageModule per local stage. While stage k runs, this rank's layers of its other
-    stages become pass-throughs; the embedding becomes a stub unless k is the first stage."""
+    """Per local stage: other stages' layers pass through, the embedding stubs unless first."""
     layers = parts.layers
     stand_ins = {i: _PPPassThrough(i, pp_stage.ctx, layers[i]) for i in owned}
     embed_owner = _owner(parts.decoder, parts.embed) if pp_stage.is_first else None
@@ -3110,6 +3499,14 @@ def apply_pipeline_parallel(
         existing = existing or level.__dict__.get("_unsloth_pp_stage")
     if existing is not None:
         return existing
+    if any(
+        level.__dict__.get("_unsloth_ep") is not None
+        for level in (_model_chain(model) if isinstance(model, nn.Module) else ())
+    ):
+        raise NotImplementedError(
+            "Unsloth: apply_pipeline_parallel cannot split an expert parallel model (apply_expert_parallel): its "
+            "experts are already split by index over the ranks. ep with pipeline parallel is not supported."
+        )
     _check_torch_pipelining()
     config = config or PPConfig()
     spec = schedule_spec(schedule)
@@ -3146,6 +3543,14 @@ def apply_pipeline_parallel(
         )
     parts = _find_parts(model)
     moe = _refuse_unsupported(model, parts, text_only = config.text_only)
+    aux_off_route = False
+    if (
+        moe is not None
+        and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1)
+        and _router_aux_off(parts.inner, _text_config(model))
+    ):
+        # Aux off: nothing to carry here; the stage forward refuses if it is turned on after the split.
+        moe, aux_off_route = None, True
     if moe is not None and (schedule not in _PP_MOE_AUX_SCHEDULES or stages_per_rank != 1):
         raise ValueError(
             f"Unsloth: pipeline parallelism over a mixture-of-experts model ({type(parts.inner).__name__}) "
@@ -3156,11 +3561,7 @@ def apply_pipeline_parallel(
         _refuse_aux_with_reentrant_checkpointing(model, moe.config)
     total_stages = pp * stages_per_rank
     rank = pp_mesh.get_local_rank()
-    if stages_per_rank > 1:
-        root = _root_mesh(pp_mesh)
-        names = tuple(getattr(root, "mesh_dim_names", None) or ()) if root is not None else ()
-        if "dp" in names:
-            raise ValueError(_MULTI_STAGE_DP)
+    check_multi_stage_dp(pp_mesh, stages_per_rank)
     # The torch schedule's own checks, on placeholder stages: before anything is cut.
     props = validate_schedule(spec, pp_mesh.get_group(), pp, stages_per_rank, n_microbatches, rank)
     _check_schedule(model, spec, props)
@@ -3222,6 +3623,7 @@ def apply_pipeline_parallel(
         carry = carry,
         carry_at = carry_at,
     )
+    pp_stage.split_backward = bool(props["split_backward"])
     if pp > 1 and dtype != parts.embed.weight.dtype:
         pp_stage.ctx.wire_dtypes = _WireDtypes(pp_stage._global_ranks)
     stage_fn = getattr(type(parts.decoder), "pipeline_stage_forward", None)
@@ -3254,7 +3656,10 @@ def apply_pipeline_parallel(
             # Dropped: hold only the stubs, so the towers' GPU memory is freed.
             parts = pp_stage.parts = dataclasses.replace(parts, towers = stubs)
     if moe is None:
-        pp_stage.ctx.uncarried_moe = _uncarried_moe_owner(model, parts)
+        pp_stage.ctx.uncarried_moe = (
+            parts.inner if aux_off_route else _uncarried_moe_owner(model, parts)
+        )
+        pp_stage.ctx.uncarried_schedule = schedule if aux_off_route else None
     if moe is not None:
         # This stage's routers report their logits into the context while its forward runs.
         pp_stage.ctx.moe = moe
@@ -3370,8 +3775,8 @@ def apply_pipeline_parallel(
                 else ""
             )
             + (
-                "; compiled backward graphs built without donated buffers (zero bubble runs autograd.grad "
-                "with retain_graph)"
+                "; compiled backward graphs built without donated buffers inside each step (zero bubble runs "
+                "autograd.grad with retain_graph)"
                 if donated_off
                 else ""
             )

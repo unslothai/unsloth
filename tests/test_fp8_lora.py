@@ -527,6 +527,13 @@ def test_fp8_loss_route_preserves_installed_transformers_decorators(monkeypatch,
 
     model = _tiny_qwen3_peft()
     owner = model.get_base_model()
+    # After import unsloth, zoo's fused forward serves only models Unsloth loaded (unsloth-zoo #2768):
+    # mark this one as a real load does, and fail plainly if the marker is not enough.
+    from unsloth.models._utils import _mark_unsloth_model
+
+    _mark_unsloth_model(owner)
+    fuses = getattr(forward_install, "_fuses_model", lambda module: True)
+    assert fuses(owner), "zoo's fused forward would skip this model"
     cls = type(owner)
     original = cls.forward
     monkeypatch.setattr(cls, "forward", original)
@@ -1539,6 +1546,8 @@ def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch, err
 )
 def test_rowwise_failure_does_not_change_the_scaling_recipe(monkeypatch, error):
     monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {})
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set())
     calls = []
 
     def fail_once(*args):
@@ -1551,8 +1560,13 @@ def test_rowwise_failure_does_not_change_the_scaling_recipe(monkeypatch, error):
     x = torch.zeros(16, 16)
     with pytest.raises(type(error), match = str(error)):
         FL._rowwise_scaled_mm(x, x.t(), torch.ones(16, 1), torch.ones(1, 16), torch.float16, True)
-    assert len(calls) == 1
-    assert FL._ROWWISE_BF16_ONLY == set()
+    # One training GEMM; the rest is the isolated probe, whose tensorwise GEMM gives no verdict here.
+    assert calls[0][0] is x and all(c[2].numel() == 1 for c in calls[1:])
+    assert (
+        FL._ROWWISE_BF16_ONLY == set()
+        and FL._ROWWISE_UNSUPPORTED == set()
+        and FL._ROWWISE_PROBED == {}
+    )
 
 
 def test_vllm_server_merge_of_a_host_master_lands_on_the_adapter_device():

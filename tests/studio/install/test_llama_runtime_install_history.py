@@ -105,8 +105,7 @@ BUNDLES = [
 
 
 def _marker_for(asset: str, backend: str | None, tag: str, source: str) -> dict:
-    """A marker as install_from_archives writes it, trimmed to the keys the probe reads: the
-    backend picks the install kinds, source and tag pick the group table."""
+    """Trimmed marker: the backend picks install kinds; source and tag pick the group table."""
     return {
         "requested_tag": "latest",
         "tag": tag,
@@ -216,8 +215,7 @@ def test_every_windows_layout_decision_agrees_on_the_release_subdirectory():
 
 
 def test_the_installer_creates_the_directory_the_probe_looks_for(tmp_path):
-    """Both builders of the tree the probe grades are checked against install_runtime_dir
-    rather than a literal path of their own."""
+    """Both builders are checked against install_runtime_dir, not a literal path of their own."""
     server, quantize = ILP.normalize_install_layout(tmp_path, WINDOWS)
     runtime_dir = ILP.install_runtime_dir(tmp_path, WINDOWS)
     assert runtime_dir.is_dir(), "the installer must create exactly the directory the probe reads"
@@ -241,8 +239,7 @@ def _managed_copy(tmp_path: Path) -> Path:
 
 
 def test_the_managed_install_on_this_machine_is_healthy():
-    """Read-only, runs against the real managed install rather than a copy, the only sample of what
-    the launch probe is asked; skipped when none is installed."""
+    """Read-only check of the real managed install, not a copy; skipped if none is installed."""
     root = _managed_install()
     if root is None:
         pytest.skip("no managed llama.cpp install on this machine")
@@ -284,8 +281,7 @@ def test_the_probe_reads_only_platform_facts():
 
 @pytest.mark.parametrize("victim", ["llama-server", "llama-quantize"])
 def test_a_quarantined_binary_in_the_real_install_is_caught(victim, tmp_path):
-    """The executables are named outright rather than globbed, so a real tree behaves like a
-    fixture here."""
+    """Executables are named outright, not globbed, so the real tree behaves like a fixture."""
     root = _managed_copy(tmp_path)
     host = ILP.platform_only_host()
     assert ILP.installed_runtime_health(root, host = host) == (True, ""), "copy must start healthy"
@@ -415,8 +411,7 @@ def test_the_capability_payload_names_the_runtime_keys():
 
 
 def test_a_probe_that_raises_leaves_the_runtime_unknown(monkeypatch):
-    """The CLI fills the keys best effort, so a probe that throws must leave the null in
-    place. False would repair a runtime whose only fault was that the check failed."""
+    """A probe that throws must leave the null in place; False would repair a healthy runtime."""
     payload = {"llama_runtime_ok": None, "llama_runtime_reason": ""}
 
     def explode(*args, **kwargs):
@@ -433,8 +428,7 @@ def test_a_probe_that_raises_leaves_the_runtime_unknown(monkeypatch):
 
 
 def test_nothing_installed_leaves_the_runtime_unknown(tmp_path):
-    """The same null for a different reason: no marker means NotInstalled, not a broken
-    runtime, so the probe returns None and the CLI leaves the key untouched."""
+    """No marker means NotInstalled, not a broken runtime, so the probe returns None."""
     assert ILP.installed_runtime_health(tmp_path / "nothing-here") is None
 
 
@@ -583,8 +577,7 @@ def test_the_flattened_trio_installs_healthy(tmp_path):
     ["libllama.so.0", "libggml.so.0", "libllama-common.so.0", "libggml-base.so.0", "libmtmd.so.0"],
 )
 def test_quarantining_a_soname_beside_a_versionless_copy_is_reported_broken(victim, tmp_path):
-    """b10840 ships a versionless copy beside the SONAME; quarantining the SONAME left the group
-    satisfied."""
+    """b10840 ships a versionless copy; quarantining the SONAME left the group satisfied."""
     root = _installed_trio_bundle(tmp_path)
     host = ILP.platform_only_host()
     runtime_dir = ILP.install_runtime_dir(root, host)

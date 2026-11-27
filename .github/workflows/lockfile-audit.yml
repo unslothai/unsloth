@@ -13,13 +13,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # The event name is in the group so a scheduled run and a push to main cannot coalesce (both
-  # resolve to refs/heads/main); queue: single keeps one pending run, so a merge burst would drop
-  # the nightly; cancel-in-progress only protects the running run.
+  # Event name in group keeps a scheduled run and a push to main from coalescing (both resolve to
+  # refs/heads/main); queue: single keeps one pending run; a merge burst would drop the nightly.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # PR: latest run only. Main: never kill a running run; a newer push replaces the pending one.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

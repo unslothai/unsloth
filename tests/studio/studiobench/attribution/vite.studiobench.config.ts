@@ -82,8 +82,7 @@ export default defineConfig({
     emptyOutDir: true,
     // hidden: emit maps without sourceMappingURL so devtools does not resolve them mid-measurement.
     sourcemap: "hidden",
-    // Use the oxc minifier's keepNames, not bundler output.keepNames, which breaks the build on the
-    // pinned rolldown 1.0.3 (rolldown#9973). The mangler is what renames components anyway.
+    // Oxc minifier keepNames; output.keepNames breaks pinned rolldown 1.0.3 (rolldown#9973).
     rolldownOptions: {
       output: {
         minify: {

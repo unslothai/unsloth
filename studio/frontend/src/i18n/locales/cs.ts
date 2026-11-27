@@ -980,11 +980,18 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
-    addScheduledTask: "Přidat naplánovanou úlohu…",
+    addScheduledTask: "Přidat naplánovanou úlohu",
     compact: "Zkomprimovat konverzaci",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:
       "Komprimace vyžaduje model GGUF nebo MLX s podporou nástrojů",
+  },
+  chatFiles: {
+    title: "Soubory v tomto chatu",
+    code: "Úryvky kódu",
+    showInChat: "Zobrazit v chatu",
+    download: "Stáhnout {name}",
+    saveFailed: "{name} se nepodařilo uložit.",
   },
   welcome: {
     goodToSeeYou: "Je fajn vás vidět",
@@ -1069,6 +1076,7 @@ export const cs = {
     saving: "Ukládání...",
     search: "Hledat",
     shutdown: "Vypnout",
+    technicalDetails: "Technické podrobnosti",
   },
   shell: {
     helpMenu: {
@@ -2634,6 +2642,10 @@ export const cs = {
         confirmDescriptionChatOnly:
           "Zastaví server a znovu spustí instalační program. Toto je instalace Pouze chat, takže ji instalační program zároveň upgraduje na úplnou instalaci s PyTorch, celkem několik gigabajtů. Chaty a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Opravit nyní",
+        recommendedTorch:
+          "Doporučena oprava: tato instalace má PyTorch {torch}, starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} je starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50, ale tento ovladač GPU nepodporuje CUDA 13. Nejprve aktualizujte ovladač GPU a pak instalaci opravte.",
       },
       resetPreferences: {
         sectionTitle: "Nebezpečná zóna",
@@ -2814,7 +2826,7 @@ export const cs = {
         oldWebkitWarning:
           "WebKitGTK {version} na Waylandu: vykreslování pomocí GPU může při spuštění na NVIDIA se zlomkovým škálováním spadnout (chyba WebKitu 280210). Pokud k tomu dojde, Unsloth se sám vrátí k vykreslování pomocí CPU. Na WebKitGTK 2.50.4 nepřineslo žádné měřitelné zrychlení (v obou případech 8 fps), proto se zde možnost Zapnuto nedoporučuje.",
         oldDriverWarning:
-          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 610 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
+          "Ovladač NVIDIA {version} na X11: Unsloth ponechá vykreslování pomocí GPU vypnuté, dokud nebude ovladač ve verzi 590 nebo novější. Starší ovladače při každém snímku ztrácejí jeden popisovač souboru a okno se během několika minut přestane vykreslovat.",
         fallbackNote:
           "Vykreslování pomocí GPU v tomto systému při spuštění spadlo, proto Unsloth používá vykreslování pomocí CPU.",
         tryAgain: "Zkusit GPU znovu",
@@ -3091,6 +3103,15 @@ export const cs = {
         runningOn: "llama.cpp aktuálně běží na: {backend}.",
         hint: "Nainstaluje sestavení llama.cpp pro tento backend a zachová ho i při aktualizacích. Hodí se, když automatická volba padá nebo ji ovladač vašeho GPU nepodporuje. Zobrazují se jen backendy, pro které existuje sestavení pro tento počítač; trénování to neovlivní.",
         autoWith: "Automaticky ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm není nainstalován",
+          rocmNoAccess: "bez přístupu ke GPU",
+          otherRelease: "vyžaduje aktualizaci llama.cpp",
+          checkFailed: "nelze ověřit",
+          noBuild: "pro tento počítač není k dispozici build",
+        },
         apply: "Použít",
         applying: "Instalace...",
         applyHint:
@@ -4393,6 +4414,54 @@ export const cs = {
       cachedDatasetGoneDescription:
         "Soubory datové sady již v tomto zařízení nejsou, takže je trénování znovu stáhne.",
     },
+    gpus: {
+      title: "GPU",
+      description: "GPU v tomto počítači a jak je trénování využívá",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB volných",
+      pickModel: "Vyberte model a uvidíte, jak trénování tyto GPU využije.",
+      planning: "Kontroluji, jak se model vejde...",
+      planFailed: "Plán GPU nelze ověřit: {message}",
+      perGpu: "(~{gb} GB na GPU)",
+      alternative: "Zkuste místo toho: {alternative}",
+      override: "Vybrat režim a GPU",
+      overrideHint: "Automaticky vybere nejrychlejší režim, který se vejde. Zrušte zaškrtnutí GPU, kterou chcete nechat volnou pro chat nebo jiný běh.",
+      modeLabel: "Režim",
+      specLabel: "Rozvržení",
+      unavailable: "Zde nedostupné",
+      runChip: "{mode} · GPU: {count}",
+      rankGpu: "Rank {rank} · GPU {index}",
+      mode: {
+        auto: "Automaticky",
+        single: "Jedna GPU",
+        layerSplit: "Rozdělení po vrstvách",
+        ddp: "Datový paralelismus (DDP)",
+        fsdp2: "Shardovaný datový paralelismus (FSDP2)",
+        tp: "Tenzorový paralelismus",
+        pp: "Paralelismus v pipeline",
+        cp: "Kontextový paralelismus",
+        ep: "Paralelismus expertů",
+        custom: "Vlastní rozvržení",
+      },
+      summary: {
+        single: "Trénování na jedné GPU",
+        layerSplit: "Model je rozdělen po vrstvách na GPU: {count}",
+        ddp: "Každá GPU trénuje úplnou kopii: datový paralelismus na GPU: {count}",
+        fsdp2: "Váhy a stav optimalizátoru shardovány na GPU: {count}",
+        tp: "Každá vrstva je rozdělena na GPU: {count}",
+        pp: "Vrstvy běží jako fáze pipeline ({count}), jedna na GPU",
+        cp: "Každá sekvence je rozdělena na GPU: {count}",
+        ep: "Experti MoE jsou rozloženi na GPU: {count}",
+        custom: "Vlastní rozvržení {spec} na GPU: {count}",
+      },
+      error: {
+        noGpu: "Vyberte alespoň jednu GPU.",
+        singleNeedsOne: "Jedna GPU používá právě jednu GPU. Zrušte zaškrtnutí ostatních.",
+        needsTwo: "Tento režim potřebuje alespoň dvě GPU.",
+        customSpec: "Zadejte rozvržení, například {example}.",
+      },
+    },
     preview: {
       title: "Náhled běhu",
       ready: "Připraveno",
@@ -4418,8 +4487,10 @@ export const cs = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "Celkem {size}",
       noGpu: "Nebyla zjištěna žádná GPU",
       hfToken: "Token HF",
+      gpus: "GPU",
       saved: "Uloženo",
       notSet: "Nenastaveno",
       files: "Soubory",
@@ -4788,6 +4859,12 @@ export const cs = {
       epochs: "Epochy",
       useMaxSteps: "Použít Maximum kroků",
       useEpochs: "Použít epochy",
+      stepGuidancePass: "Přibližně {steps} kroků je jeden průchod vašimi {rows} řádky při efektivní dávce {batch}.",
+      stepGuidanceFloor: "Jeden průchod vašimi {rows} řádky je jen {passSteps} kroků při efektivní dávce {batch}, takže přibližně {steps} kroků (několik průchodů) je rozumné minimum.",
+      stepGuidanceCap: "Jeden průchod vašimi {rows} řádky je {passSteps} kroků při efektivní dávce {batch}; {steps} kroků trénuje na jejich části, což pro první běh často stačí.",
+      stepGuidanceEpoch: "Jedna epocha je přibližně {passSteps} kroků přes vašich {rows} řádků při efektivní dávce {batch}.",
+      stepGuidancePacking: "Packing spojuje krátké řádky, takže průchod může zabrat méně kroků.",
+      useSuggestedSteps: "Použít {steps}",
       maxStepsTooltip: "Přepíše celkový počet kroků optimalizátoru.",
       epochsTooltip: "Počet úplných průchodů datovou sadou.",
       contextLength: "Kontext",
@@ -5332,6 +5409,7 @@ export const cs = {
     model: {
       label: "Překladový model",
       fast: "Rychlý",
+      balanced: "Vyvážený",
       quality: "Nejlepší kvalita",
       chat: "Model z chatu",
       recommended: "Doporučené",
@@ -5353,14 +5431,14 @@ export const cs = {
       toneFormal: "Formální",
       toneCasual: "Neformální",
       auto: "Překládat při psaní",
-      autoDescription:
-        "Spustí se po načtení modelu. Psaní nikdy nespustí stahování.",
+      autoDescription: "Spustí se automaticky po načtení modelu.",
       saveHistory: "Ukládat historii",
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
       showPrompt: "Zobrazit prompt",
-      showPromptDescription: "Zobrazí přesné pokyny odeslané modelu.",
+      showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
     },
     history: {
+      notSaved: "Neuloženo do historie: úložiště prohlížeče je plné.",
       title: "Historie",
       search: "Hledat v historii",
       empty: "Vaše překlady se zobrazí zde.",
@@ -5464,6 +5542,11 @@ export const cs = {
       notifyNone: "Vypnuto",
       archiveSuccessful: "Archivovat úspěšné běhy",
       webSearch: "Vyhledávání na webu",
+      mcpServers: "Povolit nástroje MCP pro tuto úlohu",
+      mcpServersHint: "Každé spuštění může bez schválení používat nástroje ze zaškrtnutých serverů.",
+      mcpServersEmpty: "Nejsou povoleny žádné servery. Povolte server MCP v chatu, abyste ho mohli použít zde.",
+      mcpServersLoadError: "Servery MCP se nepodařilo načíst.",
+      mcpServerUnavailable: "{name} (nedostupné)",
       project: "Projekt",
       projectNone: "Žádný",
       model: "Model",
@@ -6389,6 +6472,12 @@ export const cs = {
     maximize: "Maximalizovat okno",
     restore: "Obnovit okno",
     close: "Zavřít okno",
+    mediaCodecs: {
+      title: "Vygenerovaná videa se nemusí přehrát",
+      // {command}: an apt command line, never translated.
+      description: "V systému chybí videodekodéry GStreamer. Nainstalujte je příkazem: {command}",
+      copy: "Kopírovat příkaz",
+    },
   },
   runtimeUpdate: {
     installAudio: "Nainstalovat zvukové běhové prostředí",

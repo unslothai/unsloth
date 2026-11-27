@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Several CUDA/ROCm cards per pipeline without NCCL, split only at component or denoiser-call
-boundaries, never inside a forward; outputs bit-identical; UNSLOTH_DIFFUSION_MULTIGPU=0 disables"""
+"""Several CUDA/ROCm cards in ONE computer per pipeline (single process, single host, no NCCL and no multi-node),
+split only at component or denoiser-call boundaries, never inside a forward. Component placement and the guidance
+(CFG) split keep outputs bit-identical to one card; splitting a batch across cards changes the GEMM shapes each card
+runs, so a batch split can differ slightly from one card. UNSLOTH_DIFFUSION_MULTIGPU=0 disables."""
 
 from __future__ import annotations
 
@@ -89,14 +91,34 @@ def automatic_cfg_parallel_off() -> bool:
 AUTO_CFG_PARALLEL_IDLE_UTIL_PCT = 5.0
 
 
-def _idle_card(probe: Any) -> bool:
+def _idle_card(probe: Any, own_mib: int = 0) -> bool:
+    """``own_mib``: memory this load's own components (a companion split's text encoders) hold on the card. It is not
+    another process's, so it is not counted as in use. Utilisation is always checked: NVML cannot say whose kernels
+    ran, so a busy reading on a card holding this load's encoder is re-read once they are done
+    (:func:`_settled_util_pct`), never waived."""
     free, total = getattr(probe, "free_mib", None), getattr(probe, "total_mib", None)
     if free is None or total is None:
         return False
+    own = max(0, int(own_mib or 0))
     util = getattr(probe, "util_pct", None)
     if util is not None and float(util) > AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
         return False
-    return int(total) - int(free) <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
+    return int(total) - int(free) - own <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
+
+
+# nvidia-smi's utilization.gpu covers the last sample period (1/6 s to 1 s by card): wait past it before a re-read
+_UTIL_SETTLE_S = 1.2
+
+
+def _settled_util_pct(ordinal: int, util: Optional[float], own_mib: int) -> Optional[float]:
+    """``util`` of a card, re-read once after :data:`_UTIL_SETTLE_S` when it reads busy while this load's encoder is on
+    the card: the encoder may just have run there (it runs before the first step), and by the re-read it has
+    finished, so what the re-read still sees is another process's work. Otherwise ``util`` unchanged."""
+    if not own_mib or util is None or float(util) <= AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
+        return util
+    time.sleep(_UTIL_SETTLE_S)
+    again = _smi_util_pct(int(ordinal))
+    return util if again is None else again
 
 
 def automatic_partner(
@@ -105,9 +127,13 @@ def automatic_partner(
     need_mib: int,
     *,
     p2p: Optional[dict[int, bool]] = None,
+    own_mib: Optional[Mapping[int, int]] = None,
+    pending_mib: Optional[Mapping[int, int]] = None,
 ) -> tuple[Optional[int], str]:
     """The card Automatic lends a load's replica to, from ``cards`` (DeviceProbe-like: ordinal, name, total_mib,
-    free_mib, util_pct), or None and the reason. Pure: no device is touched.
+    free_mib, util_pct), or None and the reason. Pure: no device is touched. ``own_mib`` (ordinal -> MiB): this load's
+    own components already on a card (a companion split's text encoders), never counted as another process's use;
+    ``pending_mib``: what this load is about to place there, so the replica must fit beside it.
 
     One partner per load, on any number of cards: CFG-parallel and the batch split each need exactly one second
     copy, and a third copy would have no second call to run (a step has at most two guidance branches, and a batch is
@@ -118,11 +144,14 @@ def automatic_partner(
       - the same card model as the primary (same kernels, so the branches agree and neither card waits on a slower
         one; a mixed pair such as a 4090 with a 3060 is never paired automatically, ``force`` overrides);
       - idle: at most ``AUTO_CFG_PARALLEL_IDLE_USED_MIB`` in use and at most ``AUTO_CFG_PARALLEL_IDLE_UTIL_PCT``
-        utilisation (another process's work is never slowed and its memory never taken);
-      - able to hold the replica plus its reserve.
+        utilisation (another process's work is never slowed and its memory never taken); this load's own encoders
+        do not count (:func:`_idle_card`);
+      - able to hold the replica plus its reserve beside what this load places there.
     Among candidates: the most usable free memory, then a peer-to-peer link to the primary, then the lowest ordinal.
     A static rule, not a trial: on identical idle cards the measured gains are 1.46x to 1.79x (well beyond A/A)."""
     p2p = p2p or {}
+    own_mib = own_mib or {}
+    pending_mib = pending_mib or {}
     pidx = getattr(primary, "ordinal", None)
     pname = getattr(primary, "name", None)
     rejected: dict[str, list[int]] = {}
@@ -134,17 +163,26 @@ def automatic_partner(
         if not pname or card.name != pname:
             rejected.setdefault("a different card model", []).append(o)
             continue
-        if not _idle_card(card):
+        if not _idle_card(card, int(own_mib.get(o, 0))):
             rejected.setdefault("busy", []).append(o)
             continue
         free = int(card.free_mib)
-        usable = free - _replica_reserve_mib(free, card.total_mib)
+        pending = max(0, int(pending_mib.get(o, 0)))
+        usable = free - _replica_reserve_mib(free, card.total_mib) - pending
         if usable < int(need_mib):
-            rejected.setdefault(f"short of the {int(need_mib)} MiB replica", []).append(o)
+            beside = f" beside this load's {pending} MiB" if pending else ""
+            rejected.setdefault(f"short of the {int(need_mib)} MiB replica{beside}", []).append(o)
             continue
-        fits.append((usable, 1 if p2p.get(o) else 0, -o))
+        # a card holding nothing of this load first: one beside its encoders is the fallback
+        clean = 0 if o in own_mib or pending else 1
+        fits.append((clean, usable, 1 if p2p.get(o) else 0, -o))
     if fits:
-        return -max(fits)[2], "idle card of the same model"
+        best = max(fits)
+        return -best[3], (
+            "idle card of the same model"
+            if best[0]
+            else "same-model card beside this load's text encoders"
+        )
     if not rejected:
         return None, "no other card"
     return None, "; ".join(f"cuda:{','.join(map(str, v))} {k}" for k, v in rejected.items())
@@ -208,8 +246,7 @@ def make_selection(
             if others
             else None
         )
-    # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
-    # from Ada): a card of a lower compute capability may not run them, so it takes no component.
+    # Primary's dtype and patches (bf16 needs Ampere, FP8 Ada) exclude lower-capability cards.
     need = _capability(int(primary))
     if need is not None:
         others = tuple(o for o in others if (_capability(o) or need) >= need)
@@ -376,12 +413,19 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
                     _NAMES[o] = str(torch.cuda.get_device_name(o))
                 except Exception:  # noqa: BLE001
                     _NAMES[o] = ""
+    from .diffusion_device import smi_rows_snapshot
+
     out: dict[int, DeviceProbe] = {}
-    for o in ords:
-        free, total = _free_total_mib(o)
-        out[o] = DeviceProbe(
-            ordinal = o, name = _NAMES.get(o, ""), total_mib = total, free_mib = free, util_pct = _util_pct(o)
-        )
+    with smi_rows_snapshot():
+        for o in ords:
+            free, total = _free_total_mib(o)
+            out[o] = DeviceProbe(
+                ordinal = o,
+                name = _NAMES.get(o, ""),
+                total_mib = total,
+                free_mib = free,
+                util_pct = _util_pct(o),
+            )
     return out
 
 
@@ -451,6 +495,8 @@ class CompanionSplit:
     reason: str
     # None = every companion moves; TEXT_ENCODERS_ONLY = only the encoders (the VAE stays with the denoiser)
     components: Optional[tuple[str, ...]] = None
+    # working memory the secondary is priced with above its weights (an encoders-only split: the encode peak)
+    secondary_headroom_mib: int = 0
 
 
 def plan_companion_split(
@@ -520,6 +566,7 @@ def plan_companion_split(
             primary_required_mib = primary_required,
             primary_limit_mib = int(primary_limit_mib),
             secondary_required_mib = secondary_required,
+            secondary_headroom_mib = int(sec_headroom),
             secondary_limit_mib = limits[best],
             components = components,
             reason = (
@@ -711,6 +758,9 @@ class PlacementDecision:
     automatic: bool
     rejected: tuple[PlacementCandidate, ...] = ()
     fallback_resident: bool = False
+    # a cfg_replica beside a companion split's encoders: what runs when the replica declines (the split stays placed)
+    fallback_kind: Optional[str] = None
+    fallback_summary: Optional[str] = None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -740,6 +790,8 @@ def _record_decision(
     rejected: Sequence[PlacementCandidate] = (),
     *,
     fallback_resident: bool = False,
+    fallback_kind: Optional[str] = None,
+    fallback_summary: Optional[str] = None,
 ) -> None:
     with contextlib.suppress(TypeError):
         _DECISIONS[pipe] = PlacementDecision(
@@ -749,6 +801,8 @@ def _record_decision(
             automatic = bool(selection.automatic),
             rejected = tuple(rejected),
             fallback_resident = bool(fallback_resident),
+            fallback_kind = fallback_kind,
+            fallback_summary = fallback_summary,
         )
 
 
@@ -772,8 +826,7 @@ def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
 
 
 # One card plus a copy before a layer split when a copy fits and streaming is hidden; below
-# STREAM_HIDDEN_FRACTION exposed, card speed spread (T4s 10% apart) decides instead; splits add no
-# parallelism
+# STREAM_HIDDEN_FRACTION exposed, card speed spread decides instead; splits add no parallelism.
 STREAM_HIDDEN_FRACTION = 0.05
 STREAM_GATE_ENV = "UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE"
 _GEMM_PROBES: dict = {}
@@ -940,9 +993,8 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
     if exposed >= STREAM_HIDDEN_FRACTION:
         return None
     if streamed > 0:
-        # Split vs whole depends on which card runs cooler (FLUX.1-dev -7.7% to +4.4%, Klein-9B 0%
-        # to +14% on T4 VMs), so main split stays and no image is slower than main; applies when
-        # primary holds whole denoiser
+        # Split vs whole depends on which card runs cooler, so main's split stays (no image slower
+        # than main); applies when primary holds the whole denoiser.
         return None
     return (
         f"one card plus a copy on cuda:{partner}: streaming is hidden behind compute ({_gib(streamed)} per step in "
@@ -975,13 +1027,15 @@ def _copy_partner(pipe: Any, selection: Any) -> Optional[int]:
 _STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDictionary()
 
 
-# Guided loads: one card plus a CFG replica running the second branch concurrently beats a split, which runs both
-# branches serially (Kaggle 2x T4, Wan 2.2 5B: 3.9 vs 4.9 s/step). ``0`` = split first; ``force`` = replica, unpriced.
+# A concurrent CFG replica beats a serial split; 0 = split first, force = unpriced replica.
 CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 # The FLOP price under-reads a real forward (T4 Wan 5B: 1.13 s priced, 2.5 s measured), so the real margin is wider.
 REPLICA_MIN_GAIN = 1.05
 # The 1 GiB reserve already holds a block working set up to that size.
 _REPLICA_BASE_RESERVE_MIB = 1024
+# A step split by tokens over two cards, as a share of the one-card step (two swaps per attention included). Kaggle
+# 2x T4 PCIe: Wan 2.2 5B 1.70-1.79x (0.56-0.59).
+SEQUENCE_SPLIT_STEP_SHARE = 0.6
 
 
 def cfg_replica_placement_mode() -> str:
@@ -1002,6 +1056,8 @@ class DefaultRequest:
     steps: Optional[int] = None
     tokens: Optional[int] = None
     why: str = ""
+    # joint-sequence denoisers (FLUX.2): the prompt's tokens beside ``tokens`` image tokens
+    text_tokens: Optional[int] = None
 
 
 _DEFAULT_REQUESTS: "weakref.WeakKeyDictionary[Any, DefaultRequest]" = weakref.WeakKeyDictionary()
@@ -1014,6 +1070,7 @@ def note_default_request(
     steps: Optional[int] = None,
     tokens: Optional[int] = None,
     why: str = "",
+    text_tokens: Optional[int] = None,
 ) -> None:
     if pipe is None:
         return
@@ -1023,6 +1080,7 @@ def note_default_request(
             steps = int(steps) if steps else None,
             tokens = int(tokens) if tokens else None,
             why = str(why or ""),
+            text_tokens = int(text_tokens) if text_tokens else None,
         )
 
 
@@ -1057,7 +1115,6 @@ def video_default_tokens(pipe: Any, width: int, height: int, frames: int) -> Opt
         return None
 
 
-# These classes never run their guidance branches on two cards.
 REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
     "HiDreamImageTransformer2DModel": "the pipeline batches both branches inside its llama states (dim 1), which no "
     "cut separates",
@@ -1249,11 +1306,16 @@ def price_replica_layout(
     primary_stream_s: float,
     steps: int,
     encoder_stream_s: float = 0.0,
+    sequence_split: bool = False,
 ) -> tuple[float, float]:
     """(replica layout, alternative) seconds per render: steps x ``compute + primary stream`` vs steps x
     ``branches x compute``; ``encoder_stream_s`` = encoders the alternative keeps resident, streamed once per render."""
     branches = 2 if guided else 1
-    replica = int(steps) * (float(compute_s) + float(primary_stream_s)) + float(encoder_stream_s)
+    # ``sequence_split``: an unguided step runs half its tokens on the replica (diffusion_sequence_parallel)
+    share = SEQUENCE_SPLIT_STEP_SHARE if sequence_split and not guided else 1.0
+    replica = int(steps) * (share * float(compute_s) + float(primary_stream_s)) + float(
+        encoder_stream_s
+    )
     alternative = int(steps) * branches * float(compute_s)
     return replica, alternative
 
@@ -1266,6 +1328,7 @@ def choose_replica_layout(
     steps: int,
     encoder_stream_s: float = 0.0,
     min_gain: float = REPLICA_MIN_GAIN,
+    sequence_split: bool = False,
 ) -> tuple[bool, float, float]:
     replica, alternative = price_replica_layout(
         guided = guided,
@@ -1273,6 +1336,7 @@ def choose_replica_layout(
         primary_stream_s = primary_stream_s,
         steps = steps,
         encoder_stream_s = encoder_stream_s,
+        sequence_split = sequence_split,
     )
     return replica > 0 and alternative >= float(min_gain) * replica, replica, alternative
 
@@ -1305,8 +1369,13 @@ def _replica_card(
     need_mib: int,
     *,
     exclude: Sequence[int] = (),
+    own_mib: Optional[Mapping[int, int]] = None,
+    pending_mib: Optional[Mapping[int, int]] = None,
 ) -> tuple[Optional[int], str]:
-    """(ordinal or None, why): the secondary :func:`install_cfg_parallel` would pick, by the same rule."""
+    """(ordinal or None, why): the secondary :func:`install_cfg_parallel` would pick, by the same rule. ``own_mib`` /
+    ``pending_mib`` (ordinal -> MiB): this load's components already on / about to be placed on a card
+    (:func:`automatic_partner`)."""
+    pending_mib = pending_mib or {}
     probes = probe_devices((selection.primary, *selection.secondaries))
     primary = probes.get(int(selection.primary))
     cards = [
@@ -1317,22 +1386,32 @@ def _replica_card(
     if primary is None or not cards:
         return None, "no other card"
     if selection.automatic and cfg_parallel_mode() != "force":
-        return automatic_partner(primary, cards, need_mib)
+        return automatic_partner(primary, cards, need_mib, own_mib = own_mib, pending_mib = pending_mib)
     if cfg_parallel_mode() != "force":
         same = [c for c in cards if c.name and c.name == primary.name]
         if not same:
             return None, "secondary card is a different model (bit-identity needs the same kernels)"
         cards = same
-    fits = [c for c in cards if replica_fits(c.free_mib, c.total_mib, need_mib)]
+
+    def pending(c: Any) -> int:
+        return max(0, int(pending_mib.get(int(c.ordinal), 0)))
+
+    fits = [c for c in cards if replica_fits(c.free_mib, c.total_mib, need_mib + pending(c))]
     if not fits:
-        best = max(cards, key = lambda c: int(c.free_mib))
+        best = max(cards, key = lambda c: int(c.free_mib) - pending(c))
+        beside = f" beside this load's {pending(best)} MiB" if pending(best) else ""
         return (
             None,
-            f"replica needs {need_mib} MiB, {best.free_mib} MiB free on cuda:{best.ordinal}",
+            f"replica needs {need_mib} MiB{beside}, {best.free_mib} MiB free on cuda:{best.ordinal}",
         )
+    own_mib = own_mib or {}
     best = max(
         fits,
-        key = lambda c: (int(c.free_mib) - _replica_reserve_mib(c.free_mib, c.total_mib), -c.ordinal),
+        key = lambda c: (
+            0 if pending(c) or int(c.ordinal) in own_mib else 1,
+            int(c.free_mib) - _replica_reserve_mib(c.free_mib, c.total_mib) - pending(c),
+            -c.ordinal,
+        ),
     )
     return int(best.ordinal), "same-model card"
 
@@ -1346,6 +1425,37 @@ _ALTERNATIVE_LABELS = {
 }
 
 
+def _sequence_split_layout_refusal(denoiser: Any, request: Any, selection: Any) -> Optional[str]:
+    """Why a replica would not split the unguided default request by tokens (diffusion_sequence_parallel), or None.
+    Only joint-sequence classes (FLUX.2) take a replica for it, and only when the default request's own size (image
+    plus text tokens, recorded at load) clears the threshold: an unknown size keeps the other layouts."""
+    from . import diffusion_sequence_parallel as sp
+
+    name = type(denoiser).__name__
+    if sp.mode() == "off":
+        return f"{sp.SP_ENV}=0"
+    if sp.read_plan(type(denoiser)) is None:
+        return f"{name} has no checked sequence-parallel plan"
+    if name not in sp.SP_JOINT_PREFIX:
+        return f"{name} takes a replica for guided steps only"
+    # Speed optims run before placement: a compiled denoiser is already visible here, and every call refuses the split.
+    from .diffusion_cfg_batch import compiled_denoiser, per_call_scaled
+
+    compiled = compiled_denoiser(denoiser)
+    if compiled is not None:
+        return f"compiled submodules ({compiled}) never split by tokens"
+    # each token half would take its own activation amax (dynamic NVFP4): the router refuses every such call
+    scaled = per_call_scaled(denoiser)
+    if scaled is not None:
+        return f"per-call activation scaling ({scaled}) never splits by tokens"
+    if not request.tokens or not request.text_tokens:
+        return "the default request's token count is unknown"
+    tokens = int(request.tokens) + int(request.text_tokens)
+    if sp.mode() != "force" and tokens < sp.MIN_TOKENS:
+        return f"the default request has {tokens} tokens, under {sp.MIN_TOKENS}"
+    return None
+
+
 def replica_layout(
     pipe: Any,
     plan: Any,
@@ -1354,8 +1464,14 @@ def replica_layout(
     *,
     alternative: str,
     moved: Sequence[str] = (),
+    own_mib: Optional[Mapping[int, int]] = None,
+    pending_mib: Optional[Mapping[int, int]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """(why the replica wins, None), (None, why it lost), or (None, None) when it does not apply or is unpriced."""
+    """(why the replica wins, None), (None, why it lost), or (None, None) when it does not apply. ``own_mib`` /
+    ``pending_mib``: this load's components on / about to land on each card (:func:`_replica_card`), for a replica
+    beside a companion split's text encoders. Unpriced (no host-to-device or GEMM measurement yet, a fresh install):
+    a guided default request whose denoiser stays resident on the primary takes the replica, since each step then
+    runs one forward per card instead of two on one; a primary that streams its denoiser keeps the old order."""
     mode = cfg_replica_placement_mode()
     if mode == "off" or cfg_parallel_mode() == "off" or selection is None:
         return None, None
@@ -1371,10 +1487,12 @@ def replica_layout(
     if request is None or request.guided is None:
         return None, None
     if not request.guided and mode != "force":
-        return None, (
-            f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would only "
-            "split even batches"
-        )
+        why_not = _sequence_split_layout_refusal(denoiser, request, selection)
+        if why_not is not None:
+            return None, (
+                f"the default request runs one denoiser branch per step ({request.why or 'no CFG'}): a copy would "
+                f"only split even batches ({why_not})"
+            )
     if getattr(pipe, "transformer_2", None) is not None:
         return None, "two-expert denoiser"
     refusal = replica_layout_refusal(denoiser)
@@ -1394,16 +1512,38 @@ def replica_layout(
         )
     try:
         need = replica_need_mib(denoiser, activations = _prices_default_request(selection))
-        partner, why = _replica_card(selection, need)
+        partner, why = _replica_card(selection, need, own_mib = own_mib, pending_mib = pending_mib)
     except Exception as exc:  # noqa: BLE001 - unsized: the old order
         return None, f"replica card unknown ({type(exc).__name__})"
     if partner is None:
         return None, f"no card for a replica ({why})"
+    if not request.guided:
+        # the router refuses the same pairs at every call
+        from . import diffusion_sequence_parallel as sp
+
+        probes = probe_devices((int(selection.primary), int(partner)))
+
+        def probed(device: Any) -> Optional[tuple]:
+            probe = probes.get(device.index)
+            return (probe.name,) if probe is not None and probe.name else None
+
+        unpaired = sp.pair_refusal(
+            f"cuda:{int(selection.primary)}",
+            f"cuda:{int(partner)}",
+            type(denoiser).__name__,
+            identify = probed,
+        )
+        if unpaired is not None:
+            return None, f"no token split on this pair ({unpaired})"
     label = _ALTERNATIVE_LABELS.get(alternative, alternative)
     if alternative == "one_card" or mode == "force":
+        runs = (
+            "the default request is guided, so each step runs its second branch on the replica at the same time"
+            if request.guided
+            else "the default request has one branch per step, so each step runs half its tokens on the replica"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; the default request is guided, "
-            "so each step runs its second branch on the replica at the same time)"
+            f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there; {runs})"
             + (
                 ""
                 if alternative == "one_card"
@@ -1420,19 +1560,35 @@ def replica_layout(
         tflops = _gemm_tflops(int(selection.primary), _denoiser_compute_dtype(denoiser))
     except Exception:  # noqa: BLE001
         measured, tflops = None, None
+    dit = int(sizes.get("transformer", (0, "dit"))[0] or _denoiser_mib(dict(sizes)))
+    streamed = 0
+    if policy == "group" and bool(getattr(plan, "stream_transformer", True)):
+        streamed = max(0, dit - int(getattr(plan, "resident_transformer_mib", None) or 0))
     if measured is None or tflops is None:
+        if streamed == 0 and (dit > 0 or policy == "none"):
+            with contextlib.suppress(TypeError):
+                _MODE_ESTIMATES[pipe] = {
+                    "alternative": alternative,
+                    "replica_card": f"cuda:{partner}",
+                    "replica_need_mib": int(need),
+                    "priced": False,
+                    "chosen": "cfg_replica",
+                }
+            return (
+                f"one card plus a CFG replica on cuda:{partner} ({need} MiB fits there): unpriced (no host-to-device "
+                f"or GEMM measurement on this card yet), but the default request is guided and the denoiser stays "
+                f"resident on cuda:{selection.primary}, so each step runs one forward per card instead of two on one; "
+                f"{CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
+            ), None
         return (
             None,
-            "unpriced (no host-to-device or GEMM measurement on this card): the split order stays",
+            "unpriced (no host-to-device or GEMM measurement on this card) and the one-card plan streams the "
+            "denoiser: the split order stays",
         )
     h2d = float(measured[0])
     tokens = int(request.tokens or (_COST_CANVAS_PX // _DIT_PIXELS_PER_TOKEN) ** 2)
     params = float(logical_weight_elements(denoiser))
     compute = denoiser_compute_s(params, tokens, tflops)
-    dit = int(sizes.get("transformer", (0, "dit"))[0] or _denoiser_mib(dict(sizes)))
-    streamed = 0
-    if policy == "group" and bool(getattr(plan, "stream_transformer", True)):
-        streamed = max(0, dit - int(getattr(plan, "resident_transformer_mib", None) or 0))
     stream_s = streamed / 1024.0 / max(h2d, 1e-6)
     encoders_s = 0.0
     if alternative == "companion_split" and bool(getattr(plan, "stream_text_encoders", False)):
@@ -1445,6 +1601,7 @@ def replica_layout(
         primary_stream_s = stream_s,
         steps = steps,
         encoder_stream_s = encoders_s,
+        sequence_split = not request.guided,
     )
     with contextlib.suppress(TypeError):
         _MODE_ESTIMATES[pipe] = {
@@ -1469,11 +1626,232 @@ def replica_layout(
         f"tokens ({h2d:.1f} GiB/s, {float(tflops):.0f} TFLOPS measured)"
     )
     if take:
+        runs = (
+            "the default request is guided, so the replica runs the second branch beside the first"
+            if request.guided
+            else "the default request has one branch per step, so the replica runs half of each step's tokens"
+        )
         return (
-            f"one card plus a CFG replica on cuda:{partner}: the default request is guided, so the replica runs the "
-            f"second branch beside the first; predicted {priced}; {CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
+            f"one card plus a CFG replica on cuda:{partner}: {runs}; predicted {priced}; "
+            f"{CFG_REPLICA_PLACEMENT_ENV}=0 keeps the {label}"
         ), None
     return None, f"predicted slower or within {REPLICA_MIN_GAIN:.2f}x: {priced}"
+
+
+def _weakrefable(obj: Any) -> bool:
+    try:
+        weakref.ref(obj)
+        return True
+    except TypeError:
+        return False
+
+
+def _split_moved_names(
+    pipe: Any,
+    plan: Any,
+    sizes: Optional[Mapping[str, tuple[int, str]]] = None,
+) -> tuple[str, ...]:
+    """The components a planned companion split moves (``place_split``'s rule for None / ``TEXT_ENCODERS_ONLY``);
+    ``sizes`` (the loaded component sizes) names them when the pipeline lists no components."""
+    names = getattr(plan, "secondary_components", None)
+    companions = companion_names(pipe) or tuple(
+        n for n, (_mib, role) in (sizes or {}).items() if role != "dit" and n not in DENOISER_ATTRS
+    )
+    if names and tuple(names) == TEXT_ENCODERS_ONLY:
+        return tuple(n for n in companions if n.startswith("text_encoder"))
+    return tuple(names) if names else companions
+
+
+def _replica_shares_component(name: str) -> bool:
+    """A replica may sit beside this component of its own load: a text encoder runs before the first denoiser step,
+    never beside it (a VAE decodes on its card after the last step and needs that card's headroom)."""
+    return str(name).startswith("text_encoder")
+
+
+def _own_mib_on_cards(pipe: Any, names: Sequence[str]) -> dict[int, int]:
+    """ordinal -> MiB of ``names`` (this load's components) resident on each CUDA card now, counted per tensor, so a
+    component spread over cards (or partly on the host) is credited only where its bytes are."""
+    torch = _torch()
+    from .diffusion_memory import _storage_nbytes
+
+    nbytes: dict[int, int] = {}
+    seen: set[int] = set()
+    components = getattr(pipe, "components", {}) or {}
+    for name in names:
+        module = components.get(name) if isinstance(components, Mapping) else None
+        if not isinstance(module, torch.nn.Module):
+            continue
+        try:
+            tensors = (*module.parameters(), *module.buffers())
+        except Exception:  # noqa: BLE001 - unreadable: not counted
+            continue
+        for t in tensors:
+            if id(t) in seen:
+                continue
+            seen.add(id(t))
+            device = getattr(t, "device", None)
+            if getattr(device, "type", None) != "cuda" or device.index is None:
+                continue
+            try:
+                size = sum(_storage_nbytes(t))
+            except Exception:  # noqa: BLE001
+                continue
+            nbytes[int(device.index)] = nbytes.get(int(device.index), 0) + int(size)
+    return {o: b >> 20 for o, b in nbytes.items()}
+
+
+_ENCODER_WORKING: "weakref.WeakKeyDictionary[Any, int]" = weakref.WeakKeyDictionary()
+
+
+def note_encoder_working_mib(pipe: Any, mib: Optional[int]) -> None:
+    """The encode peak (MiB above the weights) the split priced this load's text encoder card with."""
+    if pipe is None or not mib:
+        return
+    with contextlib.suppress(TypeError):
+        _ENCODER_WORKING[pipe] = int(mib)
+
+
+def encoder_working_mib(pipe: Any) -> int:
+    """This load's text encoder working memory: what its split was priced with, at least the encoder headroom."""
+    try:
+        noted = _ENCODER_WORKING.get(pipe) if pipe is not None else None
+    except TypeError:
+        noted = None
+    return max(TEXT_ENCODER_HEADROOM_MIB, int(noted or 0))
+
+
+def beside_encoder_extra_mib(
+    pipe: Any,
+    denoiser: Any,
+    need_mib: int,
+    reserve_mib: int = _REPLICA_BASE_RESERVE_MIB,
+) -> int:
+    """MiB a replica on the card of this load's text encoders must leave free beyond its own need and reserve. The
+    replica's weights stay between renders, so the next uncached prompt encodes beside them: that encode may reuse the
+    replica's working set and the reserve (both idle while it runs), and needs only what its peak exceeds them by."""
+    try:
+        weights = _module_mib(denoiser)
+    except Exception:  # noqa: BLE001 - unsized: the whole need counts as weights
+        weights = int(need_mib)
+    working = max(0, int(need_mib) - int(weights))
+    return max(0, encoder_working_mib(pipe) - working - int(reserve_mib))
+
+
+def _replica_over_planned_split(
+    pipe: Any,
+    plan: Any,
+    selection: Any,
+    split_summary: str,
+    logger: Any = None,
+) -> tuple[Any, list[PlacementCandidate]]:
+    """(plan to run, []) when a CFG replica replaces or joins a companion split planned before the load, else
+    (None, the rejected replica candidates). Two layouts, the first that applies wins:
+
+    - beside the encoders: the split moves only text encoders, and the replica fits their card beside them (they run
+      before the first step, the replica during the steps). The split plan is kept; the primary stays resident.
+    - instead of the split: the one-card plan the split replaced (``plan.fallback_plan``) plus a replica on an idle
+      card, priced like the post-load companion split (:func:`replica_layout`, which charges the encoders that plan
+      streams once per render).
+
+    Without either, the split stays (the order before), and the reasons go to the status."""
+    rejected: list[PlacementCandidate] = []
+    try:
+        from .diffusion_memory import _loaded_component_mib
+        sizes = dict(_loaded_component_mib(pipe) or {})
+    except Exception:  # noqa: BLE001 - unsized: the split stays
+        return None, rejected
+    moved = _split_moved_names(pipe, plan, sizes)
+    secondary = int(plan.secondary_ordinal)
+    label = _ALTERNATIVE_LABELS["companion_split"]
+    if moved and all(_replica_shares_component(n) for n in moved):
+        own = _own_mib_on_cards(pipe, moved)
+        moved_mib = sum(int(sizes[n][0]) for n in moved if n in sizes)
+        note_encoder_working_mib(
+            pipe, (getattr(plan, "estimates", None) or {}).get("multigpu_secondary_headroom_mib")
+        )
+        extra = 0
+        with contextlib.suppress(Exception):  # unsized here: replica_layout reports it
+            denoiser = getattr(pipe, "transformer", None)
+            extra = beside_encoder_extra_mib(
+                pipe,
+                denoiser,
+                replica_need_mib(denoiser, activations = _prices_default_request(selection)),
+            )
+        pending = {secondary: max(0, moved_mib - int(own.get(secondary, 0))) + extra}
+        replica, why = replica_layout(
+            pipe,
+            plan,
+            sizes,
+            selection,
+            alternative = "companion_split",
+            moved = moved,
+            own_mib = own,
+            pending_mib = pending,
+        )
+        if replica is not None:
+            prefix = f"one card plus a CFG replica on cuda:{secondary}"
+            on_split_card = replica.startswith(prefix) and not replica[len(prefix) :][:1].isdigit()
+            beside = (
+                f"the replica sits beside {', '.join(moved)} on cuda:{secondary}; "
+                if on_split_card
+                else ""
+            )
+            rejected.append(
+                PlacementCandidate(
+                    "companion_split",
+                    f"the {label} runs both guidance branches on cuda:{selection.primary}; kept for the encoders, "
+                    "with a CFG replica for the second branch",
+                )
+            )
+            _record_decision(
+                pipe,
+                selection,
+                "cfg_replica",
+                f"{replica}; {beside}{split_summary}",
+                rejected,
+                fallback_resident = False,
+                fallback_kind = "companion_split",
+                fallback_summary = split_summary,
+            )
+            if logger is not None:
+                logger.info("diffusion.multigpu: %s; %s(the split stays placed)", replica, beside)
+            return plan, []
+        if why:
+            rejected.append(
+                PlacementCandidate("cfg_replica", f"beside the encoders on cuda:{secondary}: {why}")
+            )
+    fallback = getattr(plan, "fallback_plan", None)
+    if (
+        fallback is None
+        or getattr(fallback, "secondary_ordinal", None) is not None
+        or getattr(fallback, "layer_split", None) is not None
+    ):
+        return None, rejected
+    replica, why = replica_layout(
+        pipe, fallback, sizes, selection, alternative = "companion_split", moved = moved
+    )
+    if replica is None:
+        if why:
+            rejected.append(PlacementCandidate("cfg_replica", f"instead of the {label}: {why}"))
+        return None, rejected
+    rejected.append(
+        PlacementCandidate(
+            "companion_split",
+            f"the {label} would fit, but the CFG replica layout is predicted faster (one forward per guided step "
+            "instead of two)",
+        )
+    )
+    _record_decision(
+        pipe,
+        selection,
+        "cfg_replica",
+        f"{replica}; cuda:{selection.primary} runs its one-card '{fallback.offload_policy}' plan",
+        rejected,
+        fallback_resident = getattr(fallback, "offload_policy", None) == "none",
+    )
+    if logger is not None:
+        logger.info("diffusion.multigpu: %s (instead of the %s)", replica, label)
+    return fallback, []
 
 
 def refine_plan_for_multigpu(
@@ -1519,11 +1897,16 @@ def refine_plan_for_multigpu(
         )
 
     if getattr(plan, "secondary_ordinal", None) is not None:
-        return keep(
-            "companion_split",
+        split_summary = (
             f"companion split: {', '.join(plan.secondary_components or ('companions',))} on "
-            f"cuda:{plan.secondary_ordinal}, the denoiser resident on cuda:{primary} (planned before the load)",
+            f"cuda:{plan.secondary_ordinal}, the denoiser resident on cuda:{primary} (planned before the load)"
         )
+        replaced, replica_rejected = _replica_over_planned_split(
+            pipe, plan, selection, split_summary, logger
+        )
+        if replaced is not None:
+            return replaced
+        return keep("companion_split", split_summary, *replica_rejected)
     if getattr(plan, "layer_split", None) is not None:
         return keep("layer_split", f"layer split across {_cards(plan.layer_split.cards)}")
     from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
@@ -1615,11 +1998,16 @@ def refine_plan_for_multigpu(
                 rejected.append(PlacementCandidate("cfg_replica", why))
             return False
         label = _ALTERNATIVE_LABELS.get(alternative, alternative)
+        request = default_request(pipe)
+        per_step = (
+            "half of each step's tokens on each card"
+            if request is not None and request.guided is False
+            else "one forward per guided step instead of two"
+        )
         rejected.append(
             PlacementCandidate(
                 alternative,
-                f"the {label} would fit, but the CFG replica layout is predicted faster (one forward per guided step "
-                "instead of two)",
+                f"the {label} would fit, but the CFG replica layout is predicted faster ({per_step})",
             )
         )
         _record_decision(
@@ -1959,8 +2347,7 @@ def _execution_device(module: Any) -> Any:
             if onload is not None and getattr(onload, "type", None) == "cuda":
                 onload = _torch().device(onload)
                 if onload.index is None:
-                    # an automatic load on the current card onloads to bare "cuda": name the card, so the replica
-                    # search compares it with the secondaries by ordinal
+                    # Bare "cuda" onloads: name the card so replica search compares ordinals.
                     onload = _torch().device("cuda", _torch().cuda.current_device())
                 return onload
     except Exception:  # noqa: BLE001 - unknown: the parameter device stands
@@ -2311,7 +2698,21 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         else:
             cfg_rejected = None
         out["decision"] = _live_decision(pipe, decision, info, layer, cfg_rejected)
+        choice = _replica_choice(out["decision"])
+        if choice is not None:
+            out.setdefault("cfg_parallel", {"armed": False})["placement"] = choice
     return out
+
+
+def _replica_choice(live: Mapping[str, Any]) -> Optional[dict[str, str]]:
+    """What the placement decided about a CFG replica and why: ``chosen`` is ``cfg_replica`` or the layout that ran
+    instead. None when the planner did not consider one (one card selected, an unguided or unknown request)."""
+    if live.get("chosen") == "cfg_replica":
+        return {"chosen": "cfg_replica", "reason": str(live.get("summary") or "")}
+    for candidate in live.get("rejected") or ():
+        if candidate.get("kind") == "cfg_replica":
+            return {"chosen": str(live.get("chosen")), "reason": str(candidate.get("reason") or "")}
+    return None
 
 
 def _live_decision(
@@ -2334,7 +2735,14 @@ def _live_decision(
         cfg_declined = None
     if failed is not None:
         out["rejected"] = [{"kind": decision.chosen, "reason": failed}, *out["rejected"]]
-        if decision.fallback_resident:
+        if decision.fallback_kind is not None and (
+            decision.fallback_kind != "companion_split" or info is not None
+        ):
+            out["chosen"] = decision.fallback_kind
+            out["summary"] = (
+                f"placement: {decision.fallback_summary or decision.fallback_kind} ({failed})"
+            )
+        elif decision.fallback_resident:
             out["chosen"] = "one_card"
             out["summary"] = (
                 f"placement: one card: everything resident on cuda:{decision.primary} ({failed})"
@@ -2381,8 +2789,7 @@ _ROOT_HOOK_DICTS = (
 )
 
 
-# Offload machinery moves weights between host and card without changing the math. A replica holds its weights
-# resident, so it drops these instead of inheriting them.
+# Offload hooks move weights without changing the math; a resident replica drops them.
 _OFFLOAD_REGISTRY_HOOKS = frozenset(
     {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
 )
@@ -2655,6 +3062,10 @@ def build_replica(module: Any, device: Any) -> Any:
 
     Built outside inference mode: inside it, torchao weights made outside raise "Cannot set version_counter for
     inference tensor" and ones made inside silently stay on the source card."""
+    if getattr(module, "_unsloth_tp2", None) is not None:
+        raise RuntimeError(
+            "a tensor-parallel denoiser already spans both cards; it has no single-card replica"
+        )
     torch = _torch()
     device = torch.device(device)
     with torch.inference_mode(False), torch.no_grad():
@@ -2716,8 +3127,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or moss_qkv_record(key, value)
                 or zimage_qkv_record(key, value)
             ):
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
-                # source-only cache holds source-card tensors
+                # Pinned offload copies and source-card caches are dropped, not deep-copied.
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -2808,10 +3218,9 @@ def _copy_module(module: Any, device: Any) -> Any:
 
 # Per-step precision state only the source's step loop advances (the replica never enters ``cache_context``).
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
-# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
-# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-# AdaLN precompute's state (a lock, tables on the source card): the replica gets the real modulation modules instead
-# (diffusion_adaln_precompute.replica_memo).
+# Source-only caches are not copied (copies would pin source-card tensors no render clears); FLUX.3
+# conditioning reaches the replica via diffusion_cond_blocks; AdaLN's lock and tables stay on the
+# source, so the replica gets real modulation modules (diffusion_adaln_precompute.replica_memo).
 _SOURCE_ONLY_ATTRS = frozenset(
     {"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas", "_unsloth_adaln"}
 )
@@ -3370,9 +3779,8 @@ def _same_value(a: Any, b: Any) -> bool:
         return False
 
 
-# Per-call state Studio's root hooks write onto denoiser submodules (``_unsloth_*`` scalars, e.g. the HunyuanVideo-1.5
-# trim hook's null-mask flag). The root hooks run only on the source, around the router, so the replica's copy of that
-# state is mirrored from the source before every replica call and the prediction is verified against it.
+# Per-call _unsloth_* state (e.g. HunyuanVideo-1.5 null-mask flag) is written by source-only root
+# hooks; the replica mirrors it before each call and verifies the prediction against it.
 _STATE_PREFIX = "_unsloth_"
 _STATE_TYPES = (bool, int, float, str, type(None))
 _STATE_KEEP = frozenset({"_unsloth_replica_compiled"})
@@ -3581,6 +3989,7 @@ class CfgParallelRouter:
             "batch_split_skip": None,
             "sequence_splits": 0,
             "sequence_split_skip": None,
+            "sequence_split_released": None,
         }
         # why this load's calls are never split by tokens (set once a split failed), else None
         self.sequence_split_off: Optional[str] = None
@@ -3749,8 +4158,7 @@ class CfgParallelRouter:
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
-                # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
-                # it would wait for it on the source stream and serialise the two branches.
+                # Copy inputs before queuing the primary; a later copy serialises the branches.
                 self._prefetch(args, kwargs)
                 sig = self._signature(args, kwargs)
                 self._launch_prediction(latent, sig)
@@ -3900,11 +4308,13 @@ class CfgParallelRouter:
         if self.sequence_split_off is not None:
             self.stats["sequence_split_skip"] = self.sequence_split_off
             return None
-        why = sp.refusal(module, sp.call_tokens(module, latent))
+        why = sp.refusal(module, sp.call_tokens(module, latent, kwargs))
         if why is None and (args or _holds_opaque_tensors((args, kwargs))):
             why = "positional or opaque inputs"
-        if why is None and self.secondary.type != self.primary.type:
-            why = "the replica is on another device type"
+        if why is None:
+            why = sp.call_refusal(module, kwargs)
+        if why is None:
+            why = sp.pair_refusal(self.primary, self.secondary, type(module).__name__)
         if why is None:
             if self._split_scaled is None:
                 from .diffusion_cfg_batch import per_call_scaled
@@ -3949,8 +4359,23 @@ class CfgParallelRouter:
                 devices = (self.primary, self.secondary),
             )
         except Exception as exc:  # noqa: BLE001 - the step reruns whole on the source; no later step splits
-            self.sequence_split_off = f"a split call failed ({type(exc).__name__}: {exc})"[:300]
+            from .diffusion_batched import is_oom_error
+
+            cause = exc.__cause__ if isinstance(exc, sp.SequenceParallelError) else None
+            shown = cause if cause is not None else exc
+            self.sequence_split_off = f"a split call failed ({type(shown).__name__}: {shown})"[:300]
             self.stats["sequence_split_skip"] = self.sequence_split_off
+            if is_oom_error(exc):
+                # out of memory on either card: free the replica's copy too, so the rerun (and anything after it) runs
+                # with the memory main would have; an OOM in the rerun reaches the caller as on main
+                self.stats["replica_failures"] += 1
+                self.drop_replica()
+                with contextlib.suppress(Exception):
+                    from .diffusion_cuda_graph import outside_capture
+                    for card in (self.secondary, self.primary):
+                        if card.type == "cuda":
+                            with outside_capture(), _device_context(card):
+                                _torch().cuda.empty_cache()
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: sequence-parallel step failed (%s); this load runs its single calls on %s",
@@ -4215,7 +4640,14 @@ class CfgParallelRouter:
             need_mib = replica_need_mib(module, latent_tokens(module, latent))
             automatic = getattr(self, "automatic_idle_only", False)
             # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
-            util = _smi_util_pct(self.secondary.index) if automatic else None
+            own_mib = int(getattr(self, "own_mib", 0) or 0)
+            util = (
+                _settled_util_pct(
+                    self.secondary.index, _smi_util_pct(self.secondary.index), own_mib
+                )
+                if automatic
+                else None
+            )
             free, total = self._secondary_free_total_mib()
             if automatic:
                 if not _idle_card(
@@ -4225,16 +4657,22 @@ class CfgParallelRouter:
                         total_mib = total,
                         free_mib = free,
                         util_pct = util,
-                    )
+                    ),
+                    own_mib,
                 ):
                     # Automatic borrowed this card because it was idle at load; something else took it since
                     raise RuntimeError(
                         f"{self.secondary} is no longer idle ({free} of {total} MiB free, {util}% busy)"
                     )
             reserve = _replica_reserve_mib(free, total)
-            if free is not None and need_mib + reserve > free:
+            encode = 0
+            if getattr(self, "encoder_card", False):
+                ref = getattr(self, "pipe_ref", None)
+                encode = beside_encoder_extra_mib(ref() if ref else None, module, need_mib, reserve)
+            if free is not None and need_mib + encode + reserve > free:
+                beside = f" and {encode} MiB more for the next encode beside it" if encode else ""
                 raise RuntimeError(
-                    f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
+                    f"replica needs {need_mib} MiB{beside}, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
@@ -4365,8 +4803,7 @@ class CfgParallelRouter:
         return free, total
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
-        # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
-        # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
+        # Unpredicted: inputs copied after the primary; in-place edits make the copy stale.
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
         sig = self._signature(args, kwargs)
@@ -4495,9 +4932,8 @@ class UnetCfgParallelRouter(CfgParallelRouter):
         return _join_batch(first, second)
 
 
-# DiT classes whose batch may be cut along dim 0 (every per-sample input is a dim-0 tensor; ids, when unbatched, keep
-# a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
-# Lumina 2: a half pads captions to its own longest, and the padding is masked out (fp order only).
+# Batch-cut DiT classes need per-sample dim-0 tensors (unbatched ids lead with the token count);
+# Z-Image has its own split; Lumina 2 pads captions per half, masked (fp order only).
 _DIT_BATCH_SPLIT_KWARGS = {
     "FluxTransformer2DModel": frozenset(
         {
@@ -4724,6 +5160,9 @@ def cfg_parallel_decline(
 
     if is_layer_split(denoiser):
         return "denoiser is split across cards (layer split)"
+    if getattr(denoiser, "_unsloth_tp2", None) is not None:
+        # its blocks already span both cards (diffusion_tp2): a replica would copy them a second time
+        return "denoiser is tensor parallel across cards"
     # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
     # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
     if offload_policy in ("model", "sequential"):
@@ -4783,16 +5222,37 @@ def install_cfg_parallel(
         automatic = selection.automatic and cfg_parallel_mode() != "force"
         auto_reason = None
         try:
-            placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
+            placed = dict(((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).items())
         except TypeError:
-            placed = ()
-        occupied = {str(d) for d in placed} - {str(primary)}
+            placed = {}
+        # A card holding only this load's text encoders can take the replica when it fits beside them (they run
+        # before the first step); a card holding the denoiser's other companions (the VAE decodes there) cannot.
+        occupied = {str(d) for n, d in placed.items() if not _replica_shares_component(n)} - {
+            str(primary)
+        }
+        shared = [
+            n for n, d in placed.items() if _replica_shares_component(n) and str(d) != str(primary)
+        ]
+        own = {
+            int(str(placed[n]).rpartition(":")[2]): 0
+            for n in shared
+            if str(placed[n]).startswith("cuda:") and str(placed[n]).rpartition(":")[2].isdigit()
+        }
+        own.update(_own_mib_on_cards(pipe, shared))
+        if automatic:
+            for o, mib in own.items():
+                probe = probes.get(o)
+                if probe is not None:
+                    settled = _settled_util_pct(o, probe.util_pct, max(1, int(mib)))
+                    if settled != probe.util_pct:
+                        probes[o] = dataclasses.replace(probe, util_pct = settled)
         if automatic:
             # nothing else may live on a card Automatic borrows for a replica (busy: memory in use or computing)
             need = replica_need_mib(denoiser)
+            beside = {o: beside_encoder_extra_mib(pipe, denoiser, need) for o in own}
             pick, auto_reason = automatic_partner(
                 probes.get(primary.index) or DeviceProbe(primary.index, "", None, None),
-                # a card holding the split's components cannot take the replica: never the one Automatic lends
+                # a card holding the split's decode components cannot take the replica: never the one Automatic lends
                 [
                     probes[o]
                     for o in selection.secondaries
@@ -4801,8 +5261,10 @@ def install_cfg_parallel(
                     and f"cuda:{o}" not in occupied
                 ],
                 need,
+                own_mib = own,
+                pending_mib = {o: mib for o, mib in beside.items() if mib},
             )
-            candidates = [o for o in candidates if _idle_card(probes.get(o))]
+            candidates = [o for o in candidates if _idle_card(probes.get(o), own.get(o, 0))]
             if pick is not None:
                 candidates = [pick]
         if occupied:
@@ -4820,19 +5282,49 @@ def install_cfg_parallel(
         else:
             need_mib = replica_need_mib(denoiser, activations = automatic)
 
+            def extra(o: int) -> int:
+                # beside this load's text encoders: room for their next encode too
+                if o not in own or probes.get(o) is None:
+                    return 0
+                return beside_encoder_extra_mib(
+                    pipe,
+                    denoiser,
+                    need_mib,
+                    _replica_reserve_mib(probes[o].free_mib, probes[o].total_mib),
+                )
+
             def usable(o: int) -> int:
+                if probes.get(o) is None:
+                    return -1
                 free_o = probes[o].free_mib
                 if free_o is None:
                     return -1
-                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib)
+                return int(free_o) - _replica_reserve_mib(free_o, probes[o].total_mib) - extra(o)
 
-            best = max(candidates, key = usable)
+            # a card holding nothing of this load first; one beside its encoders only when no other fits
+            fitting = [
+                o
+                for o in candidates
+                if probes.get(o) is not None
+                and probes[o].free_mib is not None
+                and need_mib
+                + extra(o)
+                + _replica_reserve_mib(probes[o].free_mib, probes[o].total_mib)
+                <= probes[o].free_mib
+            ]
+            best = max(fitting or candidates, key = lambda o: (0 if o in own else 1, usable(o)))
             free = probes[best].free_mib
             if (
                 free is not None
-                and need_mib + _replica_reserve_mib(free, probes[best].total_mib) > free
+                and need_mib + extra(best) + _replica_reserve_mib(free, probes[best].total_mib)
+                > free
             ):
-                reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
+                encode = (
+                    f" and {extra(best)} MiB more for the next encode of the text encoder beside it"
+                    if extra(best)
+                    else ""
+                )
+                reason = f"replica needs {need_mib} MiB{encode}, {free} MiB free on cuda:{best}"
             else:
                 graph = _resident_graph(denoiser)
                 if graph is not None:
@@ -4847,6 +5339,10 @@ def install_cfg_parallel(
                 )
                 router.inner = graph
                 router.automatic_idle_only = automatic
+                # this load's own encoders on the replica card: not another process's use at the build's idle check
+                router.own_mib = int(own.get(best, 0))
+                router.encoder_card = best in own
+                router.pipe_ref = weakref.ref(pipe) if _weakrefable(pipe) else None
                 try:
                     _CFG_ROUTERS[pipe] = router
                 except TypeError:
@@ -4869,6 +5365,39 @@ def install_cfg_parallel(
         if logger is not None:
             logger.info("diffusion.multigpu: CFG-parallel not armed (%s)", reason)
     return reason
+
+
+def release_sequence_split_replica(
+    pipe: Any,
+    reason: str,
+    logger: Any = None,
+) -> bool:
+    """A load whose default request is unguided got its replica for token splits only. Once the denoiser is compiled
+    (Auto's deferred profile), no call splits, so free the second card's copy and stop splitting; an even batch still
+    builds one again when it needs it, as without the split. True when a replica was released."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    request = default_request(pipe)
+    if router is None or router.replica is None or request is None or request.guided is not False:
+        return False
+    router.sequence_split_off = reason
+    router.stats["sequence_split_skip"] = reason
+    router.stats["sequence_split_released"] = reason
+    router.drop_replica()
+    if router.secondary.type == "cuda":
+        with contextlib.suppress(Exception):
+            from .diffusion_cuda_graph import outside_capture
+            with outside_capture(), _device_context(router.secondary):
+                _torch().cuda.empty_cache()
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: token-split replica on %s released (%s); one card from here",
+            router.secondary,
+            reason,
+        )
+    return True
 
 
 def invalidate_cfg_replica(

@@ -24,6 +24,9 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
 ];
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
+// Module constants: Streamdown's memo compares plugins by identity, so a fresh object re-parses.
+const STREAMDOWN_PLUGINS = { code: codePlugin };
+const STREAMDOWN_CONTROLS = { code: false };
 
 export function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -139,8 +142,8 @@ function HighlightedCode({
       {highlight ? (
         <Streamdown
           mode="static"
-          plugins={{ code: codePlugin }}
-          controls={{ code: false }}
+          plugins={STREAMDOWN_PLUGINS}
+          controls={STREAMDOWN_CONTROLS}
           shikiTheme={SHIKI_THEME}
         >
           {markdown}

@@ -53,15 +53,13 @@ def test_the_venv_is_built_on_the_drivers_own_interpreter():
 
 
 def test_the_system_site_flag_is_still_passed():
-    """The pin does not replace it. Both are needed: the right interpreter with
-    no inheritance resolves the whole stack from PyPI just as expensively."""
+    """The pin does not replace it: without inheritance the whole stack resolves from PyPI."""
     body = _driver_source().split("def _make_venv(")[1].split("def run_one(")[0]
     assert '"--system-site-packages"' in body
 
 
 def test_the_resulting_python_version_is_REPORTED():
-    """Three sessions went red before anyone read a python version out of a
-    leg. A venv on the wrong interpreter is invisible without this."""
+    """A venv on the wrong interpreter is invisible unless its python version is reported."""
     body = _driver_source().split("def _make_venv(")[1].split("def run_one(")[0]
     sentinel = body.split("_VENV ")[1]
     assert '"python"' in sentinel, (
@@ -102,8 +100,7 @@ def test_the_overlay_lands_where_dill_will_pickle_by_reference():
 
 
 def test_the_mutation_this_rule_exists_for_is_actually_caught():
-    """The negative control. Without it the rule above could be passing because
-    dill answers True for everything, which it does not."""
+    """Negative control: the rule must not pass just because dill answers True for everything."""
     dill_dill = pytest.importorskip("dill._dill")
     before = types.ModuleType("pyarrow")
     # The old --target path: neither under a sys prefix nor named site-packages.
@@ -115,8 +112,7 @@ def test_the_mutation_this_rule_exists_for_is_actually_caught():
 
 
 def test_the_path_is_not_merely_a_string_containing_site_packages():
-    """The overlay --target must end in site-packages, the directory pip installs into; otherwise
-    pip lays the tree where dill still reads modules by value."""
+    """The overlay --target must end in site-packages, or dill still reads modules by value."""
     ov = _overlay_dir_from_generated_source()
     assert ov.name == "site-packages", (
         f"the overlay --target is {ov}, whose last component is {ov.name!r}; "

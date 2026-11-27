@@ -59,6 +59,23 @@ def _stems(ids):
     return [{"id": i, "audio": _b64(_wav()), "sample_rate": RATE, "channels": 2} for i in ids]
 
 
+def test_an_s2s_answer_is_saved_under_its_one_id_and_refused_without_one(tmp_path):
+    path, out = _answer(tmp_path, {"audio": _b64(_wav()), "sample_rate": RATE, "channels": 2})
+    with pytest.raises(SeparationOutputError):
+        extract_named_outputs(path, out)
+    (output,) = extract_named_outputs(path, out, single_id = "voice")
+    assert (output["id"], output["path"]) == ("voice", str(out / "voice.wav"))
+    assert (output["sample_rate"], output["channels"], output["duration_s"]) == (RATE, 2, 0.1)
+
+
+def test_named_outputs_win_over_the_single_id(tmp_path):
+    path, out = _answer(
+        tmp_path, {"audio": _b64(_wav()), "named_audio_outputs": _stems(["speaker_1", "speaker_2"])}
+    )
+    ids = [o["id"] for o in extract_named_outputs(path, out, single_id = "voice")]
+    assert ids == ["speaker_1", "speaker_2"]
+
+
 def test_stem_ids_differing_only_by_case_get_their_own_files(tmp_path):
     path, out = _answer(tmp_path, {"named_audio_outputs": _stems(["Vocals", "vocals", "VOCALS"])})
     outputs = extract_named_outputs(path, out)

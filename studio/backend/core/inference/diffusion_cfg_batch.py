@@ -20,9 +20,8 @@ COMPILED_RESIDENT_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH_COMPILED"
 # 0: any graph a paired call compiles turns pairing off for the load, the first render included
 CFG_PAIR_COMPILE_WARMUP_ENV = "UNSLOTH_DIFFUSION_CFG_PAIR_COMPILE_WARMUP"
 
-# FLUX.3 pairs CFG branches only when both prompts fit one 80-token window (padding would change its
-# output); diffusers 0.42.1 pipelines; a shorter negative stays plain;
-# test_diffusion_cfg_batch_policy pins each class to one table.
+# FLUX.3 pairs CFG only when both prompts fit one 80-token window (padding changes its output);
+# diffusers 0.42.1 pipelines; a shorter negative stays plain; see test_diffusion_cfg_batch_policy.
 STATELESS_CLASSES = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -74,8 +73,7 @@ _PADDED_TEXT = (
 # compiled once, in the shape's warm-up render; later prompts of that shape compile nothing.
 COMPILED_RESIDENT_CLASSES = frozenset({"WanTransformer3DModel"})
 
-# Measured slower batched than two calls: (class, card-name substring, "eager" | "compiled") -> measurement. Only
-# these keep two calls under the default; =force still batches them.
+# Measured slower batched: (class, card name, eager|compiled) stay two calls unless =force.
 MEASURED_SLOWER: dict[tuple[str, str, str], str] = {}
 
 _MEASURED_FRACTION = 0.92
@@ -585,6 +583,8 @@ class CfgBatchRouter:
         self.identity: Optional[str] = (
             None  # the load's verdict-store identity (None: verdicts stay per load)
         )
+        # per render: False when the current step runs one branch by design (a guidance interval ended)
+        self.guided_step: Optional[Any] = None
 
     def _reset_step(self) -> None:
         self.branch = 0
@@ -636,6 +636,7 @@ class CfgBatchRouter:
         self.prev_calls = 0
         self.render_off = None
         self.render_checked = False
+        self.guided_step = None
         self._reset_step()
         for shape in self.shapes.values():
             shape.render_steps = 0
@@ -724,8 +725,7 @@ class CfgBatchRouter:
                 for shape in self.shapes.values():
                     if shape.judged and not shape.compiled_at_trial and shape.off is None:
                         if rejudge:
-                            # compiled after an eager render (the deferred profile): this render is the shape's
-                            # compile warm-up, so its batch-2 graph is compiled here, once
+                            # Compiled after eager: this warm-up render compiles batch-2 once.
                             shape.judged = False
                         else:
                             self._shape_off(
@@ -738,6 +738,9 @@ class CfgBatchRouter:
             self.branch += 1
         else:
             self._new_step(args, kwargs, latent)
+            if self.guided_step is not None and not self._guided():
+                # no second branch is coming: nothing to batch, and its absence is not a miss
+                return self._plain(args, kwargs)
         shape = self.shape
         if self.branch == 0 and self.paired is not None:
             # the first plain pair records the second call's template
@@ -809,6 +812,12 @@ class CfgBatchRouter:
             return out
         self.disable("more than two denoiser calls per step")
         return self._plain(args, kwargs)
+
+    def _guided(self) -> bool:
+        try:
+            return bool(self.guided_step())
+        except Exception:  # noqa: BLE001 - unknown: treat the step as guided, as without a probe
+            return True
 
     def _untimed_mode(self) -> bool:
         """No timing trial: an offloaded denoiser batches whenever the doubled call fits (it saves one weight upload
@@ -905,8 +914,7 @@ class CfgBatchRouter:
         torch = _torch()
         if getattr(latent.device, "type", None) != "cuda":
             return self._plain(args, kwargs)
-        # never reset the peak counters (other measurements own them); a call that stayed under an
-        # earlier peak leaves its activations unknown
+        # Never reset peak counters (shared); under an earlier peak, activations are unknown.
         base = torch.cuda.memory_allocated(latent.device)
         before = torch.cuda.max_memory_allocated(latent.device)
         out = self._plain(args, kwargs)
@@ -1501,6 +1509,14 @@ def router_for(pipe: Any) -> Optional[CfgBatchRouter]:
         return _ROUTERS.get(pipe)
     except TypeError:
         return None
+
+
+def set_guided_step_probe(pipe: Any, probe: Optional[Any]) -> None:
+    """For this render: ``probe()`` says whether the current step runs the unconditional branch (None = every
+    step does). Cleared by ``end_render``."""
+    router = router_for(pipe)
+    if router is not None:
+        router.guided_step = probe
 
 
 def end_cfg_batch_render(pipe: Any) -> None:

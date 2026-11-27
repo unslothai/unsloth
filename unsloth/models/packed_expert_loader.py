@@ -7,6 +7,7 @@ MXFP8 fails. So fused stacks become packed placeholders, their converters are dr
 filled with exact checkpoint bytes. ``UNSLOTH_PACKED_EXPERTS=0`` installs them dequantized to 16 bit instead.
 """
 
+import math
 import os
 import re
 from typing import Optional
@@ -212,14 +213,27 @@ def _plan(model, checkpoint_files):
     return plan
 
 
-def _swap_in_placeholders(plan):
+def _ep_cut(model, module):
+    """(lo, hi, mark): expert parallel loading reads only this rank's experts [lo, hi) of `module`, else None."""
+    import sys
+
+    tpn = sys.modules.get(__name__.rpartition(".")[0] + ".tp_native")
+    cut = getattr(tpn, "ep_packed_load_cut", None)
+    return cut(model, module) if callable(cut) else None
+
+
+def _swap_in_placeholders(plan, model = None):
     for item in plan:
         module = item["module"]
+        # Under expert parallel loading the placeholders and the fill hold this rank's experts only.
+        item["cut"] = _ep_cut(model, module) if model is not None else None
         originals = {}
         for stack in ("gate_up_proj", "down_proj"):
             param = module._parameters.pop(stack)
             originals[stack] = param
             E, N, K = param.shape
+            if item["cut"] is not None:
+                E = item["cut"][1] - item["cut"][0]
             parts = 2 if stack == "gate_up_proj" else 1
             for kind, (shape, dtype) in _placeholder_shapes(item["fmt"], E, N, K, parts).items():
                 module.register_parameter(
@@ -315,9 +329,14 @@ class _Shards:
     def get(self, entries, idx, proj, suffix):
         from safetensors import safe_open
 
+        from ._windows_safetensors import pread_backend_kwargs
+
         path, _, _, key = entries[(idx, proj, suffix)]
         if path not in self.files:
-            self.files[path] = safe_open(path, framework = "pt", device = "cpu")
+            # each expert is read once into a preallocated buffer: pread where mmap -> GPU is slow
+            self.files[path] = safe_open(
+                path, framework = "pt", device = "cpu", **pread_backend_kwargs()
+            )
         return self.files[path].get_tensor(key)
 
 
@@ -325,6 +344,8 @@ def _fill(item, shards):
     pe = _zoo()
     module, entries, fmt = item["module"], item["entries"], item["fmt"]
     keep = packed_experts_enabled()
+    cut = item.get("cut")
+    lo = cut[0] if cut is not None else 0
     code_key = "weight_packed" if fmt == "nvfp4" else "weight"
     glob_key = "weight_global_scale" if fmt == "nvfp4" else "weight_scale_2"
     for stack in ("gate_up_proj", "down_proj"):
@@ -350,6 +371,10 @@ def _fill(item, shards):
         )
         del holders
         E, rows = codes.shape[0], codes.shape[1] // len(projs)
+        if cut is not None:
+            _check_headers(
+                item, projs, rows, codes.shape[2], scales.shape[2], code_key, glob_key, glob
+            )
 
         def _exact(tensor, target, what):
             # copy_ would broadcast a malformed (rows, 1) scale over the whole slice.
@@ -360,17 +385,18 @@ def _fill(item, shards):
                 )
             target.copy_(tensor)
 
-        for e in range(E):
+        # Expert parallel: only this rank's experts [lo, lo + E) are read; another rank's are never touched.
+        for i, e in enumerate(range(lo, lo + E)):
             for p, proj in enumerate(projs):
                 rs = slice(p * rows, (p + 1) * rows)
                 _exact(
                     shards.get(entries, e, proj, code_key).view(torch.uint8),
-                    codes[e, rs],
+                    codes[i, rs],
                     f"{e}.{proj} codes",
                 )
                 _exact(
                     shards.get(entries, e, proj, "weight_scale").view(torch.uint8),
-                    scales[e, rs],
+                    scales[i, rs],
                     f"{e}.{proj} scales",
                 )
                 if glob is not None:
@@ -379,7 +405,7 @@ def _fill(item, shards):
                         raise RuntimeError(
                             f"Unsloth: {item['name']} expert {e}.{proj} has {g.numel()} global scales, expected 1."
                         )
-                    glob[e, p] = g.to(torch.float32).reshape(())
+                    glob[i, p] = g.to(torch.float32).reshape(())
         dtype = item["dtype"]
         if fmt == "mxfp8":
             param = pe.Mxfp8ExpertParam(codes, packed_scales = scales, packed_dtype = dtype)
@@ -398,7 +424,63 @@ def _fill(item, shards):
             module._parameters[stack] = torch.nn.Parameter(
                 param.dequantize(dtype), requires_grad = False
             )
+        if cut is not None:
+            _mark_cut(module, stack, param, cut)
     module._unsloth_packed_expert_format = fmt if keep else None
+
+
+def _check_headers(item, projs, rows, code_cols, scale_cols, code_key, glob_key, glob):
+    """Every expert's tensor shapes from the shard headers, read on each rank before it reads only its own experts,
+    so a malformed checkpoint fails on every rank alike instead of on the rank owning the bad expert."""
+    want = {code_key: (rows, code_cols), "weight_scale": (rows, scale_cols)}
+    if glob is not None:
+        want[glob_key] = None
+    for e in range(item["cut"][2][0]):
+        for proj in projs:
+            for suffix, shape in want.items():
+                entry = item["entries"].get((e, proj, suffix))
+                got = None if entry is None else tuple(entry[1])
+                if got is None or (got != shape if shape is not None else math.prod(got) != 1):
+                    raise RuntimeError(
+                        f"Unsloth: {item['name']} expert {e}.{proj}.{suffix} has shape {got}, expected "
+                        f"{shape if shape is not None else 'one element'}; the checkpoint does not match the model."
+                    )
+
+
+def _mark_cut(module, stack, packed, cut):
+    """A stack read for this rank's experts only: marked as expert parallel loading's cut, its logical shape the
+    whole stack (PEFT sizes the expert LoRA for every expert), so apply_expert_parallel finishes the shard."""
+    import sys
+
+    tpn = sys.modules[__name__.rpartition(".")[0] + ".tp_native"]
+    new = module._parameters[stack]
+    mark = cut[2]
+    if new is packed:
+        new._original_shape = torch.Size((mark[0],) + tuple(new._original_shape)[1:])
+    else:  # UNSLOTH_PACKED_EXPERTS=0: a plain 16-bit stack, sized for PEFT by the preload wrapper
+        tpn._patch_param_wrapper_preloaded_shape()
+    setattr(new, _EXPERT_PRELOAD, mark)
+    kept = packed.nbytes_packed() if new is packed else new.numel() * new.element_size()
+    tpn.ep_packed_load_count(packed.nbytes_packed(), kept)
+
+
+def _drop_idle_decompress_hook(model):
+    """compressed-tensors decompresses on the first forward; with every packed expert stack filled here and no
+    compressed module left, that pass has nothing to decompress but still rebuilds the model's offload state
+    (newer compressed-tensors), which breaks expert parallel's sharded stacks. Drop it then, as
+    mxfp4_compressed_linear does."""
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is None:
+        return
+    for module in model.modules():
+        status = getattr(module, "quantization_status", None)
+        if str(getattr(status, "value", status)).lower() == "compressed":
+            return
+    hook.remove()
+    try:
+        delattr(model, "ct_decompress_hook")
+    except AttributeError:
+        pass
 
 
 def finalize_packed_experts(model) -> int:
@@ -413,6 +495,7 @@ def finalize_packed_experts(model) -> int:
     with torch.no_grad():
         for item in plan:
             _fill(item, shards)
+    _drop_idle_decompress_hook(model)
     fmt = plan[0]["fmt"]
     kind = {"nvfp4": "NVFP4", "nvfp4_modelopt": "ModelOpt NVFP4", "mxfp8": "MXFP8"}[fmt]
     if packed_experts_enabled():
@@ -451,7 +534,7 @@ def _before_loading(
     plan = _plan(model, checkpoint_files)
     if not plan:
         return
-    _swap_in_placeholders(plan)
+    _swap_in_placeholders(plan, model)
     _ignore_keys(model)
     model.__dict__[_PLAN_ATTR] = plan
     quantizer._unsloth_packed_expert_model = model
@@ -538,6 +621,38 @@ def install_packed_expert_loading() -> bool:
     return True
 
 
+_EXPERT_PRELOAD = (
+    "_unsloth_tp_expert_preload"  # tp_native: a stack expert parallel loading cut to this rank
+)
+
+
+def _expert_preloads(model):
+    """Every stack expert parallel loading already cut to this rank's experts: (module, name, stack, mark)."""
+    out = []
+    for module in model.modules():
+        for name, param in module._parameters.items():
+            mark = getattr(param, _EXPERT_PRELOAD, None) if param is not None else None
+            if mark is not None:
+                out.append((module, name, param, mark))
+    return out
+
+
+def _restore_expert_preloads(preloaded):
+    """The quantized stack replacing a cut one keeps its mark, and its logical shape names every expert (as the
+    cut 16-bit stack did), so PEFT sizes the expert LoRA for the whole model and expert parallel finishes the
+    shard; a mark lost here leaves the block unshardable."""
+    for module, name, old, mark in preloaded:
+        new = module._parameters.get(name)
+        if new is None or new is old:
+            continue
+        setattr(new, _EXPERT_PRELOAD, mark)
+        shape = getattr(new, "_original_shape", None)
+        if shape is not None:
+            new._original_shape = torch.Size((mark[0],) + tuple(shape)[1:])
+        if hasattr(old, "_is_hf_initialized"):
+            new._is_hf_initialized = old._is_hf_initialized
+
+
 def quantize_moe_experts_if_requested(model, full_finetuning = False) -> int:
     """UNSLOTH_MOE_EXPERTS_QUANTIZE=nvfp4|mxfp4|nf4: round-to-nearest the 16-bit routed-expert stacks after load."""
     pe = _zoo()
@@ -555,7 +670,9 @@ def quantize_moe_experts_if_requested(model, full_finetuning = False) -> int:
             "Unsloth: UNSLOTH_MOE_EXPERTS_QUANTIZE is ignored for full finetuning (the experts train)."
         )
         return 0
+    preloaded = _expert_preloads(model)
     count = pe.quantize_moe_expert_stacks(model, fmt)
+    _restore_expert_preloads(preloaded)
     if count:
         print(
             f"Unsloth: quantized {count} 16-bit routed-expert stacks to {fmt.upper()} (round to nearest)."

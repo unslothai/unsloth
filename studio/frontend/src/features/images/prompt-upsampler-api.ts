@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The prompt upsampler's routes, kept out of api.ts: startup screens import api.ts (loaded models, hub
-// companion bytes), and only the lazily loaded Images page uses these, so they stay out of the startup chunks.
+// Kept out of api.ts so startup chunks skip them; only the lazy-loaded Images page uses them.
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -67,8 +66,7 @@ export async function previewEnhancedPrompt(
   );
 }
 
-/** Start the upsampler's server in the background so the first enhanced run skips its start. Best effort: the
- *  backend's outcome ("scheduled", "loaded", or why it declined). */
+/** Best-effort background start so the first run skips it; returns the backend's outcome. */
 export async function warmPromptUpsampler(signal?: AbortSignal): Promise<string> {
   // A release sent before this (Enhance off, then quickly on) is answered first, so it cannot stop what this starts.
   await pendingRelease;

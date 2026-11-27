@@ -147,8 +147,7 @@ def test_native_int8_from_stored_bf16_equals_the_float16_build():
 
 
 def test_codes_round_through_the_compute_dtype_first():
-    """bf16 -> float16 is not exact below float16's normal range: quantising the bf16 values directly would give other
-    codes than the float16 load for a row whose scale is that small."""
+    """Round through float16 first: bf16 to float16 is inexact below float16's normal range."""
     from core.inference.diffusion_native_quant import native_linear_class
 
     cls = native_linear_class()

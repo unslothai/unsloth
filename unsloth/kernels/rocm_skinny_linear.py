@@ -11,7 +11,8 @@
 # enables it on every gfx11 part, =0 disables it.
 # NVIDIA: on by default on L4 (sm89) for 2 to 16 rows, where cuBLAS runs the two rank-r GEMMs as extra
 # tile passes; UNSLOTH_CUDA_SKINNY_LINEAR=all enables it on every sm80+ card, =0 disables it. Turing (T4)
-# never takes it: Triton ran these shapes 3-10x slower than cuBLAS there.
+# never takes it: Triton ran these shapes 3-10x slower than cuBLAS there. With split K on NVIDIA, the X @ A.T
+# partials are summed with the base ones and the scaled LoRA term is added once, in the reduce launch.
 
 import os
 
@@ -74,6 +75,7 @@ if triton is not None:
         scale,
         HAS_LORA: tl.constexpr,  # add scale * (X @ A^T) @ B^T
         SPLIT_K: tl.constexpr,  # K splits; > 1 writes fp32 partials for the reduce kernel
+        LORA_IN_REDUCE: tl.constexpr,  # split K: store X @ A^T partials, the reduce kernel adds the LoRA term
         BLOCK_M: tl.constexpr,  # all decode rows (MAX_ROWS) in one tile
         BLOCK_N: tl.constexpr,  # output columns per program
         BLOCK_K: tl.constexpr,  # reduction step
@@ -111,7 +113,19 @@ if triton is not None:
                     other = 0.0,
                 )
                 xa = tl.dot(x, a, xa)
-        if HAS_LORA:
+        if LORA_IN_REDUCE:
+            # Every N tile computes the same X @ A^T slice: the first stores it after the base partials. The
+            # mask is a tensor comparison: a scalar pid_n == 0 term made it int32 in Triton 3.9's interpreter.
+            tl.store(
+                P
+                + SPLIT_K * (BLOCK_M * N)
+                + pid_k * (BLOCK_M * BLOCK_R)
+                + rm[:, None] * BLOCK_R
+                + rr[None, :],
+                xa,
+                mask = (rm[:, None] + pid_n * BLOCK_M < BLOCK_M) & (rr[None, :] < BLOCK_R),
+            )
+        elif HAS_LORA:
             b = tl.load(
                 B + rn[None, :] * stride_bn + rr[:, None] * stride_br,
                 mask = n_mask[None, :] & r_mask[:, None],
@@ -134,14 +148,21 @@ if triton is not None:
     @triton.jit(do_not_specialize = ["M"])
     def _splitk_reduce_kernel(
         P,
+        B,
         Y,
         M,
         N,
+        R,
+        stride_bn,
+        stride_br,
         stride_ym,
         stride_yn,
+        scale,
+        LORA_IN_REDUCE: tl.constexpr,  # add scale * (sum of the X @ A^T partials) @ B^T once, in fp32
         SPLIT_K: tl.constexpr,  # partial slices to sum
         BLOCK_M: tl.constexpr,  # rows per partial slice (MAX_ROWS)
         BLOCK_N: tl.constexpr,  # output columns per program
+        BLOCK_R: tl.constexpr,  # LoRA rank padded as in the main kernel
     ):
         pid_n = tl.program_id(0)
         rm = tl.arange(0, BLOCK_M)
@@ -152,6 +173,20 @@ if triton is not None:
         acc = tl.load(P + offs, mask = mask, other = 0.0)
         for s in tl.static_range(1, SPLIT_K):
             acc += tl.load(P + s * (BLOCK_M * N) + offs, mask = mask, other = 0.0)
+        if LORA_IN_REDUCE:
+            # Summing the base partials first keeps a small LoRA term from being rounded away by large base
+            # partials that cancel, and scaling once keeps finite scaled split terms from overflowing apart.
+            rr = tl.arange(0, BLOCK_R)
+            xa_ptr = P + SPLIT_K * (BLOCK_M * N) + rm[:, None] * BLOCK_R + rr[None, :]
+            xa = tl.load(xa_ptr)
+            for s in tl.static_range(1, SPLIT_K):
+                xa += tl.load(xa_ptr + s * (BLOCK_M * BLOCK_R))
+            b = tl.load(
+                B + rn[None, :] * stride_bn + rr[:, None] * stride_br,
+                mask = n_mask[None, :] & (rr[:, None] < R),
+                other = 0.0,
+            ).to(tl.float32)
+            acc += scale * tl.dot(xa, b, input_precision = "ieee")
         tl.store(
             Y + rm[:, None] * stride_ym + rn[None, :] * stride_yn,
             acc.to(Y.dtype.element_ty),
@@ -270,6 +305,18 @@ def skinny_linear(
         raise ValueError("skinny_linear: A must be [R, K] and B [N, R]")
     if out is not None and tuple(out.shape) != (M, N):
         raise ValueError(f"skinny_linear: out must be [{M}, {N}]")
+    if A is not None and out is not None and out.numel() and B.numel():
+        # The reduce launch reads B while it writes out: an out sharing B's bytes reads a copy.
+        b_start, o_start = B.data_ptr(), out.data_ptr()
+        b_end = (
+            b_start
+            + ((N - 1) * B.stride(0) + (B.shape[1] - 1) * B.stride(1) + 1) * B.element_size()
+        )
+        o_end = (
+            o_start + ((M - 1) * out.stride(0) + (N - 1) * out.stride(1) + 1) * out.element_size()
+        )
+        if b_start < o_end and o_start < b_end:
+            B = B.clone()
     return _launch(X, W, A, B, scale, out, config)
 
 
@@ -297,8 +344,17 @@ def _launch(
     # Every split covers whole BLOCK_K steps; the last split's tail is masked.
     k_per_split = triton.cdiv(triton.cdiv(K, sk), bk) * bk
     sk = triton.cdiv(K, k_per_split)
+    # NVIDIA split K adds the LoRA term after the split reduction (see the reduce kernel); the X @ A^T
+    # partials ride in the same scratch buffer.
+    lora_in_reduce = has_lora and sk > 1 and not _HIP
     partials = (
-        torch.empty((sk, MAX_ROWS, N), dtype = torch.float32, device = X.device) if sk > 1 else out
+        torch.empty(
+            sk * MAX_ROWS * (N + (block_r if lora_in_reduce else 0)),
+            dtype = torch.float32,
+            device = X.device,
+        )
+        if sk > 1
+        else out
     )
     grid = (triton.cdiv(N, bn), sk)
     _skinny_linear_kernel[grid](
@@ -326,6 +382,7 @@ def _launch(
         float(scale),
         HAS_LORA = has_lora,
         SPLIT_K = sk,
+        LORA_IN_REDUCE = lora_in_reduce,
         BLOCK_M = MAX_ROWS,
         BLOCK_N = bn,
         BLOCK_K = bk,
@@ -335,16 +392,27 @@ def _launch(
         enable_fp_fusion = True,
     )
     if sk > 1:
-        _splitk_reduce_kernel[(triton.cdiv(N, 128),)](
+        # The LoRA dot in the reduce needs more programs: on an L4 decode sweep 128 columns each ran 4% slower
+        # than adding the term per split, 32 ran 0.8% faster.
+        reduce_n = 32 if lora_in_reduce else 128
+        # A sum-only reduce gets fixed LoRA arguments, so ranks and B layouts share one compiled variant.
+        _splitk_reduce_kernel[(triton.cdiv(N, reduce_n),)](
             partials,
+            B if lora_in_reduce else partials,
             out,
             M,
             N,
+            R if lora_in_reduce else 0,
+            B.stride(0) if lora_in_reduce else 0,
+            B.stride(1) if lora_in_reduce else 0,
             out.stride(0),
             out.stride(1),
+            float(scale) if lora_in_reduce else 0.0,
+            LORA_IN_REDUCE = lora_in_reduce,
             SPLIT_K = sk,
             BLOCK_M = MAX_ROWS,
-            BLOCK_N = 128,
+            BLOCK_N = reduce_n,
+            BLOCK_R = block_r if lora_in_reduce else 16,
             num_warps = 4,
             enable_fp_fusion = True,
         )
@@ -432,7 +500,8 @@ def skinny_decode_linear(X, W, A, B, scale, out):
     if dtype not in (torch.bfloat16, torch.float16) or type(W) not in _PLAIN or W.dim() != 2:
         return None
     N = W.shape[0]
-    if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or N * MAX_ROWS * 64 >= _INT32:
+    # int32 scratch offsets: up to 64 splits of [16, N] base partials plus [16, <= 128] rank partials.
+    if W.dtype != dtype or K < 1 or N < 1 or W.shape[1] != K or (N + 128) * MAX_ROWS * 64 >= _INT32:
         return None
     if X.layout != _STRIDED or W.layout != _STRIDED or X.is_neg() or W.is_neg():
         return None

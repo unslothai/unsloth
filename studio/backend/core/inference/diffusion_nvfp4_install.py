@@ -820,8 +820,7 @@ _PIP_TRANSPORT_SETTINGS = ("proxy", "cert", "client-cert", "trusted-host", "time
 
 
 def _pinned_index_env(pip_settings: Optional[dict[str, str]] = None) -> dict[str, str]:
-    """The jit-cache step's env: pip.conf is skipped (its extra indexes could beat the pinned one) and the transport
-    settings in ``pip_settings`` are re-exported."""
+    """Skips pip.conf (extra indexes could beat the pinned one); re-exports transport settings."""
     env = _child_env()
     for name in _INDEX_SOURCE_ENVS:
         env.pop(name, None)

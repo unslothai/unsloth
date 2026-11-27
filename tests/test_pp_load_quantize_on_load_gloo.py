@@ -116,7 +116,6 @@ def _case(
     embed, head = inner.get_input_embeddings(), inner.get_output_embeddings()
     tied = {
         "config": bool(getattr(inner.config.get_text_config(), "tie_word_embeddings", False)),
-        # A stand-in of the shared embedding on the stage that runs it (first: embedding, last: lm_head).
         "embed_placeholder": pp.is_first and ppl.is_placeholder(embed.weight),
         "head_placeholder": pp.is_last and ppl.is_placeholder(head.weight),
     }
@@ -237,7 +236,6 @@ def test_quantize_on_load_reads_per_stage(checkpoint, tied_checkpoint, mode, sch
     assert kept == results[0]["full4"]  # the two ranks hold every 4-bit weight exactly once
     for res in results:
         if tie:
-            # Both ends hold the real shared weight: no placeholder where the embedding or the head runs.
             assert res["tied"]["config"], res["tied"]
         assert not res["tied"]["embed_placeholder"] and not res["tied"]["head_placeholder"], res[
             "tied"

@@ -50,8 +50,7 @@ export function modelReadsSamplingSeed(
   if (activeModel?.isAudio && !activeModel.hasAudioInput) {
     return false;
   }
-  // The transformers backend declares no `seed` kwarg, so worker.py drops it.
-  // SGLang ignores it unless launched with --enable-deterministic-inference.
+  // SGLang needs --enable-deterministic-inference for seed; transformers has no seed kwarg.
   return (
     activeModel?.isGguf === true ||
     activeModel?.isMlx === true ||

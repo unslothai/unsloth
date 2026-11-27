@@ -978,11 +978,18 @@ export const id = {
   chatMenu: {
     more: "Opsi chat",
     copy: "Salin",
-    addScheduledTask: "Tambahkan tugas terjadwal…",
+    addScheduledTask: "Tambahkan tugas terjadwal",
     compact: "Padatkan percakapan",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
+  },
+  chatFiles: {
+    title: "File di obrolan ini",
+    code: "Cuplikan kode",
+    showInChat: "Tampilkan di obrolan",
+    download: "Unduh {name}",
+    saveFailed: "Tidak dapat menyimpan {name}.",
   },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
@@ -1068,6 +1075,7 @@ export const id = {
     saving: "Menyimpan...",
     search: "Cari",
     shutdown: "Matikan",
+    technicalDetails: "Detail teknis",
   },
   shell: {
     helpMenu: {
@@ -2616,6 +2624,10 @@ export const id = {
         confirmDescriptionChatOnly:
           "Menghentikan server dan menjalankan ulang penginstal. Ini adalah instalasi Hanya chat, jadi penginstal juga meningkatkannya ke instalasi lengkap dengan PyTorch, total beberapa gigabyte. Chat dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Perbaiki sekarang",
+        recommendedTorch:
+          "Perbaikan disarankan: instalasi ini memakai PyTorch {torch}, lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50, tetapi driver GPU ini tidak mendukung CUDA 13. Perbarui driver GPU terlebih dahulu, lalu perbaiki instalasi.",
       },
       resetPreferences: {
         sectionTitle: "Zona berbahaya",
@@ -2798,7 +2810,7 @@ export const id = {
         oldWebkitWarning:
           "WebKitGTK {version} di Wayland: rendering GPU dapat mogok saat diluncurkan di NVIDIA dengan penskalaan pecahan (bug WebKit 280210). Jika terjadi, Unsloth akan kembali ke rendering CPU dengan sendirinya. Di WebKitGTK 2.50.4, tidak ada peningkatan kecepatan yang terukur (8 fps dalam kedua kasus), jadi Aktif tidak disarankan di sini.",
         oldDriverWarning:
-          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 610 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
+          "Driver NVIDIA {version} di X11: Unsloth menonaktifkan rendering GPU hingga driver versi 590 atau yang lebih baru. Driver lama membocorkan satu file descriptor per frame, dan jendela berhenti menggambar dalam hitungan menit.",
         fallbackNote:
           "Rendering GPU mogok saat diluncurkan di sistem ini, jadi Unsloth menggunakan rendering CPU.",
         tryAgain: "Coba GPU lagi",
@@ -3077,6 +3089,15 @@ export const id = {
         runningOn: "llama.cpp saat ini berjalan di {backend}.",
         hint: "Menginstal build llama.cpp untuk backend ini dan mempertahankannya saat pembaruan. Berguna saat pilihan otomatis mogok atau driver GPU Anda tidak mendukungnya. Hanya backend yang memiliki build untuk mesin ini yang dicantumkan; pelatihan tidak terpengaruh.",
         autoWith: "Otomatis ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm belum terpasang",
+          rocmNoAccess: "tidak ada akses ke GPU",
+          otherRelease: "memerlukan pembaruan llama.cpp",
+          checkFailed: "tidak dapat memeriksa",
+          noBuild: "tidak ada build untuk mesin ini",
+        },
         apply: "Terapkan",
         applying: "Menginstal...",
         applyHint:
@@ -4374,6 +4395,54 @@ export const id = {
       cachedDatasetGoneDescription:
         "File dataset sudah tidak ada di perangkat ini, jadi pelatihan akan mengunduhnya lagi.",
     },
+    gpus: {
+      title: "GPU",
+      description: "GPU di mesin ini dan cara pelatihan menggunakannya",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB kosong",
+      pickModel: "Pilih model untuk melihat bagaimana pelatihan akan menggunakan GPU ini.",
+      planning: "Memeriksa apakah model ini muat...",
+      planFailed: "Tidak dapat memeriksa rencana GPU: {message}",
+      perGpu: "(~{gb} GB per GPU)",
+      alternative: "Coba sebagai gantinya: {alternative}",
+      override: "Pilih mode dan GPU",
+      overrideHint: "Otomatis memilih mode tercepat yang muat. Hapus centang GPU untuk membiarkannya bebas bagi chat atau proses lain.",
+      modeLabel: "Mode",
+      specLabel: "Tata letak",
+      unavailable: "Tidak tersedia di sini",
+      runChip: "{mode} · {count} GPU",
+      rankGpu: "Rank {rank} · GPU {index}",
+      mode: {
+        auto: "Otomatis",
+        single: "Satu GPU",
+        layerSplit: "Pembagian per lapisan",
+        ddp: "Paralel data (DDP)",
+        fsdp2: "Paralel data ter-shard (FSDP2)",
+        tp: "Paralel tensor",
+        pp: "Paralel pipeline",
+        cp: "Paralel konteks",
+        ep: "Paralel pakar",
+        custom: "Tata letak khusus",
+      },
+      summary: {
+        single: "Melatih di satu GPU",
+        layerSplit: "Model dibagi per lapisan ke {count} GPU",
+        ddp: "Setiap GPU melatih salinan penuh: paralel data di {count} GPU",
+        fsdp2: "Bobot dan status optimizer di-shard ke {count} GPU",
+        tp: "Setiap lapisan dibagi ke {count} GPU",
+        pp: "Lapisan berjalan sebagai {count} tahap pipeline, satu per GPU",
+        cp: "Setiap urutan dibagi ke {count} GPU",
+        ep: "Pakar MoE disebar ke {count} GPU",
+        custom: "Tata letak khusus {spec} di {count} GPU",
+      },
+      error: {
+        noGpu: "Pilih setidaknya satu GPU.",
+        singleNeedsOne: "Satu GPU memakai tepat satu GPU. Hapus centang yang lain.",
+        needsTwo: "Mode ini memerlukan setidaknya dua GPU.",
+        customSpec: "Masukkan tata letak, misalnya {example}.",
+      },
+    },
     preview: {
       title: "Pratinjau proses",
       ready: "Siap",
@@ -4399,8 +4468,10 @@ export const id = {
       lr: "LR",
       hardware: "Perangkat keras",
       vram: "VRAM",
+      vramTotal: "Total {size}",
       noGpu: "Tidak ada GPU yang terdeteksi",
       hfToken: "Token HF",
+      gpus: "GPU",
       saved: "Tersimpan",
       notSet: "Belum diatur",
       files: "File",
@@ -4768,6 +4839,12 @@ export const id = {
       epochs: "Epoch",
       useMaxSteps: "Gunakan Langkah Maks",
       useEpochs: "Gunakan Epoch",
+      stepGuidancePass: "Sekitar {steps} langkah adalah satu putaran atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidanceFloor: "Satu putaran atas {rows} baris Anda hanya {passSteps} langkah dengan batch efektif {batch}, jadi sekitar {steps} langkah (beberapa putaran) adalah batas bawah yang wajar.",
+      stepGuidanceCap: "Satu putaran atas {rows} baris Anda adalah {passSteps} langkah dengan batch efektif {batch}; {steps} langkah melatih sebagian darinya, yang sering cukup untuk percobaan pertama.",
+      stepGuidanceEpoch: "Satu epoch sekitar {passSteps} langkah atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidancePacking: "Packing menggabungkan baris pendek, jadi satu putaran bisa butuh lebih sedikit langkah.",
+      useSuggestedSteps: "Gunakan {steps}",
       maxStepsTooltip: "Ganti total langkah optimizer.",
       epochsTooltip: "Jumlah lintasan penuh atas dataset.",
       contextLength: "Konteks",
@@ -5315,6 +5392,7 @@ export const id = {
     model: {
       label: "Model terjemahan",
       fast: "Cepat",
+      balanced: "Seimbang",
       quality: "Kualitas terbaik",
       chat: "Model chat",
       recommended: "Direkomendasikan",
@@ -5336,13 +5414,14 @@ export const id = {
       toneFormal: "Formal",
       toneCasual: "Santai",
       auto: "Terjemahkan saat mengetik",
-      autoDescription: "Dimulai setelah model dimuat. Mengetik tidak pernah memulai unduhan.",
+      autoDescription: "Mulai otomatis saat model dimuat.",
       saveHistory: "Simpan riwayat",
       saveHistoryDescription: "Hanya disimpan di browser ini.",
       showPrompt: "Tampilkan prompt",
       showPromptDescription: "Lihat instruksi persis yang dikirim ke model.",
     },
     history: {
+      notSaved: "Tidak disimpan ke Riwayat: penyimpanan browser penuh.",
       title: "Riwayat",
       search: "Cari riwayat",
       empty: "Terjemahan Anda muncul di sini.",
@@ -5443,6 +5522,11 @@ export const id = {
       notifyNone: "Nonaktif",
       archiveSuccessful: "Arsipkan proses yang berhasil",
       webSearch: "Pencarian web",
+      mcpServers: "Izinkan alat MCP untuk tugas ini",
+      mcpServersHint: "Setiap eksekusi dapat menggunakan alat dari server yang dicentang tanpa persetujuan.",
+      mcpServersEmpty: "Tidak ada server yang diaktifkan. Aktifkan server MCP di chat untuk menggunakannya di sini.",
+      mcpServersLoadError: "Tidak dapat memuat server MCP.",
+      mcpServerUnavailable: "{name} (tidak tersedia)",
       project: "Proyek",
       projectNone: "Tidak ada",
       model: "Model",
@@ -6367,6 +6451,12 @@ export const id = {
     maximize: "Maksimalkan jendela",
     restore: "Pulihkan jendela",
     close: "Tutup jendela",
+    mediaCodecs: {
+      title: "Video yang dibuat mungkin tidak dapat diputar",
+      // {command}: an apt command line, never translated.
+      description: "Sistem ini tidak memiliki dekoder video GStreamer. Instal dengan: {command}",
+      copy: "Salin perintah",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instal runtime audio",

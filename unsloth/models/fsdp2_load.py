@@ -49,8 +49,7 @@ _PACKED_UNIT = 4
 
 
 def _chunk_rows(rows, world, rank):
-    """Rows [start, stop) of dim-0 chunk `rank` as fully_shard cuts it (torch.chunk: ceil(rows / world) per
-    chunk, so the last ranks may hold fewer rows or none)."""
+    """Rows [start, stop) of rank's torch.chunk piece; last ranks may hold fewer rows or none."""
     size = math.ceil(rows / world) if rows else 0
     start = min(rank * size, rows)
     return start, min(start + size, rows)
@@ -288,9 +287,8 @@ def quantized_load_bytes(index, kwargs):
 
 
 def _keep_chunk(module, p, world, rank, ranks):
-    """This rank's dim-0 chunk of a just-loaded parameter, tagged like a sharded-loaded one, or None (kept
-    whole): a quantized Params4bit (packed [n, 1] bytes, the QuantState whole) or a 16-bit nn.Linear /
-    nn.Embedding weight."""
+    """This rank's dim-0 chunk of a just-loaded param, tagged as sharded, for quantized Params4bit
+    (packed [n, 1] bytes, QuantState whole) or 16-bit Linear/Embedding; else None."""
     if not isinstance(p, torch.Tensor) or p.is_meta or _preload(p) is not None:
         return None
     is4 = any(c.__name__ == "Params4bit" for c in type(p).__mro__)
@@ -342,11 +340,36 @@ def _keep_chunk(module, p, world, rank, ranks):
 _ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
 
 
-def _shard_allocator_warmup(world):
+def _kept_byte_count(
+    model,
+    device_map,
+    hf_quantizer = None,
+):
+    """Bytes each device holds for the parameters in device_map, counted whole: what a pipeline stage retains.
+    transformers' own get_total_byte_count (5.0-5.18) divides every parameter its tp_plan names by the world size
+    once a process group is up, which undercounts a stage that keeps those weights unsplit. Tied weights count
+    once and a DTensor counts its local shard, as upstream does."""
+    tied = getattr(model, "all_tied_weights_keys", None) or {}
+    counts = collections.defaultdict(int)
+    for name, device in device_map.items():
+        if name in tied:
+            continue
+        param = model.get_parameter_or_buffer(name)
+        if hf_quantizer is not None:
+            size = hf_quantizer.param_element_size(model, name, param)
+        else:
+            size = param.element_size()
+        local = getattr(param, "_local_tensor", None)
+        numel = local.numel() if isinstance(local, torch.Tensor) else param.numel()
+        counts[device] += numel * size
+    return counts
+
+
+def _shard_allocator_warmup(world, keep = None):
     """transformers 5 reserves the whole (quantized) model on each GPU before loading (caching_allocator_warmup,
-    capped by total, not free, memory), which can OOM a rank that only keeps 1/world of it. For the chunked load
-    size it to this rank's share (get_total_byte_count / world), or skip it when that helper is missing. Returns
-    the restore callable."""
+    capped by total, not free, memory), which can OOM a rank that only keeps part of it. For a sharded load size it
+    to this rank's share: the parameters `keep(model, name)` accepts when given (a pipeline stage), else
+    get_total_byte_count / world; skip it when that helper is missing. Returns the restore callable."""
     try:
         from transformers import modeling_utils as mu
     except Exception:
@@ -357,8 +380,15 @@ def _shard_allocator_warmup(world):
     counter = mu.__dict__.get("get_total_byte_count")
     if callable(counter):
 
-        def per_rank(*args, **kwargs):
-            counts = counter(*args, **kwargs)
+        def per_rank(model, device_map, *args, **kwargs):
+            if keep is not None:
+                try:
+                    kept = {n: d for n, d in device_map.items() if keep(model, n)}
+                except Exception:
+                    kept = None  # no stage plan for this model: the 1/world floor below
+                if kept is not None:
+                    return _kept_byte_count(model, kept, *args, **kwargs)
+            counts = counter(model, device_map, *args, **kwargs)
             for device in list(counts):
                 counts[device] = -(-int(counts[device]) // world)
             return counts
@@ -376,6 +406,24 @@ def _shard_allocator_warmup(world):
         mu.caching_allocator_warmup = warmup
 
     return restore
+
+
+@contextlib.contextmanager
+def sharded_load_memory(world, keep = None):
+    """Around a sharded quantize-on-load (FSDP2, TP, PP): the allocator warmup sized to this rank's share
+    (_shard_allocator_warmup) and synchronous materialization. transformers 5.0-5.3 materializes tensors on worker
+    threads ahead of the setter loop even when quantizing on the fly, so the Futures hold whole full-precision
+    tensors on the card; HF_DEACTIVATE_ASYNC_LOAD=1 unless the user set it. Both restored on exit."""
+    restore_warmup = _shard_allocator_warmup(world, keep)
+    forced_sync = _ASYNC_LOAD_ENV not in os.environ
+    if forced_sync:
+        os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        if forced_sync:
+            os.environ.pop(_ASYNC_LOAD_ENV, None)
+        restore_warmup()
 
 
 def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
@@ -416,19 +464,11 @@ def _load_quantizing(original, cls, name, args, kwargs, mesh, state):
 
     loading.set_param_for_module = set_and_chunk
     state["active"] = True
-    restore_warmup = _shard_allocator_warmup(world)
-    # transformers 5.0-5.3 materializes tensors on worker threads ahead of the setter loop even when quantizing
-    # on the fly, so the Futures hold whole full-precision tensors on the card; load synchronously instead.
-    forced_sync = _ASYNC_LOAD_ENV not in os.environ
-    if forced_sync:
-        os.environ[_ASYNC_LOAD_ENV] = "1"
     try:
-        loaded = original(cls, name, *args, **kwargs)
+        with sharded_load_memory(world):
+            loaded = original(cls, name, *args, **kwargs)
     finally:
-        if forced_sync:
-            os.environ.pop(_ASYNC_LOAD_ENV, None)
         loading.set_param_for_module = set_param
-        restore_warmup()
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
     live = {

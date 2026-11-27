@@ -53,9 +53,8 @@ def _reclaimable_file_bytes(
     v1: bool,
     credit_mapped: bool = False,
 ) -> int:
-    """Droppable page cache bytes: inactive_file + active_file minus mapped, dirty and writeback
-    (conservative); shmem/tmpfs is never counted; credit_mapped also counts clean mapped pages as
-    MemAvailable does, else MGLRU flips the reading."""
+    """Droppable cache: inactive_file + active_file minus mapped/dirty/writeback (conservative);
+    shmem excluded; credit_mapped adds clean mapped pages like MemAvailable, else MGLRU flips."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
@@ -364,3 +363,41 @@ def credited_cgroup_headroom_mib() -> Optional[int]:
 def host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: min(system total, cgroup limit)."""
     return usable_mib(system_total_mib(), cgroup_limit_mib())
+
+
+def windows_commit_mib() -> Optional[tuple[int, int]]:
+    """(commit available, commit limit) MiB; ullAvailPageFile / ullTotalPageFile are system commit, not the page file."""
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD)] + [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ullTotalPhys",
+                    "ullAvailPhys",
+                    "ullTotalPageFile",
+                    "ullAvailPageFile",
+                    "ullTotalVirtual",
+                    "ullAvailVirtual",
+                    "ullAvailExtendedVirtual",
+                )
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.WinDLL("kernel32", use_last_error = True).GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        ):
+            return None
+        avail, limit = int(status.ullAvailPageFile) // _MIB, int(status.ullTotalPageFile) // _MIB
+    except Exception:  # noqa: BLE001
+        return None
+    if limit <= 0 or avail < 0:
+        return None
+    return avail, limit

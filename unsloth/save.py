@@ -61,9 +61,12 @@ from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
 import traceback
 import psutil
+import collections
 import re
 from .models.loader_utils import (
     get_model_name,
+    checkpoint_folder_quant_method,
+    prequantized_snapshot_original,
     sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
@@ -83,6 +86,7 @@ from .models._utils import (
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import (
+    inkling2_lora_gguf_adapter,
     is_inkling2_config,
     raise_if_merging_inkling2,
     save_inkling2_merged_16bit,
@@ -1579,8 +1583,8 @@ def _refuse_tp_in_place_merge(fn, method, args, kwargs):
 
 
 def _model_parallel_refuses_save(method):
-    """Every whole-model export refuses an apply_pipeline_parallel model before it writes anything (see
-    _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
+    """Every whole-model export refuses an apply_pipeline_parallel or apply_expert_parallel model (each rank holds
+    only its experts) before it writes anything (see _refuse_model_parallel_export). A tensor parallel model (tp, or tp x DDP-style dp) is gathered to rank 0,
     which runs the export; the other ranks wait for it (models/tp_replica.py)."""
 
     def decorate(fn):
@@ -2794,6 +2798,16 @@ def _remove_empty_directory(directory):
         pass
 
 
+def _partial_gguf_path(final):
+    """Sibling to write `final` under before `_place_gguf_output` moves it in; a short name when `.tmp` would pass NAME_MAX or Windows MAX_PATH."""
+    head, name = os.path.split(final)
+    if len(os.fsencode(name)) + 4 <= 255 and not (
+        IS_WINDOWS and len(os.path.abspath(final)) + 4 > _WINDOWS_MAX_PATH_CHARS
+    ):
+        return final + ".tmp"
+    return os.path.join(head, f"~{os.urandom(4).hex()}.tmp")
+
+
 def _place_gguf_output(src, dst):
     """`os.replace` is a rename that also overwrites on Windows; anything it refuses (cross-device, directory at `dst`, held file) falls back to `shutil.move`."""
     if os.path.abspath(src) == os.path.abspath(dst):
@@ -3143,11 +3157,12 @@ def save_to_gguf(
             output_location = os.path.join(
                 gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
             )
+            partial_location = _partial_gguf_path(output_location)
             try:
                 if quant_method == "q2_k_l":
-                    return _quantize_q2_k_l(
+                    _quantize_q2_k_l(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quantizer_location = quantizer_location,
                         n_threads = n_threads if n_threads is not None else n_cpus,
                         print_output = print_output,
@@ -3157,7 +3172,7 @@ def save_to_gguf(
                     # Standard unsloth-zoo quantization for everything else. Pass imatrix only when set, so an older zoo still handles plain quants; an inapplicable imatrix was rejected above.
                     quant_kwargs = dict(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quant_type = quant_method,
                         quantizer_location = quantizer_location,
                         print_output = print_output,
@@ -3166,7 +3181,9 @@ def save_to_gguf(
                         quant_kwargs["imatrix"] = imatrix
                     if n_threads is not None:
                         quant_kwargs["n_threads"] = n_threads
-                    return quantize_gguf(**quant_kwargs)
+                    quantize_gguf(**quant_kwargs)
+                _place_gguf_output(partial_location, output_location)
+                return output_location
             except Exception as e:
                 # Judge "no room" against what this pass writes, not a constant. Priced as a lower bound, not the generous reclamation estimate: a high guess calls a disk full that had room.
                 try:
@@ -3195,7 +3212,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
@@ -3212,7 +3229,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     # Kaggle is not the only place a disk fills, and the rebuild advice below only fits a broken quantizer; on a full disk it is a long compile that fixes nothing.
                     try:
@@ -3251,6 +3268,8 @@ def save_to_gguf(
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
                     ) from e  # keep the cause: the OOM check walks it for the returncode
+            finally:
+                Path(partial_location).unlink(missing_ok = True)
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -5405,19 +5424,7 @@ def unsloth_save_pretrained_gguf(
                 "Unsloth: Please use .push_to_hub_gguf(save_method='lora') instead of "
                 ".save_pretrained_gguf(save_method='lora', push_to_hub=True)."
             )
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self, tokenizer, save_directory, outtype = _outtype, token = token
         )
@@ -6097,19 +6104,7 @@ def unsloth_push_to_hub_gguf(
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
-        _qm = quantization_method
-        if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
-            _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
-        if _qm in _LORA_GGUF_OUTTYPES:
-            _outtype = _qm
-        else:
-            if _qm not in (None, "fast_quantized"):
-                logger.warning_once(
-                    f"Unsloth: LoRA GGUF export does not support "
-                    f"quantization_method={quantization_method!r}; using outtype 'f16'. "
-                    f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
-                )
-            _outtype = "f16"
+        _outtype = _lora_gguf_outtype(quantization_method)
         return _unsloth_save_lora_gguf(
             self,
             tokenizer,
@@ -6346,6 +6341,25 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
+
+def _lora_gguf_outtype(quantization_method):
+    """--outtype for a save_method="lora" GGUF export; case-insensitive like the merged GGUF path."""
+    outtype = quantization_method
+    if isinstance(outtype, (list, tuple)) and len(outtype) == 1:
+        outtype = outtype[0]
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
+    if outtype in _LORA_GGUF_OUTTYPES:
+        return outtype
+    if outtype not in (None, "fast_quantized"):
+        logger.warning_once(
+            f"Unsloth: LoRA GGUF export does not support "
+            f"quantization_method={quantization_method!r}; using outtype 'f16'. "
+            f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
+        )
+    return "f16"
+
+
 # get_token() reads only the first two; the rest are third-party. HF_OIDC_* mint one, ahead of HF_TOKEN, on hub >= 1.19.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
@@ -6414,6 +6428,23 @@ def _base_config_dir(repo_id, token = None):
         return None
     directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
     shutil.copyfile(config, os.path.join(directory, "config.json"))
+    return directory
+
+
+def _local_base_config_dir(folder):
+    """Temporary dir with only the config.json of the local checkpoint `folder`, its quantization_config dropped: the
+    LoRA applies to the 16-bit weights that checkpoint was quantized from."""
+    import json
+    import tempfile
+
+    with open(os.path.join(folder, "config.json"), encoding = "utf-8") as f:
+        config = json.load(f)
+    config.pop("quantization_config", None)
+    if isinstance(config.get("text_config"), dict):
+        config["text_config"].pop("quantization_config", None)
+    directory = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-base-")
+    with open(os.path.join(directory, "config.json"), "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2, ensure_ascii = False)
     return directory
 
 
@@ -6523,6 +6554,36 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     )
 
 
+def _lora_target_parameters(model) -> list:
+    names = set()
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        names.update(getattr(config, "target_parameters", None) or ())
+    return sorted(str(name) for name in names)
+
+
+def _converter_error_line(lines) -> str:
+    # The last exception line, else the reasons the converter logs before sys.exit(1) ("ERROR:lora-to-gguf:...").
+    lines = [line.strip() for line in lines]
+    for line in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception)(: |$)", line):
+            return line
+    logged = [m.group(1) for m in map(re.compile(r"^ERROR:[^:\s]+:\s*(\S.*)$").match, lines) if m]
+    return " ".join(logged[:3])
+
+
+def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
+    if expert_targets and "Can not map tensor" in cause and ".experts" in cause:
+        return NotImplementedError(
+            "Unsloth: llama.cpp's LoRA GGUF converter cannot map this adapter's MoE expert weights "
+            f"(target_parameters: {', '.join(expert_targets)}) yet: {cause}. Export the merged model as "
+            "GGUF instead, or save the adapter as safetensors."
+        )
+    return RuntimeError(
+        f"Unsloth: LoRA -> GGUF conversion failed (exit {returncode})"
+        + (f": {cause}" if cause else ". See the output above for details.")
+    )
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6545,6 +6606,8 @@ def _unsloth_save_lora_gguf(
             "Unsloth: LoRA GGUF export needs a PEFT/LoRA model. "
             "For a full or merged model use save_pretrained_gguf(...) instead."
         )
+    if isinstance(outtype, str):
+        outtype = outtype.lower()
     if outtype not in _LORA_GGUF_OUTTYPES:
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
@@ -6554,6 +6617,9 @@ def _unsloth_save_lora_gguf(
     token_is_explicit = token is not None
     if token is None or token is True:
         token = get_token()
+
+    # Not refused up front: the converter decides, so expert LoRA works as soon as llama.cpp can map it.
+    expert_targets = _lora_target_parameters(model)
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
@@ -6569,6 +6635,8 @@ def _unsloth_save_lora_gguf(
     model_name = _model_basename(base_model_id)
 
     base_config_dir = None
+    inkling2_dir = None
+    partial_gguf = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6596,13 +6664,31 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        cmd = [sys.executable, converter, lora_dir, "--outfile", out_gguf, "--outtype", outtype]
+        partial_gguf = _partial_gguf_path(out_gguf)
+        converter_input = lora_dir
+        if is_inkling2_config(getattr(model, "config", None)):
+            # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, lora_dir)
+        cmd = [
+            sys.executable,
+            converter,
+            converter_input,
+            "--outfile",
+            partial_gguf,
+            "--outtype",
+            outtype,
+        ]
         # Pass --trust-remote-code only when the model really came from custom code (the approved load decision), not merely because its config carries an auto_map entry.
         loaded_via_remote_code = _loaded_via_remote_code(model)
         # --base-model-id's strict AutoConfig rejects an older config (Ling-3.0-tiny's int kda_lower_bound, #13948); --base falls back to config.json.
         local_base = None
         if os.path.isdir(base_model_id):
-            local_base = base_model_id
+            # The converter indexes every tensor in --base; a pre-quantized bitsandbytes folder would hand it the
+            # packed 4-bit weights and their quant_state companions. It only needs the config, as for a Hub base.
+            if checkpoint_folder_quant_method(base_model_id) == "bitsandbytes":
+                local_base = base_config_dir = _local_base_config_dir(base_model_id)
+            else:
+                local_base = base_model_id
         elif not loaded_via_remote_code:
             # False stays anonymous; a token we resolved ourselves is left to huggingface_hub, which honors HF_HUB_DISABLE_IMPLICIT_TOKEN.
             local_base = base_config_dir = _base_config_dir(
@@ -6619,6 +6705,7 @@ def _unsloth_save_lora_gguf(
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        output_tail = collections.deque(maxlen = 40)
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
@@ -6633,20 +6720,21 @@ def _unsloth_save_lora_gguf(
             ) as sp:
                 for line in sp.stdout:
                     print(line, end = "", flush = True)
+                    output_tail.append(line.rstrip())
                 sp.wait()
                 if sp.returncode != 0:
                     raise subprocess.CalledProcessError(sp.returncode, sp.args)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                f"Unsloth: LoRA -> GGUF conversion failed (exit {e.returncode}). "
-                "See the output above for details."
+            raise _lora_gguf_conversion_error(
+                e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
-        if not os.path.isfile(out_gguf):
+        if not os.path.isfile(partial_gguf):
             raise RuntimeError(
                 f"Unsloth: LoRA GGUF conversion reported success but wrote no .gguf file to "
                 f"{out_gguf}. See the output above for details."
             )
+        _place_gguf_output(partial_gguf, out_gguf)
 
         if not push_to_hub:
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
@@ -6691,10 +6779,14 @@ def _unsloth_save_lora_gguf(
         print(f"Unsloth: Done. Uploaded to {destination}")
         return save_directory
     finally:
+        if partial_gguf is not None:
+            Path(partial_gguf).unlink(missing_ok = True)
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
         if base_config_dir is not None:
             shutil.rmtree(base_config_dir, ignore_errors = True)
+        if inkling2_dir is not None:
+            shutil.rmtree(inkling2_dir, ignore_errors = True)
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")
@@ -6748,6 +6840,24 @@ from unsloth_zoo.llama_cpp import (
 )
 
 
+def _merge_base_model_name(model_name, load_in_4bit = True):
+    """`get_model_name` for the base a merge re-reads. A hub cache snapshot of a pre-quantized bitsandbytes repo (what a run started from a cached model records) maps to the 16-bit original, as its repo id does: its packed 4-bit tensors cannot take the LoRA deltas."""
+    if not load_in_4bit:
+        original = prequantized_snapshot_original(model_name)
+        if original is not None:
+            return get_model_name(original, load_in_4bit = False)
+    return get_model_name(model_name, load_in_4bit = load_in_4bit)
+
+
+def _merge_base_resolver(in_place):
+    """Base-name resolver for zoo's merge_and_overwrite_lora. An in-place merge (merged_4bit) folds LoRA into the loaded weights and keeps resolving the recorded base as is: zoo calls the resolver with load_in_4bit = False for every method, and remapping a local snapshot there would send an offline 4-bit merge to the Hub."""
+    if in_place:
+        return get_model_name
+    if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1":
+        return _modelscope_base_model_name
+    return _merge_base_model_name
+
+
 def _modelscope_base_model_name(model_name, load_in_4bit = True):
     """`get_model_name` for a merge under UNSLOTH_USE_MODELSCOPE=1: the 16bit base comes from ModelScope, like the model it was trained on, not the Hugging Face Hub (#3726)."""
     name = get_model_name(model_name, load_in_4bit = load_in_4bit)
@@ -6795,7 +6905,7 @@ def _prewarm_base_model_hub_cache(
         if not name_or_path:
             return
         try:
-            model_name = get_model_name(name_or_path, load_in_4bit = False)
+            model_name = _merge_base_model_name(name_or_path, load_in_4bit = False)
         except Exception:
             model_name = name_or_path
         if not model_name or os.path.isdir(model_name):
@@ -7719,9 +7829,7 @@ def unsloth_generic_save(
         relative = nullcontext() if in_place else lora_relative_to_original_base(model)
         with relative, _unmerge_flags_on_error(streamed):
             merge_and_overwrite_lora(
-                _modelscope_base_model_name
-                if os.environ.get("UNSLOTH_USE_MODELSCOPE", "0") == "1" and not in_place
-                else get_model_name,
+                _merge_base_resolver(in_place),
                 model = model,
                 tokenizer = tokenizer,
                 save_directory = save_directory,
@@ -8567,93 +8675,98 @@ def _unsloth_save_torchao_with_given_config(
     arguments["save_method"] = "merged_16bit"
     del arguments["torchao_config"]
     del arguments["untied_lm_head"]
+    torchao_save_directory = os.fspath(save_directory) + "-torchao"
 
-    if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
-        model.save_pretrained(save_directory)
-        tokenizer.save_pretrained(save_directory)
-    else:
-        unsloth_generic_save(**arguments)
+    # Stage beside the output, not in the caller's directory, and not in TMPDIR: a tmpfs /tmp cannot hold the 16-bit merge.
+    import tempfile
 
-    if untied_lm_head is not None:
-        _untie_merged_checkpoint(save_directory, *untied_lm_head)
-
-    _collect_garbage()
-
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoTokenizer,
-        TorchAoConfig,
-        AutoModelForImageTextToText,
-        AutoProcessor,
+    staging_parent = (
+        os.getcwd() if push_to_hub else os.path.dirname(os.path.abspath(torchao_save_directory))
     )
-    from torchao import quantize_
-
-    if isinstance(torchao_config, TorchAoConfig):
-        quantization_config = torchao_config
-    else:
-        quantization_config = TorchAoConfig(quant_type = torchao_config)
-
-    is_vlm = _is_vlm(model)
-    auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
-    auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-
-    tokenizer = auto_processor.from_pretrained(save_directory)
-    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
-        tokenizer = patch_saving_functions(tokenizer)
-
-    # TorchAO must only use bfloat16 for loading; float16 fails.
-    if HAS_TORCH_DTYPE:
-        kwargs = {"torch_dtype": torch.bfloat16}
-    else:
-        kwargs = {"dtype": torch.bfloat16}
-
-    # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
-    model_restore = _offload_model_for_quantize_subprocess(model)
-    _collect_garbage(after = clean_gpu_cache)
-
-    # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
+    os.makedirs(staging_parent, exist_ok = True)
+    staging = tempfile.mkdtemp(prefix = ".unsloth-torchao-", dir = staging_parent)
     try:
-        with sync_load_when_quantizing(quantization_config, None):
-            quantized_model = auto_model.from_pretrained(
-                save_directory,
-                device_map = "auto",
-                quantization_config = quantization_config,
-                **kwargs,
-            )
-
-        torchao_save_directory = save_directory + "-torchao"
-
-        # TorchAO does not support safe_serialization right now; 0.14.0 seems broken.
-        safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
-        safe_serialization = False
-
-        if push_to_hub:
-            quantized_model.push_to_hub(
-                torchao_save_directory, safe_serialization = safe_serialization, token = token
-            )
-            tokenizer.push_to_hub(torchao_save_directory, token = token)
+        arguments["save_directory"] = staging
+        if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
+            model.save_pretrained(staging)
+            tokenizer.save_pretrained(staging)
         else:
-            quantized_model.save_pretrained(
-                torchao_save_directory, safe_serialization = safe_serialization
-            )
-            tokenizer.save_pretrained(torchao_save_directory, token = token)
+            unsloth_generic_save(**arguments)
 
-    finally:
-        # del here, not at the end of the try: if save_pretrained raises, the copy would still be resident while the original is restored.
-        quantized_model = None
-        del quantized_model
-        # A failed save leaves a live traceback whose frames hold the copy, so dropping the local alone does not free its VRAM.
-        _exc = sys.exc_info()[1]
-        if _exc is not None:
-            traceback.clear_frames(_exc.__traceback__)
-        _collect_garbage(after = clean_gpu_cache)
-        _restore_model_after_quantize_subprocess(model, model_restore)
+        if untied_lm_head is not None:
+            _untie_merged_checkpoint(staging, *untied_lm_head)
 
-    if os.path.exists(save_directory):
+        _collect_garbage()
+
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            TorchAoConfig,
+            AutoModelForImageTextToText,
+            AutoProcessor,
+        )
+        from torchao import quantize_
+
+        if isinstance(torchao_config, TorchAoConfig):
+            quantization_config = torchao_config
+        else:
+            quantization_config = TorchAoConfig(quant_type = torchao_config)
+
+        is_vlm = _is_vlm(model)
+        auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
+        auto_processor = AutoProcessor if is_vlm else AutoTokenizer
+
+        tokenizer = auto_processor.from_pretrained(staging)
+        if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+            tokenizer = patch_saving_functions(tokenizer)
+
+        # TorchAO must only use bfloat16 for loading; float16 fails.
+        if HAS_TORCH_DTYPE:
+            kwargs = {"torch_dtype": torch.bfloat16}
+        else:
+            kwargs = {"dtype": torch.bfloat16}
+
+        # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
+        model_restore = _offload_model_for_quantize_subprocess(model)
+
+        # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
         try:
-            shutil.rmtree(save_directory)
-        except:
-            pass
+            _collect_garbage(after = clean_gpu_cache)
+            with sync_load_when_quantizing(quantization_config, None):
+                quantized_model = auto_model.from_pretrained(
+                    staging,
+                    device_map = "auto",
+                    quantization_config = quantization_config,
+                    **kwargs,
+                )
+
+            # TorchAO does not support safe_serialization right now; 0.14.0 seems broken.
+            safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+            safe_serialization = False
+
+            if push_to_hub:
+                quantized_model.push_to_hub(
+                    torchao_save_directory, safe_serialization = safe_serialization, token = token
+                )
+                tokenizer.push_to_hub(torchao_save_directory, token = token)
+            else:
+                quantized_model.save_pretrained(
+                    torchao_save_directory, safe_serialization = safe_serialization
+                )
+                tokenizer.save_pretrained(torchao_save_directory, token = token)
+
+        finally:
+            # del here, not at the end of the try: if save_pretrained raises, the copy would still be resident while the original is restored.
+            quantized_model = None
+            del quantized_model
+            # A failed save leaves a live traceback whose frames hold the copy, so dropping the local alone does not free its VRAM.
+            _exc = sys.exc_info()[1]
+            if _exc is not None:
+                traceback.clear_frames(_exc.__traceback__)
+            _collect_garbage(after = clean_gpu_cache)
+            _restore_model_after_quantize_subprocess(model, model_restore)
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
 
 
 def _scheme_is_available(scheme):
@@ -8944,6 +9057,22 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
         )
 
 
+def _report_lora_quant_survival(model, scheme, ignore_patterns):
+    """Log how much of a LoRA update the quantized export keeps; a diagnostic that never fails the export.
+    `ignore_patterns` are the modules the export leaves 16-bit."""
+    try:
+        from .utils.lora_quant_survival import report_lora_quant_survival
+        report_lora_quant_survival(
+            model,
+            scheme,
+            log = print,
+            warn = logger.warning,
+            skip = lambda name, module: _matches_ignore_pattern(name, module, ignore_patterns),
+        )
+    except Exception:
+        pass
+
+
 @_model_parallel_refuses_save("save_pretrained_merged")
 def _unsloth_save_compressed_tensors(
     model,
@@ -9037,6 +9166,7 @@ def _unsloth_save_compressed_tensors(
 
         # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight filenames, so never write variant-named shards here; the user's variant goes on the final compressed checkpoint.
         variant = merge_kwargs.pop("variant", None)
+        _report_lora_quant_survival(model, scheme, _compressed_ignore_patterns(model))
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(
@@ -9298,6 +9428,9 @@ def _unsloth_save_torchao(
 
         # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so never write variant-named shards here.
         merge_kwargs.pop("variant", None)
+        if kind == "fp8":
+            # torchao quantizes Linear weights only and keeps lm_head 16-bit.
+            _report_lora_quant_survival(model, "torchao_fp8", ["lm_head"])
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
         merge_args.update(

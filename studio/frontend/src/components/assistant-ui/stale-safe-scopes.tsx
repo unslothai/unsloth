@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Thread switches swap the store before React unmounts old rows, so a stale index throws in
-// assistant-ui 0.12 (#10288); backports assistant-ui#5119, #5127, #5948.
+// Stale index throws in assistant-ui 0.12 (#10288); backports assistant-ui#5119, #5127, #5948.
 
 import type { MessageMethods, PartMethods } from "@assistant-ui/core/store";
 import { AuiProvider, useAui, useAuiState } from "@assistant-ui/react";

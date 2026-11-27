@@ -43,6 +43,8 @@ _FUSED_FNS = (
     "mamba2_split_conv1d_scan_combined",
 )
 _MARK = "_unsloth_mamba_fused_lora"
+# Mixer forward's cache argument: cache_params up to transformers 5.23, cache from 5.24.
+_CACHE_PARAM_NAMES = ("cache_params", "cache")
 
 
 class _Routing(threading.local):
@@ -64,8 +66,7 @@ class _Frame:
     __slots__ = ("merged", "applied")
 
     def __init__(self, merged):
-        # [(weight the forward passes, W + delta handed to the kernel instead, leaf)]; matched by
-        # identity, not id(), which torch.compile cannot trace for a tensor built in the forward.
+        # Matched by identity: torch.compile cannot trace id() of tensors built in forward.
         self.merged = merged
         # Leaves whose adapter ran: merged into a kernel call that returned, or called as a module.
         self.applied = set()
@@ -440,10 +441,11 @@ def _patch_class(cls):
         _gate_module_fns(cls)
         return True
     params = list(inspect.signature(forward).parameters)
-    if "cache_params" not in params or len(params) < 2:
+    cache_name = next((name for name in _CACHE_PARAM_NAMES if name in params), None)
+    if cache_name is None or len(params) < 2:
         return False
-    # Position of cache_params within *args, after (self, hidden_states).
-    cache_index = params.index("cache_params") - 2
+    # Position of the cache within *args, after (self, hidden_states).
+    cache_index = params.index(cache_name) - 2
 
     # transformers 4.x: forward picks cuda_kernels_forward or a same-signature torch path.
     slow_takes = None
@@ -482,7 +484,9 @@ def _patch_class(cls):
         leaves = mamba_raw_weight_adapters(self)
         if not leaves:
             return forward(self, hidden_states, *args, **kwargs)
-        if "cache_params" in kwargs:
+        if "cache" in kwargs:
+            cache_params = kwargs["cache"]
+        elif "cache_params" in kwargs:
             cache_params = kwargs["cache_params"]
         else:
             cache_params = args[cache_index] if 0 <= cache_index < len(args) else None
@@ -503,7 +507,6 @@ def _patch_class(cls):
         modules = {leaf: self._modules[leaf] for leaf in leaves}
         weights = {leaf: _merged_weight(modules[leaf]) for leaf in leaves} if names else {}
         fused_cover = [leaf for leaf in leaves if weights.get(leaf) is not None]
-        # Leave the fused kernel only when the non-fused path applies more adapters.
         use_slow = sum(leaf in called for leaf in leaves) > len(fused_cover)
         merged = []
         frame = _Frame(merged)

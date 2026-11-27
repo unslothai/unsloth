@@ -215,9 +215,8 @@ def _meets_node_floor(version: str) -> bool:
 
 
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
-    """Picks a concrete Node version from index.json: channel lts takes the newest LTS line and
-    latest the newest overall, both with major >= min_major; any other channel is an explicit
-    version string."""
+    """Picks a Node version from index.json: channel lts takes the newest LTS line, latest the
+    newest overall, both with major >= min_major; other channels are explicit versions."""
     if channel not in {"lts", "latest"}:
         return channel.lstrip("v")
 
@@ -775,9 +774,8 @@ _PREBUILT_FULL_CHECK_ENV = "UNSLOTH_PREBUILT_FULL_CHECK"
 
 
 def prebuilt_full_check_requested() -> bool:
-    """Escape hatch forcing a full Node revalidation past the recorded-runtime shortcut; defined
-    here rather than imported from the llama module so this installer stays independent, spelled
-    as llama and whisper spell it."""
+    """Escape hatch forcing full Node revalidation past the recorded-runtime shortcut; defined here
+    to stay independent of llama, spelled as llama and whisper spell it."""
     return os.environ.get(_PREBUILT_FULL_CHECK_ENV, "").strip().lower() in (
         "1",
         "true",
@@ -797,9 +795,8 @@ def _file_record(path: Path) -> dict | None:
 
 
 def _file_record_matches(path: Path, recorded: object) -> bool:
-    """Compares only size and mtime_ns: hashing the node binary on every launch would cost more than
-    the node -v spawn it avoids; a node that no longer runs is still caught by the npm-cli.js
-    probe, and the record was never a tamper defence."""
+    """Compares only size and mtime_ns, not a tamper defence: hashing the node binary per launch
+    costs more than the -v spawn; the npm-cli.js probe catches a node that no longer runs."""
     if not isinstance(recorded, dict):
         return False
     try:
@@ -937,9 +934,8 @@ def existing_install_matches(
     expected_sha: str | None = None,
     under_lock: bool = False,
 ) -> bool:
-    """True iff the on-disk install is exactly this version, runs, and (when
-    expected_sha is given) was recorded with that digest, so a non-pinned or
-    tampered artifact is not kept just because its version string matches."""
+    """True iff the install is exactly this version, runs and, when expected_sha is given, was
+    recorded with that digest; a non-pinned or tampered artifact is not kept on version alone."""
     meta = load_metadata(install_dir)
     if not meta or meta.get("version") != version:
         return False
@@ -1113,7 +1109,6 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     asset = node_asset_name(version, host)
     log(f"target Node v{version} ({asset})")
 
-    # Keep an existing install only if it matches the pin (or pinning is opted out).
     pin = pin_to_keep(pins, version, asset, install_dir)
     allow_unverified = allow_unverified_node()
     may_keep = pin is not None or allow_unverified
@@ -1283,8 +1278,7 @@ def _report_access_denied(exc: OSError, install_dir: Path) -> int:
 
 
 def _within(path: str, root: Path) -> bool:
-    """Whether path is root or under it, by spelling alone; both sides come from the same
-    --install-dir string, and resolving links would need the access that was just denied."""
+    """Root-or-under check on --install-dir spellings; resolving links needs the denied access."""
     normalized = os.path.normcase(os.path.abspath(path))
     base = os.path.normcase(os.path.abspath(root))
     return normalized == base or normalized.startswith(base.rstrip(os.sep) + os.sep)

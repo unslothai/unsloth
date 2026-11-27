@@ -76,6 +76,7 @@ def _run(
     mixed_precision = "float32",
     user_float32 = None,
     device_type = "cuda",
+    forced_stamp = None,
 ):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
@@ -86,6 +87,13 @@ def _run(
             (model_dtype is torch.float32) if user_float32 is None else user_float32 == "1"
         ),
     )
+    # Every Unsloth load stamps the forced-float32 decision on the model it returns, and the trainer
+    # reads that stamp, not the process-wide UNSLOTH_FORCE_FLOAT32 (#19442). Stamp it the way the
+    # loader would for this env; forced_stamp = "none" leaves the model unstamped (not loaded by Unsloth).
+    if forced_stamp is None:
+        model._unsloth_forced_float32 = force_float32 == "1"
+    elif forced_stamp != "none":
+        model._unsloth_forced_float32 = forced_stamp == "1"
     args = _Args(fp16 = fp16, bf16 = bf16)
     env = {
         "UNSLOTH_FORCE_FLOAT32": force_float32,
@@ -207,8 +215,7 @@ def test_upcast_float32_on_a_v100_still_gets_fp16_autocast():
 
 
 def test_loaders_record_the_explicit_request():
-    """Every public entry point, since only the outermost one sees the
-    argument as the caller wrote it."""
+    """Each public entry point must record it; only the outermost sees the argument as written."""
     for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_requested_float32(dtype)" in src, rel
@@ -269,8 +276,7 @@ def test_the_direct_diffusion_loader_records_it_too():
 
 
 def test_the_request_is_read_from_the_model_not_the_environment():
-    """The request is stored on each model, since a process-global would describe whichever model
-    loaded last and train the first with the second's precision."""
+    """Stored per model: a process-global would train the first with the second's precision."""
     assert "_unsloth_user_float32" in MP_SRC
     assert "UNSLOTH_USER_FLOAT32" not in MP_SRC
 

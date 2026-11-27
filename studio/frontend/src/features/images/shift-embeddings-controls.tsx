@@ -5,8 +5,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { listDiffusionEmbeddings, type DiffusionEmbeddingInfo } from "./embeddings-api";
+import { FAST_CFG_HINT } from "./lib/fast-cfg";
 import { shiftFieldInvalid, type ShiftControl, type ShiftValue } from "./lib/shift-choice";
 
 // The resolved defaults can be e.g. ln(e^0.69); show them the way a user would type them.
@@ -98,6 +100,24 @@ export function ShiftField({
           onChange={(maxShift) => onChange({ ...value, maxShift })}
         />
       </div>
+    </div>
+  );
+}
+
+export function FastCfgField({
+  available,
+  enabled,
+  onChange,
+}: {
+  available: boolean;
+  enabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  if (!available) return null;
+  return (
+    <div className="flex items-center justify-between pt-2">
+      <Label label="Fast CFG" hint={FAST_CFG_HINT} />
+      <Switch checked={enabled} onCheckedChange={onChange} aria-label="Fast CFG" />
     </div>
   );
 }

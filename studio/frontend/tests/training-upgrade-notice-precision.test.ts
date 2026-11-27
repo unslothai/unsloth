@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// With custom code AND an installable release, the backend answers forces_16bit for the
-// 4-bit fallback, so the card must separately disclose that Install switches to 16-bit.
+// Custom code + installable: 4-bit fallback gets forces_16bit, so card must disclose 16-bit.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -92,5 +91,21 @@ test("the sidecar already routing this model needs no action-dependent wording",
   );
   assert.equal(notice.installVersion, null);
   assert.equal(notice.fourBitUnavailable, true);
+  assert.equal(notice.installSwitchesTo16Bit, false);
+});
+
+test("an install the sidecar keeps in 4-bit is announced with no precision change", () => {
+  // Inkling 2: the release is installable and the sidecar trains it in bnb 4-bit.
+  const notice = trainingTransformersUpgradeNotice(
+    {
+      ...BOTH_ACTIONS,
+      requiresTrustRemoteCode: false,
+      forces16Bit: false,
+      sidecarKeeps4Bit: true,
+    },
+    true,
+  );
+  assert.equal(notice.installVersion, RELEASE);
+  assert.equal(notice.fourBitUnavailable, false);
   assert.equal(notice.installSwitchesTo16Bit, false);
 });

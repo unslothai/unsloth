@@ -133,8 +133,7 @@ def test_data_parallel_and_other_models_pass(monkeypatch):
 
 
 def test_loader_refuses_in_the_inkling2_branch_before_loading():
-    """FastModel.from_pretrained's model-type branch for Inkling 2 calls the refusal (config time, before the
-    transformers load the tensor parallel sharded loader wraps)."""
+    """Inkling 2 refusal runs at config time in from_pretrained, before the transformers load."""
     tree = ast.parse((_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8"))
     found = False
     for node in ast.walk(tree):
@@ -176,7 +175,6 @@ def test_capability_table_inkling2_rules(monkeypatch, family):
             )
             cap.check(query)
             assert cap.cell_status(query)[0] == "supported", cap.cell_status(query)
-    # data parallel (DDP / FSDP2), tensor parallel and pipeline parallel alone are not refused by the rule
     for layout in (dict(dp = 2), dict(dp = 2, fsdp2 = True), dict(tp = 2), dict(pp = 2)):
         rules = [r for r in cap.RULES if r.applies(cap.Query(family = family, **layout))]
         assert not rules, [r.when for r in rules]

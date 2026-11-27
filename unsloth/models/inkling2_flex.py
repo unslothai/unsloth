@@ -196,6 +196,12 @@ def _split_lse(output, lse_kwargs):
     return out, (aux.lse if "return_aux" in lse_kwargs else aux)
 
 
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
 def _flex_function(device):
     """torch.compile'd flex_attention on CUDA (the uncompiled HOP materializes the scores). CPU keeps the HOP: only
     the tests run it, through flex's reference math."""
@@ -206,7 +212,7 @@ def _flex_function(device):
     if _COMPILED_FLEX is None:
         # ROCm: a dynamic-shape flex recompiled at a second length gave inf / NaN LoRA gradients on gfx1151 and
         # dynamic = False was clean (unsloth-zoo#2663), so a forced ROCm run compiles one kernel per length.
-        dynamic = False if getattr(torch.version, "hip", None) else None
+        dynamic = False if _is_rocm_torch() else None
         _COMPILED_FLEX = torch.compile(flex_attention, dynamic = dynamic)
     return _COMPILED_FLEX
 
@@ -327,7 +333,7 @@ def _auto_min_length(device):
     # ROCm reports gfx numbers as capability (gfx1151 = (11, 5)), so the sm80 rule would take every AMD card. This
     # path compiles flex with dynamic shapes, which gave inf / NaN LoRA gradients on gfx1151 after a recompile
     # (unsloth-zoo#2663); AMD stays eager unless forced.
-    if getattr(torch.version, "hip", None):
+    if _is_rocm_torch():
         return None
     capability = _capability(device)
     if capability is None:
@@ -434,8 +440,7 @@ def _mask_interface(*args, **kwargs):
     return _block_or_eager_mask(*args, **kwargs)
 
 
-# Unsloth compiles transformers' mask builders (dynamic, not fullgraph); building the BlockMask inside that trace graph
-# breaks on the padding check and hands create_block_mask to dynamo, so this builder always runs eagerly.
+# BlockMask built inside the compiled trace breaks on the padding check, so it runs eagerly.
 @torch.compiler.disable
 def _block_or_eager_mask(
     batch_size,
@@ -487,8 +492,7 @@ def _block_or_eager_mask(
 
 
 def _attention_interface(module, query, key, value, attention_mask, **kwargs):
-    """ATTN_KEY in the AttentionInterface: the language attention layers call their patched forward instead, so only
-    the block / message attention residuals (learned queries, no mask) and unpatched callers land here: eager."""
+    """ATTN_KEY eager fallback: only block/message residuals and unpatched callers reach it."""
     eager = getattr(sys.modules.get(type(module).__module__), "eager_attention_forward", None)
     if eager is None:
         from transformers.integrations.sdpa_attention import sdpa_attention_forward as eager
@@ -500,9 +504,8 @@ def _attention_interface(module, query, key, value, attention_mask, **kwargs):
 
 
 def _move_closure(obj, device, memo):
-    """Copy of a mask function whose captured tensors (padding mask, packed-sequence ids, position ids) live on
-    ``device``: the BlockMask is built once on the embedding device, and layers placed on another card evaluate its
-    mask_mod on theirs."""
+    """Copy of a mask function whose captured tensors live on device, since the BlockMask is built
+    once on the embedding device and other cards evaluate its mask_mod."""
     if id(obj) in memo:
         return memo[id(obj)]
     if isinstance(obj, torch.Tensor):
@@ -806,9 +809,7 @@ def _patch_classes(model):
 
 
 def _rebind_hooked_instances(model, classes):
-    """accelerate's device-map hooks (a model split over GPUs) call the forward bound at load, ``_old_forward``, not the
-    class attribute: point those at the wrapped forward, or the split model would keep running eager attention on
-    flex masks."""
+    """Repoint accelerate hooks' load-time _old_forward, or split models run eager attention."""
     rebound = 0
     for module in model.modules():
         cls = type(module)
@@ -881,8 +882,7 @@ def enable_inkling2_flex(model, verbose = True):
         devices = _cuda_devices(model)
         if not devices:
             return False
-        # The mask picks flex from the embedding device, so a model split over an L4 and a T4 would run flex on the
-        # T4 too: auto takes flex only when every card does.
+        # Flex is chosen from the embedding device, so auto needs every card to qualify.
         if _mode() == "auto" and any(_auto_min_length(d) is None for d in devices):
             return False
     if _patch_classes(model) is not None:

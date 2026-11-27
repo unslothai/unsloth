@@ -89,8 +89,7 @@ def create_early_stopping_callback(patience: int, user_stopped = None):
             model = None,
             **kwargs,
         ):
-            # A user stop never restores, even on the step patience ran out: stop-and-save writes a resume
-            # checkpoint whose optimizer state is the current step's.
+            # User stops never restore, even at patience's limit; optimizer state is current.
             best, self._best_weights = self._best_weights, None
             finished = self.stopped_at is not None or state.global_step >= state.max_steps
             if user_stopped is not None and user_stopped():
@@ -153,7 +152,6 @@ def attach_early_stopping(
     value: Any,
     user_stopped = None,
 ):
-    """Add the callback to an HF trainer that evaluates; returns it, or None when off or there is nothing to watch."""
     patience = early_stopping_patience(value)
     if patience == 0:
         return None

@@ -11,6 +11,7 @@
 
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
+from ._cache_kwarg import pop_cache_kwarg
 import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
@@ -109,7 +110,6 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Falcon H1 multiplies key states by a multiplier.
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
@@ -323,7 +323,6 @@ def FalconH1Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -460,7 +459,6 @@ def FalconH1DecoderLayer_fast_forward(
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
-        # Residual connection after attention + Mamba.
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -614,6 +612,8 @@ def _fast_prepare_inputs_for_generation(
     **kwargs,
 ):
     # Overwritten -- has a unique cache type, `FalconHybridMambaAttentionDynamicCache`
+    # transformers 5.24 generate passes the cache as `cache`; the fast forward reads past_key_values.
+    past_key_values = pop_cache_kwarg(kwargs, past_key_values)
     empty_past_kv = past_key_values is None
 
     # Slice input_ids to unprocessed tokens, except with input_embeds or synced-GPU overflow.
@@ -637,7 +637,6 @@ def _fast_prepare_inputs_for_generation(
         if not empty_past_kv:
             position_ids = position_ids[:, -input_ids.shape[1] :]
 
-    # inputs_embeds are only used in the 1st generation step.
     if inputs_embeds is not None and empty_past_kv:
         model_inputs = {"inputs_embeds": inputs_embeds}
     else:

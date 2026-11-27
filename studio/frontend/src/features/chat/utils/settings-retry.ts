@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// /api/chat/settings is extra="forbid" and rejects the whole body on one bad field, so a
-// permanently rejected value must be dropped, not requeued forever.
+// /api/chat/settings is extra="forbid": one bad field rejects all, so drop it, never requeue.
 
 export class ChatSettingsRequestError extends Error {
   readonly status: number;

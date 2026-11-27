@@ -61,8 +61,7 @@ def _device() -> str:
     """
     if config.embed_device_preference() != "gpu":
         return "cpu"
-    # Still a table lookup: asking for a GPU on a host without one lands on CPU rather than on a device
-    # string torch cannot open.
+    # Still a table lookup: no GPU on this host maps to cpu, not to a device torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -93,8 +92,7 @@ def _load_device() -> str:
     )
 
 
-# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
-# vector comes back NaN; its model card says to use float32 or bfloat16.
+# Lowercased substring match; EmbeddingGemma overflows float16 to NaN; use float32 or bfloat16.
 _FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
 
 
@@ -116,8 +114,7 @@ def _load_dtype(device: str, name: str) -> str:
 
 
 _torchao_stub_done = False
-# Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
-# a preflight probe wait out someone else's download.
+# Own lock: _lock is held across model construction, so a preflight would wait out a download.
 _stub_lock = threading.Lock()
 
 
@@ -175,8 +172,7 @@ def download_required(model_name: str | None = None) -> bool:
 
 
 def _ambient_hf_token() -> str | None:
-    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
-    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    """HF_TOKEN or cached login, so gated repos scan instead of failing open; None if absent."""
     if managed_account():
         return False
     try:
@@ -328,8 +324,7 @@ class _CaptureLoadReport(logging.Filter):
 _LOAD_REPORT_LOGGERS = (
     "transformers.utils.loading_report",
     "transformers.modeling_utils",
-    # An adapter-backed embedding model reports through the PEFT integration's own logger, not a
-    # descendant of either above.
+    # PEFT adapter models log through their own logger, not a descendant of the loggers above.
     "transformers.integrations.peft",
 )
 
@@ -393,9 +388,7 @@ def _one_line(text: str) -> str:
 
 
 def _emit_load_reports(report) -> None:
-    """Re-emit what the filter swallowed, as one record on our own logger: debug for
-    the expected legacy-key notice, warning for anything that could change the
-    embeddings. Drains the list so a retry does not report the same lines twice."""
+    """Re-emit load reports; warn if they could change embeddings, else debug; drains the list."""
     serious = report.is_serious()
     for text in report.reports:
         if serious:
@@ -633,11 +626,9 @@ def _get(model_name: str | None = None):
                 # Load the cached snapshot path, not the repo id, so ST cannot fetch a newer revision.
                 load_target = str(st_source[1])
             if local_only:
-                # ST-specific AND complete: a hybrid repo's cached GGUF, or a transfer that finalized only its first
-                # shard, would otherwise retire the marker.
+                # ST-specific and complete: partial or hybrid repos must not retire the marker.
                 if download_pending and st_source is None:
-                    # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
-                    # still a pending model.
+                    # Defensive: no shared lock, so an eviction in between still means pending.
                     raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
@@ -753,8 +744,7 @@ _ST_COUNT_CACHE_SIZE = 4096
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload.
-    The count memo is tied to that tokenizer by a weakref: a switch empties it, an unload frees it."""
+    """Read per call under _compute_lock, never cached past an unload; memo is weakref-tied."""
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
@@ -1146,6 +1136,8 @@ def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool
 
 def resolved_backend_for_model(model_name: str, token: str | bool | None = None) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
+    if config.is_connection_model(model_name):
+        return "connection"
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
@@ -1171,8 +1163,7 @@ def resolved_backend_for_model(model_name: str, token: str | bool | None = None)
 
 
 def _try_make_llama_backend():
-    """A llama-server GGUF embedding backend if its binary is present, else None.
-    Construction is lazy -- no server starts until warm."""
+    """llama-server GGUF backend if its binary exists, else None; no server starts until warm."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     if not LlamaCppBackend._find_llama_server_binary():
@@ -1241,20 +1232,14 @@ def sentence_transformers_fallback_allowed(model_name: str | None = None) -> boo
 
 
 def _current_backend_key() -> str:
-    """The cache key the backend in use should carry right now. Tests that install a
-    stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
+    """Cache key for the active backend; test stubs set _backend_key from it to avoid rebuilds."""
     raw = _raw_backend()
-    forced = _forced_backends.get(config.effective_embedding_model())
-    if forced:
-        return _backend_cache_key(raw, forced)
-    key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
-    return _backend_cache_key(raw, key)
+    model = config.effective_embedding_model()
+    return _backend_cache_key(raw, _backend_choice(raw, model, _forced_backends.get(model)))
 
 
 def _backend_cache_key(raw: str, key: str) -> str:
-    """Cache key for a built backend. It carries the RESOLVED choice, not just the
-    raw config, so saving a model that needs the other backend rebuilds instead of
-    serving the one already built for the previous model."""
+    """Cache key uses the resolved backend, so a model needing the other one rebuilds."""
     return f"{raw}\x00{key}"
 
 
@@ -1262,8 +1247,7 @@ def _dispose_replaced_backend(old, new = None) -> None:
     if old is None or old is new:
         return
     if isinstance(old, _SentenceTransformersBackend):
-        # Two ST wrappers share the module-level model and the replacement is already warmed, so clearing it
-        # here would discard the model just selected.
+        # ST wrappers share one model; clearing here would drop the warmed replacement's model.
         if not isinstance(new, _SentenceTransformersBackend):
             _release_st_model()
         return
@@ -1273,6 +1257,25 @@ def _dispose_replaced_backend(old, new = None) -> None:
             shutdown()
         except Exception:  # noqa: BLE001 - replacement is already selected
             logger.warning("replaced embedding backend shutdown failed", exc_info = True)
+
+
+def _backend_choice(
+    raw: str,
+    model: str,
+    forced: str | None = None,
+) -> str:
+    # The model itself is remote, so it wins over RAG_EMBED_BACKEND and any local fallback pin.
+    if config.is_connection_model(model):
+        return "connection"
+    return forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+
+
+def _is_connection_backend(backend) -> bool:
+    try:
+        from .embed_connection import ConnectionEmbeddingBackend
+    except Exception:  # noqa: BLE001 - connection plumbing import must never block
+        return False
+    return isinstance(backend, ConnectionEmbeddingBackend)
 
 
 def _get_backend(model_name: str | None = None):
@@ -1286,12 +1289,15 @@ def _get_backend(model_name: str | None = None):
         forced = _forced_backends.get(model)
         # Load-bearing: other probes resolve auto outside this lock and would keep a stale answer.
         _hardware_probe.choice = None
-        key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+        key = _backend_choice(raw, model, forced)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             _keep_hardware_choice(_backend)
             return _backend
         old = _backend
-        if key in _ST_ALIASES:
+        if key == "connection":
+            from .embed_connection import ConnectionEmbeddingBackend
+            new = ConnectionEmbeddingBackend()
+        elif key in _ST_ALIASES:
             new = _build_st_backend_or_fallback(model)
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
@@ -1344,6 +1350,8 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return True
     if isinstance(backend, _SentenceTransformersBackend):
         return _model is not None and _name == model_name
+    if _is_connection_backend(backend):
+        return config.is_connection_model(model_name)
     if _is_llama_backend(backend):
         try:
             # Unload is a fresh start: clearing _forced_backends lets the saved model pick its backend again.
@@ -1359,8 +1367,7 @@ def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
     global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
-        # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
-        # model picks its backend again.
+        # Unload restarts fresh: past runtime fallbacks stop pinning; the saved model re-picks.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
@@ -1385,7 +1392,7 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw
+        key = _backend_choice(raw, model_name or config.effective_embedding_model())
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False
@@ -1394,7 +1401,9 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
 def batches_across_documents(model_name: str | None = None) -> bool:
     """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
     CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
-    if active_backend_is_llama(model_name):
+    if active_backend_is_llama(model_name) or config.is_connection_model(
+        model_name or config.effective_embedding_model()
+    ):
         return True
     model = _model
     # A loaded model's device counts: a GPU choice can still have fallen back to CPU at load.
@@ -1434,8 +1443,13 @@ def _identity(
     is_llama: bool,
     name: str,
     served = None,
-    served_identity: tuple[str | None, str | None] | None = None,
+    served_identity: tuple[str | None, str | None] | str | None = None,
 ) -> str:
+    if config.is_connection_model(name):
+        from .embed_connection import connection_identity
+        return connection_identity(
+            name, served_identity if isinstance(served_identity, str) else None
+        )
     if is_llama:
         if served_identity is None:
             repo = config.effective_gguf_repo_for_embedding_model(name)
@@ -1459,8 +1473,7 @@ def _identity_backend_is_llama(name: str) -> bool:
         with _backend_lock:
             backend = _backend
             cached_key = _backend_key
-        forced = _forced_backends.get(name)
-        resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
+        resolved = _backend_choice(raw, name, _forced_backends.get(name))
         expected_key = _backend_cache_key(raw, resolved)
         if backend is None or cached_key == expected_key:
             return active_backend_is_llama(name)

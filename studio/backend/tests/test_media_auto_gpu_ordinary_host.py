@@ -303,8 +303,7 @@ def test_fastest_first_mask_without_mig_keeps_nvidia_smi(monkeypatch):
 
 
 def test_torch_fallback_rows_skip_the_physical_mig_correction(monkeypatch):
-    # No bus-id mapping: torch rows carry mask ids and already report slice memory. Physical row 0 is a
-    # MIG card, but mask id 0 is another card, so correcting it would hide the card that has room.
+    # No bus-id map: torch rows carry mask ids, so the MIG correction would hide a free card.
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.hardware import nvidia
 
