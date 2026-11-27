@@ -10,6 +10,7 @@ import functools
 import sys
 
 import pytest
+from torch.torch_version import TorchVersion
 import torch
 
 import core.inference.safetensors_pread as sp
@@ -56,6 +57,12 @@ def _gpu(
 ):
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(torch.version, "hip", "7.13" if vendor == "rocm" else None, raising = False)
+    # is_rocm_torch also reads the build tag, which a real ROCm wheel carries in __version__
+    monkeypatch.setattr(
+        torch,
+        "__version__",
+        TorchVersion("2.11.0+rocm7.13.0" if vendor == "rocm" else "2.11.0+cu130"),
+    )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(host_pinning, "device_integrated_status", lambda device = None: integrated)
@@ -264,6 +271,9 @@ def test_host_memory_reads_meminfo():
 )
 def test_rocm_is_integrated(monkeypatch, hip, status, expected):
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(
+        torch, "__version__", TorchVersion("2.11.0+rocm7.13.0" if hip else "2.11.0+cu130")
+    )
     monkeypatch.setattr(host_pinning, "device_integrated_status", lambda device = None: status)
     assert host_pinning.rocm_is_integrated("cuda") is expected
     if hip:
