@@ -183,3 +183,26 @@ def test_completed_siblings_stay_compactable_for_the_result_budget_rescue(monkey
     assistant = next(m for m in prompt if m.get("tool_calls"))
     assert [c["id"] for c in assistant["tool_calls"]] == ids
     assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == ids
+
+
+def test_the_result_reserve_compacts_a_completed_sibling_before_evicting(monkeypatch):
+    backend, _, payloads = make_batch(monkeypatch, 2)
+    backend._effective_context_length = 12288
+    monkeypatch.setattr(tools, "execute_tool", lambda *args, **kwargs: "Records.")
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = document_history(),
+            tools = [tools.PYTHON_TOOL],
+            max_tokens = None,
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+    assert not any(e.get("type") == "context_truncated" for e in events)
+    prompt = payloads[-1]["messages"]
+    assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == [
+        "old-0",
+        "old-1",
+        "new-0",
+        "new-1",
+    ]

@@ -700,6 +700,7 @@ def compact_completed_tool_arguments(
     protect_last: int = 0,
     preserve_failed: bool = False,
     protected_message_ids: Optional[set[int]] = None,
+    protected_calls: Optional[set[tuple[int, str]]] = None,
 ) -> tuple[list[dict], int]:
     """Rewrites only the replayed copy, leaving the stored thread and tool arguments byte-identical;
     only answered calls, oldest first; protect_last keeps trailing messages unchanged."""
@@ -723,7 +724,11 @@ def compact_completed_tool_arguments(
         changed = False
         for call in calls:
             function = call.get("function") if isinstance(call, dict) else None
-            if not isinstance(function, dict) or (index, str(call.get("id") or "")) not in answered:
+            if (
+                not isinstance(function, dict)
+                or (index, str(call.get("id") or "")) not in answered
+                or (id(message), str(call.get("id") or "")) in (protected_calls or ())
+            ):
                 new_calls.append(call)
                 continue
             reply = answered[(index, str(call.get("id") or ""))]

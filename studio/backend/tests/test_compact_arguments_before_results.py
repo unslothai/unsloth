@@ -109,3 +109,22 @@ def test_unmeasurable_or_already_fitting_history_keeps_arguments(monkeypatch):
             count_tokens = counter,
         )
         assert fitted is messages
+
+
+def test_a_protected_pending_call_keeps_its_arguments_beside_a_compacted_sibling():
+    code = "# inspect the input\n" * 400
+    done, pending = (exchange(call_id, code, "") for call_id in ("done", "pending"))
+    turn = {**done[0], "tool_calls": [*done[0]["tool_calls"], *pending[0]["tool_calls"]]}
+    messages = [
+        {"role": "user", "content": "Find every exception."},
+        turn,
+        {**done[1], "content": "FINDINGS"},
+        pending[1],
+    ]
+    fitted, compacted = compact_completed_tool_arguments(
+        messages, protected_calls = {(id(turn), "pending")}
+    )
+    assert compacted == 1
+    calls = {c["id"]: json.loads(c["function"]["arguments"]) for c in fitted[1]["tool_calls"]}
+    assert calls["pending"]["code"] == code
+    assert calls["done"].get("code") != code

@@ -415,7 +415,7 @@ def _fit_with_instruction_pins(
     messages,
     *,
     anchor_ids = None,
-    argument_anchor_ids = None,
+    protected_calls = None,
     reserve_anchor_ids = None,
     on_compacting = None,
     **kwargs,
@@ -448,7 +448,8 @@ def _fit_with_instruction_pins(
             compacted, count = compact_completed_tool_arguments(
                 messages,
                 preserve_failed = True,
-                protected_message_ids = anchors | pins | set(argument_anchor_ids or ()),
+                protected_message_ids = anchors | pins,
+                protected_calls = protected_calls,
             )
             if count:
                 before_tokens = kwargs["count_tokens"](messages)
@@ -466,7 +467,7 @@ def _fit_with_instruction_pins(
         return _fit_with_instruction_pins(
             messages,
             anchor_ids = anchor_ids,
-            argument_anchor_ids = argument_anchor_ids,
+            protected_calls = protected_calls,
             reserve_anchor_ids = reserve_anchor_ids,
             on_compacting = on_compacting,
             **{**kwargs, "prompt_reserve_tokens": 0},
@@ -43618,7 +43619,8 @@ class LlamaCppBackend:
                             _pending_before = list(conversation)
                             _pending_fitted, _pending_cut = _fit_with_instruction_pins(
                                 [*conversation, _pending_probe],
-                                argument_anchor_ids = {id(assistant_msg)},
+                                # The probe answers the pending call; its completed siblings stay compactable.
+                                protected_calls = {(id(assistant_msg), decision.tool_call_id)},
                                 reserve_anchor_ids = {
                                     id(message)
                                     for message in conversation
@@ -43657,6 +43659,14 @@ class LlamaCppBackend:
                                 and _pending_fitted[-1] is _pending_probe
                             ):
                                 conversation[:] = _pending_fitted[:-1]
+                                assistant_msg = next(
+                                    (
+                                        m
+                                        for m in reversed(conversation)
+                                        if message_source(m) is message_source(assistant_msg)
+                                    ),
+                                    assistant_msg,
+                                )
                             if (
                                 _pending_cut
                                 and _pending_cut.get("fits")
