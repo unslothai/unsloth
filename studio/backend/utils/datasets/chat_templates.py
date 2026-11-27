@@ -742,9 +742,32 @@ def apply_chat_template_to_dataset(
                 except Exception:
                     pass
 
-        def _alpaca_message(role, text):
-            content = [{"type": "text", "text": text}] if uses_content_parts else text
-            return {"role": role, "content": content}
+        def _render_alpaca(prompt, answer, system, parts):
+            def message(role, text):
+                return {"role": role, "content": [{"type": "text", "text": text}] if parts else text}
+
+            turns = [message("user", prompt), message("assistant", answer)]
+            if not (isinstance(system, str) and system.strip()):
+                return _render_messages(tokenizer, turns)
+            try:
+                return _render_messages(tokenizer, [message("system", system), *turns])
+            except Exception:
+                # Templates without a system role carry explicit instructions in the user turn.
+                turns[0] = message("user", system + "\n\n" + prompt)
+                return _render_messages(tokenizer, turns)
+
+        def _native_alpaca(prompt, answer, system):
+            # A list-only template given strings (an AutoTokenizer on a VLM) renders empty turns.
+            error = None
+            for parts in (uses_content_parts, not uses_content_parts):
+                try:
+                    text = _render_alpaca(prompt, answer, system, parts)
+                except Exception as e:
+                    error = error or e
+                    continue
+                if isinstance(text, str) and (answer or prompt).strip() in text:
+                    return text
+            raise error or ValueError("The model's chat template did not render the Alpaca example")
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
 
@@ -765,32 +788,14 @@ def apply_chat_template_to_dataset(
                     if context:
                         prompt += "\n\n" + context
                     trimmed_answer = cell_text(output).removesuffix(eos_token)
-                    messages = [
-                        _alpaca_message("user", prompt),
-                        _alpaca_message("assistant", trimmed_answer),
-                    ]
-                    if isinstance(system, str) and system.strip():
-                        messages.insert(0, _alpaca_message("system", system))
-                    try:
-                        text = _render_messages(tokenizer, messages)
-                    except Exception:
-                        if messages[0]["role"] != "system":
-                            raise
-                        # Templates without a system role carry explicit instructions in the user turn.
-                        messages.pop(0)
-                        messages[0] = _alpaca_message("user", system + "\n\n" + prompt)
-                        text = _render_messages(tokenizer, messages)
+                    text = _native_alpaca(prompt, trimmed_answer, system)
                     if (
                         eos_token
-                        and isinstance(text, str)
                         and trimmed_answer.strip()
                         and text.rstrip().endswith(trimmed_answer.rstrip())
                     ):
                         # The template closes no turn after the answer, so the row needs EOS.
-                        messages[-1] = _alpaca_message("assistant", trimmed_answer + eos_token)
-                        text = _render_messages(tokenizer, messages)
-                    if not isinstance(text, str) or not text.strip():
-                        raise ValueError("The model's chat template did not render the Alpaca example")
+                        text = _native_alpaca(prompt, trimmed_answer + eos_token, system)
                     if remove_bos_prefix and (bos := getattr(tokenizer, "bos_token", None)):
                         text = text.removeprefix(bos)
                     texts.append(text)
