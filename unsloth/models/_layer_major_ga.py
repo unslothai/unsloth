@@ -493,7 +493,6 @@ def layer_major_ineligible(
         return "this optimizer updates the weights inside every backward"
     if "_unsloth_token_budget_splits" in trainer.__dict__:
         # Its instance-level training_step splits micro-batches into chunks the window never sees.
-        # UNSLOTH_TOKEN_BALANCE (on by default under DDP) only regroups rows in get_train_dataloader.
         return "UNSLOTH_TOKEN_BUDGET"
     if not _trainer_ok(trainer):
         return f"{type(trainer).__name__} overrides training_step or compute_loss"

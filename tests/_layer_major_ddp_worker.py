@@ -371,8 +371,7 @@ def main(out_dir, zoo_dir):
         return lambda: mlp.__dict__.pop("forward", None)
 
     def buffer_written(mod, engine, model):
-        # A forward that writes a buffer DDP broadcasts (BatchNorm, dynamic RoPE): standard DDP re-broadcasts it
-        # before the next step's forward, so every rank's commit vote fails and the step runs the standard way.
+        # A forward writing a DDP-broadcast buffer (BatchNorm, dynamic RoPE) fails every rank's commit vote.
         attn = model.get_base_model().model.layers[2].self_attn
         mlp = model.get_base_model().model.layers[2].mlp
         real = mlp.forward
