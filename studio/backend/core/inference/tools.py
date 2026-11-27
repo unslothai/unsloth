@@ -10257,7 +10257,15 @@ def _refresh_sandbox_memory_limit() -> None:
     _sandbox_as_bytes = (
         sandbox_memory_limit.memory_limit_bytes() if sys.platform == "linux" else None
     )
-    _sandbox_fsize_bytes = sandbox_file_size_limit.file_size_limit_bytes()
+    fsize = sandbox_file_size_limit.file_size_limit_bytes()
+    # Above an inherited hard limit setrlimit fails and the child keeps the inherited soft limit: clamp instead.
+    try:
+        hard = _resource.getrlimit(_resource.RLIMIT_FSIZE)[1] if _resource is not None else None
+    except (ValueError, OSError):
+        hard = None
+    if hard is not None and hard != _resource.RLIM_INFINITY and 0 <= hard < fsize:
+        fsize = hard
+    _sandbox_fsize_bytes = fsize
 
 
 _MEMORY_WATCHDOG_POLL_S = 1.0
