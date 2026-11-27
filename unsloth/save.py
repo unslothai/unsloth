@@ -6571,11 +6571,18 @@ def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
     )
 
 
-def _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir):
+def _lora_gguf_converter_input(
+    model,
+    tokenizer,
+    lora_dir,
+    scratch_dir,
+    fold_scale = True,
+):
     """The adapter folder the converter reads. llama.cpp adds `alpha / r * B @ A` to the original base, with one alpha
     per file and r read off each tensor, ignoring use_rslora and alpha_pattern. PiSSA, OLoRA, ... train on a rewritten
     base, so they are saved relative to the original one first; then each lora_B absorbs its PEFT scale over
-    llama.cpp's. Written to `scratch_dir`, so `lora_dir` stays as PEFT reads it."""
+    llama.cpp's (unless `fold_scale` is False: Inkling 2's adapter folds it from the live model). Written to
+    `scratch_dir`, so `lora_dir` stays as PEFT reads it."""
     import json
     from peft.utils import load_peft_weights
     from peft.utils.other import get_pattern_key
@@ -6599,8 +6606,8 @@ def _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir):
         )
     rslora, alpha = config.get("use_rslora"), config.get("lora_alpha")
     ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
-    if not (rewritten_base or rslora or alphas or not alpha):
-        return lora_dir
+    if not fold_scale or not (rewritten_base or rslora or alphas or not alpha):
+        return source
     gguf_alpha = alpha or 1.0  # llama.cpp reads alpha = 0 as "no scaling"
     weights = load_peft_weights(source, device = "cpu")
     for key, B in weights.items():
@@ -6706,8 +6713,11 @@ def _unsloth_save_lora_gguf(
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
         scratch_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-adapter-")
-        converter_input = _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir)
-        if is_inkling2_config(getattr(model, "config", None)):
+        inkling2 = is_inkling2_config(getattr(model, "config", None))
+        converter_input = _lora_gguf_converter_input(
+            model, tokenizer, lora_dir, scratch_dir, fold_scale = not inkling2
+        )
+        if inkling2:
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
             converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, converter_input)
         cmd = [

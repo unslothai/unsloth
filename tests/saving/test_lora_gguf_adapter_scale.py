@@ -149,3 +149,23 @@ def test_residual_adapter_without_original_base_form_is_refused(
     model, _ = _trained_model(tmp_path, **config_kwargs)
     with pytest.raises(NotImplementedError, match = "rewritten base"):
         _export(model, tmp_path, monkeypatch)
+
+
+def test_inkling2_adapter_folds_the_scale_itself(tmp_path, monkeypatch):
+    # inkling2_lora_gguf_adapter scales lora_B from the live model, so it must get the unscaled adapter.
+    import shutil
+
+    model, _ = _trained_model(tmp_path, use_rslora = True)
+    monkeypatch.setattr(save_mod, "is_inkling2_config", lambda config: True)
+    copy_dir = str(tmp_path / "inkling2")
+    monkeypatch.setattr(
+        save_mod,
+        "inkling2_lora_gguf_adapter",
+        lambda model, folder: shutil.copytree(folder, copy_dir),
+    )
+    out, converter_input = _export(model, tmp_path, monkeypatch)
+    assert _config(converter_input)["use_rslora"]
+    torch.testing.assert_close(
+        load_file(f"{converter_input}/adapter_model.safetensors"),
+        load_file(f"{out}/adapter_model.safetensors"),
+    )
