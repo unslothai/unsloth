@@ -1320,7 +1320,6 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
 
 
 def _torch_cache_may_persist(tmp_path: Path, cases: list[tuple[str, str, str, bool]]) -> list[str]:
-    """Runs the shipped Test-TorchCacheMayPersist so a rewrite that keeps only the words fails."""
     calls = "\n".join(
         f"Write-Output (Test-TorchCacheMayPersist {_ps_quote(v)} {_ps_quote(p)} "
         f"{_ps_quote(h)} ${'true' if custom else 'false'})"
@@ -1352,18 +1351,14 @@ def test_a_custom_home_never_repoints_another_installs_inductor_cache(tmp_path):
     scratch = r"C:\work\0023\studio_home_emul"
     ours = scratch + r"\cache\torchinductor"
     cases = [
-        # The device report: the real install had persisted C:\tc.
         (ours, r"C:\tc", scratch, True),
-        # Another install's own home tree, and a user's own directory, are left alone.
         (ours, r"C:\Users\u\.unsloth\studio\cache\torchinductor", scratch, True),
         (ours, r"D:\my inductor", scratch, True),
         # A sibling whose name only starts with this home is not inside it.
         (ours, r"C:\work\0023\studio_home_emul2\cache\torchinductor", scratch, True),
-        # Nothing persisted yet, the same value, or a value inside this home: safe to write.
         (ours, "", scratch, True),
         (ours, ours.lower() + "\\", scratch, True),
         (ours, scratch + r"\cache\old", scratch, True),
-        # The default home stays the owner of the USER value, so it also heals a hijacked one.
         (
             r"C:\Users\u\.unsloth\studio\cache\torchinductor",
             ours,
@@ -1377,7 +1372,6 @@ def test_a_custom_home_never_repoints_another_installs_inductor_cache(tmp_path):
 
 
 def test_the_user_inductor_cache_write_is_gated_on_ownership():
-    """Every USER write of TORCHINDUCTOR_CACHE_DIR must pass the ownership check first."""
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
     writes = [
