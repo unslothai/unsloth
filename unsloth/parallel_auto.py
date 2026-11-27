@@ -339,9 +339,11 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
                     lora += lora_rank * 2 * int(math.sqrt(params))
             continue
         # Float weights load in the model dtype; bnb quant state beside packed weights keeps its stored dtype.
-        quant_state = packed and any(
-            t in key for t in ("absmax", "quant_map", "quant_state", "nested_", ".SCB")
-        )
+        # So do the block scales of a kept FP8 checkpoint (weight_scale_inv, float32).
+        quant_state = (
+            packed
+            and any(t in key for t in ("absmax", "quant_map", "quant_state", "nested_", ".SCB"))
+        ) or (fp8_checkpoint and "scale" in key.rsplit(".", 1)[-1].lower())
         # FP8 weights stay FP8 on load (1 byte, never re-quantized), as the fsdp2 / pp load estimators count them.
         fp8 = dt.startswith("F8") and not dequantize_fp8
         loaded = (
@@ -350,7 +352,12 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
         numel_total += numel
         # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize, and get_peft_model's
         # target_parameters LoRA is r * E * (in + out).
-        stacked = len(shape) == 3 and "expert" in key.lower()
+        leaf = key.rsplit(".", 1)[-1].lower()  # a stack's quant scales / biases are not linears
+        stacked = (
+            len(shape) == 3
+            and "expert" in key.lower()
+            and not any(t in leaf for t in ("scale", "bias", "zero", "absmax"))
+        )
         if _is_quantizable(key, shape) or stacked:
             lora += lora_rank * (
                 shape[0] * (shape[1] + shape[2]) if stacked else shape[0] + shape[1]

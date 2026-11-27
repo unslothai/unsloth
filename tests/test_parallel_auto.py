@@ -1025,13 +1025,21 @@ def test_fp8_and_int8_checkpoints_count_their_stored_bytes(clean):
         ("model.layers.0.mlp.down_proj.weight_scale_inv", "F32", (32, 32)),
         ("model.layers.0.self_attn.q_proj.weight", "BF16", (4096, 4096)),
     ]
-    scale = 2 * 32 * 32  # float quant scales load in the model dtype
+    scale = 4 * 32 * 32  # the block scales stay float32
     w16, lora = auto.checkpoint_estimate(fp8)
     assert w16 == n + scale + 2 * n
     assert lora == 2 * 16 * (4096 + 4096)
     # bitsandbytes is off for an FP8 checkpoint: the BF16 linear is not quantized either.
     assert auto.checkpoint_estimate(fp8, load_in_4bit = True, skip_modules = [])[0] == w16
-    assert auto.checkpoint_estimate(fp8, dequantize_fp8 = True)[0] == 2 * n + scale + 2 * n
+    assert auto.checkpoint_estimate(fp8, dequantize_fp8 = True)[0] == 2 * n + 2 * 32 * 32 + 2 * n
+    # A 3-D FP8 expert stack: its block scales are float32 tensors, not linears with LoRA.
+    stack = [
+        ("model.layers.0.mlp.experts.down_proj", "F8_E4M3", (8, 256, 128)),
+        ("model.layers.0.mlp.experts.down_proj_scale_inv", "F32", (8, 2, 1)),
+    ]
+    w_stack, lora_stack = auto.checkpoint_estimate(stack, load_in_4bit = True, skip_modules = [])
+    assert w_stack == 8 * 256 * 128 + 4 * 8 * 2
+    assert lora_stack == 16 * 8 * (256 + 128)
     int8 = [
         ("model.layers.0.mlp.up_proj.weight", "I8", (4096, 4096)),
         ("model.layers.0.mlp.up_proj.SCB", "F32", (4096,)),
