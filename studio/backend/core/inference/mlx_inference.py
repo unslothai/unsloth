@@ -5039,9 +5039,7 @@ def _vlm_generate_kwargs(inputs):
 
 @contextmanager
 def _spliced_columns(model):
-    """Yields ``[n]``: the columns the widest prompt embedding filled past its ids. A model that
-    splices an image's features in place of its one placeholder id (FastVLM) fills more positions
-    than mlx-vlm's id-counted ``prompt_tokens`` names."""
+    """Yields ``[n]``: columns the widest prompt embedding filled past its ids (FastVLM splicing)."""
     spliced, widest = [0], [-1]
     embed = getattr(model, "get_input_embeddings", None)
     if embed is None:
