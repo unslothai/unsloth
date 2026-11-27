@@ -1056,6 +1056,15 @@ def _serve_vram_request(msg: dict, event_queue: Any) -> None:
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Unexpected exceptions become an error event on the queue, not a silent subprocess crash."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    from utils.process_memory_peaks import PeakStampingQueue
+
+    # Progress and terminal events carry this process's memory peaks, as in the LLM worker; the host
+    # RSS covers the process tree, since multi-GPU runs start their other ranks as children.
+    event_queue = PeakStampingQueue(
+        event_queue,
+        event_types = frozenset({"progress", "complete", "error"}),
+        include_children = True,
+    )
 
     def on_event(ev: dict) -> None:
         event_queue.put(ev)
