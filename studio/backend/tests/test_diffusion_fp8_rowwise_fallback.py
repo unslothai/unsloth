@@ -26,6 +26,8 @@ def _clean(monkeypatch):
     compile_config._reset_for_tests()
     monkeypatch.delenv(us.UNIT_SCALE_ENV, raising = False)
     monkeypatch.delenv(us.MIN_ROWS_ENV, raising = False)
+    # The tensorwise route under test; the fused Triton GEMM on these cards has its own tests.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FP8_TRITON_GEMM", "0")
     for k in us._COUNTS:
         us._COUNTS[k] = 0
     getattr(us, "_ROWWISE", {}).clear()
