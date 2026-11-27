@@ -239,6 +239,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
     updatedAt: 2000,
   });
   const errors: string[] = [];
+  const uploads = { pending: [] as string[], removed: [] as string[] };
   const db = loadWithStubs<Record<string, (...args: unknown[]) => unknown>>(
     new URL("../src/features/data-recipes/data/recipes-db.ts", import.meta.url),
     {
@@ -283,14 +284,16 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
       toastSuccess: () => undefined,
     },
     "@/utils": { normalizeNonEmptyName: (n: string, f: string) => n.trim() || f },
-    "../api": { removeUnstructuredBlock: async () => undefined },
+    "../api": {
+      removeUnstructuredBlock: async (uid: string) => void uploads.removed.push(uid),
+    },
     "../executions/execution-helpers": {
       buildSignature: (name: string, p: unknown) => JSON.stringify([name, p]),
       formatSavedLabel: () => "",
     },
     "../stores/recipe-studio": {
       useRecipeStudioStore: {
-        getState: () => ({ pendingUploadCleanups: [] }),
+        getState: () => ({ pendingUploadCleanups: uploads.pending }),
         setState: () => undefined,
       },
     },
@@ -326,9 +329,11 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   });
 
   return {
+    db,
     editor,
     server,
     errors,
+    uploads,
     edit: async (next: unknown) => {
       editorPayload = next;
       editor.rerender();
@@ -539,4 +544,55 @@ test("a save lost to the network does not make the next ordinary save guess", as
   assert.equal(s.server.puts[1].body.baseUpdatedAt, 2000);
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+});
+
+test("undoing an edit while it saves still saves the undo on leave", async () => {
+  for (const leave of ["unmount", "pagehide"] as const) {
+    const s = setup();
+    await s.edit({ columns: ["b"] });
+    await s.fireDebounce();
+    await s.edit({ columns: ["a"] });
+    if (leave === "pagehide") await s.fire("pagehide");
+    else s.editor.unmount();
+    await s.server.release();
+    assert.deepEqual(payloads(s), [{ columns: ["b"] }, { columns: ["a"] }], leave);
+    assert.deepEqual(s.server.stored.payload, { columns: ["a"] }, leave);
+  }
+});
+
+test("a save finishing after its editor closed only cleans uploads queued before it", async () => {
+  const s = setup();
+  s.uploads.pending.push("mine");
+  await s.edit({ columns: ["b"] });
+  s.editor.unmount();
+  s.uploads.pending.push("next-editor");
+  await s.server.release();
+  assert.deepEqual(s.uploads.removed, ["mine"]);
+});
+
+test("the losing copy's 409 keeps the saved record cached", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.server.cancelOldest(true);
+  await s.fire("pagehide");
+  await s.server.release();
+  assert.deepEqual(s.server.puts.slice(1).map((p) => p.outcome), [200, 409]);
+  assert.equal(
+    (s.db.getCachedRecipe("r1") as { updatedAt: number } | null)?.updatedAt,
+    s.server.stored.updatedAt,
+  );
+});
+
+test("two recovery copies never exceed the keepalive budget together", async () => {
+  const s = setup();
+  await s.edit({ text: "x".repeat(40 * 1024) });
+  await s.fireDebounce();
+  await s.edit({ text: "y".repeat(40 * 1024) });
+  await s.server.cancelOldest(false);
+  await s.fire("pagehide");
+  assert.deepEqual(s.server.puts.slice(1).map((p) => p.keepalive), [true, false]);
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
 });

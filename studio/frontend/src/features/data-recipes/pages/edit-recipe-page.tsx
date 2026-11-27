@@ -129,7 +129,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       inFlightVersion.current = updatedAt;
       try {
         const record = await Promise.any(
-          bases.map((baseUpdatedAt) =>
+          bases.map((baseUpdatedAt, i) =>
             saveRecipe({
               id: input.id ?? recipeId,
               name: input.name,
@@ -137,6 +137,8 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
               baseUpdatedAt,
               updatedAt,
               keepalive: input.keepalive,
+              // The first copy keeps keepalive alone; the second only when both fit.
+              keepaliveCopies: i + 1,
             }),
           ),
         ).catch((error: AggregateError) => {

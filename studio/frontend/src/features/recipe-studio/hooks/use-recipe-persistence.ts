@@ -185,8 +185,9 @@ function sanitizeSeedForShare(payload: unknown): unknown {
 // autosave never leaves the saved recipe pointing at deleted files.
 function drainQueuedUploadCleanups(
   savedPayload: RecipePayloadResult["payload"],
+  // A save that settles after its editor closed may only drain what was queued when it started.
+  pending: readonly string[] = useRecipeStudioStore.getState().pendingUploadCleanups,
 ): void {
-  const pending = useRecipeStudioStore.getState().pendingUploadCleanups;
   if (pending.length === 0) {
     return;
   }
@@ -325,6 +326,7 @@ export function useRecipePersistence({
     ): Promise<void> => {
       const { recipeId: id, onPersistRecipe: persist } = latest.current;
       const seq = ++savedRef.current.seq;
+      const queued = [...useRecipeStudioStore.getState().pendingUploadCleanups];
       setSaveLoading(true);
       const done: Promise<void> = persist({ id, name, payload, keepalive })
         .then(
@@ -338,7 +340,7 @@ export function useRecipePersistence({
             setFailedSignature(null);
             savedRef.current.saved = signature;
             setSavedSignature(signature);
-            drainQueuedUploadCleanups(payload);
+            drainQueuedUploadCleanups(payload, queued);
           },
           (error: unknown) => {
             console.error("Save recipe failed:", error);
@@ -392,11 +394,10 @@ export function useRecipePersistence({
     const flush = (keepalive: boolean): void => {
       const { ready, name, payload, signature } = latest.current;
       const { saved, failed } = savedRef.current;
-      if (!ready || !saved || signature === saved || signature === failed) {
-        return;
-      }
       const running = inFlight.current;
-      if (running?.signature === signature) {
+      // Compare with what the save in flight will leave stored: undoing it still needs a save.
+      const settled = running ? running.signature : saved;
+      if (!ready || !saved || signature === settled || signature === failed) {
         return;
       }
       // An unloading page cannot wait, so it sends now on top of the save in flight.

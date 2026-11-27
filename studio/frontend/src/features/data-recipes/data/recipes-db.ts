@@ -99,10 +99,17 @@ export async function saveRecipe(
     record = await recipeRequest<RecipeRecord>(`/${encodeURIComponent(id)}`, {
       method: "PUT",
       body,
-      keepalive: input.keepalive ? isUnderKeepaliveBudget(body) : undefined,
+      keepalive: input.keepalive
+        ? isUnderKeepaliveBudget(body, input.keepaliveCopies)
+        : undefined,
     });
   } catch (error) {
-    if (error instanceof RecipeApiError && error.status === 409) {
+    // A losing copy's 409 must not evict a save at or past this version that already landed.
+    if (
+      error instanceof RecipeApiError &&
+      error.status === 409 &&
+      (recentRecipeCache.get(id)?.updatedAt ?? -1) < now
+    ) {
       recentRecipeCache.delete(id);
     }
     throw error;
