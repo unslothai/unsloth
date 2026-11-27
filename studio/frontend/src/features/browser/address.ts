@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type SearchEngineId = "duckduckgo" | "google" | "bing" | "brave";
+export type SearchEngineId = "duckduckgo" | "google" | "bing" | "brave" | "yandex";
 
 export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: (query: string) => string }> = {
   // Server-rendered, so it works without scripts.
@@ -16,6 +16,11 @@ export const SEARCH_ENGINES: Record<SearchEngineId, { label: string; searchUrl: 
   bing: {
     label: "Bing",
     searchUrl: (query) => `https://www.bing.com/search?q=${encodeURIComponent(query)}`,
+  },
+  yandex: {
+    // Server-rendered too, so it works without scripts.
+    label: "Yandex",
+    searchUrl: (query) => `https://yandex.ru/search/?text=${encodeURIComponent(query)}`,
   },
   brave: {
     label: "Brave Search",
