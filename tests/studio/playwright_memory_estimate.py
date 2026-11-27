@@ -17,6 +17,8 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     click_and_wait_for_response,
     dump_diagnostics,
+    expand_collapsed_model_picker,
+    RUN_SETTINGS_CONTEXT_LABEL,
     install_view_transition_killer,
     install_wall_clock_watchdog,
     is_benign_page_error,
@@ -426,6 +428,9 @@ with sync_playwright() as p:
         if _count(popover) == 0 or not popover.is_visible():
             page.locator(TRIGGER).first.click()
             popover = page.locator(POPOVER).first
+            popover.wait_for(state = "visible", timeout = 30_000)
+            # A loaded model opens the picker collapsed to its own row: no tabs, search or rows.
+            expand_collapsed_model_picker(popover)
         popover.wait_for(state = "visible", timeout = 30_000)
         return popover
 
@@ -468,7 +473,13 @@ with sync_playwright() as p:
         try:
             wait_until(
                 lambda: not popover.is_visible()
-                or _count(popover.locator('button[aria-label^="Inference settings for" i]')) > 0,
+                or _count(
+                    popover.locator(
+                        'button[aria-label^="Inference settings for" i], '
+                        'button[aria-label^="Run settings for" i]'
+                    )
+                )
+                > 0,
                 timeout_s = 10,
                 what = "the row click to close the picker or show its gears",
                 interval_s = 0.1,
@@ -485,7 +496,8 @@ with sync_playwright() as p:
         timeout_ms = SOLE_QUANT_SETTLE_MS,
     ):
         # The gear is a sibling of the row. Anchor the quant at the end, or F16 matches BF16.
-        pattern = f"^Inference settings for .*{re.escape(hint)}"
+        # The header picker says "Inference settings", the composer picker "Run settings".
+        pattern = f"^(?:Inference|Run) settings for .*{re.escape(hint)}"
         if quant:
             pattern += f".* {re.escape(quant)}$"
         gear = popover.get_by_role("button", name = re.compile(pattern, re.IGNORECASE)).first
@@ -538,10 +550,11 @@ with sync_playwright() as p:
 
     def context_input(popover):
         for role in ("textbox", "spinbutton"):
-            loc = popover.get_by_role(role, name = "Context Length").first
+            # Exact: "Context" is a prefix of other run settings names.
+            loc = popover.get_by_role(role, name = RUN_SETTINGS_CONTEXT_LABEL, exact = True).first
             if _count(loc):
                 return loc
-        loc = popover.locator('input[aria-label="Context Length"]').first
+        loc = popover.locator(f'input[aria-label="{RUN_SETTINGS_CONTEXT_LABEL}"]').first
         return loc if _count(loc) else None
 
     # Row helpers anchor on the toggle button: its parent is the header, aria-controls names the breakdown.

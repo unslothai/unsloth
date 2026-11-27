@@ -21,8 +21,7 @@ def _read(path: Path) -> str:
 
 
 def test_the_repair_reads_its_own_messages_as_late_as_it_can():
-    """The repair reads its own messages as late as it can, not the sidebar map: that map merges
-    pruned Dexie rows via listStoredChatMessages and is fetched at load time."""
+    """Reads late, not via the sidebar map: it is fetched at load and merges pruned Dexie rows."""
     hook = _read(HOOK)
     assert "void repairLegacyChatTitles(threads).catch(() => undefined);" in hook
 
@@ -59,16 +58,14 @@ def test_an_emptied_chat_is_not_retried_for_the_session():
 
 
 def test_the_repair_never_creates_anything():
-    """The repair must never create threads: updateStoredChatThread ensures the thread first and
-    would re-import one deleted elsewhere, so a patch to a gone row must 404."""
+    """Never creates threads: a patch to a row deleted elsewhere must 404, not re-import it."""
     repair = _read(REPAIR)
     assert 'from "./chat-history-storage"' not in repair
     assert "await updateChatThread( repair.threadId, { title: repair.title }," in repair
 
 
 def test_the_next_page_is_scheduled_rather_than_waited_for():
-    """A page that writes nothing fires no history update, so nothing else
-    would come back for the rest of the backlog."""
+    """A page writing nothing fires no history update, so the rest of the backlog would stall."""
     repair = _read(REPAIR)
     assert "if (hasMore) { setTimeout(" in repair
     # On `rest`: a row this page unmarked must not starve the rows behind it.
@@ -77,16 +74,14 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
 
 
 def test_only_one_repair_pass_runs_at_a_time():
-    """Several sidebars can be mounted at once, so the write concurrency cap
-    only holds if their passes queue."""
+    """Sidebars can mount at once, so the write concurrency cap only holds if passes queue."""
     repair = _read(REPAIR)
     assert "const serial = createSerialQueue();" in repair
     assert "return serial(() => runRepairPass(threads));" in repair
 
 
 def test_a_rename_is_left_to_the_backend_guard():
-    """Renames are left to the backend guard: the pass runs only where it is enforced, and
-    re-listing all threads per page client side would be redundant and quadratic."""
+    """Renames stay with the backend guard; re-listing all threads per page would be quadratic."""
     repair = _read(REPAIR)
     assert "listChatThreads" not in repair
     assert "repairsStillValid" not in repair
@@ -95,8 +90,7 @@ def test_a_rename_is_left_to_the_backend_guard():
 
 
 def test_the_write_is_guarded_on_the_message_it_took_the_title_from():
-    """Deleting the opening prompt does not change the title, so expectedTitle
-    alone still matches and would expand the deleted text."""
+    """Deleting the opening prompt keeps the title, so expectedTitle alone would still match."""
     repair = _read(REPAIR)
     assert "expectedOpeningMessageId: repair.openingMessageId," in repair
 
@@ -105,9 +99,8 @@ def test_the_write_is_guarded_on_the_message_it_took_the_title_from():
 
 
 def test_the_migration_stays_off_where_the_guard_is_not_enforced():
-    """A backend from before expectedTitle drops it and writes anyway. Sending
-    one to find out is the destructive act itself, so the served schema is what
-    answers, and anything unreadable counts as unsupported."""
+    """A backend from before expectedTitle drops it and writes anyway; sending a probe is the
+    destructive act, so the served schema answers, and unreadable counts as unsupported."""
     repair = _read(REPAIR)
     assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
     # The thread list's advertised flag decides first; only an older backend falls back to the schema.

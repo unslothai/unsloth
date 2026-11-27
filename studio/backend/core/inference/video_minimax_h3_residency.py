@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any, Optional
 
 H3_DIT_RESIDENT_ENV = "UNSLOTH_H3_DIT_RESIDENT"
@@ -203,6 +204,16 @@ def _host_copy_of(tensor: Any) -> Any:
     return _pin_host_tensor(host)
 
 
+def _rebuild_pin_cost(group: Any) -> int:
+    """Host bytes the allocator's pinned copies of ``group``'s device weights take (a power-of-two block each)."""
+    from .diffusion_pinned_arena import _pow2_ceil
+    return sum(
+        _pow2_ceil(int(leaf.numel()) * int(leaf.element_size()))
+        for t in _group_tensors(group)
+        for leaf in _host_leaves(t if _is_wrapper(t) else t.data)
+    )
+
+
 def rebuild_host_copy(
     group: Any,
     *,
@@ -216,13 +227,14 @@ def rebuild_host_copy(
         return 0
     import torch
 
+    cost = need if _registers_host() else _rebuild_pin_cost(group)
     if host_yield is not None:
         try:
             from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
             total, available = host_ram_mib()
             if available is not None:
                 keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
-                deficit = (need >> 20) + keep - int(available)
+                deficit = (cost >> 20) + keep - int(available)
                 if deficit > 0:
                     host_yield(deficit << 20)
         except Exception as exc:  # noqa: BLE001 -- rebuild anyway
@@ -285,7 +297,7 @@ def _pin_cost(leaf: Any) -> int:
     from .diffusion_pinned_arena import _packable, _pow2_ceil
 
     nbytes = int(leaf.numel()) * int(leaf.element_size())
-    if type(leaf) is torch.Tensor and _packable(leaf):
+    if _registers_host() and type(leaf) is torch.Tensor and _packable(leaf):
         return -(-nbytes // 4096) * 4096
     return _pow2_ceil(nbytes)
 
@@ -295,8 +307,7 @@ def _repin_leaves_in(
     keys: set,
     depth: int = 0,
 ) -> tuple[Any, int]:
-    """``src`` with only its inner tensors stored in one of ``keys`` re-pinned (exact copies); the others are shared.
-    Returns ``(src, 0)`` when none is."""
+    """Re-pins inner tensors of src stored in keys (exact copies); returns (src, 0) if none."""
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
     if depth < 4 and is_traceable_wrapper_subclass(src):
@@ -1042,6 +1053,12 @@ def _host_leaves(tensor: Any) -> list:
     return [leaf for leaf in _plain_leaves(tensor) if leaf.numel() > 0]
 
 
+def _registers_host() -> bool:
+    """``cudaHostRegister`` copies only on Linux, as every other registered pin (``_fast_pin_supported``): on Windows
+    the H3 re-fit ran it on the render thread, where a refusal the runtime keeps pending fails the next launch."""
+    return sys.platform.startswith("linux")
+
+
 def _pin_host_tensor(src: Any) -> Any:
     """Pinned copy of ``src``; torchao wrapper subclasses are rebuilt from pinned inner tensors like ``PinnedArena.pin``."""
     import torch
@@ -1054,12 +1071,19 @@ def _pin_host_tensor(src: Any) -> Any:
         names, ctx = src.__tensor_flatten__()
         inner = {name: _pin_host_tensor(getattr(src, name)) for name in names}
         return type(src).__tensor_unflatten__(inner, ctx, src.size(), src.stride())
-    if type(src) is torch.Tensor and _packable(src):
+    if _registers_host() and type(src) is torch.Tensor and _packable(src):
         try:
             return registered_host_copy(src)
         except Exception:  # noqa: BLE001 -- registration refused: the allocator's pin for this tensor
             pass
-    return src.pin_memory()
+    pinned = src.pin_memory()
+    if type(src) is torch.Tensor and (
+        pinned is src or pinned.untyped_storage().data_ptr() == src.untyped_storage().data_ptr()
+    ):
+        # pin_memory() hands an already-pinned tensor (a slab view) back as itself, keeping the whole slab alive
+        pinned = torch.empty_like(src, pin_memory = True)
+        pinned.copy_(src)
+    return pinned
 
 
 def _reads(tensor: Any, src: Any) -> bool:

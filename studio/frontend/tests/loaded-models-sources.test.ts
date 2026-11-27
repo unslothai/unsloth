@@ -724,3 +724,38 @@ test("a kept chat model takes its size from its own slot, never from a primary t
   assert.equal(withServingResident(kept, primary), kept);
   assert.equal(withServingResident(kept, null), kept);
 });
+
+test("an NPU chat model is labelled NPU, not Transformers", () => {
+  const [row] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "qwen3.5-9b-FLM",
+      model_identifier: "lemonade:qwen3.5-9b-FLM",
+      is_npu: true,
+      loaded: ["lemonade:qwen3.5-9b-FLM"],
+    }),
+  );
+  assert.equal(row.detail, "NPU");
+});
+
+test("two loaded quants of one repo are each labelled with their quant", () => {
+  const repo = "unsloth/SmolLM2-135M-Instruct-GGUF";
+  const rows = describeInferenceStatus(
+    inferenceStatus({
+      active_model: repo,
+      model_identifier: `${repo}:Q8_0`,
+      is_gguf: true,
+      gguf_variant: "Q8_0",
+      serving: [repo, repo, "org/Other-GGUF"],
+      serving_checkpoints: [`${repo}:Q8_0`, `${repo}:Q4_K_M`, "org/Other-GGUF"],
+      serving_quants: ["Q8_0", "Q4_K_M", "Q8_0"],
+    }),
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.label, row.detail, row.servingCheckpoint]),
+    [
+      [`${repo}:Q8_0`, "GGUF · Q8_0", undefined],
+      [`${repo}:Q4_K_M`, "Q4_K_M · Also serving", `${repo}:Q4_K_M`],
+      [undefined, "Also serving", "org/Other-GGUF"],
+    ],
+  );
+});

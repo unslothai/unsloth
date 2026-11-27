@@ -301,7 +301,8 @@ jobs:
           PY
 
       # --reps 2 is load-bearing: derive_unstable needs 2 observations, else the measured set is
-      # empty and scoring silently falls back to the declared list.
+      # empty and scoring silently falls back to the declared list. --windowed-arm on both sides:
+      # a thread may mount only the rows near the reader; a fully mounted side is unaffected.
       - name: Drive both sides through one session
         timeout-minutes: 9
         run: |
@@ -314,6 +315,7 @@ jobs:
             --ab "${{ steps.refs.outputs.side_b }}" \
             --password "$PASSWORD_a" \
             --password-b "$PASSWORD_b" \
+            --windowed-arm base,treatment \
             --engine chromium \
             --parity-shots "$SHOT_DIR" \
             --out "$OUT_DIR"

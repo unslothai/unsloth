@@ -247,6 +247,59 @@ def test_an_answer_without_stems_is_an_empty_list(started, tmp_path):
     assert list(out.iterdir()) == []
 
 
+def _s2s_answer() -> bytes:
+    """What an s2s family answers (measured on v0.9.6): one top-level audio, no named outputs."""
+    audio = base64.b64encode(_wav()).decode()
+    return json.dumps({"audio": audio, "sample_rate": 44100, "channels": 2}).encode()
+
+
+def _s2s_backend(
+    monkeypatch,
+    tmp_path,
+    family,
+    display,
+    raw_options = (),
+):
+    policy = acm.family_policy(family)
+    spec = {"options": {"request": list(raw_options)}}
+    from dataclasses import replace
+
+    model = replace(_model(family, display), options = acm.option_schema(policy, spec, None))
+    starts: list[tuple[AudioCppModel, _Recorder]] = []
+
+    def start(served, path, **_kwargs):
+        server = _Recorder(served, _s2s_answer())
+        starts.append((served, server))
+        return server
+
+    monkeypatch.setattr(audio_cpp_files, "materialize", lambda m: str(tmp_path / "m.gguf"))
+    monkeypatch.setattr(acb.AudioCppServer, "start", start)
+    return _backend(model), starts
+
+
+def test_voice_isolation_runs_s2s_and_saves_its_one_answer_as_the_voice(monkeypatch, tmp_path):
+    backend, starts = _s2s_backend(monkeypatch, tmp_path, "voice_isolator", "voice-isolator-GGUF")
+    out = _out(tmp_path)
+    outputs = backend.separate_audio(SOURCE, str(out))
+    ((served, server),) = starts
+    assert served.server_task == "s2s"
+    ((_path, body),) = server.calls
+    assert body == {"model": "studio-test", "audio": SOURCE}
+    assert [(o["id"], Path(o["path"]).name) for o in outputs] == [("voice", "voice.wav")]
+    assert (outputs[0]["sample_rate"], outputs[0]["duration_s"]) == (44100, 0.01)
+
+
+def test_a_restorer_gets_its_spec_options_and_never_an_unknown_one(monkeypatch, tmp_path):
+    chunk = {"name": "audio_chunk_duration_sec", "type": "float", "min": 0, "default": 0}
+    backend, starts = _s2s_backend(monkeypatch, tmp_path, "apollo", "Apollo-GGUF", [chunk])
+    outputs = backend.separate_audio(
+        SOURCE, str(_out(tmp_path)), {"audio_chunk_duration_sec": 5, "num_overlap": 2}
+    )
+    ((_path, body),) = starts[0][1].calls
+    assert body["options"] == {"audio_chunk_duration_sec": 5.0}
+    assert [o["id"] for o in outputs] == ["restored"]
+
+
 class _Handler(BaseHTTPRequestHandler):
     body = b""
     status = 200

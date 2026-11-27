@@ -24,6 +24,7 @@ from test_llama_cpp_placement import (  # noqa: F401, I001 -- fixtures by name
     _cache_launch,
     _discrete_linux_host,
     _moe_cache_host,
+    _pinned_host_ram,
 )
 from test_offload_planner import _StubReader, _StubTensor, _shard_fields, _shard_tensors
 

@@ -183,9 +183,8 @@ export function useIntentAwareAutoScroll(): {
       let scrollKeyAt = Number.NEGATIVE_INFINITY;
       let pointerHeld = false;
       let insertionRemainder = 0;
-      // distant-rows.ts skipped or released a row since the last scroll event. Chromium can clamp
-      // scrollTop while it swaps the row's size, and the scroll event then reads an unchanged
-      // scrollHeight: without this a long chat opening at its bottom read as a scroll up.
+      // Set when distant-rows.ts skips or releases a row, so a clamped scrollTop is not a scroll
+      // up.
       let rowsToggledSinceScroll = false;
 
       const distanceFromBottom = (): number => {
@@ -551,7 +550,14 @@ export function useIntentAwareAutoScroll(): {
       const stabilize = (): number => {
         const sh = el.scrollHeight;
         const currentContent = sh - stabilizerPx;
+        // Runs only: opening a thread shrinks too, and that padding stuck under the reply.
+        // `source` is null outside a thread runtime, where `aui.thread()` throws.
+        const runSettling =
+          aui.thread.source != null &&
+          (aui.thread().getState().isRunning ||
+            performance.now() - runEndAtRef.current < FOLLOW_SETTLE_MS);
         const followActive =
+          runSettling &&
           !userDetachedRef.current &&
           performance.now() < followUntilRef.current;
         if (!followActive) {

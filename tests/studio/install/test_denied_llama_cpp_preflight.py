@@ -235,8 +235,7 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
-    # Compare canonical paths, and every ancestor of the override: a build inside the
-    # managed tree is the user's too.
+    # Canonicalise the override and ancestors: a build in the managed tree is the user's too.
     assert "$probe = [string](Get-CanonicalDir -Path $suppliedDir)" in body
     assert "if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
@@ -341,8 +340,7 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
 
 
 def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
-    """Get-Item returns nothing for a directory whose ACL denies read, so attributes must come
-    through an API needing only FILE_READ_ATTRIBUTES, such as [System.IO.File]::GetAttributes."""
+    """Denied dir: Get-Item returns nothing; GetAttributes needs only FILE_READ_ATTRIBUTES."""
     for text in (INSTALL_PS1, SETUP_PS1):
         body = _function_source(text, "Get-PathDenialDetail")
         assert "[System.IO.File]::GetAttributes($Path)" in body
@@ -353,8 +351,7 @@ def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
         # On a directory, Encrypted only affects new descendants; listing never needs the key.
         assert body.index("FileAttributes]::Directory") < body.index("FileAttributes]::Encrypted")
         assert "-not $isDirectory" in body
-        # RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS are missing from the
-        # FileAttributes enum on Windows PowerShell 5.1.
+        # RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS are not in PS 5.1's FileAttributes; use hex.
         assert "0x00040000" in body and "0x00400000" in body
 
 

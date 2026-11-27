@@ -74,7 +74,9 @@ def build(
 ):
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    probe = AutoConfig.from_pretrained(repo)
+    from tests._tiny_fixture_revisions import revision
+
+    probe = AutoConfig.from_pretrained(repo, revision = revision(repo))
     values = probe.to_dict()
     values["num_hidden_layers"] = layers
     values.pop("layer_types", None)  # rebuilt for the new depth (sliding / full pattern)
@@ -707,7 +709,9 @@ def test_pp2_grad_scaler_found_inf_is_max_over_stages():
 
 def test_pp2_refusals():
     out = _spawn("refusals", 2)[0]
-    assert "mixture-of-experts" in (out["moe"] or ""), out["moe"]
+    # Since #18165 an uncarried MoE (OLMoE here) splits with its router aux loss off; turning the loss on is
+    # what is refused, covered in test_pp_moe_aux_off_gloo.py.
+    assert out["moe"] is None, out["moe"]
     assert "mixture-of-experts" in (out["mla"] or "") or "latent attention" in (
         out["mla"] or ""
     ), out["mla"]

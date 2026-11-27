@@ -40,6 +40,7 @@ function harness(response: ReturnType<typeof jsonResponse>, epoch = { value: 0 }
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         getAuthSessionEpoch: () => epoch.value,
         authFetch: async (url: string, init?: RequestInit) => {
@@ -140,7 +141,7 @@ test("the gone case gets its own copy and does not tell the user to retry", () =
 
 test("a decision that is gone disables the buttons instead of inviting another 404", () => {
   const disabled = CONTROLS.match(/disabled=\{pending !== null[^}]*\}/g) ?? [];
-  assert.equal(disabled.length, 4, "approval buttons and the Full Access shortcut share the gone gate");
+  assert.equal(disabled.length, 5, "approval buttons and the Full Access shortcut share the gone gate");
   for (const expr of disabled) {
     assert.match(
       expr,

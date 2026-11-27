@@ -21,7 +21,7 @@ GATE = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
 # Runs only when a label is added, which is already an explicit request for the run.
 EXEMPT = frozenset({"windows-installer-differential-ci.yml"})
 # Every job, Linux build included: the suite is the Tauri shell, not an OS.
-WHOLE = frozenset({"studio-tauri-smoke.yml"})
+WHOLE = frozenset({"studio-tauri-smoke.yml", "studio-tauri-native-ci.yml"})
 _HEAVY = re.compile(r"windows|macos", re.I)
 
 
@@ -95,7 +95,7 @@ def test_the_scan_found_the_heavy_suites():
     for filename in (
         "studio-windows-ui-smoke.yml",
         "studio-mac-ui-smoke.yml",
-        "studio-tauri-smoke.yml",
+        "studio-tauri-native-ci.yml",
     ):
         assert (
             filename in gated

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- Direct API imports keep the media pages code-split.
-import { getDiffusionDownloadPlan } from "@/features/images/api";
-// eslint-disable-next-line no-restricted-imports -- Direct API imports keep the media pages code-split.
-import { getVideoDownloadPlan } from "@/features/video/api";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GgufVariantDetail } from "../inventory";
 import { ggufVariantDownloadSizeBytes } from "../lib/gguf-variant-sort";
+import { inFlightMediaDownloadPlan } from "../lib/media-download-plan";
 import { fingerprintToken } from "../lib/token-fingerprint";
 import { hfApiToken } from "../stores/hf-token-store";
 import { useInventoryVersion } from "../stores/inventory-events";
@@ -60,6 +57,7 @@ export async function resolveCompanionBytes(
   filename: string,
   sizeBytes: number,
   hfToken: string | null | undefined,
+  inventoryVersion = 0,
 ): Promise<number | null> {
   const request = {
     model_path: repoId,
@@ -67,10 +65,7 @@ export async function resolveCompanionBytes(
     model_kind: "gguf" as const,
     hf_token: hfApiToken(hfToken),
   };
-  const plan =
-    page === "video"
-      ? await getVideoDownloadPlan(request)
-      : await getDiffusionDownloadPlan(request);
+  const plan = await inFlightMediaDownloadPlan(page, request, inventoryVersion);
   // Rejected, not null, so the per-card cache drops it and a later rerun retries.
   if (plan.plan_failed) throw new Error("Download plan incomplete");
   // A backend without the per-entry flag cannot say which bytes are the checkpoint's.
@@ -161,6 +156,7 @@ export function useMediaCompanionBytes(
           filename,
           sizeBytes,
           hfToken,
+          inventoryVersion,
         );
         plans.current.set(planKey, plan);
         plan.catch(() => plans.current.delete(planKey));

@@ -67,8 +67,35 @@ def test_other_errors_are_not_retried():
     assert calls["n"] == 1
 
 
-def test_the_safari_driver_opens_its_session_through_the_retry_and_only_there():
-    tree = ast.parse((HERE / "selenium_composer_safari.py").read_text(encoding = "utf-8"))
+REPO = HERE.parents[1]
+
+
+def _safari_drivers() -> list[Path]:
+    """Every file under tests/ that opens a native Safari WebDriver session."""
+    found = []
+    for path in sorted((REPO / "tests").rglob("*.py")):
+        text = path.read_text(encoding = "utf-8", errors = "replace")
+        if "Safari" not in text:
+            continue
+        tree = ast.parse(text)
+        if any(
+            isinstance(n, ast.Attribute)
+            and n.attr == "Safari"
+            and getattr(n.value, "id", None) == "webdriver"
+            for n in ast.walk(tree)
+        ):
+            found.append(path)
+    return found
+
+
+def test_every_known_safari_driver_is_found():
+    names = {p.name for p in _safari_drivers()}
+    assert {"selenium_composer_safari.py", "rag_upload_safari.py"} <= names, names
+
+
+@pytest.mark.parametrize("path", _safari_drivers(), ids = lambda p: p.relative_to(REPO).as_posix())
+def test_the_safari_driver_opens_its_session_through_the_retry_and_only_there(path):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     direct = [
         n
         for n in ast.walk(tree)

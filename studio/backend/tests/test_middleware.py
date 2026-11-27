@@ -1319,8 +1319,8 @@ def health_app(tmp_path, monkeypatch):
 
     import main as _main
 
-    # Pin the hardware snapshot (MLX self-repair can hold it); health_check reads all three fields.
-    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
+    # Pin the hardware snapshot (MLX self-repair can hold it); health_check reads all four fields.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None, False))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 
@@ -1731,6 +1731,16 @@ def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, m
         "hf_endpoint": "https://huggingface.co",
         "hf_datasets_server": "https://datasets-server.huggingface.co",
     }
+
+
+def test_health_reports_modelscope_page_links_only_for_modelscope(main_module, monkeypatch):
+    monkeypatch.setattr(main_module, "_active_hub_source", lambda: "huggingface")
+    assert main_module._modelscope_page_links() == {}
+    monkeypatch.setattr(main_module, "_active_hub_source", lambda: "modelscope")
+    pages = main_module._modelscope_page_links()["modelscope_pages"]
+    assert pages["base"] == "https://www.modelscope.cn"
+    assert pages["aliases"]["dataset"]["openai/gsm8k"] == "AI-ModelScope/gsm8k"
+    assert pages["orgs"]["nvidia"] == "nv-community"
 
 
 def test_every_api_write_route_is_body_capped(main_module):

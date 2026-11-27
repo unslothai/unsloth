@@ -714,9 +714,8 @@ def _checkpointed(block, x, mode):
 @pytest.mark.parametrize("scoring", ["sigmoid", "softmax"])
 @pytest.mark.parametrize("mode", ["none", "reentrant", "non_reentrant", "non_reentrant_offload"])
 def test_an_in_place_kimi_gate_matches_an_out_of_place_oracle(mode, scoring):
-    """Kimi-Linear adds its (nonzero) score bias in place to the sigmoid / softmax output that op's
-    backward saved. Without a copy, plain and reentrant backward raise autograd's version error and
-    non-reentrant checkpointing silently differentiates the biased scores."""
+    """Kimi-Linear in-place bias on the saved sigmoid/softmax output needs a copy: else plain and
+    reentrant autograd errors, non-reentrant silently differs"""
     if mode == "non_reentrant_offload":
         pytest.importorskip("unsloth_zoo.gradient_checkpointing").non_reentrant_offload_hooks
     x = torch.randn(3, 7, 16, dtype = torch.float64, generator = torch.Generator().manual_seed(1))
@@ -909,27 +908,22 @@ def _moe_ddp_worker(rank, world, cp_active, lora):
 
 @pytest.mark.parametrize("lora", [False, True], ids = ["full", "lora_experts"])
 def test_context_parallel_ranks_routing_disjoint_experts_train_under_ddp(lora):
-    """Under context parallelism each rank routes its own sequence shard, so an expert idle on one
-    rank trains on its peer. DDP with find_unused_parameters = False needs a gradient from every
-    rank: idle experts run on no tokens for a zero gradient, over several steps of shifting routes."""
+    """Under CP an expert idle on one rank trains on its peer; DDP with find_unused_parameters =
+    False needs a gradient from every rank"""
     _moe_spawn(_moe_ddp_worker, 2, True, lora)
 
 
 def test_without_context_parallelism_idle_experts_stall_ddp():
-    # Negative control: the CP-off dispatch leaves idle experts' gradients None, so DDP without
-    # find_unused_parameters never reduces that bucket (local gradients) and refuses the next step.
-    # Whichever rank fails first is the error spawn reports: the rank that used an expert sees its
-    # unreduced gradient (not close), the rank that left it idle sees no gradient at all.
+    # Negative control: without CP, idle experts get None gradients, so DDP without
+    # find_unused_parameters refuses the next step
     with pytest.raises(
         Exception, match = "not close|finished reduction|did not receive grad|no gradient"
     ):
         _moe_spawn(_moe_ddp_worker, 2, False, False)
 
 
-# Per optimizer step, two gradient accumulation micro-batches, the experts each rank routes to.
-# Step 0: 6 and 7 idle everywhere; 4 and 5 used in the second micro-batch only. Step 1: 2 to 5
-# idle everywhere after training at step 0 (AdamW momentum and weight decay would move them).
-# Step 2: 4 to 7 idle everywhere.
+# Route table per step: 6-7 idle at step 0; 2-5 idle at step 1 (AdamW momentum and weight decay
+# would move them); 4-7 idle at step 2; idle experts must not move
 _GA_ROUTES = (
     (((0, 1), (2, 3)), ((0, 1), (4, 5))),
     (((6, 7), (0, 1)), ((0, 1), (6, 7))),
@@ -989,10 +983,7 @@ def _moe_adamw_worker(rank, world, lora, hook):
 
 @pytest.mark.parametrize("lora", [False, True], ids = ["full", "lora_experts"])
 def test_context_parallel_idle_experts_follow_single_process_adamw(lora):
-    """An expert no rank routes to runs on no tokens under CP, so DDP hands it a zero gradient.
-    The optimizer step pre-hook must turn that back into None so AdamW (weight decay, moments,
-    step count) treats it like the single-process run, over gradient accumulation micro-batches
-    where an expert used in only one micro-batch keeps its gradient."""
+    """Pre-hook turns DDP's zero gradient for unrouted experts into None, so AdamW matches one process."""
     _moe_spawn(_moe_adamw_worker, 2, lora, True)
 
 
@@ -1040,9 +1031,7 @@ def test_idle_expert_hook_is_inert_without_every_expert_blocks_and_when_all_are_
 
 @pytest.mark.parametrize("skipped", [False, True], ids = ["stepped", "amp_skipped"])
 def test_an_optimizer_reused_without_context_parallelism_keeps_every_gradient(skipped):
-    """The idle-expert step pre-hook stays on the optimizer. A later trainer without CP reusing it
-    must keep the gradients of experts the CP window never routed to (one process has them), also
-    when the last CP step was skipped (GradScaler overflow: the pre-hook never ran)."""
+    """Without CP, a reused optimizer keeps gradients of experts CP never routed to, even after a skip."""
     from unsloth import context_parallel as cp
 
     block = _complementary_block(False)
@@ -1114,9 +1103,8 @@ _PAD_ROUTES = ((6, 7), (0, 1), (2, 3), (4, 5))
 
 
 def _moe_cp_padding_worker(rank, world, lora, backend):
-    """Five real tokens over 2 ranks: the manager pads with id 0 (Ulysses: one token, on rank 1's
-    shard; ring: three, load balanced over both), the only token routed to experts 6 and 7. One
-    process never routes to them."""
+    """Five real tokens over 2 ranks, padded with id 0; the only token routed to experts 6 and 7 is
+    padding, which one process never routes to"""
     import copy
 
     import torch.distributed as dist
@@ -1181,15 +1169,12 @@ def _moe_cp_padding_worker(rank, world, lora, backend):
     ids = ["full-ulysses", "lora_experts-ulysses", "full-ring"],
 )
 def test_context_parallel_padding_does_not_count_as_expert_usage(lora, backend):
-    """When the sequence length does not divide the CP size, the manager appends synthetic pad
-    tokens. Their routes must not mark an expert as used: one process never sees them, so an
-    expert only they pick has a None gradient there and AdamW must leave it alone under CP too."""
+    """Pad tokens must not count as expert usage; an expert only they pick must keep a None gradient."""
     _moe_spawn(_moe_cp_padding_worker, 2, lora, backend)
 
 
-# Per optimizer step, two gradient accumulation micro-batches, the experts each rank routes to.
-# Step 0 overflows under fp16 loss scaling, so GradScaler skips optimizer.step() (and its pre-hook).
-# Step 1: 0 to 3 idle everywhere; they were used only in the discarded window. Step 2: 4 to 7 idle.
+# Route table: step 0 overflows and is skipped; experts 0-3 idle at step 1 (used only in the skipped
+# window); 4-7 idle at step 2; usage must not carry over
 _AMP_ROUTES = (
     (((0, 1), (2, 3)), ((0, 1), (2, 3))),
     (((4, 5), (6, 7)), ((4, 5), (6, 7))),
@@ -1303,17 +1288,14 @@ def _moe_amp_skip_worker(rank, world, set_to_none, gc):
 @pytest.mark.parametrize("gc", [False, True], ids = ["plain", "checkpointed"])
 @pytest.mark.parametrize("set_to_none", [True, False], ids = ["set_to_none", "zeroed"])
 def test_a_skipped_amp_step_does_not_leak_expert_usage(set_to_none, gc):
-    """fp16 GradScaler skips optimizer.step() on overflow, so the step pre-hook never runs for that
-    window. Its expert usage must not carry into the next window (an expert used only there would
-    keep a zero gradient and AdamW would decay it), with gradient accumulation and checkpoint
-    recompute; with zero_grad(set_to_none = False) one process keeps zero gradients, which CP
-    must mirror instead of dropping them."""
+    """Skipped fp16 steps: expert usage must not carry over; with zero_grad(set_to_none = False) CP
+    must mirror zero gradients, not drop them"""
     _moe_spawn(_moe_amp_skip_worker, 2, set_to_none, gc)
 
 
 def test_real_token_masks_never_mark_a_real_token_as_padding():
-    """The MoE sees only a shard's token count: masks of graph-building forwards of one size are
-    OR-ed, and one with nothing appended makes every token of that size real."""
+    """The MoE sees only a shard's token count: masks of forwards of one size are OR-ed, and one
+    with nothing appended makes every token of that size real."""
     manager = _ulysses_manager(2, 1)
     odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
     manager._prepare_inputs(odd)
@@ -1327,7 +1309,7 @@ def test_real_token_masks_never_mark_a_real_token_as_padding():
     assert manager.real_token_mask(3) is None
     manager._clear_real_tokens()
     odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
-    with torch.no_grad():  # nothing to recompute: not noted
+    with torch.no_grad():  # evaluate() inside no_grad: the appended token is still not real
         manager._prepare_inputs(odd)
         manager._ulysses_shard(odd)
-    assert manager.real_token_mask(3) is None
+    assert manager.real_token_mask(3).tolist() == [True, True, False]

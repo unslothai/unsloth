@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { LearnedMemorySection } from "./learned-memory-section";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -88,6 +89,8 @@ export function ChatMemorySection() {
     normaliseChatMemory(draft) !== normaliseChatMemory(settings.text);
 
   return (
+    <>
+    <LearnedMemorySection />
     <SettingsSection
       title={t("settings.chat.memory.title")}
       description={t("settings.chat.memory.description")}
@@ -160,5 +163,6 @@ export function ChatMemorySection() {
         ) : null}
       </div>
     </SettingsSection>
+    </>
   );
 }

@@ -17,6 +17,7 @@ __all__ = [
     "QGaLoreAdamW8bit",
     "AdamWBF16",
     "prepare_bf16_training",
+    "enable_bf16_stochastic_rounding",
 ]
 
 
@@ -24,4 +25,7 @@ def __getattr__(name):
     if name in ("AdamWBF16", "prepare_bf16_training"):
         from . import bf16_adamw
         return getattr(bf16_adamw, name)
+    if name == "enable_bf16_stochastic_rounding":
+        from . import bf16_stochastic_rounding
+        return getattr(bf16_stochastic_rounding, name)
     raise AttributeError(name)

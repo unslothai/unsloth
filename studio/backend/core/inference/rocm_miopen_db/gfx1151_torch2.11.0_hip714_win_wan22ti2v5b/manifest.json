@@ -1,0 +1,14 @@
+{
+ "stack": {
+  "arch": "gfx1151",
+  "torch": "2.11.0+rocm7.14.0",
+  "hip": "7.14.60850",
+  "miopen": "3005002",
+  "platform": "win32"
+ },
+ "files": [
+  "gfx1151_20.HIP.3_5_2_cd957402.ufdb.txt",
+  "gfx1151_20.HIP.3_5_2_cd957402.udb.txt"
+ ],
+ "measured": "Wan2.2-TI2V-5B 1280x704x121 decode 141.6 -> 120.1 s (Radeon 8060S, Windows 11, AMD CI)"
+}

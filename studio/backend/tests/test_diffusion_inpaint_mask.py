@@ -296,7 +296,10 @@ def test_external_connection_refuses_inpaint_mask_fields(client, monkeypatch, fi
         json = {"prompt": "p", "provider_id": "openai-1", "model": "gpt-image-1", **field},
     )
     assert response.status_code == 400, response.text
-    assert response.json()["detail"] == "An external image connection only supports text to image."
+    assert (
+        response.json()["detail"]
+        == "An external image connection only supports text to image and image edits."
+    )
     assert looked_up == []
 
 

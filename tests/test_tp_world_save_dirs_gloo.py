@@ -60,7 +60,12 @@ def _case(rank, world, tmp):
             return json.load(f).get("model_max_length")
 
     def leftovers():
-        return sorted(n for n in os.listdir(tmp) if ".unsloth_tp_rank" in n)
+        return sorted(
+            os.path.relpath(os.path.join(root, d), tmp)
+            for root, dirs, _ in os.walk(tmp)
+            for d in dirs
+            if ".unsloth_tp_rank" in d
+        )
 
     # 1. one shared directory, every rank at once: complete files on every rank when it returns
     shared = os.path.join(tmp, "shared")
@@ -166,7 +171,6 @@ def test_marked_processor_stays_picklable(tmp_path):
     processor = mark_world_save(_PicklableProcessor())
     assert processor.__dict__["save_pretrained"].__name__ == "unsloth_tp_world_save_pretrained"
     clone = pickle.loads(pickle.dumps(processor))
-    # Unpickled in a worker, it is the plain class method again.
     assert clone.save_pretrained.__name__ == "save_pretrained"
     assert clone.save_pretrained(str(tmp_path)) == (str(tmp_path),)
     # Outside torch.distributed the wrapped save still writes through the object's own save.

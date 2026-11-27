@@ -11,6 +11,7 @@ import {
   parseBackendTrainingMethod,
   useTrainingActions,
 } from "@/features/training";
+import { normalizeRunParallel } from "@/features/training/lib/parallel-plan";
 import { translate, useT } from "@/i18n";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useState } from "react";
@@ -76,6 +77,7 @@ function mapToViewData(
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
     resumedLater: run.resumed_later ?? false,
+    artifactsAvailable: run.artifacts_available,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -94,6 +96,7 @@ function mapToViewData(
     error: run.status === "error" ? run.error_message : null,
     warnings: [],
     isTrainingRunning: false,
+    parallel: normalizeRunParallel(detail.config?.parallel),
     modelName: run.display_name ?? run.model_name,
     projectName: run.project_name,
     trainingMethod: parseBackendTrainingMethod(
@@ -135,27 +138,31 @@ export function HistoricalTrainingView({
 
   useEffect(() => {
     const controller = new AbortController();
-    getTrainingRun(runId, controller.signal)
-      .then((detail) => {
-        setResult({
-          runId,
-          detail,
-          error: null,
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      getTrainingRun(runId, controller.signal)
+        .then((detail) => {
+          if (controller.signal.aborted) return;
+          setResult({ runId, detail, error: null });
+          // Live status can turn terminal before the worker's history write commits.
+          if (detail.run.status === "running") retry = setTimeout(load, 1_000);
+        })
+        .catch((err) => {
+          if (controller.signal.aborted) return;
+          setResult({
+            runId,
+            detail: null,
+            error:
+              err instanceof Error
+                ? err.message
+                : translate("studio.history.loadingRun"),
+          });
         });
-      })
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        setResult({
-          runId,
-          detail: null,
-          error:
-            err instanceof Error
-              ? err.message
-              : translate("studio.history.loadingRun"),
-        });
-      });
+    };
+    load();
     return () => {
       controller.abort();
+      clearTimeout(retry);
     };
   }, [runId]);
 

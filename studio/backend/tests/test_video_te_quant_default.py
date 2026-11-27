@@ -166,7 +166,12 @@ def test_wan_is_not_equivalent_to_other_encoders():
     assert not tpq.te_base_equivalent(WAN_BASES[2], "Qwen/Qwen-Image")
 
 
-def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one():
+@pytest.fixture
+def rows_published(monkeypatch):
+    monkeypatch.setattr(tpq, "te_int8_convrot_published", lambda *a, **k: True)
+
+
+def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one(rows_published):
     for name in ("wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "wan2.1-t2v-1.3b", "wan2.1-t2v-14b"):
         source = tpq.resolve_te_prequant_source(_family(name), "text_encoder", "int8")
         assert source.location == WAN_REPO
@@ -177,7 +182,7 @@ def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one():
         ), name
 
 
-def test_wan_int8_needs_no_lm_head_trim(monkeypatch):
+def test_wan_int8_needs_no_lm_head_trim(monkeypatch, rows_published):
     """UMT5EncoderModel has no lm_head, so the keep-lm_head switch cannot push it onto the fp8 file."""
     from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
 

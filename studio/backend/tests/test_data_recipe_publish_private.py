@@ -34,6 +34,9 @@ class _Hub:
     def repo_info(self, *, repo_id, repo_type):
         return SimpleNamespace(private = self.private)
 
+    def upload_folder(self, *, path_in_repo, **kwargs):
+        self.upload(path_in_repo)
+
     def upload(self, name):
         self.uploads.append((name, self.private))
 
@@ -55,14 +58,8 @@ def _stub_data_designer(monkeypatch, hub):
         def _create_or_get_repo(self, *, repo_id, private):
             hub.create_repo(repo_id = repo_id, repo_type = "dataset", exist_ok = True, private = private)
 
-        def _upload_main_dataset_files(self, *, repo_id, parquet_folder):
-            hub.upload("data")
-
         def _upload_images_folder(self, *, repo_id, images_folder):
             hub.upload("images")
-
-        def _upload_processor_files(self, *, repo_id, processors_folder):
-            hub.upload("processors")
 
         def _upload_config_files(self, *, repo_id, metadata_path, builder_config_path):
             hub.upload("metadata.json")
@@ -100,6 +97,7 @@ def _publish(monkeypatch, tmp_path, hub, *, private):
     _stub_data_designer(monkeypatch, hub)
     monkeypatch.setattr(recipe_hf, "_resolve_recipe_artifact_path", lambda _: tmp_path)
     (tmp_path / "metadata.json").write_text("{}", encoding = "utf-8")
+    (tmp_path / "processors-files" / "summary").mkdir(parents = True)
     return recipe_hf.publish_recipe_dataset(
         artifact_path = str(tmp_path),
         repo_id = "org/dataset",
@@ -114,7 +112,7 @@ def test_private_publish_to_an_existing_public_repo_makes_it_private_first(monke
     _publish(monkeypatch, tmp_path, hub, private = True)
 
     assert hub.private is True
-    assert hub.uploads
+    assert ("summary", True) in hub.uploads
     assert all(private for _, private in hub.uploads)
 
 

@@ -92,9 +92,10 @@ def _batch(view = None):
     payload = {"threadIds": ["t1", "missing"]}
     if view is not None:
         payload["view"] = view
-    return chat_history.batch_thread_messages(
+    response = chat_history.batch_thread_messages(
         chat_history.ChatMessagesBatchRequest(**payload), current_subject = "test-user"
-    ).model_dump(mode = "json")["messagesByThreadId"]
+    )
+    return json.loads(response.body)["messagesByThreadId"]
 
 
 def test_batch_without_a_view_still_returns_full_messages(history):

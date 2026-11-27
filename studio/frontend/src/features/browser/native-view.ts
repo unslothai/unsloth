@@ -1394,9 +1394,9 @@ export function startNativeViews(): () => void {
   overlays.observe(document.body, { childList: true });
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-palette"] });
   window.addEventListener("resize", schedule);
-  // Clickable overlays slide in without a body mutation: measure them every frame while they move.
+  // Clickable overlays and covers slide in without a body mutation: measure them every frame while they move.
   const moved = (event: Event) => {
-    if (!(event.target as Element | null)?.closest?.(CLICKABLE_SELECTOR)) return;
+    if (!(event.target as Element | null)?.closest?.(`${CLICKABLE_SELECTOR}, [data-native-cover]`)) return;
     motionUntil = performance.now() + MOTION_MS;
     schedule();
   };

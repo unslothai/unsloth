@@ -419,11 +419,18 @@ def make_grammar_logits_processor(constraint: GrammarConstraint):
 
     def _processor(tokens, logits):
         seen, committed = state["seen"], state["committed"]
-        if seen is None:
-            state["seen"] = int(tokens.shape[0])
-        elif committed is None:
-            for token_id in tokens[seen:].tolist():
-                constraint.advance(int(token_id))
+        if seen is None or committed is None:
+            import mlx.core as mx
+
+            unseen = None if seen is None else tokens[seen:]
+            # Queued apart, so reading the new tokens waits for the last sample but not for this forward,
+            # which then runs on the GPU while the host advances the matcher and fills the mask.
+            if unseen is not None:
+                mx.async_eval(unseen)
+            mx.async_eval(logits)
+            if unseen is not None:
+                for token_id in unseen.tolist():
+                    constraint.advance(int(token_id))
             state["seen"] = int(tokens.shape[0])
         elif not constraint.follow(tokens[committed:].tolist()):
             return logits

@@ -84,6 +84,9 @@ export const WORKFLOW_TABS: Array<{
   },
 ];
 
+/** Create and Edit only: the others need a strength or mask, which servers' /images/edits do not take uniformly. */
+export const CONNECTION_WORKFLOWS: readonly WorkflowId[] = ["create", "edit"];
+
 export const BACKEND_WORKFLOW_RECIPE_LABELS: Record<string, string> = {
   txt2img: "Create",
   img2img: "Transform",

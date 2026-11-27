@@ -3,12 +3,14 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
+import { watchStreamSilence } from "@/lib/stream-silence";
 import type {
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
 } from "../types/api";
 
 import { skillLoadCardEvent } from "./skill-load-event";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 export type ChatGenerationStatus =
   | "queued"
   | "running"
@@ -147,6 +149,9 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Credentials cannot be persisted") ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message === "This connection's chat runs use the legacy streaming path") ||
     // A media payload rejection is a policy signal to use the legacy stream, not an error.
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
@@ -247,18 +252,50 @@ export function explicitStopSignal(signal: AbortSignal): {
   };
 }
 
+// Failures while hidden (a locked phone) do not count.
+const ADMISSION_VISIBLE_ATTEMPTS = 4;
+
+function pageIsHidden(): boolean {
+  return (
+    typeof document !== "undefined" && document.visibilityState === "hidden"
+  );
+}
+
 export async function supportsChatGenerationRuns(
   threadId: string,
   signal?: AbortSignal,
+  options: {
+    isHidden?: () => boolean;
+    delay?: (failures: number) => number;
+  } = {},
 ): Promise<boolean> {
   const query = new URLSearchParams({ threadId });
-  const response = await authFetch(
-    `/api/inference/chat-runs/active?${query.toString()}`,
-    { signal },
-  );
-  if (response.status === 404 || response.status === 405) return false;
-  await json<{ runs: ChatGenerationRun[] }>(response);
-  return true;
+  const isHidden = options.isHidden ?? pageIsHidden;
+  let failures = 0;
+  let visibleFailures = 0;
+  while (true) {
+    try {
+      const response = await authFetch(
+        `/api/inference/chat-runs/active?${query.toString()}`,
+        { signal },
+      );
+      if (response.status === 404 || response.status === 405) return false;
+      await json<{ runs: ChatGenerationRun[] }>(response);
+      return true;
+    } catch (error) {
+      if (signal?.aborted || isPermanent(error)) throw error;
+      failures += 1;
+      if (!isHidden()) visibleFailures += 1;
+      if (visibleFailures >= ADMISSION_VISIBLE_ATTEMPTS) throw error;
+      await waitForReconnect(
+        (options.delay ?? reconnectDelay)(failures),
+        signal,
+      );
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+    }
+  }
 }
 
 export async function getActiveChatGenerationRuns(
@@ -380,6 +417,7 @@ async function* streamChatGenerationEvents(
   signal?: AbortSignal,
   /** A keep-alive is progress only if its stamp MOVED, judged by the caller across reconnects. */
   onActivity?: (keepAliveStamp?: string) => void,
+  silenceTimeoutMs?: number,
 ): AsyncGenerator<ChatGenerationEvent> {
   const response = await authFetch(
     `/api/inference/chat-runs/${encodeURIComponent(id)}/events?after=${Math.max(0, after)}`,
@@ -391,9 +429,11 @@ async function* streamChatGenerationEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const silence = watchStreamSilence(reader, silenceTimeoutMs);
   try {
     while (true) {
       const { done, value } = await reader.read();
+      silence.touch();
       buffer += decoder.decode(value, { stream: !done });
       buffer = buffer.replace(/\r\n/g, "\n");
       let boundary = buffer.indexOf("\n\n");
@@ -412,6 +452,7 @@ async function* streamChatGenerationEvents(
         if (data.length > 0) {
           const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
           if (event.type === "chunk") {
+            notifyChatImageToolSettled(event.payload);
             event.payload = normalizeChatGenerationChunkPayload(event.payload);
           }
           onActivity?.();
@@ -422,6 +463,7 @@ async function* streamChatGenerationEvents(
       if (done) return;
     }
   } finally {
+    silence.stop();
     await reader.cancel().catch(() => undefined);
   }
 }
@@ -438,6 +480,7 @@ export async function* followChatGenerationRun(
     signal?: AbortSignal;
     /** Overridable so a test can reach the deadline without waiting out the default. */
     stallTimeoutMs?: number;
+    silenceTimeoutMs?: number;
   } = {},
 ): AsyncGenerator<ChatGenerationRunUpdate> {
   const { replayFrom } = options;
@@ -502,6 +545,7 @@ export async function* followChatGenerationRun(
           cursor,
           signal,
           noteProgress,
+          options.silenceTimeoutMs,
         )) {
           if (event.seq <= cursor) continue;
           cursor = event.seq;

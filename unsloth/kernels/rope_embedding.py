@@ -227,39 +227,39 @@ def _rope_embedding_QK(
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride: tl.constexpr,
+    q_seq_stride: tl.constexpr,  # fixed per model layout
     q_head_stride,
-    q_dim_stride: tl.constexpr,
+    q_dim_stride: tl.constexpr,  # 1
     qo_batch_stride,
-    qo_seq_stride: tl.constexpr,
+    qo_seq_stride: tl.constexpr,  # fixed per model layout
     qo_head_stride,
-    qo_dim_stride: tl.constexpr,
+    qo_dim_stride: tl.constexpr,  # 1
     k_batch_stride,
-    k_seq_stride: tl.constexpr,
+    k_seq_stride: tl.constexpr,  # fixed per model layout
     k_head_stride,
-    k_dim_stride: tl.constexpr,
+    k_dim_stride: tl.constexpr,  # 1
     ko_batch_stride,
-    ko_seq_stride: tl.constexpr,
+    ko_seq_stride: tl.constexpr,  # fixed per model layout
     ko_head_stride,
-    ko_dim_stride: tl.constexpr,
+    ko_dim_stride: tl.constexpr,  # 1
     cos,
     cos_row_stride,
     sin,
     sin_row_stride,
     rope_embedding_indices,
     seqlen,
-    n_heads_Q: tl.constexpr,
-    n_heads_K: tl.constexpr,
-    n_groups_Q: tl.constexpr,
-    half_head_dim: tl.constexpr,
-    BACKWARD_PASS: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    CAST_TO_SIN: tl.constexpr,
-    HEADS_Q: tl.constexpr,
-    HEADS_K: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    EVICT_INDICES: tl.constexpr,
+    n_heads_Q: tl.constexpr,  # query heads
+    n_heads_K: tl.constexpr,  # key heads (0 without K)
+    n_groups_Q: tl.constexpr,  # query heads per K head
+    half_head_dim: tl.constexpr,  # head_dim // 2
+    BACKWARD_PASS: tl.constexpr,  # negated sin
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin's dtype
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of head_dim // 2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
 ):
     """Layout strides as constexprs (fixed per model)."""
     _rope_qk_program(
@@ -331,18 +331,18 @@ def _rope_embedding_QK_strided(
     sin_row_stride,
     rope_embedding_indices,
     seqlen,
-    n_heads_Q: tl.constexpr,
-    n_heads_K: tl.constexpr,
-    n_groups_Q: tl.constexpr,
-    half_head_dim: tl.constexpr,
-    BACKWARD_PASS: tl.constexpr,
-    HAS_ROPE_INDICES: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    CAST_TO_SIN: tl.constexpr,
-    HEADS_Q: tl.constexpr,
-    HEADS_K: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    EVICT_INDICES: tl.constexpr,
+    n_heads_Q: tl.constexpr,  # query heads
+    n_heads_K: tl.constexpr,  # key heads (0 without K)
+    n_groups_Q: tl.constexpr,  # query heads per K head
+    half_head_dim: tl.constexpr,  # head_dim // 2
+    BACKWARD_PASS: tl.constexpr,  # negated sin
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin's dtype
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # next pow2 of head_dim // 2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
 ):
     """Runtime layout strides, for strides that depend on seq_len (dK as [b, h, d, s])."""
     _rope_qk_program(
@@ -927,6 +927,13 @@ def decode_rope_inplace(Q, K, cos, sin, position_ids):
     return True
 
 
+def _batch_position_ids(position_ids, batch, seq_len):
+    # The kernels read one id per (batch, seq) row: [1, seq] ids would read past the tensor.
+    if position_ids is not None and batch != 1 and position_ids.numel() == seq_len:
+        return position_ids.reshape(1, seq_len).expand(batch, seq_len)
+    return position_ids
+
+
 def fast_rope_embedding(
     Q,
     K,
@@ -934,6 +941,7 @@ def fast_rope_embedding(
     sin,
     rope_embedding_indices = None,
 ):
+    rope_embedding_indices = _batch_position_ids(rope_embedding_indices, Q.shape[0], Q.shape[2])
     if not torch.compiler.is_compiling():
         return _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices)
     if (

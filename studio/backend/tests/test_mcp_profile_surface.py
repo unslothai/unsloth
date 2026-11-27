@@ -15,8 +15,7 @@ from mcp_server import create_studio_mcp, surface, withheld
 from studio_mcp import surface as text_surface
 from studio_mcp.profile import AGENT, CHAT, CallerProfile, OUTLIVES_CALL
 
-# What the chat model reads on every message, in characters. 52,513 before profiles, 47,499 with
-# them; lower it when the surface shrinks, never raise it to fit.
+# Chat model's per-message read budget; lower it as the surface shrinks, never raise it.
 CHAT_BUDGET_CHARS = 48_000
 
 
@@ -27,7 +26,7 @@ def _texts(profile):
 
 def test_chat_withholds_each_tool_by_its_facts_and_never_names_one():
     absent = set(withheld(CHAT))
-    assert absent == {"load_model", "unload_model", "plan_load", "chat", "run_recipe"} | {
+    assert absent == {"plan_load", "chat", "run_recipe"} | {
         "start_training",
         "export_model",
         "cancel",

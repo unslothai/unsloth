@@ -210,7 +210,8 @@ async def start(
         caller = dataclasses.replace(caller, hf_token = hf_token)
     if kind == "stt":
         status = await loading.stt_status(caller, model)
-        engine = loading.stt_engine(status, model)
+        # As load_model picks it: an audio.cpp catalog model is not in any engine's list until downloaded.
+        engine = await loading.catalog_stt_engine(caller, status, model)
         wanted = f"{model}:{variant}" if variant and ":" not in model else model
         if wanted not in strings(as_dict(status.get(engine)).get("downloaded_models")):
             await loading.download_stt(

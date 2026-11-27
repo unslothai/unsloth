@@ -13,6 +13,7 @@ __all__ = [
 
 import os
 import re
+import sys
 import time
 
 from collections.abc import Mapping
@@ -300,14 +301,24 @@ def get_peak_tflops(device = None, dtype = torch.float16):
 def _runs_unsloth_head_window(model):
     get_base_model = getattr(model, "get_base_model", None)
     base = get_base_model() if callable(get_base_model) else model
-    forward = getattr(type(base), "forward", None)
+    # pre_patch's gate keeps the fast forward's __module__ but runs it only on marked modules.
+    llama = sys.modules.get("unsloth.models.llama")
+    running_forward = getattr(llama, "running_forward", None)
+    if running_forward is not None:
+        forward = running_forward(base)
+    else:
+        forward = getattr(type(base), "forward", None)
     return getattr(forward, "__module__", "").startswith("unsloth.")
 
 
 def _gradient_checkpointing_on(model, args):
     if getattr(args, "gradient_checkpointing", False):
         return True
-    if getattr(model, "is_gradient_checkpointing", False) is True:
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
+    if _is_activation_checkpointing(model) is True:
         return True
     return any(getattr(m, "gradient_checkpointing", False) is True for m in model.modules())
 

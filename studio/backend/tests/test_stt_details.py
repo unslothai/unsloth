@@ -202,3 +202,75 @@ def test_spans_come_back_in_time_order_whatever_order_the_runtime_used():
     result = stt_details.normalize(payload, "moss_transcribe_diarize", 16000)
     assert [s["start"] for s in result["segments"]] == [0.0, 2.0, 5.0]
     assert [w["word"] for w in result["words"]] == ["a", "b"]
+
+
+_INTERRUPTION = (
+    ("S01", 0, 96000, "I recommend approval."),
+    ("S02", 24000, 48000, "I object."),
+)
+
+
+@pytest.mark.parametrize("family", ["moss_transcribe_diarize", "vibevoice_asr"])
+@pytest.mark.parametrize("order", [1, -1])
+@pytest.mark.parametrize("with_segments", [True, False])
+def test_an_interruption_inside_a_turn_keeps_its_own_speaker(family, order, with_segments):
+    """Both turns overlap the interruption by its whole length; overlap alone gave it to S01."""
+    spans = [
+        {"start_sample": start, "end_sample": end, "text": text}
+        for _, start, end, text in _INTERRUPTION[::order]
+    ]
+    turns = [
+        {**span, "speaker_id": speaker}
+        for span, (speaker, *_) in zip(spans, _INTERRUPTION[::order])
+    ]
+    payload = {"text": "", "speaker_turns": turns, "sample_rate": 24000}
+    if with_segments:
+        payload["segments"] = spans
+    result = stt_details.normalize(payload, family, 24000)
+    assert [(s["text"], s["speaker"]) for s in result["segments"]] == [
+        ("I recommend approval.", "S01"),
+        ("I object.", "S02"),
+    ]
+    assert result["speaker_ids"] == ["S01", "S02"]
+
+
+def test_an_interruption_across_two_turns_of_the_other_speaker_keeps_its_own_speaker():
+    """MOSS's spans for a live interruption: S01's two turns cover all of S02's 3.37 s."""
+    spoken = [
+        ("S01", 5600, 101440, "So I recommend approving the budget."),
+        ("S02", 69440, 123360, "I strongly object to this plan."),
+        ("S01", 101440, 156480, "And that we start hiring in March."),
+    ]
+    spans = [{"start_sample": a, "end_sample": b, "text": text} for _, a, b, text in spoken]
+    payload = {
+        "segments": spans,
+        "speaker_turns": [{**span, "speaker_id": s} for span, (s, *_) in zip(spans, spoken)],
+        "sample_rate": 16000,
+    }
+    result = stt_details.normalize(payload, "moss_transcribe_diarize", 16000)
+    assert [s["speaker"] for s in result["segments"]] == ["S01", "S02", "S01"]
+
+
+@pytest.mark.parametrize("with_segments", [True, False])
+def test_two_speakers_saying_the_same_words_at_once_keep_their_own_speakers(with_segments):
+    span = {"start_sample": 0, "end_sample": 24000, "text": "Yes."}
+    payload = {
+        "speaker_turns": [{**span, "speaker_id": "S01"}, {**span, "speaker_id": "S02"}],
+        "sample_rate": 24000,
+    }
+    if with_segments:
+        payload["segments"] = [span, dict(span)]
+    result = stt_details.normalize(payload, "moss_transcribe_diarize", 24000)
+    assert [s["speaker"] for s in result["segments"]] == ["S01", "S02"]
+    assert result["speaker_ids"] == ["S01", "S02"]
+
+
+def test_an_unpaired_segment_on_two_speakers_span_falls_back_to_overlap():
+    span = {"start_sample": 0, "end_sample": 24000, "text": "Yes."}
+    payload = {
+        "segments": [span],
+        "speaker_turns": [{**span, "speaker_id": "S01"}, {**span, "speaker_id": "S02"}],
+        "sample_rate": 24000,
+    }
+    result = stt_details.normalize(payload, "moss_transcribe_diarize", 24000)
+    assert result["segments"][0]["speaker"] == "S01"

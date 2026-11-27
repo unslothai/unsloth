@@ -11,6 +11,13 @@ import pytest
 
 import core.inference.diffusion_memory as dm
 
+
+@pytest.fixture(autouse = True)
+def _trusted_free_reading(monkeypatch):
+    """The wider encoder room reads free memory as a measurement; a Windows ROCm host (a ceiling) keeps the flat room."""
+    monkeypatch.setattr(dm, "_free_reading_untrusted", lambda: False, raising = False)
+
+
 # Loaded storage of Qwen-Image-2.1 auto (int8 DiT, fp8 text encoder, bf16 VAE), MiB.
 Q21_LOADED = {
     "transformer": (6922, "dit"),
@@ -114,20 +121,38 @@ def test_16gb_keeps_transformer_resident_streams_encoder(q21_pipe):
     assert new.resident_transformer_mib == 6922
 
 
-def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe):
-    """An L4 reports 23034 MiB: its 10% reserve leaves the whole encoder ~900 MiB short, so the DiT stays resident
-    and only the encoder layers past the budget stream."""
+def _wide_te_room(plan, total):
+    """Encoder MiB beside the whole int8 DiT: free less the resident slack, the measured peak and the components."""
+    slack = max(1024, total // 10)
+    return min(8959, plan.device_memory.free_mib - slack - 2304 - 644 - 6922)
+
+
+def test_l4_class_card_keeps_most_of_the_encoder_resident(q21_pipe, monkeypatch):
+    """An L4 (23034 MiB): the flat room is ~900 MiB short of the encoder; the wider room keeps most of it resident."""
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
     budget = 20000
-    new = _refine(q21_pipe, _flat_plan(budget, 23034))
+    plan = _flat_plan(budget, 23034)
+    new = _refine(q21_pipe, plan)
     assert new.offload_policy == dm.OFFLOAD_GROUP and new.stream_text_encoders
     room = budget - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-    assert new.resident_text_encoder_mib == room and 0 < room < 8959
-    assert new.as_public_dict()["resident_text_encoder_mib"] == room
+    assert 0 < room < 8959 and new.estimates["flat_resident_text_encoder_mib"] == room
+    wide = _wide_te_room(plan, 23034)
+    assert new.resident_text_encoder_mib == wide > room
+    assert new.as_public_dict()["resident_text_encoder_mib"] == wide
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(budget, 23034)).resident_text_encoder_mib == room
 
 
 def test_16gb_encoder_room_and_kill_switch(q21_pipe, monkeypatch):
-    new = _refine(q21_pipe, _flat_plan(13638, 16376))
-    assert new.resident_text_encoder_mib == 13638 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV, raising = False)
+    plan = _flat_plan(13638, 16376)
+    new = _refine(q21_pipe, plan)
+    room = 13638 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
+    assert new.estimates["flat_resident_text_encoder_mib"] == room
+    assert new.resident_text_encoder_mib == _wide_te_room(plan, 16376) > room
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(13638, 16376)).resident_text_encoder_mib == room
+    monkeypatch.delenv(dm.TE_RESIDENT_ROOM_ENV)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", "0")
     plan = _flat_plan(13638, 16376)
     assert _refine(q21_pipe, plan) is plan
@@ -142,14 +167,19 @@ def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, m
     new = _refine(q21_pipe, plan)
     assert new.offload_policy == dm.OFFLOAD_STREAMING and new.stream_transformer
     assert new.resident_transformer_mib == 6922
-    assert new.resident_text_encoder_mib is None
+    # the encoders keep what free memory leaves beside the whole DiT, the measured peak and the slack
+    assert new.resident_text_encoder_mib == min(8959, free - 1228 - 644 - 2304 - 6922)
+    assert new.estimates["flat_resident_text_encoder_mib"] == 0
     assert new.estimates["resident_dit_slack_mib"] == 1228
+    assert new.estimates["resident_te_slack_mib"] == 1228
     assert (
         new.estimates["encode_resident_transformer_mib"]
         == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
     )
-    assert 6922 + 644 + 2304 + 1228 <= free
+    assert 6922 + 644 + 2304 + 1228 + new.resident_text_encoder_mib <= free
     assert new.as_public_dict()["resident_transformer_mib"] == 6922
+    monkeypatch.setenv(dm.TE_RESIDENT_ROOM_ENV, "0")
+    assert _refine(q21_pipe, _flat_plan(9550, 12288)).resident_text_encoder_mib is None
 
 
 def test_12gb_partial_residency_when_the_whole_transformer_does_not_fit(q21_pipe, monkeypatch):
@@ -271,11 +301,21 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
     )
     assert int(new.resident_transformer_mib or 0) <= 6922
     if "resident_dit_slack_mib" in new.estimates:
-        assert new.resident_transformer_mib == 6922 and not new.resident_text_encoder_mib
+        # whole DiT on the streaming tier: encoders only in what the whole-DiT fit leaves (resident_te_slack_mib)
+        assert new.resident_transformer_mib == 6922
+        assert not new.resident_text_encoder_mib or "resident_te_slack_mib" in new.estimates
         slack = new.estimates["resident_dit_slack_mib"]
         assert slack >= max(1024, total // 10)
         assert kept + 2304 + slack <= plan.device_memory.free_mib
         return
+    if "resident_te_slack_mib" in new.estimates:
+        # the encoders past the flat room: the whole-DiT fit (free less the resident slack), DiT held whole
+        slack = new.estimates["resident_te_slack_mib"]
+        assert slack >= max(1024, total // 10)
+        assert int(new.resident_transformer_mib or 6922) == 6922
+        assert new.estimates["flat_resident_text_encoder_mib"] < new.resident_text_encoder_mib
+        assert kept + 2304 + slack <= plan.device_memory.free_mib
+        kept -= new.resident_text_encoder_mib - new.estimates["flat_resident_text_encoder_mib"]
     assert kept + head <= budget
 
 

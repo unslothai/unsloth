@@ -239,10 +239,8 @@ def test_incremental_matches_reference_on_structured_fuzz():
 
 
 def test_prose_containing_the_word_call_is_still_amortized(monkeypatch):
-    """The word call is also English, so a sentinel hit must be confirmed against its arm.
-
-    Counts the characters handed to the sentinel scan and the full strip instead of timing: a
-    one-shot wall-clock ratio over a few milliseconds failed on a loaded runner with linear code."""
+    """The word call is also English, so a sentinel hit must be confirmed against its arm; counts
+    characters scanned, since a wall-clock ratio flaked on loaded runners."""
     work = []
     real_scan = tool_call_parser._first_sentinel
     real_full = StreamingMarkupStripper._full_strip

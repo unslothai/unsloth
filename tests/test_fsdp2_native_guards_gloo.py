@@ -74,7 +74,6 @@ def _case_replicated_unused(rank):
     fully_shard(model, mesh = mesh, ignored_params = {model.rep, model.extra, model.never})
     names = save.reduce_unsharded_trainable_grads(model)
     x = torch.randn(4, 8, generator = torch.Generator().manual_seed(rank))
-    # Two accumulated micro-steps: `extra` is used by rank 0 in the first, by rank 1 in the second.
     model(x, k = float(rank + 1), c = 3.0 if rank == 0 else 0.0).backward()
     model(x, k = float(10 * (rank + 1)), c = 5.0 if rank == 1 else 0.0).backward()
     return {
@@ -286,6 +285,5 @@ def test_cpu_offloaded_or_4bit_model_is_refused(native_env, monkeypatch):
     proj.weight = Params4bit(proj.weight.detach().clone(), requires_grad = False)
     with pytest.raises(RuntimeError, match = "4-bit model on the CPU"):
         native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32))
-    # No GPU in use (CUDA unavailable): the CPU run keeps its CPU mesh.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert _shard_device_seen(native, monkeypatch, _tiny_llama()).type == "cpu"

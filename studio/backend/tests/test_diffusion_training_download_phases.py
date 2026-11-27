@@ -78,7 +78,6 @@ def test_dit_resumes_download_progress_after_preparation(monkeypatch, tmp_path, 
         monkeypatch.setattr(
             "core.training.diffusion_train_extras.source_revision", lambda *_a: "local"
         )
-        monkeypatch.setattr(dit, "PersistentConditioningCache", lambda *_a: object())
         monkeypatch.setattr(
             dit, "_load_warm_conditioning", lambda *_a: ({"caption": object()}, [object()])
         )

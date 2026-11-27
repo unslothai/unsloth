@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import remend from "remend";
+import { mathSafeRemendOptions } from "../../lib/math-safe-remend.ts";
 import { type BlockProps } from "streamdown";
 import {
   parseMarkdownBlockDetails,
@@ -899,7 +900,10 @@ export function hasIncompleteLinkRepair(
   }
   return rememberLinkRepair(
     source,
-    addsIncompleteLinkPlaceholder(source, remend(source)),
+    addsIncompleteLinkPlaceholder(
+      source,
+      remend(source, mathSafeRemendOptions()),
+    ),
   );
 }
 
@@ -917,9 +921,9 @@ export const FINISHED_TEXT_REMEND = {
 } as const;
 
 export function repairStreamingMarkdown(source: string): string {
-  const repaired = remend(source);
+  const repaired = remend(source, mathSafeRemendOptions());
   return hasIncompleteLinkRepair(source, repaired)
-    ? remend(source, LITERAL_LINK_REMEND)
+    ? remend(source, mathSafeRemendOptions(LITERAL_LINK_REMEND))
     : repaired;
 }
 
@@ -991,9 +995,11 @@ function repairTail(
 ): string {
   const prefix = repairContextPrefix(context);
   if (!prefix) {
-    return remend(tail, options);
+    return remend(tail, mathSafeRemendOptions(options));
   }
-  return remend(prefix + tail, options).slice(prefix.length);
+  return remend(prefix + tail, mathSafeRemendOptions(options)).slice(
+    prefix.length,
+  );
 }
 
 function repairTailKeepingLinks(
@@ -1109,7 +1115,10 @@ function repairOpenFenceTail(
   ) {
     return null;
   }
-  const repaired = remend(OPEN_FENCE_SYNTHETIC_HEAD + tail.slice(cut + 1));
+  const repaired = remend(
+    OPEN_FENCE_SYNTHETIC_HEAD + tail.slice(cut + 1),
+    mathSafeRemendOptions(),
+  );
   if (!hasPrefix(repaired, OPEN_FENCE_SYNTHETIC_HEAD)) {
     return null;
   }
@@ -1290,7 +1299,8 @@ export class IncrementalMarkdownCache {
     if (head !== this.openFenceHead) {
       this.openFenceHead = head;
       const probed = head + OPEN_FENCE_PROBE;
-      this.openFenceHeadInert = remend(probed) === probed;
+      this.openFenceHeadInert =
+        remend(probed, mathSafeRemendOptions()) === probed;
     }
     return this.openFenceHeadInert
       ? repairOpenFenceTail(this.tail, bounds.bodyStart, bounds.firstBodyMarker)

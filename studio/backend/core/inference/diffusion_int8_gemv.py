@@ -16,6 +16,8 @@ import threading
 from functools import lru_cache
 from typing import Any, Optional
 
+from .triton_closure_globals import publishes_closure_globals
+
 INT8_GEMV_ENV = "UNSLOTH_DIFFUSION_INT8_GEMV"
 # Above this many rows the stock dequant + GEMM is faster.
 MAX_ROWS = 4
@@ -42,6 +44,7 @@ def gemv_enabled() -> bool:
 
 
 @lru_cache(maxsize = 1)
+@publishes_closure_globals
 def _kernel() -> Any:
     try:
         import triton

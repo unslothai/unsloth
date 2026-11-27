@@ -141,7 +141,8 @@ def test_other_functions_and_trainers_still_stripped():
     line = "\n        llm_model.load_weights(state_dict.items())\n"
     for function, trainer_file in (
         ("_generate", "grpo_trainer"),
-        ("_move_model_to_vllm", "rloo_trainer"),
+        ("_generate", "rloo_trainer"),
+        ("_move_model_to_vllm", "nash_md_trainer"),
     ):
         out = _strip_vllm_weight_loads(function, line, trainer_file)
         assert "load_weights" not in out and "pass" in out
@@ -150,7 +151,9 @@ def test_other_functions_and_trainers_still_stripped():
         "_sync_fsdp_params_to_vllm",
         "_sync_fsdp2_params_to_vllm",
     ):
-        assert _strip_vllm_weight_loads(function, line, "grpo_trainer") == line
+        # RLOO (TRL 0.22 to 0.27) carries GRPO's sync methods.
+        for trainer_file in ("grpo_trainer", "rloo_trainer"):
+            assert _strip_vllm_weight_loads(function, line, trainer_file) == line
 
 
 class Params4bit(torch.nn.Parameter):
@@ -252,9 +255,13 @@ def test_lora_sync_pushes_merged_weights_every_step(vllm_mode, dtype):
         before = len(rec.tensors)
         assert method(trainer) is None
         pushed = dict(rec.tensors[before:])
-        assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+        # The frozen layer without an adapter is sent once; the engine keeps it after that.
+        if step == 0:
+            assert sorted(pushed) == ["0.weight", "1.bias", "1.weight"]
+            assert torch.equal(pushed["1.weight"], model.base_model.model[1].weight)
+        else:
+            assert sorted(pushed) == ["0.weight"]
         assert torch.equal(pushed["0.weight"], _expected_merged(model))
-        assert torch.equal(pushed["1.weight"], model.base_model.model[1].weight)
     assert rec.resets == 2
     assert trainer._unsloth_vllm_sync_skip is False
 
@@ -271,7 +278,9 @@ def test_lora_sync_never_touches_frozen_base(dtype):
         assert method(trainer) is None
     assert torch.equal(layer.base_layer.weight, before)
     assert not layer.merged
-    assert len(rec.tensors) == 9
+    assert [name for name, _ in rec.tensors] == ["0.weight", "1.weight", "1.bias"] + [
+        "0.weight"
+    ] * 2
 
 
 def test_dora_syncs_out_of_place():

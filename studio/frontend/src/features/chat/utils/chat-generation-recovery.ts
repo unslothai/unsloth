@@ -5,10 +5,16 @@ import type { ChatGenerationStatus } from "../api/chat-generation-api";
 import {
   createThinkTagTracker,
   extractDeltaText,
+  markLiteralThinkTags,
+  markPendingThinkTag,
   parseAssistantContent,
 } from "./parse-assistant-content";
 import type { ContextUsageMarkers } from "./saved-context-usage";
-import { isExternalModelId } from "../external-providers";
+import {
+  isExternalModelId,
+  loadExternalProviders,
+  parseExternalModelId,
+} from "../external-providers";
 import { createWakeDedupe } from "../../../lib/wake-dedupe";
 import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
@@ -183,7 +189,12 @@ export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
     id: string;
-    requestPayload: { model?: unknown } & ContextUsageReasoningFields;
+    requestPayload: {
+      model?: unknown;
+      provider_id?: unknown;
+      provider_type?: unknown;
+      external_model?: unknown;
+    } & ContextUsageReasoningFields;
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
@@ -258,10 +269,7 @@ export function recoveredGenerationFinalMetadata(options: {
   if (next.responseDetails === undefined) {
     next.responseDetails = {
       modelId,
-      modelLabel: modelId,
-      responseModelId: modelId,
-      providerName: "Local model",
-      providerType: "local",
+      ...recoveredProviderDetails(modelId, run.requestPayload),
       startedAt,
       finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
@@ -284,6 +292,38 @@ export function recoveredGenerationFinalMetadata(options: {
   return next;
 }
 
+/** A connection run names its connection as the live stream does, not "Local model". */
+function recoveredProviderDetails(
+  modelId: string,
+  payload: { provider_id?: unknown; provider_type?: unknown; external_model?: unknown },
+): Record<string, unknown> {
+  const selection = parseExternalModelId(modelId);
+  const providerId =
+    typeof payload.provider_id === "string" ? payload.provider_id : selection?.providerId;
+  if (!providerId) {
+    return {
+      modelLabel: modelId,
+      responseModelId: modelId,
+      providerName: "Local model",
+      providerType: "local",
+    };
+  }
+  const connection = loadExternalProviders().find((provider) => provider.id === providerId);
+  const responseModelId =
+    typeof payload.external_model === "string"
+      ? payload.external_model
+      : (selection?.modelId ?? modelId);
+  return {
+    modelLabel: responseModelId,
+    responseModelId,
+    providerId,
+    providerName: connection?.name ?? "External provider",
+    providerType:
+      connection?.providerType ??
+      (typeof payload.provider_type === "string" ? payload.provider_type : "external"),
+  };
+}
+
 // Keep offsets aligned with parseAssistantContent's tags.
 const THINK_OPEN = "<think>";
 const THINK_CLOSE = "</think>";
@@ -304,10 +344,16 @@ export function generationRawContent(content: unknown): {
   let raw = "";
   let reasoningOpen = false;
   const carried: CarriedPart[] = [];
-  for (const part of content) {
+  for (const [index, part] of content.entries()) {
     if (!part || typeof part !== "object") continue;
     const record = part as { type?: string; text?: unknown };
-    const text = typeof record.text === "string" ? record.text : "";
+    // Saved parts are parsed, so their tags are literal; only the reply's end may be open.
+    const text =
+      typeof record.text === "string"
+        ? markLiteralThinkTags(record.text, {
+            pending: index < content.length - 1,
+          })
+        : "";
     if (record.type === "reasoning") {
       if (reasoningOpen) raw += text;
       else raw += `${THINK_OPEN}${text}`;
@@ -566,6 +612,14 @@ function mergeCarriedParts(
   ]);
 }
 
+/** A checkpoint cut mid-tag left its trailing fragment unmarked; a fuller split reply marked it. */
+function startsWithCheckpoint(text: string, checkpoint: string): boolean {
+  return (
+    text.startsWith(checkpoint) ||
+    text.startsWith(markPendingThinkTag(checkpoint))
+  );
+}
+
 export function recoveredContentToImport<TContent>(
   viewContent: TContent,
   recoveredContent: TContent,
@@ -574,13 +628,13 @@ export function recoveredContentToImport<TContent>(
   const recovered = generationRawContent(recoveredContent);
   if (
     recovered.raw.length < view.raw.length &&
-    view.raw.startsWith(recovered.raw)
+    startsWithCheckpoint(view.raw, recovered.raw)
   ) {
     return viewContent;
   }
   if (
     view.carried.length > 0 &&
-    recovered.raw.startsWith(view.raw) &&
+    startsWithCheckpoint(recovered.raw, view.raw) &&
     Array.isArray(recoveredContent)
   ) {
     const matches = carriedPartMatches(view.carried, recovered.carried);

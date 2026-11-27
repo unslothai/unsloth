@@ -47,6 +47,56 @@ export function getPresetSource(name: string): ChatPresetSource {
   return name === "Default" ? "builtin-default" : "custom";
 }
 
+/** The values a loaded model's recommendation (and the Qwen thinking table) can set. */
+export const RECOMMENDED_SAMPLING_KEYS = [
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "presencePenalty",
+  "maxTokens",
+] as const satisfies readonly (keyof InferenceParams)[];
+
+export type RecommendedSamplingKey = (typeof RECOMMENDED_SAMPLING_KEYS)[number];
+
+export function isRecommendedSamplingKey(
+  key: string,
+): key is RecommendedSamplingKey {
+  return (RECOMMENDED_SAMPLING_KEYS as readonly string[]).includes(key);
+}
+
+/** The recommended key a Run settings edit of `key` moves, if any. */
+export function editedSamplingKey(key: string): RecommendedSamplingKey | undefined {
+  const sampling = key === "minPMode" ? "minP" : key;
+  return isRecommendedSamplingKey(sampling) ? sampling : undefined;
+}
+
+/** The recommended keys the active pick keeps instead of taking the loaded model's values: a custom
+ *  preset keeps them all, Default none, and an edited Default only the ones the user moved. */
+function heldRecommendedKeys(
+  presetSource: ChatPresetSource,
+  presetEditedKeys: readonly RecommendedSamplingKey[],
+): ReadonlySet<RecommendedSamplingKey> {
+  if (presetSource === "builtin-default") return new Set();
+  if (presetSource === "custom") return new Set(RECOMMENDED_SAMPLING_KEYS);
+  return new Set(presetEditedKeys);
+}
+
+export function recommendedValuesForPick<T extends Partial<InferenceParams>>(
+  values: T | null,
+  presetSource: ChatPresetSource,
+  presetEditedKeys: readonly RecommendedSamplingKey[],
+): Partial<T> | null {
+  if (values === null) return null;
+  const held = heldRecommendedKeys(presetSource, presetEditedKeys);
+  const kept = Object.fromEntries(
+    Object.entries(values).filter(
+      ([key]) => !(isRecommendedSamplingKey(key) && held.has(key)),
+    ),
+  ) as Partial<T>;
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
 export function getUniquePresetName(
   baseName: string,
   usedNames: Set<string>,
@@ -285,12 +335,14 @@ export function mergeBackendRecommendedInference({
   response,
   modelId,
   presetSource,
+  presetEditedKeys,
   loadedContextLength,
 }: {
   current: InferenceParams;
   response: BackendInferenceEnvelope;
   modelId: string;
   presetSource: ChatPresetSource;
+  presetEditedKeys: readonly RecommendedSamplingKey[];
   /** The constructor's reading, not the raw field, which may echo the request. */
   loadedContextLength: number | null;
 }): InferenceParams {
@@ -304,16 +356,11 @@ export function mergeBackendRecommendedInference({
         : current.trustRemoteCode,
   };
 
-  if (presetSource !== "builtin-default") {
-    return next;
-  }
-
   const defaultMaxTokens = localMaxTokensCeiling(
     loadedContextLength,
     unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens),
   );
-  return {
-    ...next,
+  const recommended: Pick<InferenceParams, RecommendedSamplingKey> = {
     maxTokens: defaultMaxTokens,
     temperature:
       toFiniteNumber(inference?.temperature) ??
@@ -325,6 +372,10 @@ export function mergeBackendRecommendedInference({
       toFiniteNumber(inference?.presence_penalty) ??
       defaultInferenceParams.presencePenalty,
   };
+  return {
+    ...next,
+    ...recommendedValuesForPick(recommended, presetSource, presetEditedKeys),
+  };
 }
 
 export function resolveLoadMaxSeqLength({
@@ -332,48 +383,26 @@ export function resolveLoadMaxSeqLength({
   ggufVariant,
   isGguf,
   customContextLength,
-  loadedContextLength,
-  currentCheckpoint,
-  activeGgufVariant,
   isMlx,
   pinnedMaxSeqLength,
   defaultMaxSeqLength,
-  presetSource,
-  loadedContextPin = null,
 }: {
   modelId: string;
   ggufVariant?: string | null;
   isGguf?: boolean | null;
   customContextLength: number | null;
-  loadedContextLength: number | null;
-  currentCheckpoint: string;
-  activeGgufVariant?: string | null;
   isMlx?: boolean | null;
   pinnedMaxSeqLength: number | null;
   defaultMaxSeqLength: number;
-  presetSource: ChatPresetSource;
-  /** `loadedCustomContextLength`: the context the resident server was pinned to, or null when
-   *  it was loaded on Auto. */
-  loadedContextPin?: number | null;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
   const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
-  const isReloadingCurrentGguf =
-    isGgufLoad &&
-    currentCheckpoint === modelId &&
-    (ggufVariant ?? null) === (activeGgufVariant ?? null);
 
   if (customContextLength != null) {
     return customContextLength;
   }
-  if (isGgufLoad && presetSource === "builtin-default") {
-    return 0;
-  }
-  // Keeping the resident size only holds an Auto window steady. When that size was a pin, Auto is
-  // a request to drop it, and resending it made the reload a no-op that kept the old context.
-  if (isReloadingCurrentGguf) {
-    return loadedContextPin != null ? 0 : (loadedContextLength ?? 0);
-  }
+  // Auto fits every GGUF load again, a same-model reload included: the resident window was sized
+  // for the KV cache type, projector and GPUs it launched with, and the reload may change them.
   if (isGgufLoad) {
     return 0;
   }
@@ -479,14 +508,6 @@ export function resolveFitMaxSeqLength(
 ): number {
   if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
-}
-
-export function isReplayedLoadContext(
-  isGguf: boolean | null | undefined,
-  customContextLength: number | null,
-  maxSeqLength: number,
-): boolean {
-  return isGguf === true && customContextLength == null && maxSeqLength > 0;
 }
 
 /** The user's explicit Context Length or null; never derived from the wire n_ctx. */

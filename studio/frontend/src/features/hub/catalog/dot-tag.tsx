@@ -55,7 +55,7 @@ export function DotTag({
           dotClassName,
         )}
       />
-      {labelClassName ? <span className={labelClassName}>{label}</span> : label}
+      <span className={cn("cap-centered", labelClassName)}>{label}</span>
     </span>
   );
 }

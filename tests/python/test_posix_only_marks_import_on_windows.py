@@ -57,8 +57,7 @@ def _getattr_geteuid(node: ast.AST) -> ast.Call | None:
 
 
 def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
-    """Whether this lambda could take the call's arguments; a call with starred or keyword-unpacked
-    arguments returns True, since a false alarm is worse than a miss."""
+    """Whether a lambda takes the call; unpacked args give True, as misses beat false alarms."""
     if any(isinstance(arg, ast.Starred) for arg in call.args) or any(
         keyword.arg is None for keyword in call.keywords
     ):
@@ -81,8 +80,7 @@ def _lambda_accepts(lam: ast.Lambda, call: ast.Call) -> bool:
 
 
 def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
-    """Whether getattr's third argument survives this call on Windows: a literal never does, a
-    lambda is checked against the call, and other expressions are taken at face value."""
+    """A literal fallback never survives on Windows; lambdas are checked, others pass."""
     if isinstance(fallback, ast.Lambda):
         return _lambda_accepts(fallback, call)
     return not isinstance(
@@ -104,8 +102,7 @@ def _fallback_takes(fallback: ast.AST, call: ast.Call) -> bool:
 
 
 def _is_literal_arithmetic(node: ast.AST) -> bool:
-    """`1 + 2` is a BinOp, and still a number nobody can call. Only when every leaf is a
-    literal: `a + b` could be anything."""
+    """Only BinOps with all-literal leaves qualify: 1 + 2 does, a + b could be anything."""
     if not isinstance(node, ast.BinOp):
         return False
     return all(
@@ -237,8 +234,7 @@ def _windows_value(node: ast.AST) -> bool | None:
 
 
 def _spared_on_windows(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> bool:
-    """Walk out from the `os.geteuid` itself and ask each enclosing operator whether it
-    can be reached on a platform without the attribute."""
+    """Whether some enclosing operator can keep os.geteuid unreached on a platform without it."""
     child = node
     parent = parents.get(child)
     while parent is not None:
@@ -330,8 +326,7 @@ def _offending_sites(tree: ast.Module):
 
 
 def _import_time_expressions(tree: ast.Module):
-    """Yields import-time expressions; `try`, loops, `with` and `match` are skipped whole, not
-    guessed at."""
+    """Yields import-time expressions; try, loops, with and match blocks are skipped whole."""
     _normalise_os_aliases(tree)
     # PEP 649 makes annotations lazy from 3.14, and requires-python spans both sides.
     eager_annotations = not _has_future_annotations(tree) and not LAZY_ANNOTATIONS
@@ -397,8 +392,7 @@ def test_no_test_module_calls_os_geteuid_unguarded_at_import():
 
 
 def test_the_scan_still_recognises_an_unguarded_call():
-    """The scan is only worth anything if it would still fail. Both shapes, since the
-    decorator on a method inside a class is how the live one was written."""
+    """Must flag an unguarded call in both shapes; the live one is a decorator on a method."""
     bad_module = ast.parse(
         "import os, pytest\n"
         '@pytest.mark.skipif(os.geteuid() == 0, reason = "x")\n'
@@ -451,8 +445,7 @@ def test_an_unrelated_call_to_the_left_is_not_a_guard():
 
 
 def test_a_default_argument_is_import_time():
-    """A default is evaluated where the `def` is, so it breaks collection like a
-    decorator does, even though it reads like it belongs to the call."""
+    """Default arguments are evaluated at the def, so they break collection like decorators."""
     tree = ast.parse("import os\ndef helper(uid = os.geteuid()):\n    return uid\n")
     flagged = [
         expr
@@ -463,8 +456,7 @@ def test_a_default_argument_is_import_time():
 
 
 def test_a_runtime_call_inside_a_function_is_not_flagged():
-    """Only import-time evaluation breaks collection; a call in a body is the test's
-    own business and is left alone, or every POSIX helper in the tree would be noise."""
+    """Only import-time calls break collection; body calls would flag every POSIX helper."""
     tree = ast.parse("import os\ndef test_x():\n    if os.geteuid() == 0:\n        return\n")
     assert not [
         expr
@@ -478,8 +470,7 @@ def _flagged(source: str) -> list[int]:
 
 
 def test_an_os_name_guard_is_read_for_polarity_not_presence():
-    """os.name == 'posix' or os.geteuid() == 0 names the same attribute but spares nothing: on
-    Windows the left side is false and the call is reached; a word-matching scan would accept it."""
+    """A posix guard in an 'or' spares nothing on Windows; read polarity, not mere presence."""
     assert _flagged(
         "import os, pytest\n"
         '@pytest.mark.skipif(os.name == "posix" or os.geteuid() == 0, reason = "x")\n'
@@ -515,8 +506,7 @@ def test_an_annotation_is_import_time_only_without_the_future_import():
 
 
 def test_a_nested_definition_is_not_import_time():
-    """A `def` inside a function is not evaluated until the outer one runs, so its
-    decorator cannot break collection and must not be reported."""
+    """Decorators of defs nested in a function are not import-time and must not be reported."""
     assert not _flagged(
         "import os, pytest\n"
         "def test_outer():\n"
@@ -562,8 +552,7 @@ def test_a_statement_level_platform_guard_is_honoured():
 
 
 def test_a_getattr_fallback_has_to_be_callable():
-    """getattr(os, 'geteuid', None)() picks None on Windows and raises TypeError there, which Linux
-    never shows since the real function is picked; a literal fallback is no fallback."""
+    """Linux misses a None fallback's TypeError on Windows; a literal fallback is no fallback."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", None)() == 0\n')
     assert _flagged('import os\nROOT = getattr(os, "geteuid", 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
@@ -589,8 +578,7 @@ def test_a_class_header_is_evaluated_where_the_class_is_written():
 
 
 def test_a_lambda_fallback_has_to_take_the_call():
-    """`getattr(os, "geteuid", lambda required: 1)()` picks the lambda on Windows and
-    then calls it wrongly. Linux never shows it, because the real function is picked."""
+    """Windows picks the lambda fallback and calls it wrongly; Linux never shows this."""
     assert _flagged('import os\nROOT = getattr(os, "geteuid", lambda required: 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda: 1)() == 0\n')
     assert not _flagged('import os\nROOT = getattr(os, "geteuid", lambda *a: 1)() == 0\n')

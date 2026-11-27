@@ -5,8 +5,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { listDiffusionEmbeddings, type DiffusionEmbeddingInfo } from "./embeddings-api";
+import { FAST_CFG_HINT } from "./lib/fast-cfg";
 import { shiftFieldInvalid, type ShiftControl, type ShiftValue } from "./lib/shift-choice";
 
 // The resolved defaults can be e.g. ln(e^0.69); show them the way a user would type them.
@@ -80,7 +82,7 @@ export function ShiftField({
     <div className="flex flex-col gap-1.5 pt-2">
       <Label
         label="Shift (base / max)"
-        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Empty boxes keep the value Studio already uses for this model (shown in grey)."
+        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Empty boxes keep the value Unsloth already uses for this model (shown in grey)."
       />
       <div className="flex items-center gap-2">
         <NumberBox
@@ -98,6 +100,24 @@ export function ShiftField({
           onChange={(maxShift) => onChange({ ...value, maxShift })}
         />
       </div>
+    </div>
+  );
+}
+
+export function FastCfgField({
+  available,
+  enabled,
+  onChange,
+}: {
+  available: boolean;
+  enabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  if (!available) return null;
+  return (
+    <div className="flex items-center justify-between pt-2">
+      <Label label="Fast CFG" hint={FAST_CFG_HINT} />
+      <Switch checked={enabled} onCheckedChange={onChange} aria-label="Fast CFG" />
     </div>
   );
 }
@@ -144,7 +164,7 @@ export function EmbeddingsField({
         hint={
           <>
             Textual inversion embeddings (.safetensors) such as EasyNegative. Put files in{" "}
-            {dir ? <code className="break-all">{dir}</code> : "the Studio embeddings folder"}; the file name is the
+            {dir ? <code className="break-all">{dir}</code> : "the Unsloth embeddings folder"}; the file name is the
             trigger word, so writing it in the prompt or negative prompt uses the embedding.
           </>
         }

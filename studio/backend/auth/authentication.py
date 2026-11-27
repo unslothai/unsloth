@@ -23,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    API_KEY_ACCESS_INFERENCE,
     STUDIO_CHAT_TOOLS_KEY_NAME,
     validate_api_key_account,
     validate_api_key_with_credential,
@@ -40,6 +41,26 @@ _KEYLESS_CREDENTIALS = HTTPAuthorizationCredentials(
     scheme = KEYLESS_SCHEME,
     credentials = "",
 )
+
+
+class _RoutedCredentials(HTTPAuthorizationCredentials):
+    """A bearer with the (method, path, root_path) it was sent to; credentials built anywhere else
+    carry no route, so an inference only key is refused there."""
+
+    route: Optional[Tuple[str, str, str]] = None
+
+
+INFERENCE_ONLY_KEY_DETAIL = (
+    "This API key is inference only: it can chat with and list the loaded models, but cannot "
+    "load, unload or download models or change settings. Use a full access key from "
+    "Settings > API for this."
+)
+
+
+def _inference_key_may_call(credentials: HTTPAuthorizationCredentials) -> bool:
+    from utils.keyless_api_access import KEYLESS_SCOPE_INFERENCE, scope_covers
+    route = getattr(credentials, "route", None)
+    return route is not None and scope_covers(KEYLESS_SCOPE_INFERENCE, *route)
 
 
 def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
@@ -170,7 +191,12 @@ class _BearerOrKeyless(HTTPBearer):
                 credentials = token,
             )
         if usable_bearer:
-            return HTTPAuthorizationCredentials(scheme = scheme, credentials = token)
+            asgi = getattr(request, "scope", {})
+            return _RoutedCredentials(
+                scheme = scheme,
+                credentials = token,
+                route = (asgi.get("method", ""), asgi.get("path", ""), asgi.get("root_path", "")),
+            )
         return await super().__call__(request)
 
 
@@ -457,6 +483,16 @@ async def _get_current_credential(
                 detail = _invalid_api_key_detail(token),
             )
         record, secret = verified
+        if record.get("key_access") == API_KEY_ACCESS_INFERENCE and not _inference_key_may_call(
+            credentials
+        ):
+            raise HTTPException(
+                status_code = status.HTTP_403_FORBIDDEN, detail = INFERENCE_ONLY_KEY_DETAIL
+            )
+        if record.get("key_access") == API_KEY_ACCESS_INFERENCE:
+            # Server-side tools (python, terminal, skill and memory writes) act on this host, as for keyless access.
+            from state.tool_policy import force_disable_tools_for_request
+            force_disable_tools_for_request()
         generation = credential_generation(secret)
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
         bind_account(
@@ -467,7 +503,9 @@ async def _get_current_credential(
                 credential_gen = generation,
                 via_api_key = True,
                 load_policy = policy_for_credential(
-                    internal = bool(record.get("key_internal")), key_name = record.get("key_name")
+                    internal = bool(record.get("key_internal")),
+                    key_name = record.get("key_name"),
+                    access = record.get("key_access"),
                 ).value,
                 ui_chat = bool(record.get("key_internal"))
                 and record.get("key_name") == STUDIO_CHAT_TOOLS_KEY_NAME,

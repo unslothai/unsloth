@@ -15,6 +15,7 @@
 # http://www.apache.org/licenses/LICENSE-2.0
 """The prefetch warm must cover every file the load reads, but no weights the load never touches."""
 
+import ast
 import fnmatch
 import sys
 import types
@@ -308,10 +309,82 @@ def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
         and "SENTENCE_TRANSFORMERS_HOME" in ast.dump(kw.value)
     ]
     assert resolutions, "expected cache_dir resolutions referencing SENTENCE_TRANSFORMERS_HOME"
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
     for kw in resolutions:
-        assert "'cache_dir'" in ast.dump(
-            kw.value
-        ), "an ST cache_dir resolution must read an explicit kwargs.get('cache_dir') first"
+        assert _st_resolution_reads_cache_dir_first(kw, parents), (
+            f"line {kw.lineno}: an ST cache_dir resolution must read an explicit "
+            "kwargs.get('cache_dir') first"
+        )
+
+
+def _reads_kwargs_key(node, key):
+    """``kwargs.get(key)`` / ``kwargs[key]`` on any mapping name."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return (
+            node.func.attr == "get"
+            and bool(node.args)
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == key
+        )
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.slice, ast.Constant) and node.slice.value == key
+    return False
+
+
+def _first_operand(node):
+    while isinstance(node, ast.BoolOp):
+        node = node.values[0]
+    return node
+
+
+def _st_resolution_reads_cache_dir_first(kw, parents):
+    """True when the resolution reads cache_dir before anything else.
+
+    Either directly (``kwargs.get("cache_dir") or ...``), or through an ST kwargs dict whose
+    ``cache_folder`` this function already set from an expression that reads cache_dir first,
+    which is how the native SentenceTransformer routes carry an explicit HF cache_dir.
+    """
+    first = _first_operand(kw.value)
+    if _reads_kwargs_key(first, "cache_dir"):
+        return True
+    if not (
+        _reads_kwargs_key(first, "cache_folder")
+        and isinstance(first, ast.Call)
+        and isinstance(first.func.value, ast.Name)
+    ):
+        return False
+    mapping = first.func.value.id
+    function = kw
+    while function in parents and not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        function = parents[function]
+    sources = {}
+    mapped = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Assign) or node.lineno >= kw.lineno:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                sources.setdefault(target.id, []).append(node.value)
+            elif (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == mapping
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "cache_folder"
+            ):
+                mapped.append(node.value)
+    if not mapped:
+        return False
+    for value in mapped:
+        if isinstance(value, ast.Name):
+            candidates = sources.get(value.id, [])
+        else:
+            candidates = [value]
+        if not candidates or not all(
+            _reads_kwargs_key(_first_operand(candidate), "cache_dir") for candidate in candidates
+        ):
+            return False
+    return True
 
 
 def test_st_native_loads_map_hf_cache_dir_to_cache_folder():

@@ -42,8 +42,7 @@ def test_frontend_sync_backfills_local_models_to_backend():
     source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
     assert "updateProviderConfig" in source
     assert "needsModelBackfill" in source
-    # The batch is settled by settleTasksIfCurrent. Only the wiring is checked here; that both
-    # hops are awaited runs for real in test_provider_backfill_awaits_batch.py.
+    # Wiring only; test_provider_backfill_awaits_batch.py checks that both hops are awaited.
     flat = " ".join(source.split()).replace("( ", "(")
     assert "settleTasksIfCurrent(backfillTasks" in flat
     helper = RECONCILIATION.read_text(encoding = "utf-8")

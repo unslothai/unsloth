@@ -11,33 +11,21 @@ import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
   formatTokenCountFull,
+  getSeverityColor,
 } from "../lib/context-usage-bar-state";
-
-function getSeverityColor(percent: number): {
-  bar: string;
-  stroke: string;
-  text: string;
-} {
-  if (percent > 85) {
-    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
-  }
-  if (percent > 65) {
-    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
-  }
-  return {
-    bar: "bg-control-accent",
-    stroke: "stroke-control-accent",
-    text: "text-control-accent",
-  };
-}
 
 const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
-export const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
-  percent,
-  stroke,
-}) => (
+// Just past the 2-unit ring on both sides, and inside the 16-unit box.
+const MARK_HALF_LENGTH = 1.6;
+
+export const UsageRing: FC<{
+  percent: number | null;
+  stroke: string;
+  /** Share of the window where the chat compacts, drawn as a tick across the ring. */
+  mark?: number | null;
+}> = ({ percent, stroke, mark }) => (
   <svg viewBox="0 0 16 16" aria-hidden={true} className="size-icon shrink-0 -rotate-90">
     <circle cx={8} cy={8} r={RING_RADIUS} fill="none" strokeWidth={2} className="stroke-(--track)" />
     {percent ? (
@@ -51,6 +39,17 @@ export const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
         strokeDasharray={RING_LENGTH}
         strokeDashoffset={RING_LENGTH * (1 - percent / 100)}
         className={cn("transition-[stroke-dashoffset]", stroke)}
+      />
+    ) : null}
+    {typeof mark === "number" ? (
+      <line
+        data-slot="compaction-mark"
+        x1={8 + (RING_RADIUS - MARK_HALF_LENGTH) * Math.cos((mark / 100) * 2 * Math.PI)}
+        y1={8 + (RING_RADIUS - MARK_HALF_LENGTH) * Math.sin((mark / 100) * 2 * Math.PI)}
+        x2={8 + (RING_RADIUS + MARK_HALF_LENGTH) * Math.cos((mark / 100) * 2 * Math.PI)}
+        y2={8 + (RING_RADIUS + MARK_HALF_LENGTH) * Math.sin((mark / 100) * 2 * Math.PI)}
+        strokeWidth={1.1}
+        className="stroke-foreground"
       />
     ) : null}
   </svg>
@@ -213,7 +212,7 @@ export const ContextUsageBar: FC<
             >
               {compactFace === null ? (
                 <span className={cn("flex size-[calc(30px*var(--ui-space-scale,1))] shrink-0 items-center justify-center", hover)}>
-                  <UsageRing percent={percent} stroke={severity.stroke} />
+                  <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} />
                 </span>
               ) : (
                 <span className={cn("flex h-full shrink-0 items-center", hover)} style={padStyle}><Face face={compactFace} /></span>
@@ -228,9 +227,9 @@ export const ContextUsageBar: FC<
                 className={cn("flex h-full items-center", fitContent ? "gap-1.5" : "w-(--full) gap-2", hover)}
                 style={padStyle}
               >
-                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                {showRing && ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} /> : null}
                 <Face face={face} />
-                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
+                {showRing && !ringFirst ? <UsageRing percent={percent} stroke={severity.stroke} mark={state.compactMarkPercent} /> : null}
               </span>
             </span>
           </button>
@@ -278,6 +277,17 @@ export const ContextUsageBar: FC<
               </span>
             </div>
           )}
+          {typeof input.compactAt === "number" && input.compactAt > 0 && (
+            <div
+              className="flex items-center justify-between gap-4"
+              data-slot="compaction-trigger-row"
+            >
+              <span className="text-muted-foreground">Auto-compacts at</span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCountFull(input.compactAt)}
+              </span>
+            </div>
+          )}
           {cached !== undefined && cached > 0 && (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">Cache hits</span>
@@ -315,21 +325,21 @@ export const ContextUsageBar: FC<
                   stopping here, but the model can no longer hold the whole
                   conversation: answers get slower and less accurate, and a
                   long enough chat can still run out of memory. Increase{" "}
-                  <span className="font-medium">Context Length</span> in the
+                  <span className="font-medium">Context</span> in the
                   chat Settings panel to fit it all.
                 </>
               ) : advice === "mlx-near-limit" ? (
                 <>
                   Close to the context limit. Past it the chat keeps going, but
                   answers get slower and less accurate. Increase{" "}
-                  <span className="font-medium">Context Length</span> in the
+                  <span className="font-medium">Context</span> in the
                   chat Settings panel to fit the whole conversation.
                 </>
               ) : advice === "mlx-refuses-past-limit" ? (
                 <>
                   Close to the context limit. This model quantizes its cache
                   instead of capping it, so{" "}
-                  <span className="font-medium">Context Length</span> is applied
+                  <span className="font-medium">Context</span> is applied
                   to each request rather than to the cache: past it the request
                   is refused instead of the chat slowing down. Increase it in
                   the chat Settings panel, or shorten the conversation.
@@ -337,14 +347,14 @@ export const ContextUsageBar: FC<
               ) : advice === "unenforced-limit" ? (
                 <>
                   This model builds its own cache, so{" "}
-                  <span className="font-medium">Context Length</span> is the
+                  <span className="font-medium">Context</span> is the
                   window it was sized for, not a limit on it: the cache keeps
                   growing and lowering the setting will not save memory.
                 </>
               ) : (
                 <>
                   Close to the context limit. Generation will stop at 100%.
-                  Increase <span className="font-medium">Context Length</span> in
+                  Increase <span className="font-medium">Context</span> in
                   the chat Settings panel to keep going.
                 </>
               )}

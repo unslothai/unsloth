@@ -4,6 +4,7 @@
 """The dense cache answers exactly what vec0 answers, and never from a snapshot it was not built at."""
 
 import math
+import sqlite3
 
 import pytest
 
@@ -295,6 +296,18 @@ def test_the_builder_opens_and_closes_through_the_connection_gate(monkeypatch, t
     opened = []
     real = sqlite_gate.connect
     monkeypatch.setattr(sqlite_gate, "connect", lambda *a, **kw: opened.append(a) or real(*a, **kw))
+    if not hasattr(sqlite3.Connection, "enable_load_extension"):
+        # This Python's sqlite3 cannot load extensions (the macos-15 runner's): the open still goes
+        # through the gate, and the refusal closes the connection it opened.
+        closed = []
+        real_close = sqlite_gate.GatedConnection.close
+        monkeypatch.setattr(
+            sqlite_gate.GatedConnection, "close", lambda self: closed.append(1) or real_close(self)
+        )
+        with pytest.raises(AttributeError, match = "enable_load_extension"):
+            vec_cache._connect(str(tmp_path / "x.db"))
+        assert len(opened) == 1 and closed == [1]
+        return
     conn = vec_cache._connect(str(tmp_path / "x.db"))
     assert isinstance(conn, sqlite_gate.GatedConnection) and len(opened) == 1
     conn.close()

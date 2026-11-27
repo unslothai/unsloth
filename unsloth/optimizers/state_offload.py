@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only."""
+"""UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only.
 
+On CUDA the chunk copies overlap the step through a fixed staging ring no larger than one serial
+chunk (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP=0 keeps them serial)."""
+
+import contextlib
 import copy
 import os
 
@@ -32,6 +36,15 @@ def _chunk_bytes():
 
 def optimizer_state_offload_enabled():
     return os.environ.get(_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _overlap_enabled():
+    return os.environ.get(_ENV + "_OVERLAP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+_RING_ALIGN = 512
+_RING_PARTS = 4
+_RING_SEGMENT_BYTES = 64 << 20
 
 
 def _innermost(optimizer):
@@ -97,6 +110,15 @@ def _local(tensor):
     return tensor
 
 
+def _with_local(value, local):
+    """`local` in the place of `value`: a DTensor keeps its wrapper (DCP sees the stock layout)."""
+    if DTensor is not None and isinstance(value, DTensor):
+        value = copy.copy(value)
+        value._local_tensor = local
+        return value
+    return local
+
+
 def _local_nbytes(tensor):
     local = _local(tensor)
     return local.numel() * local.element_size()
@@ -116,6 +138,116 @@ def _synchronize(device):
         sync() if device.type == "mps" else sync(device)
 
 
+def _plain_copy_source(tensor, host):
+    # A tensor the side stream can copy straight into `host` (no temporary on that stream).
+    return (
+        type(tensor) is torch.Tensor
+        and tensor.device.type == "cuda"
+        and tensor.dtype == host.dtype
+        and tensor.shape == host.shape
+        and tensor.is_contiguous()
+    )
+
+
+class _Ring:
+    """Device staging buffer: copies in on one side stream, out on another, events order reuse.
+    Nothing is allocated on a side stream (record_stream only on state a step replaced)."""
+
+    def __init__(self, device, capacity, streams):
+        self.device, self.capacity = device, capacity
+        self.compute = torch.cuda.current_stream(device)
+        self.h2d, self.d2h = streams
+        self.buffer = torch.empty(capacity, dtype = torch.uint8, device = device)
+        # The buffer may reuse memory the compute stream is still working on.
+        self.h2d.wait_stream(self.compute)
+        self.d2h.wait_stream(self.compute)
+        self.head = 0
+        self.live = []
+        self.done = []  # (start, end, event) of copied out ranges, in copy order
+
+    def place(self, tensors):
+        """Copy [(param, key, host, padded bytes)] in: (views, ready event, range), or None if full."""
+        nbytes = sum(n for *_, n in tensors)
+        start = 0 if self.head + nbytes > self.capacity else self.head
+        end = start + nbytes
+        if any(s < end and start < e for s, e in self.live):
+            return None
+        last = -1
+        for i, (s, e, _) in enumerate(self.done):
+            if s < end and start < e:
+                last = i
+        if last >= 0:
+            # Copies out finish in order, so the newest overlapping one covers the older ones.
+            self.h2d.wait_event(self.done[last][2])
+            self.done = self.done[last + 1 :]
+        views, offset = [], start
+        with torch.cuda.stream(self.h2d):
+            for p, key, host, n in tensors:
+                raw = self.buffer[offset : offset + host.numel() * host.element_size()]
+                view = raw.view(host.dtype).view(host.shape)
+                view.copy_(host, non_blocking = True)
+                views.append((p, key, host, view, offset, n))
+                offset += n
+        ready = torch.cuda.Event()
+        ready.record(self.h2d)
+        self.live.append((start, end))
+        self.head = end
+        return views, ready, (start, end)
+
+    def use(self, placed, state):
+        views, ready, _ = placed
+        self.compute.wait_event(ready)
+        for p, key, _, view, _, _ in views:
+            state[p][key] = _with_local(state[p][key], view)
+
+    def copy_out(self, placed, state):
+        views, _, (start, end) = placed
+        stepped = torch.cuda.Event()
+        stepped.record(self.compute)
+        self.d2h.wait_event(stepped)
+        segment, copied = start, 0
+        with torch.cuda.stream(self.d2h):
+            for p, key, host, view, offset, n in views:
+                current = state[p].get(key)
+                local = _local(current)
+                if local is view:
+                    host.copy_(view, non_blocking = True)
+                elif _plain_copy_source(local, host):
+                    # Replaced by the step (bfloat16 stochastic rounding stores new moments).
+                    host.copy_(local, non_blocking = True)
+                    local.record_stream(self.d2h)
+                else:
+                    continue
+                state[p][key] = _with_local(current, host)
+                copied += n
+                if copied >= _RING_SEGMENT_BYTES:
+                    event = torch.cuda.Event()
+                    event.record(self.d2h)
+                    self.done.append((segment, offset + n, event))
+                    segment, copied = offset + n, 0
+        event = torch.cuda.Event()
+        event.record(self.d2h)
+        self.done.append((segment, end, event))
+        self.live.remove((start, end))
+
+    def close(self):
+        # The buffer goes back to the compute stream's pool only after every copy.
+        self.compute.wait_stream(self.h2d)
+        self.compute.wait_stream(self.d2h)
+        self.buffer = None
+
+
+class _Sequence:
+    __slots__ = ("ring", "parts", "placed", "next", "current", "stopped")
+
+    def __init__(self, ring, parts):
+        self.ring, self.parts = ring, parts
+        self.placed = []
+        self.next = 0
+        self.current = None
+        self.stopped = False
+
+
 class _StateOffloader:
     def __init__(
         self,
@@ -133,6 +265,10 @@ class _StateOffloader:
         self.inside = False
         self.hidden = None
         self.pending = set()
+        self.overlapped_steps = 0
+        self.streams = None
+        self.sequence = None
+        self.ring_oom_fallbacks = 0
 
     def _host_buffer(self, param, key, src):
         buffer = self.buffers.get((param, key))
@@ -287,6 +423,8 @@ class _StateOffloader:
         closure = rest[0] if rest else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if closure is not None or not _chunk_safe(optimizer):
+            if self.sequence is not None:
+                self._sequence_end(self.sequence)
             if closure is not None or not _grad_only_step(optimizer):
                 self.restore()
                 return
@@ -322,6 +460,183 @@ class _StateOffloader:
             kwargs = dict(kwargs, closure = _chunked_updates)
         return ((optimizer,) + tuple(rest) if has_self else tuple(rest)), kwargs
 
+    def _ring_tensors(self, params):
+        """(device, {param: [(param, key, host, padded bytes)]}) for one CUDA device, or None to stay
+        serial (ROCm, CPU, first step, nested state, pageable memory, kill switch). FSDP2 DTensor
+        state is staged by its local shard, the only part this rank holds."""
+        if not _overlap_enabled() or not self.pin_memory:
+            return None
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return None
+        state = self.optimizer.state
+        device = None
+        sizes = {}
+        for p in params:
+            entries = state.get(p)
+            if not entries:
+                return None
+            tensors = []
+            for key, value in entries.items():
+                if not isinstance(value, torch.Tensor):
+                    if _held_tensors(value):
+                        return None
+                    continue
+                value = _local(value)
+                target = self.offloaded.get((p, key))
+                if target is None:
+                    if value.device.type != "cpu":
+                        return None
+                    continue
+                if value is not self.buffers.get((p, key)) or target.type != "cuda":
+                    return None
+                if device is None:
+                    device = target
+                elif target != device:
+                    return None
+                nbytes = value.numel() * value.element_size()
+                tensors.append((p, key, value, -(-nbytes // _RING_ALIGN) * _RING_ALIGN))
+            sizes[p] = tensors
+        if device is None:
+            return None
+        if device.index is None:
+            device = torch.device("cuda", torch.cuda.current_device())
+        return device, sizes
+
+    def _streams(self, device):
+        if self.streams is None or self.streams[0].device != device:
+            self.streams = (torch.cuda.Stream(device), torch.cuda.Stream(device))
+        return self.streams
+
+    def _new_ring(self, device, capacity):
+        """The staging ring, or None (serial copies) if its one contiguous block hits OOM (fragmentation)."""
+        try:
+            return _Ring(device, capacity, self._streams(device))
+        except torch.cuda.OutOfMemoryError:
+            self.ring_oom_fallbacks += 1
+            return None
+
+    def _ring_plan(self, params, chunks):
+        found = self._ring_tensors(params)
+        if found is None:
+            return None
+        device, sizes = found
+        nbytes = {p: sum(n for *_, n in sizes[p]) for p in params}
+        # As large as the biggest serial chunk, so device staging never grows.
+        capacity = max(sum(nbytes[p] for p in chunk) for chunk in chunks)
+        target = max(capacity // _RING_PARTS, 1)
+        parts, part, size = [], [], 0
+        for p in params:
+            if part and size + nbytes[p] > target:
+                parts.append(part)
+                part, size = [], 0
+            part.append(p)
+            size += nbytes[p]
+        if part:
+            parts.append(part)
+        if len(parts) <= 1 or capacity <= 0:
+            return None
+        return device, capacity, [(part, [t for p in part for t in sizes[p]]) for part in parts]
+
+    def _step_ring(self, optimizer, step, args, kwargs, params, grads, plan, ring, devices):
+        """Chunked step with neighbouring parts' copies overlapping each part's step; same updates."""
+        device, capacity, parts = plan
+        state = self.optimizer.state
+        grad_of = dict(zip(params, grads))
+        devices.add(device)
+        for p in params:
+            p.grad = None
+        placed = []
+        try:
+            for index, (members, _) in enumerate(parts):
+                while len(placed) < len(parts):
+                    slot = ring.place(parts[len(placed)][1])
+                    if slot is None:
+                        break
+                    placed.append(slot)
+                ring.use(placed[index], state)
+                for p in members:
+                    p.grad = grad_of[p]
+                step(optimizer, *args, **kwargs)
+                for p in members:
+                    p.grad = None
+                ring.copy_out(placed[index], state)
+                placed[index] = None
+                # State the step added, or could not copy on the side stream.
+                devices |= self.offload(members)
+        finally:
+            ring.close()
+            for p, g in grad_of.items():
+                p.grad = g
+        self.overlapped_steps += 1
+
+    @contextlib.contextmanager
+    def pipelined(self, batches):
+        """Step calls for these batches follow in order (bf16 stochastic rounding: one weight per call):
+        prefetch the next batches' state while each steps, one sync at the end instead of per call."""
+        found = None
+        flat = [p for batch in batches for p in batch]
+        if self.sequence is None and len(batches) > 1 and len({id(p) for p in flat}) == len(flat):
+            found = self._ring_tensors(flat)
+        if found is None:
+            yield
+            return
+        device, sizes = found
+        parts = [(list(batch), [t for p in batch for t in sizes[p]]) for batch in batches]
+        # One batch's staging at most, as each serial call held.
+        capacity = max(sum(n for *_, n in tensors) for _, tensors in parts)
+        if capacity <= 0:
+            yield
+            return
+        ring = self._new_ring(device, capacity)
+        if ring is None:
+            yield
+            return
+        sequence = _Sequence(ring, parts)
+        self.sequence = sequence
+        try:
+            yield
+            complete = (
+                not sequence.stopped and sequence.current is None and sequence.next == len(parts)
+            )
+        finally:
+            self._sequence_end(sequence)
+        if complete:
+            self.overlapped_steps += 1
+
+    def _sequence_end(self, sequence):
+        if sequence.stopped:
+            return
+        sequence.stopped = True
+        if self.sequence is sequence:
+            self.sequence = None
+        sequence.ring.close()
+        # Anything an error or an unexpected call left on the device.
+        self.finish({sequence.ring.device} | self.offload())
+
+    def _sequence_take(self, params):
+        """Serve this step call from the sequence; False (sequence ended) if it is not the next batch."""
+        sequence = self.sequence
+        index = sequence.next
+        expected = sequence.parts[index][0] if index < len(sequence.parts) else None
+        if (
+            sequence.current is not None
+            or expected is None
+            or len(expected) != len(params)
+            or any(a is not b for a, b in zip(expected, params))
+        ):
+            self._sequence_end(sequence)
+            return False
+        ring = sequence.ring
+        while len(sequence.placed) < len(sequence.parts):
+            slot = ring.place(sequence.parts[len(sequence.placed)][1])
+            if slot is None:
+                break
+            sequence.placed.append(slot)
+        ring.use(sequence.placed[index], self.optimizer.state)
+        sequence.current = index
+        sequence.next = index + 1
+        return True
+
     def _step_chunks(self, optimizer, args, kwargs):
         kwargs.pop("closure", None)
         params = [
@@ -330,24 +645,33 @@ class _StateOffloader:
         chunks = self._chunks(params)
         # Chunk-safe steps never touch parameters without a gradient, so their state stays on host.
         if len(chunks) <= 1:
-            self.restore(params)
+            if self.sequence is None or not self._sequence_take(params):
+                self.restore(params)
             return
         # Step each chunk through the unhooked class step, so registered step hooks run once for
         # the logical step, then hide every gradient so the caller's own step finds nothing left.
         step = type(optimizer).step
         if getattr(step, "hooked", False):
             step = getattr(step, "__wrapped__", step)
+        if self.sequence is not None:
+            # Not a per-weight call of the sequence: its prefetched copies must not go stale.
+            self._sequence_end(self.sequence)
         grads = [p.grad for p in params]
         devices = set()
+        plan = self._ring_plan(params, chunks)
+        ring = self._new_ring(plan[0], plan[1]) if plan is not None else None
         self.inside = True
         try:
-            for chunk in chunks:
-                members = set(chunk)
-                for p, g in zip(params, grads):
-                    p.grad = g if p in members else None
-                self.restore(chunk)
-                step(optimizer, *args, **kwargs)
-                devices |= self.offload(chunk)
+            if ring is not None:
+                self._step_ring(optimizer, step, args, kwargs, params, grads, plan, ring, devices)
+            else:
+                for chunk in chunks:
+                    members = set(chunk)
+                    for p, g in zip(params, grads):
+                        p.grad = g if p in members else None
+                    self.restore(chunk)
+                    step(optimizer, *args, **kwargs)
+                    devices |= self.offload(chunk)
         except BaseException:
             for p, g in zip(params, grads):
                 p.grad = g
@@ -369,6 +693,15 @@ class _StateOffloader:
                 p.grad = g
             self.hidden = None
         self.steps += 1
+        sequence = self.sequence
+        if sequence is not None and sequence.current is not None:
+            members = sequence.parts[sequence.current][0]
+            sequence.ring.copy_out(sequence.placed[sequence.current], self.optimizer.state)
+            sequence.placed[sequence.current] = None
+            sequence.current = None
+            # Copies still in flight; the sequence synchronizes once when it ends.
+            self.offload(members)
+            return
         devices, self.pending = self.pending, set()
         self.finish(devices | self.offload())
 
@@ -398,6 +731,8 @@ def offload_optimizer_state(
     if not any(p.device.type != "cpu" for group in optimizer.param_groups for p in group["params"]):
         return None
 
+    # The fused 8-bit AdamW (flat_adamw8bit) runs stock under an offloader; drop its packed buffers.
+    optimizer.__dict__.pop("_unsloth_flat_plans", None)
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
     # Step hooks, not a step override: accelerate swaps the instance's step on each fp16 step.
     optimizer.register_step_pre_hook(offloader._pre_step)

@@ -85,6 +85,9 @@ def _plain(value: Any) -> Any:
     image = _image_fingerprint(value)
     if image is not None:
         return image
+    array = _array_fingerprint(value)
+    if array is not None:
+        return array
     raise TypeError(type(value).__name__)
 
 
@@ -97,6 +100,25 @@ def _image_fingerprint(value: Any) -> Optional[list]:
         return None
     digest = hashlib.sha256(value.tobytes()).hexdigest()
     return ["PIL.Image", str(value.mode), list(value.size), digest]
+
+
+def _array_fingerprint(value: Any) -> Optional[list]:
+    """Float reference pictures (NumPy arrays) key by dtype, shape and their exact bytes, so precision is kept."""
+    module = type(value).__module__ or ""
+    if not (hasattr(value, "dtype") and hasattr(value, "shape") and hasattr(value, "tobytes")):
+        return None
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not isinstance(value, np.ndarray) or value.dtype.kind not in "biuf":
+        return None
+    digest = getattr(value, "digest", None) if not module.startswith("numpy") else None
+    if not isinstance(digest, str):
+        digest = hashlib.blake2b(
+            np.ascontiguousarray(value).reshape(-1).view(np.uint8), digest_size = 16
+        ).hexdigest()
+    return ["ndarray", value.dtype.str, list(value.shape), digest]
 
 
 def _is_tensor(obj: Any) -> bool:

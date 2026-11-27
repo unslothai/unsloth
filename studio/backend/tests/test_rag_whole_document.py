@@ -457,6 +457,25 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
     assert _injected_text(result) == "TOPK_LARGE_MODEL_FALLBACK"
 
 
+def test_build_rag_autoinject_whole_document_only_follows_the_history_budget(rag_conn, monkeypatch):
+    _add_doc(
+        rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["whole body"], tokens = [600]
+    )
+    scope = {"thread_id": "t1", "context_length": 4000}
+    long_history = [{"role": "user", "content": "x" * 10_000}, *_convo()]
+    sentinel = ("TOPK_TEXT", [{"citationId": 1, "filename": "doc.pdf", "text": "x"}])
+    searches = []
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: searches.append(kw) or sentinel)
+    excerpts = inf_tools.build_rag_autoinject(long_history, scope)
+    assert _injected_text(excerpts) == "TOPK_TEXT" and excerpts["whole_document"] is False
+
+    searches.clear()
+    assert inf_tools.build_rag_autoinject(long_history, scope, whole_document_only = True) is None
+    assert searches == []
+    whole = inf_tools.build_rag_autoinject(_convo(), scope, whole_document_only = True)
+    assert "whole body" in _injected_text(whole) and whole["whole_document"] is True
+
+
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
     monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
@@ -489,7 +508,8 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
 
     injected = _injected_text(result)
     assert "x" * 1600 in injected and "project" in injected
-    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
+    searches = [c for c in calls if c.get("mode") != "dense"]
+    assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in searches] == [
         ("t1", None),
         (None, "p1"),
     ]
@@ -670,6 +690,188 @@ def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn
     )
     injected = _injected_text(result)
     assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_summary_of_long_attachment_leads_with_its_opening(
+    rag_conn, monkeypatch, autoinject
+):
+    from core.rag import embeddings
+
+    scope = store.thread_scope("t1")
+    texts = [
+        "Orbital Mechanics Handbook, by A. Author",
+        "Abstract: how satellites keep their orbits.",
+    ]
+    texts += [f"Table {i}: summarize this document row {i}" for i in range(8)]
+    chunks = [
+        _chunk(t, i, source_page = i, tokens = 60 if i == 0 else 1000) for i, t in enumerate(texts)
+    ]
+    vectors = [[0.0, 0.0, 1.0, 0.0]] * 2 + [[0.6, 0.8, 0.0, 0.0]] * 8
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(rag_conn, scope, "d1", chunks, vectors)
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(texts))
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"), {"thread_id": "t1", "autoinject": autoinject}
+    )
+    injected = _injected_text(result)
+    assert injected.index("Orbital Mechanics Handbook") < injected.index("Abstract:")
+    assert injected.index("Abstract:") < injected.index("Table ")
+    assert injected.count("Table ") == inf_tools._autoinject_top_k()
+
+
+def test_build_rag_autoinject_strong_match_skips_the_opening(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "d1",
+        [
+            _chunk("FRONT_MATTER", 0, source_page = 0, tokens = 60),
+            _chunk("ORBIT_PERIOD", 1, source_page = 1, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [1.0, 0.0, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 2)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("what is the orbital period"), {"thread_id": "t1", "autoinject": False}
+    )
+    injected = _injected_text(result)
+    assert "ORBIT_PERIOD" in injected
+    assert "FRONT_MATTER" not in injected.split("ORBIT_PERIOD")[0]
+
+
+def test_build_rag_autoinject_opening_of_a_sparse_deck_stays_small(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "deck.pdf", sha256 = "h1", document_id = "d1")
+    n = 510
+    chunks = [_chunk(f"SLIDE_{i}", i, source_page = i, tokens = 1) for i in range(n - 1)]
+    chunks.append(_chunk("BIG_TAIL", n - 1, source_page = n - 1, tokens = 50_000))
+    store.add_chunks(
+        rag_conn, scope, "d1", chunks, [[0.0, 0.0, 1.0, 0.0]] * (n - 1) + [[0.6, 0.8, 0.0, 0.0]]
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = n)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"), {"thread_id": "t1", "autoinject": True}
+    )
+    injected = _injected_text(result)
+    assert "SLIDE_0" in injected
+    assert injected.count("<chunk id=") <= 3 + inf_tools._autoinject_top_k()
+
+
+def _encode_as_query(monkeypatch):
+    from core.rag import embeddings
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+
+def test_build_rag_autoinject_opening_comes_from_the_matched_attachment_beside_project(
+    rag_conn, monkeypatch
+):
+    tscope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = tscope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        tscope,
+        "d1",
+        [
+            _chunk("BIG_TITLE", 0, source_page = 0, tokens = 60),
+            _chunk("BIG_INTRO", 1, source_page = 1, tokens = 1000),
+            _chunk("MATCH_PASSAGE", 2, source_page = 2, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.6, 0.8, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 3)
+    store.create_document(rag_conn, scope = tscope, filename = "new.pdf", sha256 = "h3", document_id = "d3")
+    store.add_chunks(
+        rag_conn, tscope, "d3", [_chunk("NEW_OPENING", 0, tokens = 1000)], [[0.0, 0.0, 0.0, 1.0]]
+    )
+    store.set_document_status(rag_conn, "d3", "completed", num_chunks = 1)
+    pscope = store.project_scope("p1")
+    store.create_document(
+        rag_conn, scope = pscope, filename = "notes.md", sha256 = "h2", document_id = "d2"
+    )
+    store.add_chunks(rag_conn, pscope, "d2", [_chunk("PROJECT_PASSAGE")], [[1.0, 0.0, 0.0, 0.0]])
+    store.set_document_status(rag_conn, "d2", "completed", num_chunks = 1)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {
+            "thread_id": "t1",
+            "project_id": "p1",
+            "autoinject": True,
+            "autoinject_min_score": 0.7,
+            "default_top_k": 2,
+        },
+    )
+    injected = _injected_text(result)
+    assert "NEW_OPENING" not in injected
+    assert injected.index("BIG_TITLE") < injected.index("MATCH_PASSAGE")
+    assert "PROJECT_PASSAGE" in injected
+
+
+def test_build_rag_autoinject_budget_keeps_the_match_over_the_opening(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    store.create_document(rag_conn, scope = scope, filename = "big.pdf", sha256 = "h1", document_id = "d1")
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "d1",
+        [
+            _chunk("FRONT_MATTER " + "x" * 4000, 0, source_page = 0, tokens = 500),
+            _chunk("MATCH_PASSAGE " + "y" * 1500, 1, source_page = 1, tokens = 50_000),
+        ],
+        [[0.0, 0.0, 1.0, 0.0], [0.6, 0.8, 0.0, 0.0]],
+    )
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = 2)
+    _encode_as_query(monkeypatch)
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "autoinject": False, "context_length": 4096},
+    )
+    assert "MATCH_PASSAGE" in _injected_text(result)
+    end = next(e for e in result["events"] if e["type"] == "tool_end")
+    text, sources = end["result"].split(inf_tools.RAG_SOURCES_SENTINEL)
+    assert [s["citationId"] for s in json.loads(sources)] == [
+        int(i) for i in re.findall(r'<chunk id="(\d+)"', text)
+    ]
+
+
+def test_build_rag_autoinject_retries_hybrid_when_lexical_winner_is_over_budget(
+    rag_conn, monkeypatch
+):
+    monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
+
+    def fake_search(**kw):
+        text = "z" * 6000 if kw["mode"] == "lexical" else "HYBRID_PASSAGE"
+        sources = [{"citationId": 1, "chunkId": kw["mode"], "filename": "big.pdf", "text": text}]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("what is the orbital period"),
+        {"thread_id": "t1", "autoinject": False, "mode": "lexical", "context_length": 2048},
+    )
+    assert "HYBRID_PASSAGE" in _injected_text(result)
 
 
 def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):

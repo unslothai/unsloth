@@ -46,8 +46,7 @@ def _container(path: Path, ref: str) -> str:
 
 
 def test_the_floating_panels_paint_over_the_notification_stack():
-    """The stack holds its corner, so a monitor parked there is under it. The stack
-    is passive status; the panels are windows being dragged, resized and closed."""
+    """Panels must sit above the passive stack so their Close buttons stay clickable."""
     layers = _layers()
     assert layers["FLOATING_PANEL"] > layers["OVERLAY_STACK"], (
         "the notification stack paints over the floating panels, so their Close "
@@ -56,8 +55,7 @@ def test_the_floating_panels_paint_over_the_notification_stack():
 
 
 def test_the_front_panel_does_not_climb_past_the_layer_above_it():
-    """Only one panel is ever raised, by one step, so the pair cannot straddle
-    the startup screen."""
+    """Only one panel is raised, by one step, so the pair cannot straddle the startup screen."""
     layers = _layers()
     assert layers["FLOATING_PANEL_TOP"] == layers["FLOATING_PANEL"] + 1
     assert layers["FLOATING_PANEL_TOP"] < layers["STARTUP_SCREEN"]

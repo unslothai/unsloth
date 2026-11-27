@@ -93,6 +93,25 @@ def test_retrieve_hybrid_returns_relevant_chunk(rag_conn, bow_embeddings):
     assert hits[0].chunk_id == "d1:0"
 
 
+def test_retrieve_hybrid_keeps_lexical_hits_while_embedder_downloads(
+    rag_conn, bow_embeddings, monkeypatch
+):
+    from core.rag import embeddings
+
+    _add_doc(rag_conn, "kb_a", "d1", "f1", "h1", "alpha bravo charlie")
+    _add_doc(rag_conn, "kb_a", "d2", "f2", "h2", "golf hotel delta")
+
+    def pending(texts, **kwargs):
+        raise embeddings.EmbeddingModelDownloadRequiredError("still downloading")
+
+    monkeypatch.setattr(embeddings, "encode", pending)
+    hits = retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k = 5)
+    assert [h.chunk_id for h in hits] == ["d1:0"]
+    assert hits[0].dense_score is None
+    with pytest.raises(embeddings.EmbeddingModelDownloadRequiredError):
+        retrieval.retrieve_hybrid(rag_conn, "kb_a", "alpha bravo", k = 5, mode = "dense")
+
+
 def test_retrieve_dense_round_trips(rag_conn, bow_embeddings):
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", "alpha alpha")
     _add_doc(rag_conn, "kb_a", "d2", "f", "h2", "hotel golf")
@@ -294,6 +313,22 @@ def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, mo
     assert tool.search_for_autoinject(query = "q", scope_kb_id = "a", min_dense_score = 0.55) is None
 
 
+def test_search_for_autoinject_keeps_above_floor_passage_ranked_past_top_k(
+    rag_conn, bow_embeddings
+):
+    filler = " ".join(f"note{i}" for i in range(200))
+    _add_doc(rag_conn, "kb_a", "best", "guide.pdf", "h0", f"alpha bravo {filler}")
+    for i in range(12):
+        text = "alpha bravo charlie delta echo" + " foxtrot" * i
+        _add_doc(rag_conn, "kb_a", f"d{i}", "faq.pdf", f"h{i + 1}", text)
+
+    found = tool.search_for_autoinject(
+        query = "alpha bravo", scope_kb_id = "a", top_k = 4, min_dense_score = 0.70
+    )
+    assert found is not None
+    assert [s["chunkId"] for s in found[1]] == ["best:0"]
+
+
 def test_search_for_autoinject_bm25_gates_on_dense_probe(rag_conn, bow_embeddings, monkeypatch):
     # BM25 hits carry no cosine, so the gate uses a dense 1-NN probe.
     _add_doc(rag_conn, "kb_a", "d1", "paper.pdf", "h1", "body text here", page = 3)
@@ -430,7 +465,7 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "_rrf",
-        lambda rankings, rrf_k, top_k: calls.append(("rrf", rrf_k, top_k)) or [],
+        lambda rankings, rrf_k, top_k, min_score = 0.0: calls.append(("rrf", rrf_k, top_k)) or [],
     )
 
     calls.clear()
@@ -523,3 +558,37 @@ def test_build_rag_autoinject_scope_overrides_env(monkeypatch):
         )
         is None
     )
+
+
+def test_search_for_autoinject_caps_after_dense_floor(rag_conn, bow_embeddings, monkeypatch):
+    for i in range(4):
+        _add_doc(rag_conn, "kb_a", f"s{i}", "guide.pdf", f"s{i}", "alpha bravo")
+        _add_doc(rag_conn, "kb_a", f"z{i}", "log.txt", f"z{i}", "zulu")
+    # Keyword-only hits outside the dense leg tie the floor-clearing dense hits rank for rank.
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_lexical",
+        lambda *a, **kw: [retrieval.Hit(f"z{i}:0", 1.0, lexical_score = 1.0) for i in range(4)],
+    )
+    monkeypatch.setattr(
+        retrieval,
+        "retrieve_dense",
+        lambda *a, **kw: [retrieval.Hit(f"s{i}:0", 0.9, dense_score = 0.9) for i in range(4)],
+    )
+    found = tool.search_for_autoinject(
+        query = "alpha bravo", scope_kb_id = "a", top_k = 4, min_dense_score = 0.70
+    )
+    assert found is not None
+    assert [s["chunkId"] for s in found[1]] == [f"s{i}:0" for i in range(4)]
+
+
+def test_knowledge_search_floors_before_top_k(rag_conn, bow_embeddings):
+    filler = " ".join(f"note{i}" for i in range(200))
+    _add_doc(rag_conn, "kb_a", "best", "guide.pdf", "h0", f"alpha bravo {filler}")
+    for i in range(12):
+        text = "alpha bravo charlie delta echo" + " foxtrot" * i
+        _add_doc(rag_conn, "kb_a", f"d{i}", "faq.pdf", f"h{i + 1}", text)
+    _, sources = tool.search_knowledge_base_with_sources(
+        query = "alpha bravo", scope_kb_id = "a", top_k = 4, min_score = 0.70
+    )
+    assert [s["chunkId"] for s in sources] == ["best:0"]

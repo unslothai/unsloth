@@ -5,16 +5,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
-test("video-family adapters get no Deploy to Create", () => {
+test("video-family adapters deploy to Video, image families to Create", () => {
   const src = readSrc("features/images/train/diffusion-train-panel.tsx");
   assert.match(src, /\?\.is_video === true/);
   assert.match(
     src,
-    /viewRun\.catalog_path && !isVideoFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeploy\?\.\(/,
+    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}onDeployVideo : onDeploy\)\?\.\(/,
   );
   assert.match(
     src,
-    /status\?\.catalog_path && !isVideoFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+    /status\?\.catalog_path && canDeployFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
   );
   assert.match(readSrc("features/images/api.ts"), /is_video\?: boolean;/);
 });
@@ -54,7 +54,7 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
     assert.match(
       src,
       page.includes("video")
-        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
+        ? /\/>\s*<\/div>\s*\)\}\s*\{restyleMounted && \(\s*<div className=\{pageMode === "restyle" \? "contents" : "hidden"\} inert=\{pageMode !== "restyle" \|\| undefined\}>\s*<VideoRestylePanel active=\{active\} restore=\{restyleRecipe\} \/>\s*<\/div>\s*\)\}\s*\{pageMode === "create" && \(/
         : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
     );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);

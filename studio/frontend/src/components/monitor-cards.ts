@@ -2,12 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  carveOutVramGb,
   gpuMemoryTotalsGb,
   resolveGpuVramUsedGb,
   sharesHostMemoryDevice,
   type VramReportingGpu,
 } from "../hooks/gpu-vram.ts";
 import type { GpuDevice } from "../hooks/use-system.ts";
+import type { LoadedModelEntry } from "../features/loaded-models/loaded-models-sources.ts";
+import type { NpuStatus } from "../features/npu/api.ts";
 
 export interface CardUsage {
   key: string;
@@ -34,6 +37,14 @@ export interface VramCards {
   showTotal: boolean;
 }
 
+// A carve-out APU's shared part is system RAM, which the RAM row already shows.
+function vramTotalGb(cards: GpuDevice[]): number {
+  return (
+    carveOutVramGb(cards, null, null)?.totalGb ??
+    gpuMemoryTotalsGb(cards).total
+  );
+}
+
 /** Dedicated cards only: an iGPU borrows system RAM, and its missing reading would blank the total. */
 export function vramCards(
   devices: GpuDevice[],
@@ -54,14 +65,56 @@ export function vramCards(
           name: shortCardName(card.name),
           title: card.name ?? "GPU",
           usedGb: Number.isFinite(card.vram_used_gb) ? (card.vram_used_gb as number) : null,
-          totalGb: gpuMemoryTotalsGb([card]).total,
+          totalGb: vramTotalGb([card]),
         }))
       : [];
   const showTotal =
     rows.length === 0 || (usedGb !== null && rows.some((row) => row.usedGb === null));
-  return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows, showTotal };
+  return { cards, totalGb: vramTotalGb(cards), usedGb, rows, showTotal };
 }
 
 export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {
   return cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
+}
+
+export interface NpuCard {
+  name: string;
+  driver: string | null;
+  model: string | null;
+  residentGb: number | null;
+  loadPercent: number | null;
+}
+
+/** null hides the card. The NPU's model lives in system RAM. */
+/** An AMD NPU with FastFlowLM installed; every NPU surface stays hidden otherwise, NVIDIA included. */
+export function npuActive(
+  status: Pick<NpuStatus, "hardware" | "ready"> | null | undefined,
+): boolean {
+  return Boolean(status?.hardware?.supported && status.ready);
+}
+
+export function npuCard(
+  status: Pick<NpuStatus, "hardware" | "ready"> | null,
+  entries: readonly LoadedModelEntry[],
+  loadPercent: number | null | undefined,
+): NpuCard | null {
+  if (!npuActive(status)) return null;
+  const hardware = status!.hardware;
+  // describeInferenceStatus leads an NPU row's detail with its runtime.
+  const row = entries.find(
+    (entry) => !entry.loading && entry.detail.split(" · ")[0] === "NPU",
+  );
+  const driver = [
+    hardware.driver === "installed" ? null : hardware.driver,
+    hardware.driver_version,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    name: hardware.name || "NPU",
+    driver: driver || null,
+    model: row ? row.label || row.name : null,
+    residentGb: row?.residentMib ? row.residentMib / 1024 : null,
+    loadPercent: Number.isFinite(loadPercent) ? (loadPercent as number) : null,
+  };
 }

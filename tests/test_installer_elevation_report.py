@@ -22,8 +22,7 @@ def _read(path: Path) -> str:
 
 
 def _code_only(text: str) -> str:
-    """Drop whole-line comments so an assertion about what the code reads is not
-    satisfied, or defeated, by prose explaining it."""
+    """Strips whole-line comments so assertions check code, not prose that explains it."""
     return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
 
 
@@ -35,8 +34,7 @@ def _repair_block(path: Path) -> str:
 
 
 def test_diag_marker_prefix_is_still_parsed_and_reported():
-    """Both scripts write [TAURI:DIAG]; if the Rust side stops reading it the
-    markers become invisible without either file changing."""
+    """Both scripts write [TAURI:DIAG]; if Rust stops parsing it, markers vanish silently."""
     assert '"[TAURI:DIAG] "' in _read(INSTALL_RS), "install.rs no longer parses [TAURI:DIAG]"
     assert "record_diag_marker" in _read(INSTALL_RS), "the marker is parsed but not recorded"
     assert "installer_diag_markers" in _read(
@@ -230,8 +228,7 @@ def test_the_early_bail_restores_the_environment_too():
 
 
 def test_both_scripts_resolve_the_warning_root_the_same_way():
-    """install.ps1 and setup.ps1 each mirror the resolver's precedence for the warning, so drift in
-    one would send only half the flows to the right directory."""
+    """install.ps1 and setup.ps1 mirror resolver's precedence; drift misroutes half the flows."""
     install_root = _read(INSTALL_PS1)
     install_root = install_root[
         install_root.index("$UnslothRoot =") : install_root.index("-Tauri:$TauriMode")
@@ -254,8 +251,7 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
 
 
 def test_install_ps1_warning_does_not_assume_a_powershell_window():
-    """install.rs spawns this from the desktop app, where there is no console to
-    close and no PowerShell prompt to re-run from."""
+    """Spawned by the desktop app: no console to close and no PowerShell prompt to re-run from."""
     src = _read(INSTALL_PS1)
     notice = src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
     for phrase in ("Close this window", "normal PowerShell"):
@@ -275,8 +271,7 @@ def test_setup_ps1_reports_elevation_without_duplicating_the_installer():
 
 
 def test_setup_ps1_warning_names_the_root_actually_written():
-    """$StudioHome is not resolved until much later in setup.ps1, so the message
-    mirrors the documented override precedence rather than a fixed path."""
+    """$StudioHome resolves late, so the message mirrors override precedence, not a fixed path."""
     src = _read(SETUP_PS1)
     idx = src.index('if ($env:SKIP_STUDIO_BASE -ne "1") {')
     block = src[idx : src.index("# Back up User PATH")]
@@ -307,8 +302,7 @@ def test_degraded_llama_cpp_is_recorded_not_only_flashed():
 
 
 def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
-    """The marker must not soften the non-desktop contract: install.sh and
-    install.ps1 still need the non-zero exit."""
+    """Marker must not soften non-desktop exits: install.sh and install.ps1 exit non-zero."""
     assert 'setup_fail 1 "llama.cpp setup did not produce a usable server"' in _read(SETUP_SH)
     assert 'Exit-SetupFailure "llama.cpp setup did not produce a usable server"' in _read(SETUP_PS1)
 

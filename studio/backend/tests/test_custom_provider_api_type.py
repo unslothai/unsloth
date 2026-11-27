@@ -236,6 +236,8 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
     from routes import inference
 
     def handle(request):
+        if request.url.path == "/api/version":
+            return httpx.Response(404)
         assert request.url.path == "/v1/responses"
         assert json.loads(request.content)["stream"] is False
         if upstream_status != 200:
@@ -373,7 +375,8 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
     response = asyncio.run(run())
     assert response.status_code == 200
     body = json.loads(response.body)
-    assert body["context_truncated"] == truncation
+    # The cloud fit says whether a summary was tried before turns were dropped.
+    assert body["context_truncated"] == {**truncation, "summary_failed": False}
     assert "old" not in json.dumps(requests[-1]["input"])
     assert "latest" in json.dumps(requests[-1]["input"])
     assert len(requests) == (2 if server_compaction_rejected else 1)

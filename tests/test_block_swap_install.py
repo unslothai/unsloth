@@ -425,6 +425,18 @@ def test_every_unsupported_load_mode_is_refused_before_trimming():
         assert hits and min(hits) < trim, needle
 
 
+def test_generic_load_refuses_the_load_modes_the_llama_path_refuses():
+    fn = _method("vision.py", "FastBaseModel", "from_pretrained")
+    begin = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "begin_block_swap_load"
+    )
+    for needle in ("load_in_8bit", "quantization_config", "state_dict", "gguf_file"):
+        hits = _refusals(fn, needle)
+        assert hits and min(hits) < begin, needle
+
+
 def test_older_zoo_without_placement_still_installs():
     ns, calls = _load()
 
@@ -543,7 +555,13 @@ def _load_skip():
     )  # _skip_aware_flag
     src = open(UTILS, encoding = "utf-8").read() + "\n" + open(gc_kwargs, encoding = "utf-8").read()
     mod = ast.parse(src)
-    names = ("_skip_aware_flag", "skip_checkpointing", "_gc_keep_layers_env")
+    names = (
+        "_skip_aware_flag",
+        "skip_checkpointing",
+        "_mark_checkpoint_skips",
+        "_gc_keep_layers_env",
+        "_default_checkpoint_skip_allowed",
+    )
     ns = {"find_decoder_layers": lambda m: m.layers, "os": os}
     for n in mod.body:
         if isinstance(n, ast.FunctionDef) and n.name in names:
@@ -583,7 +601,8 @@ def test_skip_leaves_block_swapped_layers_checkpointed():
     assert [l.gradient_checkpointing for l in model.layers] == [True, False, True, False]
 
 
-def test_skip_zero_changes_nothing():
+def test_skip_zero_changes_nothing(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GC_KEEP_LAYERS", "0")
     ns = _load_skip()
     model = _skip_model()
     assert ns["skip_checkpointing"](model, 0) == []

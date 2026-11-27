@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Opening or closing a dialog registers and drops a trigger per shortcut and fires several modal
-// observer batches. Each re-ask walks the whole document, which on a long chat is the cost of the
-// open or close itself, so the re-asks are batched into one pass per microtask that asks each
-// selector once. Press-time checks stay uncached.
+// Re-asks are batched into one document walk per microtask; press-time checks stay uncached.
 
 import assert from "node:assert/strict";
 import test from "node:test";

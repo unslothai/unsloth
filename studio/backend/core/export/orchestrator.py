@@ -164,6 +164,7 @@ class ExportOrchestrator:
             self._last_op = {
                 "seq": self._op_seq,
                 "kind": self._active_op_kind,
+                "id": self._active_op_id,
                 "status": status,
                 "output_path": output_path if success else None,
                 "error": None if success else (message or None),
@@ -502,6 +503,7 @@ class ExportOrchestrator:
         base_model: Optional[str] = None,
         op_id: Optional[str] = None,
         offload_layers = "auto",
+        adapter_free: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -523,6 +525,7 @@ class ExportOrchestrator:
         sub_config = {
             "checkpoint_path": checkpoint_path,
             "base_model": base_model,
+            "adapter_free": adapter_free,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "offload_layers": offload_layers,

@@ -328,6 +328,7 @@ _NATIVE_TOOL_FORMATS = (
 _FORCED_CALL_OPENERS = {
     "hermes": ('<tool_call>\n{"name":', lambda name: f' {json.dumps(name)}, "arguments":'),
     "qwen3_coder": ("<tool_call>\n<function=", lambda name: f"{name}>\n"),
+    "gemma4": ("<|tool_call>call:", lambda name: f"{name}{{"),
 }
 
 
@@ -337,7 +338,7 @@ def forced_call_prefix(names: Optional[set], *templates: Any) -> str:
     from core.inference.engine_adapters import tool_parser_for_template
 
     parsers = {
-        tool_parser_for_template(body, "vllm")
+        "gemma4" if "<|tool_call>call:" in body else tool_parser_for_template(body, "vllm")
         for template in templates
         for body in _template_strings(template)
     } - {None}

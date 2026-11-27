@@ -92,8 +92,12 @@ fn watchdog_failure_budget(inference_active: bool, probe_timed_out: bool) -> u32
     }
 }
 
-async fn managed_install_ready_after_repair() -> bool {
-    crate::preflight::managed_install_ready().await
+async fn managed_install_not_ready_after_repair() -> Option<String> {
+    crate::preflight::managed_install_not_ready_reason().await
+}
+
+fn repair_not_ready_message(reason: &str) -> String {
+    format!("Repair finished, but Unsloth install is still not desktop-ready ({reason}).")
 }
 
 fn should_emit_repair_failed(msg: &str) -> bool {
@@ -952,20 +956,30 @@ pub async fn start_managed_repair(
     };
 
     match update_result {
-        Ok(()) if !force_installer && managed_install_ready_after_repair().await => {
-            info!("Managed repair complete after update");
-            diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
-            let _ = app.emit("repair-complete", ());
-            return Ok(());
-        }
         Ok(()) if force_installer => {}
-        Ok(()) => {
-            warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
-            let _ = app.emit(
-                "repair-progress",
-                "Update finished, but Unsloth is still not ready. Running bundled installer...",
-            );
-        }
+        Ok(()) => match managed_install_not_ready_after_repair().await {
+            None => {
+                info!("Managed repair complete after update");
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "success",
+                    None,
+                );
+                let _ = app.emit("repair-complete", ());
+                return Ok(());
+            }
+            Some(reason) => {
+                warn!(
+                    "Managed repair update finished, but preflight is still not ready ({}); falling back to installer",
+                    reason
+                );
+                let _ = app.emit(
+                    "repair-progress",
+                    "Update finished, but Unsloth is still not ready. Running bundled installer...",
+                );
+            }
+        },
         Err(msg) => {
             // A stop is the user quitting, not a broken install; running the installer would
             // half-build the venv.
@@ -1047,14 +1061,14 @@ pub async fn start_managed_repair(
         return Err(msg);
     }
 
-    if managed_install_ready_after_repair().await {
+    let Some(reason) = managed_install_not_ready_after_repair().await else {
         info!("Managed repair complete after installer");
         diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
         let _ = app.emit("repair-complete", ());
         return Ok(());
-    }
+    };
 
-    let msg = "Repair finished, but Unsloth install is still not desktop-ready.".to_string();
+    let msg = repair_not_ready_message(&reason);
     error!("{}", msg);
     diagnostics::finish_repair_group(
         &diagnostics_state,
@@ -1170,6 +1184,14 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Directory does not exist"));
     }
+    #[test]
+    fn a_repair_that_ends_not_ready_names_the_reason() {
+        assert_eq!(
+            super::repair_not_ready_message("studio_install_incomplete"),
+            "Repair finished, but Unsloth install is still not desktop-ready (studio_install_incomplete)."
+        );
+    }
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));

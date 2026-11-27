@@ -13,6 +13,7 @@ import {
   type SystemInfoStatus,
   vulkanRetryDelayMs,
 } from "./system-discovery";
+import type { RepairRecommendation } from "@/features/settings/components/repair-recommendation";
 
 export interface GpuDevice {
   index?: number;
@@ -28,7 +29,7 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** Host-backed part of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** Apple MLX only: Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
+  /** Apple only (MLX, or the "metal" GGUF inventory): Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
   metal_working_set_gb?: number | null;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
   gpu_utilization_pct?: number | null;
@@ -67,6 +68,10 @@ export interface SystemInfoResponse {
   nvfp4_diffusion?: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
   checkpoint_quant_formats?: string[];
+  /** Checkpoint kinds that load but run dequantized to 16-bit here ("fp8_rowwise"). Absent on older backends. */
+  checkpoint_quant_dequant_only?: string[];
+  /** Windows: an existing home older than the managed torch. Null or absent otherwise. */
+  repair_recommendation?: RepairRecommendation | null;
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
   /** GiB VRAM / GiB available RAM per lower-cased repo id. Absent on older backends. */
@@ -106,6 +111,8 @@ export interface SystemInfoResponse {
   gpu: SystemGpuInfo;
   /** Differs from `gpu` when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;
+  /** null where no counter reports the NPU (Linux, no supported NPU). */
+  npu_load_percent?: number | null;
   ml_packages: {
     torch?: string;
     transformers?: string;

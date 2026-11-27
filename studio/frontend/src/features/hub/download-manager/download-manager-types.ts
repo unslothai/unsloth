@@ -46,6 +46,8 @@ export interface ManagedDownload {
   downloadDir?: string | null;
   /** A failure kept in the panel for retry, no longer a live inventory row. */
   retained?: boolean;
+  /** Standalone Engram table fetched in place of the quant's own table shard. */
+  engramPrecision?: string | null;
 }
 
 export interface DownloadRequest {
@@ -62,6 +64,10 @@ export interface DownloadRequest {
   skipXetNotice?: boolean;
   /** Download to folder captured when the start was requested; null means the Models folder. */
   downloadDir?: string | null;
+  /** GGUF only: fetch this standalone Engram table instead of the quant's own table shard.
+   * `null` is the quant's own table; `undefined` means the caller does not know (an adoption then
+   * keeps the job's). */
+  engramPrecision?: string | null;
 }
 
 export interface DownloadPresentation {

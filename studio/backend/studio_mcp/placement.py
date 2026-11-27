@@ -163,6 +163,9 @@ def llm_fields(
         fields.update(gpu_memory_mode = "manual", gpu_layers = 0, speculative_type = "off")
     elif gpu_layers is not None:
         fields.update(gpu_memory_mode = "manual", gpu_layers = gpu_layers)
+    elif device == "gpu":
+        # Sent, so a saved CPU placement does not replace the GPU asked for.
+        fields["gpu_memory_mode"] = "auto"
     if alongside is not None:
         fields["alongside"] = alongside
     if kv_cache_type is not None:

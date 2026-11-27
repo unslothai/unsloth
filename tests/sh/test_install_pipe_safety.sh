@@ -34,8 +34,7 @@ fi
 
 echo "=== behaviour: an early exit must not kill the writer ==="
 
-# `--python` with no argument exits 1 before any work. PIPESTATUS must be read on the next
-# line, so drop errexit rather than appending `|| true`.
+# --python with no args exits 1 early; read PIPESTATUS next, so drop errexit, not add || true.
 set +e
 cat "$INSTALL_SH" | sh -s -- --python >/dev/null 2>&1
 _pipe=("${PIPESTATUS[@]}")

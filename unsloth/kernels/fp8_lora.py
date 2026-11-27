@@ -57,6 +57,13 @@ def reset_fp8_lora_stats():
         FP8_LORA_STATS[key] = 0
 
 
+def _count(key):
+    # Counts eager calls only: a traced increment mutates a guarded global and recompiles every call.
+    # The fp8 GEMM ops stay opaque under compile, so their own counts still run.
+    if not _compiling():
+        FP8_LORA_STATS[key] += 1
+
+
 _SCALING = os.environ.get("UNSLOTH_FP8_LORA_SCALING", "auto").strip().lower()
 _SCALING = {"rowwise": "row", "tensorwise": "tensor"}.get(_SCALING, _SCALING)
 if _SCALING not in ("auto", "row", "tensor"):
@@ -78,6 +85,80 @@ def _scaling_for(device):
     except Exception:
         pass
     return scaling_for_class(gpu_class)
+
+
+def _is_oom(exc) -> bool:
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(exc, oom)) or "out of memory" in str(exc).lower()
+
+
+def _cuda_context_ok(device) -> bool:
+    """After a failed probe GEMM: surface any error it left (synchronize), let a kernel launch check read and so
+    reset the last CUDA error, then confirm the context still runs work."""
+    if device.type != "cuda":
+        return True
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+    try:
+        return float(torch.ones(1, device = device).add_(1).item()) == 2.0
+    except Exception:
+        return False
+
+
+_ROWWISE_UNSUPPORTED = set()  # devices whose torch build has no row-wise _scaled_mm
+_ROWWISE_PROBED = {}
+
+
+def _note_rowwise_unsupported(device):
+    if device not in _ROWWISE_UNSUPPORTED:
+        _ROWWISE_UNSUPPORTED.add(device)
+        print(
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; row-scaled fp8 "
+            "GEMMs run on the tensorwise kernel there, with the scales applied in float32."
+        )
+
+
+def _probe_gemm(x, scale_a, scale_b):
+    out = _scaled_mm(x, x.t(), scale_a, scale_b, torch.bfloat16, False)
+    return bool((out == x.shape[1]).all())
+
+
+def rowwise_supported(device) -> bool:
+    """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one does not: any failure counts
+    ("Rowwise scaling is not currently supported on your device" on the Windows wheels, cuBLASLt
+    CUBLAS_STATUS_NOT_SUPPORTED on older ones, a wrong answer). One small GEMM pair per device, cached. No verdict
+    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards.
+    ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs (gfx1151, or fnuz-only MI300) fail its
+    tensorwise GEMM and give no verdict, so the answer always comes from the device."""
+    device = torch.device(device)
+    if device in _ROWWISE_UNSUPPORTED:
+        return False
+    verdict = _ROWWISE_PROBED.get(device)
+    if verdict is not None:
+        return verdict
+    try:
+        x = torch.ones((64, 128), device = device).to(E4M3)
+        one = torch.ones((), device = device, dtype = torch.float32)
+        if not _probe_gemm(x, one, one):
+            return True
+        rows = torch.ones((64, 1), device = device, dtype = torch.float32)
+    except Exception:  # no tensorwise fp8 GEMM either: nothing proven
+        _cuda_context_ok(device)
+        return True
+    try:
+        verdict = _probe_gemm(x, rows, rows.t())
+    except Exception as exc:
+        if _is_oom(exc):
+            return True
+        verdict = False
+    if not verdict:
+        if not _cuda_context_ok(device):
+            return True
+        _note_rowwise_unsupported(device)
+    _ROWWISE_PROBED[device] = verdict
+    return verdict
 
 
 def _env_dgrad():
@@ -346,25 +427,44 @@ _ROWWISE_BF16_ONLY = set()
 
 
 def _rowwise_ok(dtype, device) -> bool:
-    return dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY
+    return (
+        dtype != torch.float16 or device not in _ROWWISE_BF16_ONLY or device in _ROWWISE_UNSUPPORTED
+    )
+
+
+def _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum):
+    """A row-scaled GEMM on the tensorwise kernel (torch builds without the row-wise one, the Windows wheels): unit
+    scales and float32 out, as fp8_lora_accum runs it, then both scales in float32, rounded once to dtype."""
+    one = torch.ones((), device = a.device, dtype = torch.float32)
+    raw = _scaled_mm(a, b, one, one, torch.float32, fast_accum)
+    return raw.mul_(scale_a).mul_(scale_b).to(dtype)
 
 
 def _rowwise_scaled_mm(a, b, scale_a, scale_b, dtype, fast_accum):
-    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf."""
+    """None for fp16 when this device's rowwise GEMM refuses float32 out: bf16 would round 65504 to an inf. Without
+    a row-wise kernel at all, the unit-scale tensorwise GEMM keeps the row scaling."""
+    if a.device in _ROWWISE_UNSUPPORTED:
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
     out_dtype = _out_dtype(dtype)
-    if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
-        try:
-            return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
-        except (RuntimeError, ValueError) as exc:
-            if str(exc) not in (
-                "Only bf16 high precision output types are supported for row-wise scaling.",
-                "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
-            ):
-                raise
-            _ROWWISE_BF16_ONLY.add(a.device)
-    if dtype == torch.float16:
-        return None
-    return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    try:
+        if out_dtype == torch.float32 and a.device not in _ROWWISE_BF16_ONLY:
+            try:
+                return _scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum)
+            except (RuntimeError, ValueError) as exc:
+                if str(exc) not in (
+                    "Only bf16 high precision output types are supported for row-wise scaling.",
+                    "Only bf16 and fp16 high precision output types are supported for row-wise scaling.",
+                ):
+                    raise
+                _ROWWISE_BF16_ONLY.add(a.device)
+        if dtype == torch.float16:
+            return None
+        return _scaled_mm(a, b, scale_a, scale_b, torch.bfloat16, fast_accum)
+    except (RuntimeError, NotImplementedError):
+        # Never swallowed here: only the isolated probe can say the row-wise kernel is missing.
+        if rowwise_supported(a.device):
+            raise
+        return _unit_scale_mm(a, b, scale_a, scale_b, dtype, fast_accum)
 
 
 def _weight_scale(w_inv):
@@ -419,7 +519,7 @@ def _fwd_fake(x, w8, w_inv):
 def fp8_lora_fwd(x: torch.Tensor, w8: torch.Tensor, w_inv: torch.Tensor) -> torch.Tensor:
     """x [M, K] (16-bit) @ dequant(w8 [N, K]).T -> [M, N] in x.dtype. w_inv: 0-d (tensorwise activations) or
     [1, N] (rowwise activations: the weight's tensorwise scale per output column)."""
-    FP8_LORA_STATS["fwd"] += 1
+    _count("fwd")
     out = None
     if w_inv.dim() == 2 and _rowwise_ok(x.dtype, x.device):
         x8, x_inv = quantize_rowwise(x, E4M3)
@@ -443,7 +543,7 @@ def fp8_lora_dgrad(
     """dy [M, N] (16-bit) @ dequant(W [N, K]) -> dx [M, K] in dy.dtype. w8 is the cached K-major copy [K, N]
     (w_is_t) or the forward copy [N, K], transposed here by the square-tile kernel inside the op, never by an
     Inductor-generated fp8 transpose (those write corrupt bytes for non-square tile configs on sm89)."""
-    FP8_LORA_STATS["dgrad"] += 1
+    _count("dgrad")
     w8t = w8 if w_is_t else fp8_transpose(w8)
     out = None
     if w_inv.dim() == 2 and _rowwise_ok(dy.dtype, dy.device):
@@ -536,7 +636,7 @@ def fp8_lora_accum(
     backward: bool,
     transpose_weight: bool,
 ) -> torch.Tensor:
-    FP8_LORA_STATS["dgrad" if backward else "fwd"] += 1
+    _count("dgrad" if backward else "fwd")
     if transpose_weight:
         w8 = fp8_transpose(w8)
     if w_inv.dim() == 2:
@@ -643,7 +743,7 @@ class Fp8LoRABaseState:
         self.dtype = weight.dtype
         self._key = key
         self.quantizations += 1
-        FP8_LORA_STATS["quantize"] += 1
+        _count("quantize")
         return self
 
     def _dgrad_weight(self):
@@ -740,7 +840,7 @@ class Fp8LoRABaseState:
         shape = X.shape
         X2 = X.reshape(-1, shape[-1])
         if not self._use_fp8(X2):
-            FP8_LORA_STATS["fwd_16bit"] += 1
+            _count("fwd_16bit")
             result = torch.matmul(X2, self._dense(W).t().to(X2.dtype))
         elif _is_transposed(W):
             result = self.dgrad(X2, W.t())
@@ -788,7 +888,7 @@ class Fp8LoRABaseState:
         shape = dY.shape
         dY2 = dY.reshape(-1, shape[-1])
         if _DGRAD_DTYPE is None or not self._use_fp8(dY2):
-            FP8_LORA_STATS["dgrad_16bit"] += 1
+            _count("dgrad_16bit")
             if W is None and not self.offloaded:
                 raise RuntimeError("Unsloth: 16-bit dgrad needs the base weight")
             result = torch.matmul(dY2, self._dense(W).to(dY2.dtype))
@@ -822,7 +922,7 @@ class _Fp8FrozenLinear(torch.autograd.Function):
         shape = dy.shape
         dy2 = dy.reshape(-1, shape[-1])
         if _DGRAD_DTYPE is None:
-            FP8_LORA_STATS["dgrad_16bit"] += 1
+            _count("dgrad_16bit")
             dx = torch.matmul(dy2, weight.to(dy2.dtype))
         else:
             dx = fp8_lora_dgrad(dy2, w8t, w_inv, ctx.w_is_t)
@@ -833,7 +933,7 @@ def _fp8_base_forward(self, x):
     state = self.__dict__.get("_unsloth_fp8_lora")
     weight = self.weight
     if state is None or weight.requires_grad or not state._use_fp8(x.reshape(-1, x.shape[-1])):
-        FP8_LORA_STATS["fwd_16bit"] += 1
+        _count("fwd_16bit")
         if state is not None and state.offloaded:
             if weight.requires_grad:  # unfrozen: train the exact weight
                 state.restore(self)
