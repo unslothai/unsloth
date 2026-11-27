@@ -46,9 +46,8 @@ def test_a_listed_model_does_not_fail_on_the_known_disagreement():
 
 
 def test_a_listed_model_that_starts_AGREEING_fails():
-    """The strict half, and the reason this is not a mute. Agreement in bf16
-    means a kernel or the stack changed, and CI says so instead of carrying a
-    stale expectation."""
+    """A listed model that starts agreeing in bf16 means a kernel or the stack changed, so CI must
+    fail and say to delete the entry rather than carry a stale expectation."""
     agreeing = _record(agrees = {"2": True, "4": True, "8": True})
     broken = batched_generation_failures(agreeing, "unsloth/Qwen3.5-2B")
     assert broken, "a fixed upstream bug must turn the leg red"
@@ -56,9 +55,7 @@ def test_a_listed_model_that_starts_AGREEING_fails():
 
 
 def test_a_listed_model_still_fails_every_other_rule():
-    """The entry excuses ONE claim. A right-padded batch, an unpadded batch or
-    an empty output is still a failure, and those are exactly what make the
-    disagreement meaningful rather than an artefact."""
+    """A listed model excuses only batched-generation disagreement; other rules still fail."""
     for over, expect in (
         ({"padding_side_after": "right"}, "padding_side_after"),
         ({"distinct_lengths": 1}, "nothing was ever padded"),
@@ -79,8 +76,7 @@ def test_every_entry_names_the_issue_it_is_waiting_on():
 
 
 def test_the_list_is_short_and_explicit():
-    """A growing list is the signal that this mechanism is being used to make
-    reds go away rather than to carry one filed bug."""
+    """Growing list means the mechanism is silencing failures, not carrying one filed bug."""
     assert len(KNOWN_BATCHED_GENERATION_BREAKAGE) <= 3, (
         "if this list is growing, the mechanism is being used to silence "
         "failures rather than to hold one filed upstream bug"

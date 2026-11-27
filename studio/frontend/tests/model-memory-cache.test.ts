@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The response carries runtime state that goes stale as soon as a model is
-// loaded, so the module coalesces concurrent reads but never caches. Saving it
-// must also drop the auto-switch cache, whose idle TTL residency vetoes.
+// Runtime state goes stale on load, so reads coalesce but never cache.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -11,8 +9,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-// The settings API modules reach authFetch through the auth barrel, which
-// re-exports login-page.tsx. See helpers/auth-stub.mjs.
+// Settings API modules reach authFetch via a barrel that re-exports login-page.tsx.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 installLocalStorageFake();
 
@@ -85,9 +82,6 @@ test("concurrent reads share one request", async () => {
 });
 
 test("a 404 is an absent route, not a failed read", async () => {
-  // The resident-model shortcut treats the two oppositely: an older backend has no such
-  // setting to disagree about, while a read that could not be made says nothing, and
-  // assuming it said no is how a saved policy goes missing.
   calls = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async () =>
@@ -112,14 +106,10 @@ test("a 404 is an absent route, not a failed read", async () => {
 });
 
 test("a forced read does not join one already in flight", async () => {
-  // Sharing is right for two panels painting the same answer and wrong for the
-  // resident-model shortcut: a read that started before a policy save describes the
-  // policy it replaced, and a reloadRequired false from that would suppress the very
-  // load the save was made for.
+  // A read started before a policy save describes the old policy, so it must not be shared.
   calls = [];
   const joined = loadModelMemorySettings();
-  // The fake snapshots the body when the request goes out, so the second GET carries the
-  // saved policy and the first still carries the one it replaced.
+  // The fake snapshots the body when the request goes out, so only the second GET sees this.
   nextBody = { ...API, reload_required: true };
   const forced = loadModelMemorySettings({ force: true });
   assert.equal(calls.length, 2, "the forced read must issue its own GET");
@@ -138,9 +128,7 @@ test("a forced read does not join one already in flight", async () => {
 });
 
 test("a displaced read neither publishes nor frees the slot", async () => {
-  // Forcing replaces an in-flight read, and that older request is still running. It
-  // describes the state its replacement was issued because of, so it must not repaint
-  // subscribers, and it must not clear a sharing handle it no longer owns.
+  // A displaced in-flight read must not repaint subscribers or clear a handle it no longer owns.
   const original = globalThis.fetch;
   const pending: ((body: Record<string, unknown>) => void)[] = [];
   let issued = 0;
@@ -167,7 +155,6 @@ test("a displaced read neither publishes nor frees the slot", async () => {
     const forced = loadModelMemorySettings({ force: true });
     assert.equal(issued, 2);
 
-    // The displaced request lands first, while its replacement is still in flight.
     pending[0]({ ...API, reload_required: false });
     assert.equal(
       await displaced,
@@ -181,7 +168,6 @@ test("a displaced read neither publishes nor frees the slot", async () => {
       "a superseded read must not repaint subscribers",
     );
 
-    // The slot still belongs to the forced read, so a new caller joins it.
     const joiner = loadModelMemorySettings();
     assert.equal(issued, 2, "the displaced read freed a slot it did not own");
 
@@ -221,7 +207,6 @@ test("a failed read does not wedge the in-flight slot", async () => {
   }) as typeof fetch;
   await assert.rejects(loadModelMemorySettings());
   globalThis.fetch = original;
-  // The next caller must get a fresh request rather than the rejected promise.
   const after = await loadModelMemorySettings();
   assert.equal(after.keepResident, false);
 });
@@ -258,9 +243,7 @@ test("subscribers receive every published value", async () => {
 });
 
 test("saving model memory drops the auto-switch cache", async () => {
-  // idle_unload_active is vetoed by residency, so the other endpoint's cached
-  // copy is wrong the moment this one is written. hub-page reads it on every
-  // status poll, so a stale value survives for the life of the page.
+  // Residency vetoes idle_unload_active, so the other endpoint's cache goes stale on write.
   const first = await autoSwitch.loadOpenAIAutoSwitchSettings();
   assert.ok(first);
   calls = [];
@@ -274,14 +257,11 @@ test("saving model memory drops the auto-switch cache", async () => {
 });
 
 test("a read invalidated in flight returns the post-write value, not the stale one", async () => {
-  // hub-page puts this straight into idleUnloadArmed, so handing back a
-  // response that predates the write is as bad as caching it.
   autoSwitch.invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, idle_unload_active: true };
   release = () => {};
   const pending = autoSwitch.loadOpenAIAutoSwitchSettings();
 
-  // Land the invalidation, and the new value, while that response is in flight.
   autoSwitch.invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, idle_unload_active: false };
   const resume = release;
@@ -295,7 +275,6 @@ test("a read invalidated in flight returns the post-write value, not the stale o
     "the read must have been retried against the new generation",
   );
 
-  // And the retry's value is the one that got cached.
   calls = [];
   const again = await autoSwitch.loadOpenAIAutoSwitchSettings();
   assert.equal(calls.length, 0);
@@ -303,10 +282,7 @@ test("a read invalidated in flight returns the post-write value, not the stale o
 });
 
 test("a caller arriving after the invalidation does not adopt the pre-write read", async () => {
-  // The retry above covers the caller that started before the write. One that
-  // arrives after it must not share that same GET either: the reply predates the
-  // write, and the hub poll puts it straight into idleUnloadArmed, where
-  // "disarmed" clears the user's selected checkpoint.
+  // A post-write caller must not share the pre-write GET; "disarmed" clears the checkpoint.
   autoSwitch.invalidateOpenAIAutoSwitchSettings();
   nextBody = { ...API, idle_unload_active: true };
   release = () => {};

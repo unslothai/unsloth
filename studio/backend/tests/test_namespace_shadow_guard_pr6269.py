@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verification tests for PR #6269 (namespace-shadow guard).
-
-`ensure_real_packages` (core/import_guards.py) drops namespace-package
-shadow dirs (a `unsloth`/`unsloth_zoo` dir with no __init__.py on sys.path)
-before `from unsloth import ...`. Order matters: `unsloth.__init__` runs its
-ROCm/Windows bnb fixes before importing unsloth_zoo, so the guard must import
-unsloth first. Each test runs the real guard (ast-extracted from source, no
-GPU/torch) in a subprocess, with fake packages reachable only via a meta path
-finder to mimic an editable/PEP 660 install where the shadow wins.
-
-Originally defined in core/training/trainer.py; extracted to the shared
-core/import_guards.py so the inference, export and embedding workers reuse it.
-"""
+"""Import unsloth before unsloth_zoo: unsloth's __init__ applies ROCm/Windows fixes first."""
 
 import json
 import os
@@ -27,9 +15,7 @@ import pytest
 GUARD_PY = Path(__file__).resolve().parents[1] / "core" / "import_guards.py"
 
 
-# ── fake package bodies ──────────────────────────────────────────────
-# Real `unsloth` sets a sentinel (mimics _gpu_init's pre-zoo fixes) then
-# imports unsloth_zoo, which records whether that sentinel was set first.
+# Real unsloth sets a sentinel then imports unsloth_zoo, which records if it was set first.
 
 _REAL_UNSLOTH_INIT = textwrap.dedent(
     """
@@ -54,10 +40,6 @@ _REAL_ZOO_INIT = textwrap.dedent(
     """
 )
 
-
-# ── subprocess driver ────────────────────────────────────────────────
-# Reads a JSON config, rebuilds sys.path / sys.meta_path to model the
-# scenario, runs the real guard, and writes the observed result as JSON.
 
 _DRIVER = textwrap.dedent(
     """
@@ -178,13 +160,10 @@ def _run(
     env["GUARD_ORDER_FILE"] = str(order_file)
     env["GUARD_SENTINEL_FILE"] = str(sentinel_file)
     env.pop("UNSLOTH_GPU_INIT_RAN", None)
-    # Drop PYTHONPATH too so nothing re-introduces the real packages onto the
-    # path; -S already keeps site-packages off.
     env.pop("PYTHONPATH", None)
 
     proc = subprocess.run(
-        # -S: skip site-packages so the installed unsloth_zoo can't shadow-beat
-        # the namespace portion; the real package is served by the meta finder.
+        # -S: keep site-packages' unsloth_zoo from beating the namespace portion.
         [sys.executable, "-S", str(driver), str(cfg_path)],
         env = env,
         capture_output = True,
@@ -197,12 +176,8 @@ def _run(
     return json.loads(out.read_text())
 
 
-# ── scenarios ────────────────────────────────────────────────────────
-
-
 def test_only_zoo_shadowed_imports_unsloth_first(tmp_path):
-    """Core concern: a unsloth_zoo shadow must not make the guard import
-    unsloth_zoo before unsloth -- that would skip _gpu_init's pre-zoo fixes."""
+    """Importing unsloth_zoo before unsloth would skip _gpu_init's pre-zoo fixes."""
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth_zoo")
     res = _run(tmp_path, shadow_roots = [shadow], real = True)
@@ -243,7 +218,7 @@ def test_healthy_install_is_noop(tmp_path):
     res = _run(tmp_path, shadow_roots = [], real = True)
 
     assert res["error"] is None
-    assert res["order"] == [], res  # guard short-circuits before importing
+    assert res["order"] == [], res
     assert res["path_restored"], res
 
 
@@ -253,7 +228,7 @@ def test_real_package_absent_surfaces_module_not_found(tmp_path):
     res = _run(tmp_path, shadow_roots = [shadow], real = False)
 
     assert res["error"] == "ModuleNotFoundError", res
-    assert res["path_restored"], res  # restored even on failure
+    assert res["path_restored"], res
 
 
 def test_multiple_shadow_entries_all_removed(tmp_path):
@@ -264,8 +239,7 @@ def test_multiple_shadow_entries_all_removed(tmp_path):
     res = _run(tmp_path, shadow_roots = [shadow_a, shadow_b], real = True)
 
     assert res["error"] is None
-    # if only one offending entry were dropped, zoo would still resolve to a
-    # namespace shadow and unsloth_zoo_real would be False
+    # dropping only one offending entry would still leave zoo a namespace shadow
     assert res["unsloth_zoo_real"], res
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
     assert res["path_restored"], res

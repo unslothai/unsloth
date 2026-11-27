@@ -36,7 +36,7 @@ def _wav(frames = 4410, fill = b"\x01\x00") -> bytes:
 def _float_wav(frames, channels = 2) -> bytes:
     data = b"\x00\x00\x00\x00" * frames * channels
     fmt = struct.pack("<HHIIHH", 3, channels, RATE, RATE * channels * 4, channels * 4, 32)
-    fmt += struct.pack("<H", 0)  # cbSize: an 18-byte fmt chunk
+    fmt += struct.pack("<H", 0)
     body = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
     body += b"data" + struct.pack("<I", len(data)) + data
     return b"RIFF" + struct.pack("<I", len(body)) + body
@@ -57,6 +57,23 @@ def _answer(tmp_path, payload):
 
 def _stems(ids):
     return [{"id": i, "audio": _b64(_wav()), "sample_rate": RATE, "channels": 2} for i in ids]
+
+
+def test_an_s2s_answer_is_saved_under_its_one_id_and_refused_without_one(tmp_path):
+    path, out = _answer(tmp_path, {"audio": _b64(_wav()), "sample_rate": RATE, "channels": 2})
+    with pytest.raises(SeparationOutputError):
+        extract_named_outputs(path, out)
+    (output,) = extract_named_outputs(path, out, single_id = "voice")
+    assert (output["id"], output["path"]) == ("voice", str(out / "voice.wav"))
+    assert (output["sample_rate"], output["channels"], output["duration_s"]) == (RATE, 2, 0.1)
+
+
+def test_named_outputs_win_over_the_single_id(tmp_path):
+    path, out = _answer(
+        tmp_path, {"audio": _b64(_wav()), "named_audio_outputs": _stems(["speaker_1", "speaker_2"])}
+    )
+    ids = [o["id"] for o in extract_named_outputs(path, out, single_id = "voice")]
+    assert ids == ["speaker_1", "speaker_2"]
 
 
 def test_stem_ids_differing_only_by_case_get_their_own_files(tmp_path):
@@ -197,7 +214,6 @@ def test_duplicate_and_unsafe_ids_become_safe_unique_names(tmp_path):
 
 
 def test_a_large_answer_decodes_in_bounded_memory(tmp_path):
-    # Two ~30 MB base64 stems (~46 MB of audio): never held whole in memory.
     frames = 5_700_000
     stem = _wav(frames, fill = b"\x12\x34")
     encoded = base64.b64encode(stem)

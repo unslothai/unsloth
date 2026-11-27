@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 
 import pytest
@@ -18,9 +17,8 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo rank
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def test_grpo_training_step_averages_gradients_like_ddp():

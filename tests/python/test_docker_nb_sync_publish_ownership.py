@@ -191,11 +191,8 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     reason = "needs POSIX mode bits, and root holds CAP_DAC_OVERRIDE, so a read-only marker does not stop the write",
 )
 def test_a_marker_the_user_cannot_truncate_is_still_advanced(tmp_path: Path):
-    """A root boot leaves the marker root-owned 0644 inside a directory the host user
-    owns. A later --user boot renames the state into place fine but `> marker` fails
-    on the truncate, so the refresh reported success while the marker stayed behind
-    and every start after that re-synced every notebook. Modelled here with a
-    read-only marker, which fails the same open(O_TRUNC)."""
+    """A root-owned marker that a --user boot cannot truncate must still be advanced, or every start
+    re-syncs every notebook; modelled with a read-only marker, which fails open(O_TRUNC)."""
     template, dest, remote = _world(tmp_path)
     synced = dest / ".unsloth_sync_commit"
     synced.write_text("stale\n", encoding = "utf-8")
@@ -387,9 +384,8 @@ def test_an_existing_notebook_still_inherits_from_the_file_not_the_directory(tmp
 
 
 def test_both_template_copies_hand_the_file_to_the_host_user():
-    """The sibling guard: populate and restore both `cp -a` from the template,
-    which preserves its root:root 0644, so each needs the ownership fix. Fixing
-    the publish path alone is how this class of bug keeps coming back."""
+    """Populate and restore both cp -a from the template, preserving its root:root 0644, so each
+    needs the ownership fix; fixing only the publish path lets this bug recur."""
     source = SYNC_SH.read_text(encoding = "utf-8")
     copies = [
         i

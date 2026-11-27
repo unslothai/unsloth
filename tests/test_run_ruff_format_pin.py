@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Use the ruff .pre-commit-config.yaml pins or refuse; ruff output changes between releases."""
+"""Use the ruff-unsloth .pre-commit-config.yaml pins or refuse; its output changes between releases."""
 
 from __future__ import annotations
 
@@ -22,8 +22,19 @@ from run_ruff_format import (  # noqa: E402
     installed_ruff_version,
     main,
     parse_files,
+    pinned_requirements,
     pinned_ruff_version,
     version_mismatch,
+)
+
+_URL = "https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/"
+_LINUX = (
+    f'"ruff-unsloth @ {_URL}ruff_unsloth-0.6.9.post1-py3-none-manylinux_2_17_x86_64.whl'
+    "#sha256=00 ; sys_platform == 'linux'\""
+)
+_MAC = (
+    f'"ruff-unsloth @ {_URL}ruff_unsloth-0.6.9.post1-py3-none-macosx_11_0_arm64.whl'
+    "#sha256=11 ; sys_platform == 'darwin'\""
 )
 
 
@@ -32,27 +43,39 @@ class TestReadingThePin:
         assert CONFIG.exists()
         assert pinned_ruff_version(CONFIG.read_text(encoding = "utf-8"))
 
+    def test_the_repo_lists_a_wheel_per_platform(self):
+        requirements = pinned_requirements(CONFIG.read_text(encoding = "utf-8"))
+        assert len(requirements) >= 2
+        assert all("#sha256=" in r and " ; " in r for r in requirements), requirements
+
     @pytest.mark.parametrize(
         "text, expected",
         [
-            ("        additional_dependencies:\n          - ruff==0.6.9\n", "0.6.9"),
-            ("  - ruff == 0.6.9\n", "0.6.9"),
-            ("  - ruff==0.6.9  # keep in step with the formatter\n", "0.6.9"),
-            ("  - ruff==0.12.0rc1\n", "0.12.0rc1"),
+            (f"        additional_dependencies:\n          - {_LINUX}\n", "0.6.9.post1"),
+            (f"  - {_LINUX}\n  - {_MAC}\n", "0.6.9.post1"),
+            (f"  - {_LINUX}  # keep in step with the formatter\n", "0.6.9.post1"),
+            ("  - ruff-unsloth==0.6.9.post2\n", "0.6.9.post2"),
+            ("  - ruff-unsloth == 0.6.9.post2 ; sys_platform == 'linux'\n", "0.6.9.post2"),
         ],
     )
     def test_the_spellings_a_config_may_use(self, text, expected):
         assert pinned_ruff_version(text) == expected
+
+    def test_the_requirement_lines_come_back_installable(self):
+        # The quotes are YAML's, not part of the requirement pip is handed.
+        assert pinned_requirements(f"  - {_LINUX}\n") == [_LINUX.strip('"')]
+
+    def test_stock_ruff_is_not_the_pin(self):
+        # The lint hook's ruff is a different tool; only ruff-unsloth formats.
+        assert pinned_ruff_version("  - ruff==0.6.9\n") is None
 
     def test_no_pin_is_not_a_mismatch(self):
         assert pinned_ruff_version("repos:\n  - repo: local\n") is None
         assert version_mismatch(None, "0.16.6") is False
 
     def test_two_different_pins_answer_nothing(self):
-        assert pinned_ruff_version("  - ruff==0.6.9\n  - ruff==0.9.0\n") is None
-
-    def test_the_same_pin_twice_is_still_one_answer(self):
-        assert pinned_ruff_version("  - ruff==0.6.9\n  - ruff==0.6.9\n") == "0.6.9"
+        text = f"  - {_LINUX}\n  - ruff-unsloth==0.6.9.post2\n"
+        assert pinned_ruff_version(text) is None
 
 
 class TestTheMismatchRule:
@@ -130,15 +153,15 @@ class TestRuffHasToBeRunnableFirst:
         )
         assert main([str(target)]) == 1
         err = capsys.readouterr().err
-        assert "pip install ruff==" in err
+        assert "ruff-unsloth" in err and "additional_dependencies" in err
         assert pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) in err
 
 
 class TestRefusing:
     @staticmethod
     def _fake_ruff(tmp_path: Path, version: str) -> str:
-        """A python whose `-m ruff --version` answers `version` and formats nothing."""
-        pkg = tmp_path / "ruff"
+        """A python whose `-m ruff_unsloth --version` answers `version` and formats nothing."""
+        pkg = tmp_path / "ruff_unsloth"
         pkg.mkdir()
         (pkg / "__init__.py").write_text("")
         (pkg / "__main__.py").write_text(
@@ -149,7 +172,7 @@ class TestRefusing:
         shim.write_text(
             "import runpy, sys\n"
             f"sys.path.insert(0, {str(tmp_path)!r})\n"
-            "runpy.run_module('ruff', run_name='__main__')\n",
+            "runpy.run_module('ruff_unsloth', run_name='__main__')\n",
             encoding = "utf-8",
         )
         return str(shim)
@@ -172,7 +195,7 @@ class TestRefusing:
 
     @pytest.mark.skipif(
         installed_ruff_version() is None,
-        reason = "this one really runs the formatter, and ruff is not installed here",
+        reason = "this one really runs the formatter, and ruff-unsloth is not installed here",
     )
     def test_the_override_lets_it_through(self, tmp_path, monkeypatch):
         # Skipped without ruff: main() forwards the formatter's exit code, unrelated to the gate.
@@ -181,7 +204,7 @@ class TestRefusing:
         monkeypatch.setattr("run_ruff_format.installed_ruff_version", lambda *a, **k: "9.9.9")
         monkeypatch.setenv(ANY_VERSION_ENV, "1")
         assert main([str(target)]) == 0
-        # The post-pass is what puts the spaces in, so this proves it ran.
+        # ruff-unsloth is what puts the spaces in, so this proves it ran.
         assert target.read_text(encoding = "utf-8") == "x = f(a = 1)\n"
 
     def test_no_files_is_rejected_before_the_version_is_consulted(self, monkeypatch):

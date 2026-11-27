@@ -17,17 +17,16 @@ export async function saveAudio(
   load: (() => Promise<Blob>) | null,
 ): Promise<void> {
   try {
+    let savedFileName: string | undefined;
     if (load && (!url || (isTauri && url.startsWith("blob:")))) {
       const blob = await load();
-      if (isTauri) {
-        await downloadBlobStreaming(blob, filename);
-      } else {
-        await downloadFile(blob, filename, blob.type || "audio/wav");
-      }
+      savedFileName = isTauri
+        ? await downloadBlobStreaming(blob, filename)
+        : await downloadFile(blob, filename, blob.type || "audio/wav");
     } else if (url) {
-      await downloadUrl(url, filename);
+      savedFileName = await downloadUrl(url, filename);
     }
-    if (isTauri) toast.success("Audio saved", { description: filename });
+    if (savedFileName !== undefined) toast.success("Audio saved", { description: savedFileName });
   } catch (error) {
     if (isDownloadCancelled(error)) return;
     toast.error("Could not save audio", {

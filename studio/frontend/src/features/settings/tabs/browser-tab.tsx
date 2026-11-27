@@ -26,6 +26,7 @@ import {
   canScreenshot,
   exportBookmarksFile,
   importBookmarksFile,
+  importHistoryFile,
   nativeDownloadFolder,
   pickNativeDownloadFolder,
   resetNativeDownloadFolder,
@@ -39,13 +40,15 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
-import { BrowserAgentSettings } from "./browser-agent-settings";
+import { BROWSER_USE_DOCS_URL, BrowserAgentSettings } from "./browser-agent-settings";
+import { BrowserCaptureSettings } from "./browser-capture-settings";
 
 const RETENTION_LABELS: Record<number, TranslationKey> = {
   0: "browser.retention.forever",
@@ -83,7 +86,7 @@ function DownloadLocationRow() {
     >
       <div className="flex gap-2">
         {folder?.custom ? (
-          <Button variant="ghost" size="sm" onClick={reset}>
+          <Button variant="outline" size="sm" onClick={reset}>
             {t("browser.downloadLocationReset")}
           </Button>
         ) : null}
@@ -106,7 +109,7 @@ function DownloadSiteRows() {
       description={t("browser.downloadSitesSettingDescription")}
       below={
         origins.length > 0 ? (
-          <ul className="flex w-full flex-col divide-y divide-border/60 rounded-lg border border-border/80">
+          <ul className="flex w-full flex-col divide-y divide-border/60 rounded-xl border border-border/80">
             {origins.map((origin) => (
               <li key={origin} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
                 <span className="min-w-0 flex-1 truncate text-sm text-foreground">{origin}</span>
@@ -119,6 +122,7 @@ function DownloadSiteRows() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allow">{t("browser.downloadSiteAllow")}</SelectItem>
+                    <SelectItem value="allowAll">{t("browser.downloadSiteAllowAll")}</SelectItem>
                     <SelectItem value="block">{t("browser.downloadSiteBlock")}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -162,6 +166,7 @@ export function BrowserTab() {
   const saveDownloadHistory = useBrowserPrefsStore((state) => state.saveDownloadHistory);
   const askWhereToSave = useBrowserPrefsStore((state) => state.askWhereToSave);
   const askBeforeDownloading = useBrowserPrefsStore((state) => state.askBeforeDownloading);
+  const askBeforeProgramDownloads = useBrowserPrefsStore((state) => state.askBeforeProgramDownloads);
   const annotationScreenshots = useBrowserPrefsStore((state) => state.annotationScreenshots);
   const {
     setOpenLinksInBrowser,
@@ -180,10 +185,12 @@ export function BrowserTab() {
     setSaveDownloadHistory,
     setAskWhereToSave,
     setAskBeforeDownloading,
+    setAskBeforeProgramDownloads,
     setAnnotationScreenshots,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
   const importInput = useRef<HTMLInputElement | null>(null);
+  const historyImportInput = useRef<HTMLInputElement | null>(null);
   const percent = useMemo(
     () => new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }),
     [locale],
@@ -199,6 +206,16 @@ export function BrowserTab() {
       else toast.success(t(count === 1 ? "browser.importBookmarksDoneOne" : "browser.importBookmarksDoneMany", { count }));
     } catch {
       toast.error(t("browser.importBookmarksFailed"));
+    }
+  };
+  const importHistory = async (file: File) => {
+    try {
+      const { added: count, leftOut } = await importHistoryFile(file);
+      if (leftOut > 0) toast.warning(t("browser.importHistoryPartial", { count, leftOut }));
+      else if (count === 0) toast.info(t("browser.importHistoryNone"));
+      else toast.success(t(count === 1 ? "browser.importHistoryDoneOne" : "browser.importHistoryDoneMany", { count }));
+    } catch {
+      toast.error(t("browser.importHistoryFailed"));
     }
   };
   const exportBookmarks = () =>
@@ -229,7 +246,20 @@ export function BrowserTab() {
   return (
     <div className="settings-page">
       <header className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1 className="text-xl font-semibold font-heading">{t("browser.settingsTitle")}</h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={BROWSER_USE_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("browser.agentSettings.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("browser.agentSettings.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
       </header>
 
       <BrowserAgentSettings />
@@ -477,6 +507,16 @@ export function BrowserTab() {
             onCheckedChange={setAskBeforeDownloading}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("browser.askBeforeProgramDownloadsSetting")}
+          description={t("browser.askBeforeProgramDownloadsSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.askBeforeProgramDownloadsSetting")}
+            checked={askBeforeProgramDownloads}
+            onCheckedChange={setAskBeforeProgramDownloads}
+          />
+        </SettingsRow>
         <DownloadSiteRows />
         <SettingsRow
           label={t("browser.saveDownloadHistorySetting")}
@@ -497,6 +537,8 @@ export function BrowserTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      {isTauri ? <BrowserCaptureSettings /> : null}
 
       <SettingsSection title={t("browser.browsingDataTitle")}>
         <SettingsRow
@@ -530,6 +572,25 @@ export function BrowserTab() {
           </Select>
         </SettingsRow>
         <SettingsRow
+          label={t("browser.importHistorySetting")}
+          description={t("browser.importHistorySettingDescription")}
+        >
+          <Button variant="outline" size="sm" onClick={() => historyImportInput.current?.click()}>
+            {t("browser.importHistory")}
+          </Button>
+          <input
+            ref={historyImportInput}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importHistory(file);
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("browser.historySetting")}
           description={t(canOpenPages ? "browser.historySettingDescription" : "browser.pagesFromChat")}
         >
@@ -543,7 +604,8 @@ export function BrowserTab() {
             native ? "browser.native.clearDataSettingDescription" : "browser.clearDataSettingDescription",
           )}
         >
-          <Button variant="outline" size="sm" onClick={() => setClearOpen(true)}>
+          <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} data-icon="inline-start" />
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>

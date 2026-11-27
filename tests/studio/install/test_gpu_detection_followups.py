@@ -1,6 +1,8 @@
 """GPU-detection follow-ups to PR 6174: NVIDIA precedence + /proc/driver/nvidia/gpus fallback ported to install_llama_prebuilt.py and setup.sh. Mocks/source-level only, no GPU."""
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,6 +25,28 @@ detect_host = prebuilt_mod.detect_host
 _apply_host_overrides = prebuilt_mod._apply_host_overrides
 
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+
+def _usable_bash():
+    # On Windows a bare which() can find System32's WSL bash.exe with no distro behind it.
+    exe = shutil.which("bash")
+    if exe is None:
+        return None
+    try:
+        probe = subprocess.run(
+            [exe, "-c", "printf ok"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            errors = "replace",
+            timeout = 60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return exe if probe.stdout.strip() == "ok" else None
+
+
+BASH = _usable_bash()
 
 
 def _make_run_capture(rocminfo_stdout: str = ""):
@@ -452,9 +476,8 @@ class TestHiddenCvdNotUsable:
 
 
 class TestSetupShPhysicalNvidiaSurvivesTheMask:
-    """The nvcc source-build search is gated on this probe, so it has to answer true under
-    a mask that makes the usable probe answer false. Gated on usable, a masked host
-    compiled a CPU-only binary and activated it over the tree permanently."""
+    """The nvcc source-build search must gate on the physical NVIDIA probe, which stays true under
+    any mask; gating on usable let a masked host activate a CPU-only binary."""
 
     @pytest.mark.parametrize("cvd", [None, "", "-1", "0"])
     def test_the_physical_probe_ignores_every_mask(self, tmp_path, cvd):
@@ -468,6 +491,7 @@ class TestSetupShPhysicalNvidiaSurvivesTheMask:
         assert out == "usable"
 
 
+@pytest.mark.skipif(BASH is None, reason = "a working bash is required")
 class TestSetupShSourceBuildBackendChoice:
     """Masked NVIDIA is tried after ROCm, so it cannot take the build from a visible AMD GPU."""
 
@@ -485,7 +509,14 @@ class TestSetupShSourceBuildBackendChoice:
         src = SETUP_SH.read_text(encoding = "utf-8")
         start = src.index("_select_nvcc() {")
         end = src.index('_BUILD_DESC="building"', start)
-        body = src[start:end]
+        # The toolkit fallbacks probe fixed install paths; a real ROCm / CUDA host has them, so point
+        # them somewhere empty and let the command stub alone decide what is installed.
+        missing = (tmp_path / "missing").as_posix()
+        body = (
+            src[start:end]
+            .replace("/opt/rocm", f"{missing}/opt/rocm")
+            .replace("/usr/local/cuda", f"{missing}/usr/local/cuda")
+        )
         script = tmp_path / "decide.sh"
         script.write_text(
             "#!/bin/bash\n"
@@ -500,7 +531,7 @@ class TestSetupShSourceBuildBackendChoice:
             'echo "${GPU_BACKEND:-cpu}"\n'
         )
         return sp.run(
-            ["bash", str(script)], capture_output = True, text = True, timeout = 30
+            [BASH, str(script)], capture_output = True, text = True, timeout = 30
         ).stdout.strip()
 
     @pytest.mark.parametrize(

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
-
-A protected step dequantises to a transient bf16 weight; the counter wraps ``pipe.scheduler.step``.
-The set must be MEASURED per model (a copied set did worse than none), so it is off unless named.
-"""
+"""Denoise steps that run W4A16 instead of W4A4; NVFP4 models default to ``auto`` on sm_100-class cards, else off."""
 
 from __future__ import annotations
 
@@ -19,6 +15,10 @@ PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
+# Only per-model controllers get it: the global one stays unarmed so non-NVFP4 graph keys and logs are unchanged.
+DEFAULT_MODEL_SPEC = AUTO
+# B200 measured auto accuracy-positive for +0.7-2.6% time; sm_120 cost +2.5-17% with no LPIPS interval clear of zero.
+DEFAULT_CAPABILITY_MAJOR = 10
 
 ALL = "all"
 
@@ -28,6 +28,41 @@ _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
 def protect_steps_env() -> str:
     raw = os.environ.get(PROTECT_STEPS_ENV, "").strip().lower()
     return "" if raw in _OFF_TOKENS else raw
+
+
+def protect_steps_explicit() -> bool:
+    return bool(os.environ.get(PROTECT_STEPS_ENV, "").strip())
+
+
+def default_model_spec(device: Any = None) -> str:
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return ""
+        major = int(torch.cuda.get_device_capability(device)[0])
+    except Exception:  # noqa: BLE001 - an unreadable card keeps the old default, off
+        return ""
+    return DEFAULT_MODEL_SPEC if major == DEFAULT_CAPABILITY_MAJOR else ""
+
+
+def _module_cuda_device(module: Any) -> Any:
+    try:
+        for tensors in (module.parameters(), module.buffers()):
+            for tensor in tensors:
+                if tensor.device.type == "cuda":
+                    return tensor.device
+    except Exception:  # noqa: BLE001 - no readable tensor: the current device decides
+        pass
+    return None
+
+
+def model_protect_spec(module: Any = None) -> str:
+    if protect_steps_explicit():
+        return protect_steps_env()
+    spec = protect_controller().spec
+    if spec:
+        return spec
+    return default_model_spec(_module_cuda_device(module) if module is not None else None)
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
@@ -138,12 +173,24 @@ class NVFP4StepController:
             )
         return self.steps
 
+    def compile_key(self) -> tuple:
+        """What a compiled ``NVFP4Linear.forward`` guards on (``armed and protected``): a change recompiles."""
+        return (bool(self.armed), bool(self.armed and self.protected))
+
     def advance(self) -> int:
         self.index += 1
         self.protected = self.index in self.steps
         if self.protected:
             self.protected_steps_seen += 1
         return self.index
+
+    def restart(self) -> None:
+        """Back to step 0 of the current generation (a retried render denoises from the start)."""
+        if not self.total:
+            return
+        self.index = 0
+        self.protected = 0 in self.steps
+        self.protected_steps_seen = 1 if self.protected else 0
 
     def reset(self) -> "NVFP4StepController":
         self.total = 0
@@ -286,7 +333,7 @@ def attach_controller(module: Any, controller: NVFP4StepController) -> int:
 
 def attach_own_controller(module: Any) -> Optional[NVFP4StepController]:
     """Per-model controller, so concurrent image and video renders never move each other's steps."""
-    ctl = NVFP4StepController(protect_controller().spec)
+    ctl = NVFP4StepController(model_protect_spec(module))
     return ctl if attach_controller(module, ctl) else None
 
 
@@ -298,6 +345,11 @@ def module_controller(module: Any) -> NVFP4StepController:
 
 
 _DENOISER_ATTRS = ("transformer", "transformer_2", "unet")
+
+
+def restart_protect_generation(pipe: Any) -> None:
+    for c in pipeline_controllers(pipe):
+        c.restart()
 
 
 def pipeline_controllers(pipe: Any) -> list:

@@ -35,6 +35,7 @@ function chatApi(body: Record<string, unknown>) {
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         authFetch: async () => ({
           status: 200,
@@ -50,9 +51,14 @@ function chatApi(body: Record<string, unknown>) {
         notifyChatHistoryUpdated: () => {},
         isCoalescedHistoryEvent: () => false,
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": {
         showLoadWarning: (warning: string | null | undefined) => shown.push(warning),
       },
+      "../lib/load-request": loadWithStubs(
+        new URL("../src/features/chat/lib/load-request.ts", import.meta.url),
+        { "./server-tuning-fields": {} },
+      ),
       "./generation-length.ts": {},
       "./gguf-variants-request": {},
       "./padded-response": { assertCompletedPaddedBody: () => {} },
@@ -65,8 +71,7 @@ function chatApi(body: Record<string, unknown>) {
       "@/features/hub/lib/hub-token-header": { hubTokenHeader: () => ({}) },
       "@/features/hub/lib/network": { isHuggingFaceOffline: () => false },
       "@/features/native-intents/api": { consumeNativePathToken: () => undefined },
-      // loadModel reads the disk on the way in and out: a model the backend has to download
-      // writes to the cache inside that request, passing no download-manager funnel.
+      // loadModel may download into the cache, bypassing the download manager.
       "@/features/settings/low-disk-check": { checkDiskSpace: () => Promise.resolve() },
       "@/lib/model-lifecycle-events": {
         withModelLoadNotice: async (
@@ -109,7 +114,6 @@ test("a load response's warning reaches the notice, and its absence takes one do
   assert.deepEqual(quiet.shown, [undefined]);
 });
 
-// No test drives applyActiveModelStatusToStore, so a model loaded elsewhere is matched here.
 test("a model loaded elsewhere reaches the toast on the model change", () => {
   assert.match(
     readSrc("features/chat/lib/apply-inference-status-to-store.ts"),

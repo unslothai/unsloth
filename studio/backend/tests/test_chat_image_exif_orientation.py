@@ -94,6 +94,13 @@ def test_llama_server_gets_a_tagged_png_upright():
 
 
 def test_a_tagged_png_is_decoded_once(monkeypatch):
+    import collections
+
+    import routes.inference as inference
+
+    # A fresh memo: an earlier test may already have normalized this image.
+    monkeypatch.setattr(inference, "_LLAMA_IMAGE_MEMO", collections.OrderedDict())
+    monkeypatch.setattr(inference, "_llama_image_memo_chars", 0)
     opened = []
     real_open = Image.open
 
@@ -123,8 +130,8 @@ def test_a_tagged_jpeg_whose_tables_start_at_one_is_still_accepted():
     buf = BytesIO()
     img.save(buf, format = "JPEG", exif = exif, quality = 95)
     raw = bytearray(buf.getvalue())
-    raw[raw.index(b"\xff\xdb") + 4] = 1  # DQT defines table 1
-    raw[raw.index(b"\xff\xc0") + 12] = 1  # SOF0's one component reads it
+    raw[raw.index(b"\xff\xdb") + 4] = 1
+    raw[raw.index(b"\xff\xc0") + 12] = 1
     head, b64 = _sent_to_llama(bytes(raw)).split(",", 1)
     assert head == "data:image/jpeg;base64"
     sent = Image.open(BytesIO(base64.b64decode(b64)))

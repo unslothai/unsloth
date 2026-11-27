@@ -215,6 +215,56 @@ def test_a_tokenizer_load_failure_ends_the_worker(monkeypatch):
     assert stopped[-1] is True
 
 
+def _run_worker_until_the_tokenizer_load(monkeypatch, calls, guard):
+    """The worker entrypoint in this process, sidecar switch and tokenizer load recorded -> its reply."""
+    import queue
+    from utils import transformers_backports, transformers_version
+    from utils.security import dataset_media, hub_data_files
+
+    # The entrypoint writes both into os.environ; set here, they are restored afterwards.
+    monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
+    monkeypatch.setenv("PYTHONWARNINGS", "ignore")
+    monkeypatch.setattr(hub_data_files, "install", lambda: None)
+    monkeypatch.setattr(dataset_media, "install", lambda: None)
+    monkeypatch.setattr(
+        transformers_version,
+        "activate_transformers_for_subprocess",
+        lambda *args: calls.append("activate"),
+    )
+    monkeypatch.setattr(transformers_backports, "install", guard)
+
+    def load(config):
+        calls.append("load")
+        raise OSError("no tokenizer files")
+
+    monkeypatch.setattr(token_preview_worker, "_load_tokenizer", load)
+    commands, replies = queue.Queue(), queue.Queue()
+    commands.put({"id": 1, "text": "hi"})
+    token_preview_worker.run_token_preview_process(
+        cmd_queue = commands, resp_queue = replies, config = {"model_name": "org/model"}
+    )
+    return replies.get_nowait()
+
+
+def test_the_worker_installs_the_transformers_backports_before_the_tokenizer_load(monkeypatch):
+    """The load parses the repo's config.json on the sidecar; unsloth's own import comes after it."""
+    calls = []
+    reply = _run_worker_until_the_tokenizer_load(monkeypatch, calls, lambda: calls.append("guard"))
+    assert calls == ["activate", "guard", "load"]
+    assert reply["fatal"] is True and "no tokenizer files" in reply["error"]
+
+
+def test_the_worker_loads_no_tokenizer_without_the_transformers_backports(monkeypatch):
+    calls = []
+
+    def guard():
+        raise ImportError("unsloth/import_fixes.py was not found")
+
+    reply = _run_worker_until_the_tokenizer_load(monkeypatch, calls, guard)
+    assert calls == ["activate"]
+    assert reply["fatal"] is True and "import_fixes.py was not found" in reply["error"]
+
+
 def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
     """The latch is checked before the spawn, but a quit can land between that check and adopt_pid,
     after the shutdown sweep took its snapshot. The worker must not outlive it."""
@@ -248,6 +298,47 @@ def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
         service._spawn_locked(("k",), {})
     assert started == [True]
     assert stopped and isinstance(stopped[-1], _Proc), "the adopted worker was left running"
+
+
+def test_the_worker_env_hides_every_accelerator_only_in_the_child(monkeypatch):
+    """CUDA, HIP and SYCL are hidden only in the worker env, never in the parent's os.environ."""
+    import multiprocessing as mp_module
+
+    from core.training import account_jobs
+    from utils import process_lifetime
+
+    service = token_preview._TokenPreviewService()
+    envs = []
+
+    class _Proc:
+        pid = 4243
+
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.delenv("ONEAPI_DEVICE_SELECTOR", raising = False)
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: False)
+    monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(
+        account_jobs,
+        "account_process_spec",
+        lambda module, fn, env, kw: envs.append(env) or ((), {}),
+    )
+    monkeypatch.setattr(token_preview._CTX, "Process", _Proc)
+    monkeypatch.setattr(token_preview._CTX, "Queue", lambda: mp_module.Queue())
+    service._spawn_locked(("k",), {})
+    assert envs, "the worker was not spawned"
+    env = envs[0]
+    assert env["CUDA_VISIBLE_DEVICES"] == "" and env["HIP_VISIBLE_DEVICES"] == ""
+    assert env["ONEAPI_DEVICE_SELECTOR"] == "opencl:cpu"
+    assert env.get("ZE_AFFINITY_MASK") != ""
+    assert "ONEAPI_DEVICE_SELECTOR" not in os.environ
 
 
 def test_a_supplied_cache_folder_is_never_the_tokenizer_source(captured):

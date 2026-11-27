@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inference dispatcher resilience.
-
-The dispatcher thread is the sole consumer of the response queue; if a malformed
-response killed it, every in-flight generation would hang forever. A bad response
-must be logged and skipped, not fatal. Fakes only.
-"""
+"""A malformed response must be skipped, not fatal, since the dispatcher is the sole queue consumer."""
 
 from __future__ import annotations
 
@@ -98,32 +93,60 @@ def test_dispatcher_survives_mailbox_put_error():
     assert not t.is_alive()
 
 
-def test_route_llama_streaming_async_clients_disable_proxy_env():
-    """Local llama-server streaming proxies must ignore ambient HTTP_PROXY."""
-    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
-        encoding = "utf-8"
-    )
-    tree = ast.parse(source)
-    calls = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (
-            isinstance(func, ast.Attribute)
-            and func.attr == "AsyncClient"
+def _is_local_async_client(func) -> bool:
+    # gated_async_client (#14546) wraps httpx.AsyncClient so archive embedding pauses for the request.
+    if isinstance(func, ast.Attribute):
+        return (
+            func.attr == "AsyncClient"
             and isinstance(func.value, ast.Name)
             and func.value.id == "httpx"
-        ):
-            continue
-        calls.append(node)
+        )
+    return isinstance(func, ast.Name) and func.id == "gated_async_client"
 
-    assert len(calls) == 5
+
+def test_route_llama_streaming_async_clients_disable_proxy_env():
+    """Local llama-server streaming proxies must ignore ambient HTTP_PROXY."""
+    backend = Path(__file__).resolve().parent.parent
+    source = (backend / "routes" / "inference.py").read_text(encoding = "utf-8")
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and _is_local_async_client(node.func)
+    ]
+
+    # One factory per kind of llama-server client: streamed, and cancellable non-streaming.
+    assert len(calls) == 2
     for call in calls:
         assert any(
             kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False
             for kw in call.keywords
-        ), f"httpx.AsyncClient at line {call.lineno} must set trust_env=False"
+        ), f"the local AsyncClient at line {call.lineno} must set trust_env=False"
+
+    # The wrapper must hand trust_env (all its kwargs) to the httpx client it builds.
+    gate = ast.parse(
+        (backend / "core" / "inference" / "inference_gate.py").read_text(encoding = "utf-8")
+    )
+    wrapper = next(
+        n
+        for n in ast.walk(gate)
+        if isinstance(n, ast.FunctionDef) and n.name == "gated_async_client"
+    )
+    built = [
+        n
+        for n in ast.walk(wrapper)
+        if isinstance(n, ast.Call)
+        and _is_local_async_client(n.func)
+        and not isinstance(n.func, ast.Name)
+    ]
+    assert built and all(
+        any(
+            kw.arg is None
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == wrapper.args.kwarg.arg
+            for kw in n.keywords
+        )
+        for n in built
+    ), "gated_async_client must forward **kwargs to httpx.AsyncClient"
 
 
 def _direct_reader_host():
@@ -144,11 +167,8 @@ def _direct_reader_host():
 
 
 def test_rerouting_a_foreign_response_moves_worker_ownership():
-    # A _gen_lock reader already blocked on resp_queue can beat the compare dispatcher to
-    # that request's first response. The compare consumer passes mark_started=False, so if
-    # this path does not promote it nothing does: the direct request stays recorded as the
-    # executor, so the compare chat's Stop is ignored and a late reset from the direct one
-    # cancels the compare generation instead.
+    # A _gen_lock reader can beat the compare dispatcher; it must promote the request,
+    # or Stop targets the wrong generation.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}
@@ -169,8 +189,7 @@ def test_rerouting_a_foreign_response_moves_worker_ownership():
 
 
 def test_rerouting_a_foreign_gen_done_retires_that_request():
-    # The other half of the dispatcher's move: once its last response is routed, the
-    # request no longer owns the worker, or a Stop for it would end whatever starts next.
+    # Once its last response is routed the request no longer owns the worker.
     o = _direct_reader_host()
     mine, theirs = threading.Event(), threading.Event()
     o._request_cancel_events = {"mine": mine, "theirs": theirs}

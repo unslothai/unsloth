@@ -33,8 +33,7 @@ def test_fast_pins_are_requested_per_pipe_and_have_a_kill_switch(monkeypatch):
 
 
 def test_a_pipe_without_the_request_keeps_the_allocator_pin(monkeypatch):
-    # Image pipelines never ask, so their pinner is unchanged even where registration is supported.
-    monkeypatch.setattr(mem, "_fast_pin_supported", lambda: True)
+    monkeypatch.setattr(mem, "_fast_pin_supported", lambda *_a, **_k: True)
     monkeypatch.setattr(mem, "_offload_groups", lambda module: [types.SimpleNamespace()])
     plain, fast = _Pipe(), _Pipe()
     mem.request_fast_pins(fast)
@@ -83,7 +82,7 @@ def test_the_last_view_releasing_its_buffer_unregisters_it():
     ptr = holder.ptr
     del holder
     gc.collect()
-    assert calls == []  # the tensor still holds the buffer
+    assert calls == []
     del view
     gc.collect()
     assert calls == [ptr]
@@ -165,12 +164,16 @@ print("DEV0_CONTEXT", primary_active(0))
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or torch.version.hip,
-    reason = "needs two CUDA devices",
+    # Never a bare torch.version.* string: pytest evaluates a string condition as code ("7.13.99004" is a SyntaxError).
+    # NVIDIA only (the probe reads CUDA driver contexts): AMD SDK / Radeon wheels tag only __version__ with +rocm.
+    not torch.cuda.is_available()
+    or torch.cuda.device_count() < 2
+    or torch.version.cuda is None
+    or bool(torch.version.hip)
+    or "rocm" in torch.__version__,
+    reason = "needs two NVIDIA CUDA devices (reads CUDA driver primary contexts)",
 )
 def test_releasing_a_buffer_on_another_thread_syncs_its_own_card():
-    # A buffer registered for cuda:1 and freed on a thread still on device 0 must wait on cuda:1, never open a
-    # context on cuda:0 (a bare synchronize() did both wrong).
     import os
     import subprocess
     import sys

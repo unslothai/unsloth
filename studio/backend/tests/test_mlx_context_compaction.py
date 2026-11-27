@@ -10,6 +10,7 @@ import pytest
 import core.inference.tools as tools_mod
 from core.inference import llama_cpp
 from core.inference.context_window import retrieval_budget
+from core.inference.mcp_images import count_image_parts
 from core.inference.orchestrator import InferenceOrchestrator
 
 INSTRUCTION = "Standing instruction for the rest of this task: always answer in a markdown table."
@@ -81,11 +82,23 @@ def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
     assert truncation["type"] == "context_truncated"
     assert truncation["fits"] is fits is (truncation["prompt_tokens_after"] <= 1000)
     assert truncation["boundary_messages"] == truncation["dropped_messages"] > 0
-    # What a rescue evicts is archived, not recalled into a prompt that is already over.
     assert archive_calls[-1]["recall_done"] is not fits
     assert result["system_prompt"] == ""
     assert result["messages"][0] == {"role": "system", "content": "you are helpful"}
     assert result["messages"][-1] is messages[-1]
+
+
+def test_chat_stop_reaches_the_archive_embedding_pass(archive_calls):
+    """Stop must be able to interrupt the archive's embedding before inference (#14519)."""
+    import threading
+
+    stop = threading.Event()
+    _fit(_backend(), _thread(), thread_id = "thread-1", cancel_event = stop)
+
+    cancel_check = archive_calls[-1]["cancel_check"]
+    assert cancel_check() is False
+    stop.set()
+    assert cancel_check() is True
 
 
 @pytest.mark.parametrize(
@@ -113,6 +126,73 @@ def test_a_prompt_the_fit_must_not_touch_is_returned_unchanged(case):
     assert result["events"] == [] and "boundary_applied" not in result
 
 
+PICTURE = "cGl4ZWxz"
+
+
+def _pictured(text):
+    return {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": text}]}
+
+
+def _count_pictures(
+    messages,
+    *_args,
+    images = (),
+    **_kwargs,
+):
+    assert len(images) == count_image_parts(messages, "image")
+    return _count(messages)[0] + 300 * len(images), "mlx-test"
+
+
+@pytest.mark.parametrize("owner, dropped", [(2, [0]), (-1, [])], ids = ["old_turn", "newest_turn"])
+def test_a_picture_is_priced_into_the_fit_and_leaves_with_its_turn(archive_calls, owner, dropped):
+    backend, messages = _backend(), _thread()
+    backend.count_chat_tokens = _count_pictures
+    messages[owner] = _pictured(messages[owner]["content"])
+
+    result = _fit(backend, messages, thread_id = "thread-1", images = [PICTURE])
+
+    [truncation] = result["events"]
+    kept = count_image_parts(result["messages"], "image")
+    assert truncation["fits"] and truncation["dropped_messages"] > 0
+    assert result["dropped_images"] == dropped and kept == 1 - len(dropped)
+    assert truncation["prompt_tokens_after"] == _count(result["messages"])[0] + 300 * kept
+
+
+def test_a_picture_without_its_marker_leaves_the_prompt_unfitted():
+    messages = _thread()
+
+    result = _fit(_backend(), messages, images = [PICTURE])
+
+    assert result["messages"] == messages and result["events"] == []
+
+
+def test_the_tool_loop_stops_sending_a_picture_once_its_turn_is_dropped(monkeypatch, archive_calls):
+    backend, sent = _backend(), []
+    backend.models["mlx-test"]["is_vision"] = True
+    backend.count_chat_tokens = _count_pictures
+
+    def _generate(**call):
+        sent.append((count_image_parts(call["messages"], "image"), call["images"]))
+        yield CALL % len(sent) if len(sent) < 3 else "done"
+
+    monkeypatch.setattr(backend, "generate_chat_response", _generate)
+    monkeypatch.setattr(tools_mod, "execute_tool", lambda *_a, **_k: "r" * 2400)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [_pictured("o" * 400), ANSWERED, QUESTION],
+            tools = [WEB],
+            images = [PICTURE],
+            caller_image_indexes = (0,),
+            max_tokens = 200,
+            context_overflow = "truncate_oldest",
+            thread_id = "thread-1",
+        )
+    )
+
+    assert any(event.get("dropped_messages") for event in events)
+    assert sent[0] == (1, [PICTURE]) and sent[-1] == (0, None)
+
+
 def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered_tool(
     archive_calls, monkeypatch
 ):
@@ -126,7 +206,6 @@ def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered
         )
         return result["events"][-1], result["messages"][0]["content"], archive_calls[-1]
 
-    # A client's own catalogue may reach a plain request; it is not Unsloth's search tool.
     truncation, system, archived = fit(tools = [SEARCH])
     assert not truncation.get("checkpoint") and "carried_forward" not in system
     assert archived["style"] == "inline"
@@ -151,8 +230,6 @@ def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered
     assert archived["recall_budget_tokens"] == halved
     assert halved < retrieval_budget(1200, 200, truncation["prompt_tokens_after"])
 
-    # The loop's final answer carries no tools: no reset, and its reply never comes back,
-    # so recall gets all the room the fit left.
     turns = [{"role": "user", "content": "x" * size} for size in (3200, 800, 8)]
     truncation, _, archived = fit(messages = turns, tool_loop = True, recall_reachable = True)
     after = truncation["prompt_tokens_after"]
@@ -184,17 +261,14 @@ def _run_loop(monkeypatch, messages, replies, result_chars, **kwargs):
         tools = [WEB],
         max_tokens = 200,
         nudge_tool_calls = True,
-        thread_id = "thread-1",
         context_overflow = "truncate_oldest",
-        **kwargs,
+        **{"thread_id": "thread-1", **kwargs},
     )
     truncated = [event for event in events if event.get("type") == "context_truncated"]
     return truncated, prompts, branches
 
 
 @pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
-# The client's history holds a tool result the first fit has to evict, or none: then its
-# small first turn is still there when the loop's own results start to crowd the window.
 @pytest.mark.parametrize("old_result_chars, fits", [(3900, 3), (0, 2)])
 def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     monkeypatch, archive_calls, policy, old_result_chars, fits
@@ -207,10 +281,8 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     truncated, prompts, branches = _run_loop(
         monkeypatch,
         [old, *(old_exchange if old_result_chars else []), ANSWERED, QUESTION],
-        # An announced search is re-prompted with a user turn of the loop's own, as the cap is.
         ["Let me search the web for that.", CALL % 1, CALL % 2, CALL % 3, "done"],
         2400,
-        # Two results fill the window; after the third the loop appends its budget notice.
         max_tool_iterations = 3,
         context_policy = policy,
     )
@@ -218,19 +290,15 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     final = prompts[-1]
     assert final[-1]["role"] == "user" and final[-1] is not QUESTION
     assert any(m is QUESTION for m in final) and not any(m is old for m in final)
-    # The newest result stays: the final answer is asked for without tools, so that fit never
-    # resets it away, and the re-prompt before it is not evicted with it in tow.
     assert [m["content"][:8] for m in final if m.get("role") == "tool"] == ["result 3"]
-    # The third call can still search the first result, which a fit had already evicted,
-    # and the last fit archives against all three.
     assert sum(m["content"].startswith("result") for m in branches[2] if m["role"] == "tool") == 2
     last_fit = archive_calls[-1]
     ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
     assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
-    # Recall searches for the branch's last user turn: the question, not the loop's notice.
     assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
+    # The recall query comes from the client's turns, never from a re-prompt the loop added (#16187).
+    assert [m for m in last_fit["query_messages"] if m["role"] == "user"][-1] is QUESTION
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
-    # The loop is the one MLX request that may reset, and it archives under its thread.
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"
 
@@ -263,8 +331,7 @@ def test_a_turn_that_is_not_fitted_leaves_the_saved_boundary_to_the_next(
     assert len(asked) == 1
 
 
-# The cap's budget notice; then the no-op notice a repeated call earns, once, twice, and
-# twice with the model's own words in between.
+# The cap's budget notice, then no-op notices: once, twice, and twice with model text between.
 @pytest.mark.parametrize(
     "replies, chars, fits, dropped",
     [
@@ -285,7 +352,34 @@ def test_the_only_tool_result_is_not_evicted_to_make_room_for_what_the_loop_says
         max_tool_iterations = 5 if len(replies) > 1 else 1,
     )
 
-    # Dropping the result would fit, and leave nothing to answer from. Only what followed
-    # it may go; failing that, the prompt goes out over.
+    # Dropping the result would fit but leave nothing to answer from.
     assert truncation["fits"] is fits and truncation["dropped_messages"] == dropped
     assert [m["role"] for m in prompts[-1]].count("tool") == 1
+
+
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(
+    monkeypatch, archive_calls, fresh_cut_memory
+):
+    rounds = 16
+    _, prompts, _ = _run_loop(
+        monkeypatch,
+        [QUESTION],
+        [CALL % i for i in range(rounds)] + ["done"],
+        400,
+        max_tool_iterations = rounds,
+        context_policy = "rolling",
+        thread_id = None,
+    )
+
+    heads = [str(prompt[:3]) for prompt in prompts]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(prompts) // 2, moves

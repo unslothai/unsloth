@@ -55,6 +55,16 @@ def test_developer_role_treated_as_system():
     assert "<|turn>system\nInternal instructions<turn|>" in out
 
 
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+def test_list_system_content_renders_its_text_like_gemma4(name):
+    # google/gemma-4-E4B-it: each text part trimmed, then a space; not the list's Python repr.
+    parts = [{"type": "text", "text": "Be brief. "}, {"type": "text", "text": "Use English."}]
+    msgs = [{"role": "system", "content": parts}, {"role": "user", "content": "Hi"}]
+    out = _render(name, msgs)
+    assert "<|turn>system\nBe brief. Use English. <turn|>" in out
+    assert "'type'" not in out
+
+
 def test_no_system_no_thinking_unchanged():
     msgs = [{"role": "user", "content": "Hi"}]
     out = _render("gemma4_template", msgs)
@@ -273,3 +283,17 @@ def test_object_tool_result_renders_its_fields(name):
     assert out.endswith(
         '<|tool_response>response:get_weather{sky:<|"|>sunny<|"|>,temperature:18}<tool_response|>'
     )
+
+
+@pytest.mark.parametrize("name", ["gemma4_template", "gemma4_thinking_template"])
+@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+def test_final_turn_reasoning_becomes_the_thought_channel(name, key):
+    msgs = [
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "4", "reasoning_content": "first"},
+        {"role": "user", "content": "3+3?"},
+        {"role": "assistant", "content": "6", key: "3+3=6"},
+    ]
+    out = _render(name, msgs)
+    assert "first" not in out
+    assert out.endswith("<|turn>model\n<|channel>thought\n3+3=6\n<channel|>6<turn|>\n")

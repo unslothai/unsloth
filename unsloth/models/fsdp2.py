@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""What Unsloth adds around accelerate's `fsdp2_prepare_model` (which already wraps per block,
-keeps the [norm, lm_head] tail gathered, groups tied embeddings). `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1`
-skips the mixed precision fill and the last-block setting. bitsandbytes 4-bit (QLoRA) weights are
-sharded too, keeping their QuantState (`fsdp2_qlora.py`).
-"""
+"""Unsloth extras on accelerate's FSDP2; UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1 skips mixed precision."""
 
 import contextlib
 import dataclasses
 import functools
 import inspect
 import os
+import weakref
 
 import torch
 
@@ -119,7 +116,8 @@ def fill_fsdp2_mixed_precision(accelerator):
         return policy
     if (
         policy.param_dtype != compute
-        # torch 2.6 stores reduce_dtype None when it equals param_dtype; both reduce in compute.
+        # torch 2.6 stores reduce_dtype None when it equals param_dtype. None reduces in param_dtype up to
+        # torch 2.14 and in the parameter's own dtype from 2.15; both get the explicit float32 below.
         or policy.reduce_dtype not in (None, compute)
         or getattr(policy, "output_dtype", None) not in (None, compute)
     ):
@@ -271,6 +269,23 @@ def _decoder_blocks(model):
     return [m for m in model.modules() if any(c.__name__ in names for c in type(m).__mro__)]
 
 
+def _block_units(model, parents, FSDPModule):
+    """Each decoder block's FSDP unit: the block itself, or the activation checkpoint wrapper around it
+    (accelerate >= 1.16 shards the wrapper, so the block inside is no FSDPModule)."""
+    units = []
+    for block in _decoder_blocks(model):
+        if isinstance(block, FSDPModule):
+            units.append(block)
+            continue
+        parent = parents.get(id(block))
+        if (
+            isinstance(parent, FSDPModule)
+            and getattr(parent, "_checkpoint_wrapped_module", None) is block
+        ):
+            units.append(parent)
+    return units
+
+
 def _all_ranks_agree(value, device):
     """True only when every rank says True, so every rank takes the same branch."""
     try:
@@ -387,6 +402,56 @@ def _gather_units_read_directly(model, blocks, parents, FSDPModule):
     return len(units)
 
 
+# Roots after_fsdp2_wrap prepared. generate() runs on the inner model, so the root's pre-forward
+# (and its gather of the units Unsloth reads directly) never fires there.
+_FSDP2_ROOTS = weakref.WeakSet()
+
+
+def _param_groups(unit):
+    state = unit._get_fsdp_state()
+    groups = getattr(state, "_fsdp_param_groups", None)
+    if groups is None:  # torch < 2.8 keeps a single group
+        group = getattr(state, "_fsdp_param_group", None)
+        groups = [] if group is None else [group]
+    return list(groups)
+
+
+@contextlib.contextmanager
+def fsdp2_full_params_for_generate(module):
+    """Every FSDP2 unit of the prepared root holding `module` gathered, and kept gathered, for one
+    generate(): Unsloth's fast decode reads weights directly (inference RMSNorm, fast linear), which
+    FSDP's per-module hooks never gather, and the post-forward reshard of a block would hand the next
+    decode step its shard. Yields False (nothing done) outside accelerate FSDP2."""
+    FSDPModule = _fsdp_module_class()
+    root = None
+    if FSDPModule is not None:
+        root = next((r for r in list(_FSDP2_ROOTS) if any(m is module for m in r.modules())), None)
+    if root is None:
+        yield False
+        return
+    units = [m for m in root.modules() if isinstance(m, FSDPModule)]
+    # The root's first forward lazily initializes FSDP (which state is the root, the comm streams).
+    # generate() bypasses it, and the first unit whose forward runs would claim the root instead
+    # ("requires running forward through the root module first" at the next training forward).
+    lazy_init = getattr(root._get_fsdp_state(), "_lazy_init", None)
+    if lazy_init is not None:
+        lazy_init()
+    saved = []
+    try:
+        for unit in units:
+            for group in _param_groups(unit):
+                if hasattr(group, "post_forward_mesh_info"):
+                    saved.append((group, group.post_forward_mesh_info))
+                    group.post_forward_mesh_info = None  # no reshard after a block's forward
+            unit.unshard()
+        yield True
+    finally:
+        for group, info in saved:
+            group.post_forward_mesh_info = info
+        for unit in reversed(units):
+            unit.reshard()
+
+
 def after_fsdp2_wrap(accelerator, model):
     FSDPModule = _fsdp_module_class()
     if FSDPModule is None or not isinstance(model, FSDPModule):
@@ -394,8 +459,9 @@ def after_fsdp2_wrap(accelerator, model):
     if getattr(model, "_unsloth_fsdp2_prepared", False):
         return
     model._unsloth_fsdp2_prepared = True
+    _FSDP2_ROOTS.add(model)
     parents = _parents(model)
-    blocks = [b for b in _decoder_blocks(model) if isinstance(b, FSDPModule)]
+    blocks = _block_units(model, parents, FSDPModule)
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     if (
         blocks
@@ -436,8 +502,7 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         from .fsdp2_qlora import fsdp2_qlora_wrap
 
-        # The 4-bit fallback to uint8 storage first: float-packed weights would count as frozen
-        # 16-bit weights in the dtype unification.
+        # uint8 storage first: float-packed 4-bit weights would count as frozen 16-bit weights.
         with fsdp2_qlora_wrap(model, original) as qlora:
             fill_fsdp2_mixed_precision(accelerator)
             unify_trainable_dtypes(accelerator, model)
@@ -456,6 +521,79 @@ def install_fsdp2_prepare_hook():
 
     setattr(fsdp2_prepare_model, _PATCHED, True)
     accelerator_module.fsdp2_prepare_model = fsdp2_prepare_model
+    install_fsdp2_bnb_optimizer_hook()
+    return True
+
+
+_BNB_ALTERNATIVE = (
+    "Use optim = 'adamw_8bit' / 'paged_adamw_8bit' (bitsandbytes Adam / AdamW step each rank's local "
+    "shard), or optim = 'adamw_torch' / 'adamw_torch_fused'."
+)
+
+
+def _localize_or_refuse_bnb(objects):
+    """accelerate's FSDP2 swaps the optimizer's parameters for DTensors in Accelerator._prepare_fsdp2;
+    bitsandbytes' kernels take plain tensors. A bitsandbytes Adam / AdamW is made to step the local
+    shards (fsdp2_bnb_optim, as native FSDP2 does); any other bitsandbytes optimizer is refused here,
+    before its first step would fail with "got mixed torch.Tensor and DTensor" (unsloth#3551)."""
+    from .fsdp2_native import _inner_optimizer, _is_bnb_optimizer_class, _optimizer_on_cpu
+    for obj in objects:
+        if not isinstance(obj, torch.optim.Optimizer):
+            continue
+        inner = _inner_optimizer(obj)
+        if not _is_bnb_optimizer_class(type(inner)):
+            continue
+        from .fsdp2_bnb_optim import (
+            bnb_local_shards_enabled,
+            bnb_steps_cpu_tensors,
+            localize_bnb_optimizer,
+        )
+
+        name = type(inner).__name__
+        if not bnb_local_shards_enabled():
+            raise ValueError(
+                f"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' {name} cannot step, "
+                "and UNSLOTH_FSDP2_BNB_LOCAL=0 turns off stepping the local shards. Unset it, or use "
+                "optim = 'adamw_torch' / 'adamw_torch_fused'."
+            )
+        if _optimizer_on_cpu(inner) and not bnb_steps_cpu_tensors():
+            raise ValueError(
+                f"Unsloth: FSDP2 keeps the parameters on the CPU (CPU offload), and this bitsandbytes "
+                f"cannot step CPU tensors with {name}. Upgrade bitsandbytes (>= 0.50), turn CPU offload "
+                "off, or use optim = 'adamw_torch'."
+            )
+        if not localize_bnb_optimizer(inner):
+            raise ValueError(
+                f"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' {name} cannot step "
+                f"(only bitsandbytes Adam / AdamW step local shards). {_BNB_ALTERNATIVE}"
+            )
+        _print_rank0(
+            f"Unsloth: FSDP2 keeps the bitsandbytes optimizer ({name}): it steps each rank's local "
+            "shard of the DTensor parameters (8-bit state per shard)."
+        )
+
+
+def install_fsdp2_bnb_optimizer_hook():
+    """Wrap Accelerator._prepare_fsdp2: after it maps the optimizer onto the DTensor parameters,
+    localize (or refuse) a bitsandbytes optimizer."""
+    try:
+        from accelerate import Accelerator
+    except Exception:
+        return False
+    original = getattr(Accelerator, "_prepare_fsdp2", None)
+    if original is None:
+        return False
+    if getattr(original, _PATCHED, False):
+        return True
+
+    @functools.wraps(original)
+    def _prepare_fsdp2(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        _localize_or_refuse_bnb(result if isinstance(result, (tuple, list)) else (result,))
+        return result
+
+    setattr(_prepare_fsdp2, _PATCHED, True)
+    Accelerator._prepare_fsdp2 = _prepare_fsdp2
     return True
 
 
@@ -532,8 +670,12 @@ def install_fsdp2_peft_full_state_dict():
     ):
         if _full_peft(model, adapter_only, sd_options):
             from torch.distributed.checkpoint.state_dict import get_model_state_dict
+
+            from .fsdp2_native import frozen_tables_hidden
+
             options = dataclasses.replace(sd_options, ignore_frozen_params = True)
-            return get_model_state_dict(model, options = options)
+            with frozen_tables_hidden(model):  # a frozen lookup table is no adapter weight
+                return get_model_state_dict(model, options = options)
         return original_get(model, adapter_only = adapter_only, sd_options = sd_options)
 
     @functools.wraps(original_set)

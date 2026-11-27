@@ -60,11 +60,20 @@ def _check(norm, reference, dtype):
 @pytest.mark.parametrize("save_output", [False, True])
 @pytest.mark.parametrize("train_weight", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-def test_rms_layernorm_backward_leaves_shared_grad_alone(gemma, save_output, train_weight, dtype):
+def test_rms_layernorm_backward_leaves_shared_grad_alone(
+    gemma, save_output, train_weight, dtype, monkeypatch
+):
+    from unsloth.kernels import rms_layernorm
     from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
 
+    # save_output only engages under UNSLOTH_RMSNORM_SAVE_OUTPUT, read once at import.
+    monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", save_output)
     W = (1.0 + 0.1 * torch.randn(256, device = "cuda")).to(dtype).requires_grad_(train_weight)
     norm = lambda x: Fast_RMS_Layernorm.apply(x, W, 1e-6, gemma, save_output)
+    probe = norm(torch.randn(3, 5, 256, device = "cuda", dtype = dtype).requires_grad_())
+    # The backward from Y only runs for a frozen W.
+    from_y = save_output and not train_weight
+    assert getattr(probe, "_unsloth_rmsnorm_saved", False) is from_y
     _check(norm, lambda x: _rms_fp64(x, W, gemma), dtype)
 
 

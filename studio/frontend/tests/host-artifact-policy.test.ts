@@ -5,7 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  IMAGE_CATALOG,
+  VIDEO_CATALOG,
+  catalogToModelOptions,
+} from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import {
   classifyHost,
+  hostIsGgufOnly,
   curatedArtifactIsOfferable,
   densePerfSuffix,
   ggufPerfSuffix,
@@ -26,7 +32,6 @@ test("the backends that can place a diffusion pipeline are accelerated", () => {
   }
 });
 
-// Dense quant follows backend capability rather than the backend name.
 test("the dense-quant class follows the backend's capability answer, not its name", () => {
   assert.equal(
     classifyHost({ deviceBackend: "cuda", budgetKnown: true, denseQuantSupported: true }),
@@ -41,7 +46,6 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   assert.equal(preAmpere, "accelerated");
   assert.equal(hostIsAccelerated(preAmpere), true);
   assert.equal(hostRunsDenseQuant(preAmpere), false);
-  // Missing capability is conservative for older or unresolved backends.
   assert.equal(classifyHost({ deviceBackend: "cuda", budgetKnown: true }), "accelerated");
   for (const deviceBackend of ["rocm", "xpu"]) {
     const host = classifyHost({ deviceBackend, budgetKnown: true });
@@ -51,8 +55,8 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   for (const host of ["gguf-only", "unknown"] as const) {
     assert.equal(hostRunsDenseQuant(host), false, host);
   }
-  // A Mac only ever reports mlx or cpu; mac + cuda means a browser-derived Mac on a remote host.
-  for (const deviceBackend of ["mlx", "cpu"]) {
+  // mac + cuda means a browser-derived Mac on a remote host.
+  for (const deviceBackend of ["mlx"]) {
     assert.equal(
       classifyHost({
         deviceType: "mac",
@@ -75,14 +79,11 @@ test("the dense-quant class follows the backend's capability answer, not its nam
   );
 });
 
-test("the backends that only run the native engine are gguf-only", () => {
-  for (const deviceBackend of ["mlx", "cpu"]) {
-    assert.equal(
-      classifyHost({ deviceBackend, budgetKnown: true }),
-      "gguf-only",
-      deviceBackend,
-    );
-  }
+test("the backends that only run the native engine are gguf-only, a plain CPU cpu-only", () => {
+  assert.equal(classifyHost({ deviceBackend: "mlx", budgetKnown: true }), "gguf-only");
+  assert.equal(classifyHost({ deviceBackend: "cpu", budgetKnown: true }), "cpu-only");
+  assert.equal(hostIsGgufOnly("cpu-only"), true);
+  assert.equal(hostIsAccelerated("cpu-only"), false);
 });
 
 test("a resolved accelerated backend outranks a browser-derived Mac", () => {
@@ -95,22 +96,27 @@ test("a resolved accelerated backend outranks a browser-derived Mac", () => {
   }
 });
 
-test("a Mac is gguf-only whatever backend it reports", () => {
-  // Apple GPUs report as available and the backend string varies with what torch found, but no
-  // Mac can place the Modular Diffusers workflow: video.py refuses the load outright.
-  for (const deviceBackend of ["mlx", "cpu", null]) {
+test("a Mac is gguf-only unless its backend is a confirmed CPU", () => {
+  // No Mac can place the Modular Diffusers workflow: video.py refuses the load.
+  for (const deviceBackend of ["mlx", null]) {
     assert.equal(
       classifyHost({ deviceType: "mac", deviceBackend, budgetKnown: true }),
       "gguf-only",
       String(deviceBackend),
     );
   }
+  // An Intel Mac (no MPS) resolves the diffusion target to cpu, where the backend refuses the dense rows.
+  assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: true }), "cpu-only");
+  assert.equal(classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: false }), "gguf-only");
+  // Apple Silicon with an unusable MLX stack reports cpu, but diffusers runs dense rows on MPS there.
+  assert.equal(
+    classifyHost({ deviceType: "mac", deviceBackend: "cpu", budgetKnown: true, appleSilicon: true }),
+    "gguf-only",
+  );
 });
 
 test("a host still being discovered is unknown, not CPU-only", () => {
-  // The anti-flicker guarantee. The GPU hook's opening state is available:false,
-  // budgetKnown:false, and reading that as CPU-only would blink every non-GGUF row out and back
-  // on a real GPU host.
+  // The GPU hook opens with available:false; reading that as CPU-only flickers rows on GPU hosts.
   assert.equal(classifyHost({ budgetKnown: false }), "unknown");
   assert.equal(
     classifyHost({ deviceBackend: "cuda", budgetKnown: false }),
@@ -144,10 +150,7 @@ test("a gguf-only host drops the one pipeline the backend refuses, and nothing e
 });
 
 test("a gguf-only host keeps every non-GGUF row the backend can still load", () => {
-  // Each of these is a load Unsloth supports on Apple Silicon or CPU today: the diffusion
-  // pipelines are device-neutral (video_capability() certifies Apple Silicon, and
-  // diffusion_device.py picks MPS bfloat16 for exactly these), and the STT rows run through
-  // the whisper.cpp sidecar, whose format label in the catalog is informational only.
+  // Diffusion pipelines are device-neutral and STT rows run through the whisper.cpp sidecar.
   for (const id of [
     "unsloth/whisper-large-v3-turbo",
     "unsloth/whisper-tiny",
@@ -171,11 +174,8 @@ test("every dense 8-bit scheme shares the one FP8 label", () => {
   assert.equal(densePerfSuffix(["fp8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["mxfp8"]), "Fast FP8");
-  // Reordering the ladder must not rename the row: the label is the tier, and the resolved record
-  // names the scheme that actually loaded.
   assert.equal(densePerfSuffix(["fp8", "int8"]), "Fast FP8");
   assert.equal(densePerfSuffix(["int8", "fp8"]), "Fast FP8");
-  // A 4-bit scheme is a different quality tier and keeps its own name.
   assert.equal(densePerfSuffix(["nvfp4"]), "Fast NVFP4");
 });
 
@@ -239,7 +239,58 @@ test("a GGUF row is the slow one wherever a dense row can run beside it", () => 
 test("the dense precisions are offered exactly where they can run", () => {
   assert.equal(hostOffersDensePrecision("dense-quant"), true);
   assert.equal(hostOffersDensePrecision("accelerated"), true);
-  // An older backend reports nothing; keep the controls rather than remove ones it can honour.
   assert.equal(hostOffersDensePrecision("unknown"), true);
   assert.equal(hostOffersDensePrecision("gguf-only"), false);
+  assert.equal(hostOffersDensePrecision("cpu-only"), false);
+});
+
+test("a CPU-only host offers only the GGUF rows of a family that has a GGUF / native route", () => {
+  const cpu = new Set(catalogToModelOptions(IMAGE_CATALOG, "cpu-only").map((o) => o.id));
+  const gpu = new Set(catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["fp8"]).map((o) => o.id));
+  const mac = new Set(catalogToModelOptions(IMAGE_CATALOG, "gguf-only").map((o) => o.id));
+  // FLUX.3 Klein: the bf16 pipeline ("Fast FP8" on a GPU, 20.3 GB of bf16 on CPU) goes, the GGUF stays.
+  assert.equal(gpu.has("black-forest-labs/flux-3-image-klein"), true);
+  assert.equal(cpu.has("black-forest-labs/flux-3-image-klein"), false);
+  assert.equal(cpu.has("unsloth/flux-3-image-klein-GGUF"), true);
+  // Every image group with a GGUF row (or a native route, Krea 2) offers nothing else on CPU.
+  for (const group of IMAGE_CATALOG) {
+    const native = group.nativeGgufRoute || group.artifacts.some((a) => a.format === "gguf");
+    for (const artifact of group.artifacts) {
+      const want = !native || artifact.format === "gguf";
+      assert.equal(cpu.has(artifact.repoId), want && artifact.repoId !== "MiniMaxAI/MiniMax-H3-Image", artifact.repoId);
+    }
+  }
+  // Families with no GGUF route keep their rows on CPU.
+  for (const id of [
+    "unsloth/sdxl-turbo",
+    "unsloth/stable-diffusion-xl-base-1.0",
+    "unsloth/Lumina-Image-2.0",
+    "unsloth/HiDream-I1-Full",
+    "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+    "ideogram-ai/ideogram-4-fp8",
+  ]) {
+    assert.equal(cpu.has(id), true, id);
+  }
+  assert.equal(cpu.has("unsloth/Krea-2-Turbo"), false);
+  // A Mac (gguf-only, not cpu-only) and a GPU keep today's rows.
+  assert.equal(mac.has("black-forest-labs/flux-3-image-klein"), true);
+  assert.equal(mac.has("unsloth/Krea-2-Turbo"), true);
+  assert.equal(gpu.has("unsloth/Krea-2-Turbo"), true);
+});
+
+test("a CPU-only host offers only the GGUF rows of a video family with a GGUF row", () => {
+  const cpu = new Set(catalogToModelOptions(VIDEO_CATALOG, "cpu-only").map((o) => o.id));
+  for (const id of ["Lightricks/LTX-2.5-Diffusers", "Lightricks/LTX-2.3", "MiniMaxAI/MiniMax-H3"]) {
+    assert.equal(cpu.has(id), false, id);
+  }
+  for (const id of ["unsloth/LTX-2.5-GGUF", "unsloth/LTX-2.3-GGUF", "unsloth/MiniMax-H3-GGUF"]) {
+    assert.equal(cpu.has(id), true, id);
+  }
+  // No GGUF row: the pipeline stays.
+  assert.equal(cpu.has("Wan-AI/Wan2.2-TI2V-5B-Diffusers"), true);
+});
+
+test("the CPU-only rule needs the group: an id alone keeps today's answer", () => {
+  assert.equal(curatedArtifactIsOfferable("black-forest-labs/flux-3-image-klein", "cpu-only"), true);
+  assert.equal(curatedArtifactIsOfferable("MiniMaxAI/MiniMax-H3", "cpu-only"), false);
 });

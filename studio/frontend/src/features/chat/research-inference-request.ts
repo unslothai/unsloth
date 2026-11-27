@@ -34,13 +34,9 @@ export function buildResearchInferenceRequest(input: {
     providerId: string;
     providerType: string;
     modelId: string;
-    /** The connection's resolved output ceiling, or null when nothing grounds one. */
     maxOutputTokens: number | null;
-    /** True when the connection's saved cap is the only thing grounding that ceiling. */
     maxOutputTokensFromSavedCap: boolean;
-    /** The model's own published limit, before the connection override is folded in. */
     maxOutputTokensPublished: number | null;
-    /** The model's resolved reasoning control, so the backend never sends a field the model lacks. */
     supportsReasoning?: boolean;
     supportsReasoningOff?: boolean;
   };
@@ -75,10 +71,8 @@ export function buildResearchInferenceRequest(input: {
           input.external.maxOutputTokens > 0
             ? {
                 maxOutputTokens: Math.floor(input.external.maxOutputTokens),
-                // The run outlives the connection edit that grounded it.
                 maxOutputTokensFromSavedCap: input.external.maxOutputTokensFromSavedCap,
-                // The ceiling above has the override folded in, so it cannot say whether the
-                // model itself stops there, which is what the report floor turns on.
+                // The ceiling includes the override, so it cannot say whether the model stops there.
                 ...(input.external.maxOutputTokensPublished != null &&
                 Number.isFinite(input.external.maxOutputTokensPublished) &&
                 input.external.maxOutputTokensPublished > 0
@@ -96,7 +90,7 @@ export function buildResearchInferenceRequest(input: {
   if (Number.isFinite(input.temperature) && input.temperature >= 0 && input.temperature <= 2) {
     request.temperature = input.temperature;
   }
-  // A connection leaves Off (1) out, as the chat request does; local runs still send it.
+  // Connections omit Off (1), as chat requests do.
   if (
     Number.isFinite(input.topP) &&
     input.topP > 0 &&
@@ -126,7 +120,7 @@ export function buildResearchInferenceRequest(input: {
     input.reasoningStyle === "reasoning_effort" &&
     input.external?.supportsReasoningOff
   ) {
-    // Ollama thinks when no control arrives; gated as "none" is not in every ladder (gpt-5).
+    // Ollama thinks when no control arrives.
     request.reasoningEffort = "none";
   }
   return request;

@@ -75,6 +75,8 @@ def _run(
     full_finetuning = "0",
     mixed_precision = "float32",
     user_float32 = None,
+    device_type = "cuda",
+    forced_stamp = None,
 ):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
@@ -85,6 +87,13 @@ def _run(
             (model_dtype is torch.float32) if user_float32 is None else user_float32 == "1"
         ),
     )
+    # Every Unsloth load stamps the forced-float32 decision on the model it returns, and the trainer
+    # reads that stamp, not the process-wide UNSLOTH_FORCE_FLOAT32 (#19442). Stamp it the way the
+    # loader would for this env; forced_stamp = "none" leaves the model unstamped (not loaded by Unsloth).
+    if forced_stamp is None:
+        model._unsloth_forced_float32 = force_float32 == "1"
+    elif forced_stamp != "none":
+        model._unsloth_forced_float32 = forced_stamp == "1"
     args = _Args(fp16 = fp16, bf16 = bf16)
     env = {
         "UNSLOTH_FORCE_FLOAT32": force_float32,
@@ -108,6 +117,7 @@ def _run(
     # Stub the parent too: a raising unsloth_zoo __init__ would route through the torch.cuda fallback.
     mod = types.ModuleType("unsloth_zoo.device_type")
     mod.device_is_bf16_supported = lambda: bf16_supported
+    mod.DEVICE_TYPE = device_type
     utils = types.ModuleType("unsloth_zoo.utils")
     utils._get_dtype = _get_dtype
     parent = types.ModuleType("unsloth_zoo")
@@ -205,8 +215,7 @@ def test_upcast_float32_on_a_v100_still_gets_fp16_autocast():
 
 
 def test_loaders_record_the_explicit_request():
-    """Every public entry point, since only the outermost one sees the
-    argument as the caller wrote it."""
+    """Each public entry point must record it; only the outermost sees the argument as written."""
     for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_requested_float32(dtype)" in src, rel
@@ -249,10 +258,25 @@ def test_the_text_diffusion_path_records_it_too():
         assert "_mark_requested_float32(model, user_float32)" in statement, statement
 
 
+def test_the_direct_diffusion_loader_records_it_too():
+    """FastDiffusionModel.from_pretrained called directly never passes through _dispatch_diffusion, so on a
+    GPU without bf16 a float32 request trained under fp16 mixed precision with a loss scaler."""
+    src = (REPO_ROOT / "unsloth" / "models" / "diffusion.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    cls = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "FastDiffusionModel"
+    )
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+    first = ast.unparse(fn.body[0])
+    assert first == "user_float32 = _requested_float32(dtype)", first
+    returns = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert returns, "expected the diffusion loader to return a model"
+    for statement in returns:
+        assert "_mark_requested_float32(model, user_float32)" in statement, statement
+
+
 def test_the_request_is_read_from_the_model_not_the_environment():
-    """A process-global would describe whichever model loaded last, so a
-    program that loads two before building a trainer would train the first
-    with the second's precision."""
+    """Stored per model: a process-global would train the first with the second's precision."""
     assert "_unsloth_user_float32" in MP_SRC
     assert "UNSLOTH_USER_FLOAT32" not in MP_SRC
 
@@ -269,3 +293,15 @@ def test_block_still_compiles():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_explicit_bf16_model_on_emulated_xpu_autocasts_bf16():
+    """XPU keeps an explicit bf16 load (emulated); fp16 autocast over bf16 weights would overflow."""
+    args, env = _run(torch.bfloat16, bf16_supported = False, device_type = "xpu")
+    assert (args.bf16, args.fp16) == (True, False)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
+    # A default XPU load there is float16 and keeps float16 autocast; CUDA is unchanged.
+    args, _ = _run(torch.float16, bf16_supported = False, device_type = "xpu")
+    assert (args.bf16, args.fp16) == (False, True)
+    args, _ = _run(torch.bfloat16, bf16_supported = False, device_type = "cuda")
+    assert (args.bf16, args.fp16) == (False, True)

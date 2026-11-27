@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The partially-initialised ``torch._dynamo`` window (#10350, #10963).
-
-``torch/__init__.py`` makes ``_dynamo`` a lazy submodule, so ``torch._dynamo.X`` imports it
-on demand and returns whatever ``sys.modules`` holds, a still-initialising module included.
-``diffusers.hooks`` opens that window on every diffusion load with an offload policy, because
-it evaluates ``@torch.compiler.disable()`` at class-body time and that is ``import
-torch._dynamo``. Nothing on the offload path is guarded, so a read from another thread in
-that window fails the whole load with a bare one-line error.
-
-These tests pin the three things the fix depends on, none of which need a real torch:
-
-  1. ``ensure_dynamo_imported`` resolves ``.utils`` BY ATTRIBUTE, so the state an ``import``
-     cannot see (submodule in sys.modules, never bound on the parent) is still caught.
-  2. It is idempotent and single-flight, which is the property that closes the window.
-  3. The load path calls it BEFORE ``apply_memory_plan``, and the load failure handler logs
-     with ``exc_info``. Both are asserted against the source, since reaching them for real
-     needs a GPU and a model.
-"""
+"""ensure_dynamo_imported resolves .utils by attribute, runs single-flight, and precedes loads."""
 
 from __future__ import annotations
 
@@ -44,12 +27,7 @@ def warm(monkeypatch):
 
 
 def _fake_torch(monkeypatch, *, bind_utils: bool):
-    """A ``torch`` whose ``_dynamo`` may or may not have ``.utils`` bound on it.
-
-    ``bind_utils=False`` is the reported state: ``torch._dynamo`` and ``torch._dynamo.utils``
-    are both in ``sys.modules``, so both imports succeed, but the parent never got the
-    attribute -- which is how the compile stack reads it.
-    """
+    """bind_utils=False: torch._dynamo.utils is in sys.modules but never bound on the parent."""
     torch = types.ModuleType("torch")
     dynamo = types.ModuleType("torch._dynamo")
     utils = types.ModuleType("torch._dynamo.utils")
@@ -63,9 +41,8 @@ def _fake_torch(monkeypatch, *, bind_utils: bool):
 
 
 def test_reports_false_when_utils_is_not_bound_on_the_parent(warm, monkeypatch):
-    """The failure an ``import`` cannot observe. Both imports succeed here; only the
-    attribute read distinguishes the broken state, so a probe that merely imported would
-    report success in exactly the case that matters."""
+    """Only the attribute read exposes the broken state; a probe that merely imports would report
+    success exactly when it matters."""
     _fake_torch(monkeypatch, bind_utils = False)
     assert warm.ensure_dynamo_imported() is False
 
@@ -83,13 +60,7 @@ def test_absent_torch_is_not_fatal(warm, monkeypatch):
 
 
 def test_concurrent_callers_import_once(warm, monkeypatch):
-    """Single-flight is the whole mechanism: the window closes because exactly ONE thread
-    performs the first import while the rest wait on our lock rather than racing CPython's.
-
-    Asserted by counting the IMPORTS, not the lock entries. Threads that arrive before the
-    first one latches legitimately queue on the lock, so a bound on lock entries is a race
-    against thread scheduling; the double-checked flag inside the lock is what guarantees
-    the import body runs once, and that is the property worth pinning."""
+    """Counts imports, not lock entries; the double-checked flag ensures the import body runs once."""
     _fake_torch(monkeypatch, bind_utils = True)
 
     real_import = builtins.__import__
@@ -115,17 +86,11 @@ def test_concurrent_callers_import_once(warm, monkeypatch):
         t.join()
 
     assert results == [True] * 12
-    # `import torch._dynamo` plus `import torch._dynamo.utils`, from one thread only.
     assert len(imports) == 2, f"the import body ran more than once: {imports}"
 
 
 def test_the_warm_closes_the_window_before_it_starts_a_thread():
-    """The warm is what actually fixes this: it gets the first import done while the process
-    is still single-threaded. _prime_nvlink_topology starts the first thread this module
-    spawns, so warming after it would forfeit that.
-
-    Asserted on source order rather than by running the stage, which would need real hardware
-    detection."""
+    """Warm runs before any thread starts, so the first torch._dynamo import happens single-threaded."""
     import inspect
     from utils import torch_warmup
 
@@ -137,9 +102,8 @@ def test_the_warm_closes_the_window_before_it_starts_a_thread():
 
 
 def test_the_stage_list_and_its_purge_contract_are_untouched():
-    """The window is closed INSIDE an existing stage, not by adding one. _STAGES carries a
-    purge-on-failure mapping whose only plausible entry for a dynamo stage would be torch,
-    and purging torch is never right. This pins that decision."""
+    """The dynamo fix sits inside an existing _STAGES stage; purging torch on failure is never
+    right, so the stage list stays pinned."""
     from utils import torch_warmup
     assert [name for name, _ in torch_warmup._STAGES] == [
         "hardware",
@@ -159,17 +123,9 @@ def _load_pipeline_body():
 
 
 def test_load_path_closes_the_window_before_every_dynamo_consumer():
-    """Order is the point, not presence, and there is more than one consumer.
-
-    ``apply_memory_plan`` imports ``diffusers.hooks``, but the speed path gets there FIRST on the
-    default GGUF profile: ``apply_speed_optims`` reads ``torch._dynamo.config`` and
-    ``compile_cache.begin`` enters the compile stack. Whichever runs first is the one that can
-    lose the race, and the speed path's own best-effort handler would swallow it, quietly
-    disabling compile while leaving the module poisoned for the offload below. So the pre-import
-    has to precede all three, not just the offload."""
+    """The pre-import must precede all dynamo consumers, since the speed path may import first."""
     body = _load_pipeline_body()
-    # Keyed on lineno, not on ast.walk order: walk is breadth-first, so wrapping a call in a
-    # try/except would silently reorder it and make this assertion meaningless.
+    # keyed on lineno: ast.walk is breadth-first, so a try/except wrapper would reorder it
     lines = {}
     for node in ast.walk(body):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
@@ -178,19 +134,18 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
             lines.setdefault(node.func.attr, node.lineno)
     assert "close_dynamo_import_window" in lines, "the load path never closes the dynamo window"
     for consumer in (
-        "hidream_te4_kwargs",  # FP8 text-encoder cast -> diffusion_precision -> diffusers.hooks
-        "apply_step_cache",  # diffusion_cache -> diffusers.hooks
-        "begin",  # compile_cache.begin -> the compile stack
-        "apply_speed_optims",  # reads torch._dynamo.config
-        "apply_memory_plan",  # offload -> diffusers.hooks
+        "hidream_te4_kwargs",
+        "apply_step_cache",
+        "begin",
+        "apply_speed_optims",
+        "apply_memory_plan",
     ):
         assert consumer in lines, f"{consumer} is no longer on this path; re-check the ordering"
         assert (
             lines["close_dynamo_import_window"] < lines[consumer]
         ), f"the dynamo pre-import runs after {consumer}, which can reach dynamo first"
 
-    # And ahead of the plain `import diffusers` too, which pulls dynamo in by itself: every
-    # module in diffusers.hooks evaluates @torch.compiler.disable() at class-body time.
+    # plain `import diffusers` pulls dynamo in too via @torch.compiler.disable() in diffusers.hooks
     src = (_BACKEND / "core/inference/diffusion.py").read_text(encoding = "utf-8").splitlines()
     first_diffusers = next(
         n for n, line in enumerate(src, 1) if line.strip() == "import diffusers" and n > body.lineno
@@ -201,17 +156,9 @@ def test_load_path_closes_the_window_before_every_dynamo_consumer():
 
 
 def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports():
-    """The image path is not the only one that reaches diffusers.
-
-    ``core/inference/video.py`` imports it twice: once during modular validation, which runs on
-    the REQUEST thread, and once during pipeline assembly. The server accepts requests as soon as
-    the socket binds, while the background warm may still be inside ``import torch._dynamo``, so
-    a video load issued right after startup can recreate exactly the race this PR closes for
-    images. Every ``import diffusers`` in this file must be preceded by the guard.
-    """
+    """Each import diffusers in video.py needs the guard first; requests can arrive during the warm."""
     src = (_BACKEND / "core/inference/video.py").read_text(encoding = "utf-8").splitlines()
-    # A call to assert_pipeline_class_available counts: it closes the window itself, ahead of its
-    # own `import diffusers`, so an import below one is already protected.
+    # assert_pipeline_class_available closes the window itself, ahead of its own import
     guards = [
         n
         for n, line in enumerate(src, 1)
@@ -225,21 +172,13 @@ def test_the_video_path_closes_the_window_before_each_of_its_diffusers_imports()
         assert any(
             g < imp for g in guards
         ), f"`import diffusers` at video.py:{imp} has no dynamo guard above it"
-        # Above it in the same block, not merely somewhere earlier in a 6000-line file.
         assert (
             imp - max(g for g in guards if g < imp) < 40
         ), f"the guard for video.py:{imp} is too far above it to be the one protecting it"
 
 
 def test_the_pipeline_class_probe_closes_the_window_itself():
-    """The guard belongs where the import is, not at each call site.
-
-    ``assert_pipeline_class_available`` does its own ``import diffusers`` and then a ``hasattr``
-    that imports the pipeline's submodule, and all three request-thread entry points reach it:
-    image validation (diffusion.validate_load_request), video validation, and the training
-    preflight (_assert_family_pipeline_available -> DiffusionLoraConfig.normalized). Guarding it
-    once here covers every caller, including any added later, which chasing call sites does not.
-    """
+    """Guard lives inside assert_pipeline_class_available, so every request-thread caller is covered."""
     tree = ast.parse(
         (_BACKEND / "core/inference/diffusion_families.py").read_text(encoding = "utf-8")
     )
@@ -302,9 +241,8 @@ def test_load_failure_is_logged_with_a_traceback():
 
 
 def test_the_dynamo_failure_is_rewritten_into_something_actionable():
-    """The raw text names a private torch module and reads as a bug in the model, while the
-    only remedy is a restart. Measured on torch 2.10: a process that has lost this import race
-    does not recover, so "try again" in the same process is wrong advice."""
+    """On torch 2.10 a process that loses this import race never recovers, so the message must say
+    restart, not retry."""
     from core.inference.diffusion import dynamo_partial_init_message
 
     exc = AttributeError(
@@ -360,8 +298,7 @@ def test_an_explicit_cause_is_still_followed():
 
 
 def test_a_cyclic_exception_chain_terminates():
-    """The walk is guarded by identity, not a depth counter, so a self-referential chain
-    cannot spin."""
+    """The chain walk tracks seen exceptions by identity, so a cyclic chain terminates."""
     from core.inference.diffusion import dynamo_partial_init_message
 
     a = RuntimeError("a")
@@ -404,8 +341,7 @@ def _load_pipeline_failure_handler():
 def test_trainer_reads_dynamo_config_defensively():
     """A bare ``torch._dynamo.config`` at module scope triggers the lazy import and can bind a
     half-built module, raising at import time where nothing handles it."""
-    # AST, not a substring search: the prose explaining why this form is wrong necessarily
-    # contains the wrong form, so a text match would fail on its own comment.
+    # AST, not substring: the explanatory prose contains the wrong form itself
     tree = ast.parse((_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8"))
     bare = [
         node

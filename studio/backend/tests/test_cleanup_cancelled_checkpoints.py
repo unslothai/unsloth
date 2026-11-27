@@ -16,11 +16,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture
 def outputs_setup(tmp_path, monkeypatch):
-    """Point outputs_root() at a temp dir so cleanup may run on it.
-
-    training binds ``outputs_root`` at import time, so patch the symbol on
-    the importer module, not on storage_roots.
-    """
+    """training binds outputs_root at import time, so patch it on the importer module, not storage_roots."""
     from core.training import training as training_mod
 
     monkeypatch.setattr(training_mod, "outputs_root", lambda: tmp_path)
@@ -35,8 +31,7 @@ def _mk_dir(parent: Path, name: str) -> Path:
 
 
 def test_completed_checkpoints_are_preserved(outputs_setup):
-    """Regression: completed checkpoint-N/ used to be rmtree'd on Cancel,
-    destroying resume points."""
+    """Completed checkpoint-N/ directories are kept on Cancel because they are resume points."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     out = outputs_setup / "run-1"
@@ -59,7 +54,7 @@ def test_in_flight_tmp_checkpoints_removed(outputs_setup):
     out.mkdir()
     _mk_dir(out, "tmp-checkpoint-100")
     _mk_dir(out, "tmp-checkpoint-200")
-    _mk_dir(out, "checkpoint-50")  # completed, kept
+    _mk_dir(out, "checkpoint-50")
 
     _cleanup_cancelled_checkpoints(out)
 
@@ -75,7 +70,7 @@ def test_non_checkpoint_dirs_left_alone(outputs_setup):
     out.mkdir()
     _mk_dir(out, "logs")
     _mk_dir(out, "tensorboard")
-    _mk_dir(out, "checkpoint-final")  # non-int suffix, kept
+    _mk_dir(out, "checkpoint-final")
     _mk_dir(out, "checkpoint-best")
     _mk_dir(out, "tmp-checkpoint-99")
 
@@ -87,8 +82,7 @@ def test_non_checkpoint_dirs_left_alone(outputs_setup):
 
 
 def test_output_dir_outside_outputs_root_is_refused(tmp_path, monkeypatch):
-    """Containment check: even if a bug passed an output_dir outside
-    outputs_root, the cleanup must refuse to touch it."""
+    """Even if output_dir lies outside outputs_root, cleanup must refuse to touch it."""
     from core.training import training as training_mod
     from core.training.training import _cleanup_cancelled_checkpoints
 
@@ -108,8 +102,7 @@ def test_output_dir_outside_outputs_root_is_refused(tmp_path, monkeypatch):
 
 
 def test_symlinked_output_dir_skipped(outputs_setup):
-    """A symlinked output_dir is skipped so the realpath check can't be
-    leveraged to delete content via a symlink trick."""
+    """Skip a symlinked output_dir so a symlink cannot steer the realpath containment check."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     real = outputs_setup / "real-run"
@@ -130,12 +123,10 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 def test_missing_output_dir_is_noop(outputs_setup):
     from core.training.training import _cleanup_cancelled_checkpoints
     _cleanup_cancelled_checkpoints(outputs_setup / "does-not-exist")
-    # Should not raise; nothing to assert beyond non-failure.
 
 
 def test_symlinked_child_skipped(outputs_setup):
-    """A symlinked tmp-checkpoint-* child must not be deleted, so the
-    realpath bypass cannot redirect rmtree to arbitrary content."""
+    """A symlinked tmp-checkpoint-* child is skipped so rmtree cannot be redirected by a link."""
     from core.training.training import _cleanup_cancelled_checkpoints
 
     out = outputs_setup / "run-symchild"

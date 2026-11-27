@@ -14,7 +14,6 @@ from types import SimpleNamespace
 
 import pytest
 
-# Keep this test runnable without optional logging deps.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -34,7 +33,6 @@ from utils.account_context import OWNER, AccountContext, arun_as
 ALICE = AccountContext("a" * 32, "alice")
 
 PROBE_SECONDS = 0.5
-# Well above scheduling jitter, well below one probe.
 MAX_STALL = 0.2
 
 
@@ -84,14 +82,12 @@ def slow_hub(monkeypatch, tmp_path):
     monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = repos)])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: cache)
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
-    # GGUF listing helpers: keep the row builders trivial so only the filter costs anything.
     monkeypatch.setattr(models_route, "_repo_gguf_size_bytes", lambda repo_info: 16)
     monkeypatch.setattr(models_route, "_repo_gguf_last_modified", lambda repo_info: 1.0)
     monkeypatch.setattr(models_route, "_repo_gguf_load_id", lambda *a, **k: None)
     monkeypatch.setattr(models_route, "_gguf_copy_is_usable", lambda *a, **k: True)
     monkeypatch.setattr(models_route, "_cached_gguf_row_has_vision", lambda *a, **k: False)
     monkeypatch.setattr(models_route, "_repo_gguf_task", lambda *a, **k: "text-generation")
-    # Non-GGUF listing helpers.
     monkeypatch.setattr(models_route, "_repo_has_gguf_files", lambda repo_info: False)
     monkeypatch.setattr(models_route, "_repo_model_selection", lambda *a, **k: (None, None))
     monkeypatch.setattr(
@@ -121,8 +117,7 @@ async def _stall_during(coro):
     watcher = asyncio.create_task(ticker())
     await asyncio.sleep(0.05)
     result = await coro
-    # Record the caller's own resume point: a task cancelled before it can tick again
-    # would otherwise hide the gap the blocking call just created.
+    # Record the resume point: a cancelled task would otherwise hide the gap.
     ticks.append(time.perf_counter())
     watcher.cancel()
     gaps = [later - earlier for earlier, later in zip(ticks, ticks[1:])]

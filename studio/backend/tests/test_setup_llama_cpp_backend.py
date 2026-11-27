@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend selector coverage for setup.sh and setup.ps1.
-
-The scripts do not act on UNSLOTH_LLAMA_CPP_BACKEND: install_llama_prebuilt.py
-reads it directly, and it is also the only side that can see a choice recorded in
-the install marker. What is left here is reporting -- the match is
-case-insensitive and whitespace-trimmed, unknown values warn, and macOS says so
-for the two choices its universal Metal build cannot honour.
-"""
+"""The scripts only report UNSLOTH_LLAMA_CPP_BACKEND; install_llama_prebuilt.py reads it."""
 
 import os
 import re
@@ -19,10 +12,7 @@ from pathlib import Path
 
 import pytest
 
-# tests/_shared, put on sys.path by studio/backend/tests/conftest.py. Every pwsh spawn in
-# this file goes through it: the two parametrised probes below are 17 pwsh startups in one
-# xdist job, all sharing $XDG_CACHE_HOME/powershell with every other worker, which is the
-# race that kills a startup outright with SIGABRT before the script runs.
+# All pwsh spawns go through run_pwsh: parallel startups race on the shared cache and SIGABRT.
 from unsloth_pwsh_runner import run_pwsh
 
 _STUDIO = Path(__file__).resolve().parents[2]
@@ -40,9 +30,7 @@ def _backend_block() -> str:
 
 
 def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
-    # Pass the value through env (not the script text) so whitespace survives, and
-    # stub the setup.sh logging helpers the unknown-value branch calls. system sets
-    # _HOST_SYSTEM so the macOS (Darwin) no-op branch can be exercised.
+    # Pass the value via env so whitespace survives; stub the setup.sh log helpers.
     env = {
         k: v
         for k, v in os.environ.items()
@@ -68,9 +56,7 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
 
 
 def test_backend_block_forwards_nothing_to_the_installer():
-    # One owner for the selection. install_llama_prebuilt.py reads the variable
-    # itself and is the only side that can also read the marker's recorded choice,
-    # so a second copy assembled here could only ever contradict it.
+    # install_llama_prebuilt.py owns the selection; it alone can read the marker's recorded choice.
     assert "_PREBUILT_CMD" not in _backend_block()
 
 
@@ -85,7 +71,6 @@ def test_backend_cpu_is_accepted(value):
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["cpu", "CPU", " cpu "])
 def test_backend_cpu_macos_warns(value):
-    # macOS has no CPU-only bundle: the universal build already runs on CPU.
     args, stderr = _run(value, system = "Darwin")
     assert args == []
     assert "macOS" in stderr
@@ -145,11 +130,7 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
 
 
 def test_ordinary_prebuilt_failure_does_not_re_derive_the_backend():
-    # Exit 2 is reached only when no concrete backend was in play: a request the
-    # installer could not honour -- named in the environment or recorded in the
-    # marker the scripts cannot read -- arrives as exit 5 and fails closed there.
-    # Re-deriving it here from the environment alone would miss the marker case
-    # and disagree with the installer on the rest.
+    # An unhonoured request (env or marker) exits 5 and fails closed; exit 2 means no concrete backend.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     failure = sh.index('step "llama.cpp" "prebuilt install failed"')
     branch = sh[failure : sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)]
@@ -203,9 +184,7 @@ def test_explicit_backend_source_build_fails_closed():
 
 
 def test_force_compile_sets_need_source_build_before_backend_guard():
-    # A forced source build combined with any concrete backend must reach the
-    # explicit-backend rejection. The source-build state must therefore be set
-    # before the guard runs.
+    # The source-build state must be set before the explicit-backend guard runs.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     force_compile_set = sh.index(
         'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true'
@@ -320,8 +299,7 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
             "pwsh",
             "-NoProfile",
             "-Command",
-            # Brace the name: PowerShell reads "$var:" as a scope qualifier and
-            # fails to parse, so the probe never ran on a host that has pwsh.
+            # Brace the name: PowerShell reads "$var:" as a scope qualifier.
             f'{normalize}\n"RESULT:${{sourceLlamaBackend}}:$explicitLlamaSourceBackend"',
         ],
         capture_output = True,
@@ -338,7 +316,6 @@ def _run_ps1(value: str | None, extra_env: dict[str, str] | None = None) -> str:
         r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
-    # The mirror of test_backend_block_forwards_nothing_to_the_installer.
     assert "$prebuiltArgs" not in normalize, normalize
     env = {
         k: v
@@ -349,10 +326,7 @@ def _run_ps1(value: str | None, extra_env: dict[str, str] | None = None) -> str:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     env.update(extra_env or {})
     harness = (
-        # The spliced snippet warns through setup.ps1's output sink, which the real
-        # script defines above every call site. Stub it to Write-Host so the warning
-        # lands on stdout, where the assertions below read it: without this the call
-        # errors out and the harness returns a bare "ARGS:".
+        # Stub setup.ps1's Write-StudioLine sink so the warning lands on stdout.
         "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) "
         "Write-Host $Message }\n"
         "$prebuiltArgs = @()\n"

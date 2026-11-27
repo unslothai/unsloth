@@ -13,7 +13,7 @@ from utils import hf_cache_settings
 
 
 @pytest.fixture(params = [False, True])
-def cache_locations(monkeypatch, tmp_path, request):
+def cache_locations(monkeypatch, tmp_path, request, tmp_cache_home_allowed):
     active_custom = request.param
     store = {}
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
@@ -64,7 +64,6 @@ def cache_client():
     app.include_router(models.router, prefix = "/api/models")
     app.dependency_overrides[inventory.get_current_subject] = lambda: "test"
     app.dependency_overrides[inventory.get_request_hf_token] = lambda: None
-    # A browser session, not an sk-unsloth call: the route reads this before its cache walk.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     app.dependency_overrides[allow_ambient_hf_token] = lambda: True
     with TestClient(app) as client:

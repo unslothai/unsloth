@@ -1279,6 +1279,55 @@ def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
     assert flat.rope_parameters["rope_theta"] == 10000.0
 
 
+def test_rope_carry_overrides_a_global_base_the_setter_filled_into_a_nested_entry():
+    """transformers 5.21.0's ``rope_scaling`` setter runs ``standardize_rope_params``, which
+    ``setdefault``s the global ``rope_theta`` into every nested entry before the carry sees it.
+    A label the caller gave no base still gets its own carried base, not the global one."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_labels_naming_no_base,
+        _rope_theta_snapshot,
+    )
+
+    config = SimpleNamespace(
+        _rope_type_labels = DEEPSEEK_V4_LABELS,
+        rope_theta = 10000.0,
+        rope_parameters = {k: dict(v) for k, v in DEEPSEEK_V4_ROPE.items()},
+    )
+    carried = _rope_theta_snapshot(config)
+    value = {
+        "main": {"rope_type": "linear", "factor": 4.0},
+        "compress": {"rope_type": "default"},
+        "unknown": {"rope_type": "default"},
+    }
+    unnamed = _rope_labels_naming_no_base(config, value)
+    assert unnamed == {"main", "compress", "unknown"}
+    # What the 5.21.0 setter leaves behind: the global base defaulted into each entry.
+    config.rope_parameters = {k: dict(v, rope_theta = 10000.0) for k, v in value.items()}
+    carry(config, carried, unnamed)
+    restored = config.rope_parameters
+    assert restored["compress"]["rope_theta"] == 160000.0, f"global base kept: {restored!r}"
+    assert restored["main"]["rope_theta"] == 10000.0
+    assert restored["main"]["factor"] == 4.0
+    assert "rope_theta" not in restored
+
+    # A base the caller stated is never overridden.
+    stated = {
+        "main": {"rope_type": "default"},
+        "compress": {"rope_type": "default", "rope_theta": 5.0},
+    }
+    unnamed = _rope_labels_naming_no_base(config, stated)
+    assert unnamed == {"main"}
+    config.rope_parameters = {k: dict(v) for k, v in stated.items()}
+    config.rope_parameters["main"]["rope_theta"] = 10000.0
+    carry(config, carried, unnamed)
+    assert config.rope_parameters["compress"]["rope_theta"] == 5.0
+    # A flat incoming dict is not per-label, so nothing is reported.
+    assert _rope_labels_naming_no_base(config, {"rope_type": "default"}) is None
+
+
 def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
     """transformers asks ``isdisjoint``, not ``issubset``: laguna, mellum and zaya ship a rope
     dict naming a label their default ``layer_types`` omits. Under the subset test all their

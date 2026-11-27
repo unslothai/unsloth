@@ -33,6 +33,7 @@ import {
 import { Waveform } from "./waveform";
 import { secondsBeyondEnd } from "./waveform-range";
 import { WaveformRangeSelect } from "./waveform-range-select";
+import { FieldLabel } from "./field";
 
 export { musicEditProblem } from "../music/music-edit-rules";
 
@@ -149,7 +150,7 @@ export function MusicEditInputs({
       ) : null}
 
       {actions.length > 0 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <span className="text-ui-13 font-medium text-foreground">
             What to do
           </span>
@@ -176,7 +177,7 @@ export function MusicEditInputs({
             }))}
           />
           {action ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               {MUSIC_EDIT_ACTION_HINT[action]}
             </p>
           ) : null}
@@ -187,7 +188,7 @@ export function MusicEditInputs({
                 : rangeProblem}
             </p>
           ) : extendedBy > 0 ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               Extends the clip by{" "}
               <span className="font-mono tabular-nums">
                 {extendedBy.toFixed(1)}
@@ -231,15 +232,15 @@ export function MusicEditInputs({
       ) : null}
 
       {action ? (
-        <div className="grid gap-1.5">
-          <label
+        <div className="grid gap-2">
+          <FieldLabel
             htmlFor={PROMPT_ID}
             className="text-ui-13 font-medium text-foreground"
           >
             {editUsesStrength(action)
               ? "What should it sound like?"
               : "What should the new part sound like?"}
-          </label>
+          </FieldLabel>
           <Textarea
             id={PROMPT_ID}
             value={draft.prompt}
@@ -250,7 +251,7 @@ export function MusicEditInputs({
                 ? "Lo-fi jazz, warm piano, brushed drums…"
                 : "A soaring guitar solo over the same groove…"
             }
-            className="min-h-20 rounded-xl"
+            className="min-h-20"
           />
         </div>
       ) : null}

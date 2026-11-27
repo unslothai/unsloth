@@ -8,6 +8,12 @@ import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models._utils as u
 
 
+@pytest.fixture(autouse = True)
+def _flex_decoding_available(monkeypatch):
+    # These pin the routing where flex_decoding compiles; test_flex_decode_guard_wrapper.py covers a host where it cannot.
+    monkeypatch.setattr(u, "_flex_decoding_unavailable", lambda: False, raising = False)
+
+
 @pytest.mark.parametrize("head_dim", [32, 64, 128, 192, 256])
 def test_no_kernel_options_at_or_below_256(head_dim):
     assert u._flex_kernel_options_for_head_dim(head_dim) is None
@@ -69,6 +75,18 @@ def _call(head_dim, **kwargs):
 
 def test_wrapper_injects_kernel_options_above_256():
     assert _call(512)["kernel_options"]["BLOCK_M"] == 32
+
+
+def test_wrapper_injects_kernel_options_inside_a_compiled_block():
+    import torch
+
+    original, seen = _record()
+    wrapped = u._wrap_flex_attention_forward(original)
+    torch._dynamo.reset()
+    torch.compile(lambda q: wrapped(None, q, q, q, None), backend = "eager")(
+        torch.zeros(1, 2, 8, 512)
+    )
+    assert seen["kernel_options"]["BLOCK_M"] == 32
 
 
 def test_wrapper_leaves_256_alone():

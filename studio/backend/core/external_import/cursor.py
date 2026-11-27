@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cursor: ``~/.cursor/projects/<slug>/agent-transcripts/<session>[/<session>].jsonl``.
-
-Cursor stores no tool results or per-line timestamps, so calls import without ``result``
-and times are file creation + 1 ms per message (as the frontend does).
-"""
+"""Cursor transcripts lack tool results and timestamps; times are file creation plus 1 ms per message."""
 
 from __future__ import annotations
 
+import base64
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from core.external_import import (
     Source,
@@ -25,6 +22,7 @@ from core.external_import import (
     title_from,
     tool_call,
 )
+from utils.device_sync_settings import sniff_image_type
 
 NO_FOLDER_SLUG = "empty-window"
 
@@ -34,6 +32,9 @@ _INJECTED_TAGS = (
 )
 _INJECTED = re.compile(rf"<({_INJECTED_TAGS})>.*?</\1>|</?(?:{_INJECTED_TAGS})\s*/?>", re.DOTALL)
 _REDACTED = re.compile(r"^[ \t]*\[REDACTED\][ \t]*$", re.MULTILINE)
+_IMAGE_FILES = re.compile(r"<image_files>(.*?)</image_files>", re.DOTALL)
+_LISTED_FILE = re.compile(r"^\s*\d+\.\s+(.+?)\s*$", re.MULTILINE)
+_PLACEHOLDER = re.compile(r"^[ \t]*\[Image\][ \t]*$|</?user_query>", re.MULTILINE)
 
 
 def _sessions(state_dir: Path) -> list[Path]:
@@ -70,12 +71,30 @@ def list_projects(home: Path) -> list[SourceProject]:
     return projects
 
 
-def _user_text(text: str) -> str:
+def _user_text(text: str, pictured: bool) -> str:
     queries = [q.strip() for q in _USER_QUERY.findall(text) if q.strip()]
-    return clean_text("\n\n".join(queries) if queries else _INJECTED.sub("", text))
+    if queries:
+        return clean_text("\n\n".join(queries))
+    text = _INJECTED.sub("", text)
+    # Only beside a kept image: an emptied turn would shift every later message id.
+    return clean_text(_PLACEHOLDER.sub("", text) if pictured else text)
 
 
-def _parts(role: str, content, message_id: str) -> list[dict]:
+def _images(text: str, assets: Path) -> list[dict]:
+    parts = []
+    for block in _IMAGE_FILES.findall(text):
+        for listed in _LISTED_FILE.findall(block):
+            try:
+                data = (assets / PureWindowsPath(listed).name).read_bytes()
+            except OSError:
+                continue
+            if mime := sniff_image_type(data):
+                image = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+                parts.append({"type": "image", "image": image})
+    return parts
+
+
+def _parts(role: str, content, message_id: str, assets: Path) -> list[dict]:
     if isinstance(content, str):
         content = [{"type": "text", "text": content}]
     if not isinstance(content, list):
@@ -86,7 +105,12 @@ def _parts(role: str, content, message_id: str) -> list[dict]:
             continue
         text = block.get("text") if isinstance(block.get("text"), str) else ""
         if block.get("type") == "text":
-            text = _user_text(text) if role == "user" else clean_text(_REDACTED.sub("", text))
+            if role == "user":
+                images = _images(text, assets)
+                parts.extend(images)
+                text = _user_text(text, bool(images))
+            else:
+                text = clean_text(_REDACTED.sub("", text))
             if text:
                 parts.append({"type": "text", "text": text})
         elif block.get("type") == "tool_use" and role == "assistant":
@@ -96,13 +120,14 @@ def _parts(role: str, content, message_id: str) -> list[dict]:
 
 def read_transcript(path: Path, thread_id: str, session_id: str) -> Transcript:
     created, updated = file_times_ms(path)
+    transcripts = path.parent if path.parent.name == "agent-transcripts" else path.parent.parent
     messages: list[dict] = []
     for record in read_jsonl(path):
         role, message = record.get("role"), record.get("message")
         if role not in ("user", "assistant") or not isinstance(message, dict):
             continue
         message_id = stable_id("cursor", session_id, str(len(messages)), length = 16)
-        parts = _parts(role, message.get("content"), message_id)
+        parts = _parts(role, message.get("content"), message_id, transcripts.parent / "assets")
         if not parts:
             continue
         messages.append(

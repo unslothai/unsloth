@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 native renders through a resident sd-server instead of one sd-cli per render.
-
-Hermetic: the server process and its HTTP client are faked; nothing spawns a binary or opens a
-socket. The real-binary check (pixels and audio identical to sd-cli for the same seed, keyframe
-and text-only) lives with the benchmark evidence, not here."""
+"""Hermetic: H3 renders reuse a resident sd-server; the server process and HTTP client are faked."""
 
 from __future__ import annotations
 
@@ -24,13 +20,14 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_server_command,
     build_vid_gen_request,
     h3_server_eligible,
+    sd_cli_frame_files,
 )
 from core.inference.sd_cpp_engine import SdCppCancelled
 from core.inference.sd_cpp_server import SdCppServerUnsupported
 from core.inference.video import VideoBackend
 from core.inference import video_minimax_h3 as h3
 
-# Sibling imports need the tests dir on the path: pytest inserts rootdir, not this package.
+# pytest inserts rootdir, not this package, on the path.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -70,9 +67,6 @@ def patched(monkeypatch):
     return monkeypatch
 
 
-# -- request / argv -----------------------------------------------------------------------------
-
-
 def test_vid_gen_request_mirrors_the_cli_argv():
     req = build_vid_gen_request(_params())
     assert req == {
@@ -87,7 +81,7 @@ def test_vid_gen_request_mirrors_the_cli_argv():
             "sample_steps": 20,
             "flow_shift": 12.0,
         },
-        # AVI: needs no WebM build, and is what the CUDA prebuilt sd-cli writes anyway.
+        # AVI needs no WebM build and is what the CUDA prebuilt sd-cli writes.
         "output_format": "avi",
         "output_compression": 90,
     }
@@ -101,14 +95,45 @@ def test_vid_gen_request_carries_keyframes_and_rejects_mixing_with_references():
         build_vid_gen_request(_params(), images_b64 = {"init_image": "AAA"}, ref_images_b64 = ["BBB"])
 
 
-def test_reference_video_and_audio_stay_on_the_cli():
+def test_reference_video_and_audio_need_inline_bytes():
     assert h3_server_eligible(_params()) is True
     assert h3_server_eligible(_params(ref_images = ("/r.png",))) is True
     for field in ("ref_videos", "ref_video_audios", "ref_audios"):
         params = _params(**{field: ("/r",)})
         assert h3_server_eligible(params) is False
+        assert h3_server_eligible(params, server_refs = True) is True
         with pytest.raises(ValueError):
             build_vid_gen_request(params)
+
+
+def test_vid_gen_request_carries_reference_video_and_audio():
+    params = _params(
+        ref_videos = ("/v0", "/v1"), ref_video_audios = ("/a0.wav",), ref_audios = ("/s.wav",)
+    )
+    req = build_vid_gen_request(
+        params,
+        ref_videos_b64 = [["F0", "F1"], ["G0"]],
+        ref_video_audios_b64 = ["A0"],
+        ref_audios_b64 = ["S"],
+    )
+    assert req["ref_videos"] == [["F0", "F1"], ["G0"]]
+    assert req["ref_video_audios"] == ["A0"]
+    assert req["ref_audios"] == ["S"]
+    with pytest.raises(ValueError, match = "cannot be combined"):
+        build_vid_gen_request(
+            _params(ref_audios = ("/s.wav",)), images_b64 = {"init_image": "AAA"}, ref_audios_b64 = ["S"]
+        )
+
+
+def test_frame_files_follow_the_cli_reader(tmp_path):
+    for name in ("00001.png", "00000.png", "00002.JPG", "notes.txt", "00003.gif"):
+        (tmp_path / name).write_bytes(name.encode())
+    (tmp_path / "sub.png").mkdir()
+    assert [Path(p).name for p in sd_cli_frame_files(str(tmp_path))] == [
+        "00000.png",
+        "00001.png",
+        "00002.JPG",
+    ]
 
 
 def test_server_command_passes_the_audio_vae():
@@ -118,9 +143,6 @@ def test_server_command_passes_the_audio_vae():
         "/b/sd-server", SdCppModelFiles(diffusion_model = "/m/z.gguf"), host = "h", port = 1
     )
     assert "--audio-vae" not in no_audio
-
-
-# -- SdCppServer.vid_gen ------------------------------------------------------------------------
 
 
 def test_vid_gen_returns_container_bytes(patched):
@@ -157,30 +179,30 @@ def test_vid_gen_other_400_is_a_plain_failure(patched):
 
 
 def test_vid_gen_failure_carries_the_log_cause(patched):
-    s = _server_with(
-        _FakePopen(),
-        _FakeClient(
-            post = lambda url, json: _Resp(202, {"id": "jobF"}),
-            get = lambda url: _Resp(
-                200,
-                {
-                    "status": "failed",
-                    "error": {
-                        "code": "generation_failed",
-                        "message": "generate_video returned no results",
-                    },
+    client = _FakeClient(
+        get = lambda url: _Resp(
+            200,
+            {
+                "status": "failed",
+                "error": {
+                    "code": "generation_failed",
+                    "message": "generate_video returned no results",
                 },
-            ),
+            },
         ),
     )
-    s._tail.append(
-        "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 5463.50 MiB: out of memory"
-    )
+    s = _server_with(_FakePopen(), client)
+
+    def post(url, json):
+        s._tail.append(
+            "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 5463.50 MiB: out of memory"
+        )
+        s._lines_seen += 1
+        return _Resp(202, {"id": "jobF"})
+
+    client._post = post
     with pytest.raises(RuntimeError, match = "out of memory"):
         s.vid_gen({"prompt": "x"}, poll_interval = 0.0)
-
-
-# -- routing in the video backend ---------------------------------------------------------------
 
 
 class _FakeServer:
@@ -196,9 +218,15 @@ class _FakeServer:
         self.alive_after = alive_after
         self.payloads = []
         self._alive = True
+        self.ref_features = True
+        self.feature_queries = []
 
     def is_alive(self):
         return self._alive
+
+    def vid_gen_accepts(self, features):
+        self.feature_queries.append(tuple(features))
+        return self.ref_features
 
     def vid_gen(
         self,
@@ -238,6 +266,7 @@ class _FakeSlot:
         *,
         cancel_event = None,
         pre_spawn = None,
+        launch_transform = None,
     ):
         if self.start_exc is not None:
             self.got.append((flags, env))
@@ -245,6 +274,8 @@ class _FakeSlot:
         if pre_spawn is not None:
             # The real slot fits a start under its lock and starts with the flags the fit returns.
             flags = list(pre_spawn())
+        if launch_transform is not None:
+            self.launched_flags = tuple(launch_transform(tuple(flags or ())))
         self.got.append((flags, env))
         return self.server
 
@@ -332,8 +363,9 @@ def test_no_slot_or_kill_switch_or_reference_video_uses_the_cli(tmp_path, monkey
     slot = _FakeSlot(_FakeServer())
     monkeypatch.setenv(h3.H3_NATIVE_SERVER_ENV, "0")
     assert _render(slot, tmp_path) is None
-    assert slot.stopped == 1  # a server left from before the switch is released
+    assert slot.stopped == 1
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV)
+    monkeypatch.setenv("UNSLOTH_H3_SERVER_REFS", "0")
     server = _FakeServer()
     slot = _FakeSlot(server)
     assert _render(slot, tmp_path, _params(ref_videos = ("/frames",))) is None
@@ -342,12 +374,73 @@ def test_no_slot_or_kill_switch_or_reference_video_uses_the_cli(tmp_path, monkey
     assert slot.released and slot.got == []
 
 
+def _staged_refs(tmp_path):
+    frames = tmp_path / "ref-video-00"
+    frames.mkdir()
+    for name in ("00001.png", "00000.png"):
+        (frames / name).write_bytes(name.encode())
+    (tmp_path / "va.wav").write_bytes(b"RIFF-VA")
+    (tmp_path / "a.wav").write_bytes(b"RIFF-A")
+    return _params(
+        ref_videos = (str(frames),),
+        ref_video_audios = (str(tmp_path / "va.wav"),),
+        ref_audios = (str(tmp_path / "a.wav"),),
+    )
+
+
+def test_reference_video_and_audio_render_on_the_resident_server(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_SERVER_REFS", raising = False)
+    server = _FakeServer(data = b"AVI-REF")
+    slot = _FakeSlot(server)
+    out = _render(slot, tmp_path, _staged_refs(tmp_path))
+    assert out.read_bytes() == b"AVI-REF"
+    assert slot.released == [] and len(slot.got) == 1
+    assert server.feature_queries == [("ref_videos", "ref_video_audios", "ref_audios")]
+    payload = server.payloads[0]
+    assert [base64.b64decode(f) for f in payload["ref_videos"][0]] == [b"00000.png", b"00001.png"]
+    assert base64.b64decode(payload["ref_video_audios"][0]) == b"RIFF-VA"
+    assert base64.b64decode(payload["ref_audios"][0]) == b"RIFF-A"
+
+
+def test_server_without_reference_fields_hands_off_to_the_cli(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_H3_SERVER_REFS", raising = False)
+    server = _FakeServer()
+    server.ref_features = False
+    slot = _FakeSlot(server)
+    params = _staged_refs(tmp_path)
+    assert _render(slot, tmp_path, params) is None
+    assert server.payloads == [] and slot.released and slot.refs_unsupported
+    slot.got.clear()
+    assert _render(slot, tmp_path, params) is None
+    assert slot.got == []
+    assert _render(slot, tmp_path) is not None
+
+
+@pytest.mark.parametrize(
+    "caps,expected",
+    [
+        ({"features_by_mode": {"vid_gen": {"ref_videos": True, "ref_audios": True}}}, True),
+        ({"features_by_mode": {"vid_gen": {"ref_videos": True}}}, False),
+        ({"features_by_mode": {"vid_gen": {"init_image": True}}}, False),
+        ({}, False),
+    ],
+)
+def test_vid_gen_accepts_reads_capabilities_once(patched, caps, expected):
+    client = _FakeClient(get = lambda url: _Resp(200, caps))
+    s = _server_with(_FakePopen(), client)
+    assert s.vid_gen_accepts(("ref_videos", "ref_audios")) is expected
+    assert s.vid_gen_accepts(("ref_videos", "ref_audios")) is expected
+    assert client.get_urls == ["http://127.0.0.1:1234/sdcpp/v1/capabilities"]
+    assert s.vid_gen_accepts(()) is True
+
+
 def test_start_failure_falls_back_and_stays_one_shot(tmp_path, monkeypatch):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _FakeSlot(start_exc = RuntimeError("sd-server failed to become ready"))
     assert _render(slot, tmp_path) is None
     assert "start failed" in slot.disabled_reason
-    # Disabled: the next render does not even try.
     slot.start_exc = AssertionError("must not start again")
     assert _render(slot, tmp_path) is None
 
@@ -372,7 +465,7 @@ def test_failed_job_on_a_live_server_raises_and_releases_it(tmp_path, monkeypatc
     with pytest.raises(RuntimeError, match = "out of memory"):
         _render(slot, tmp_path)
     assert slot.stopped == 1
-    assert slot.disabled_reason is None  # the next render respawns a server
+    assert slot.disabled_reason is None
 
 
 def test_cancel_is_a_cancellation_not_a_fallback(tmp_path, monkeypatch):
@@ -383,9 +476,6 @@ def test_cancel_is_a_cancellation_not_a_fallback(tmp_path, monkeypatch):
     with pytest.raises(SdCppCancelled):
         _render(slot, tmp_path, cancel = cancel)
     assert slot.disabled_reason is None
-
-
-# -- slot lifecycle -----------------------------------------------------------------------------
 
 
 def test_sibling_server_binary(tmp_path):
@@ -411,6 +501,7 @@ def test_slot_holds_the_managed_tree_while_its_server_lives(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -432,11 +523,11 @@ def test_slot_holds_the_managed_tree_while_its_server_lives(monkeypatch):
     )
     assert sd_cpp_backend._managed_tree_in_use() is False
     server = slot.get()
-    assert slot.get() is server  # reused, not respawned
+    assert slot.get() is server
     assert started == [(_FILES, ["--offload-to-cpu", "--diffusion-fa"], ["--rng", "cpu"])]
     assert sd_cpp_backend._managed_tree_in_use() is True
     with sd_cpp_backend._tree_claimed_for_install() as claimed:
-        assert claimed is False  # an install stands down for the resident server
+        assert claimed is False
     slot.stop()
     assert server.stopped is True
     assert sd_cpp_backend._managed_tree_in_use() is False
@@ -452,6 +543,7 @@ def test_slot_respawns_a_dead_server(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -467,13 +559,10 @@ def test_slot_respawns_a_dead_server(monkeypatch):
     monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: False)
     slot = h3.H3NativeServerSlot("/x/sd-server", _FILES, ())
     first = slot.get()
-    first.alive = False  # crashed while idle
+    first.alive = False
     second = slot.get()
     assert second is not first and second.is_alive()
     slot.stop()
-
-
-# -- spawn signature, idle timeout, pressure and release ------------------------------------------
 
 
 class _LifeSrv:
@@ -490,6 +579,7 @@ class _LifeSrv:
         files,
         *,
         offload = None,
+        threads = None,
         env = None,
         extra_args = None,
     ):
@@ -533,7 +623,6 @@ def test_slot_spawns_with_the_render_flags_and_env(life):
     assert _LifeSrv.spawns == [
         {"offload": RESIDENT + ["--sage-attn"], "env": SAGE_ENV, "extra_args": ["--rng", "cpu"]}
     ]
-    # Same signature: reused, not respawned.
     assert slot.get(RESIDENT + ["--sage-attn"], dict(SAGE_ENV)) is server
     assert len(_LifeSrv.spawns) == 1
     assert slot.alive_signature()[2] == tuple(RESIDENT + ["--sage-attn"])
@@ -542,9 +631,9 @@ def test_slot_spawns_with_the_render_flags_and_env(life):
 @pytest.mark.parametrize(
     "first, second",
     [
-        ((RESIDENT, {}), (OFFLOAD, {})),  # memory decision changed
-        ((RESIDENT, {}), (RESIDENT + ["--sage-attn"], SAGE_ENV)),  # speed_mode=max switched on
-        ((RESIDENT + ["--sage-attn"], SAGE_ENV), (RESIDENT + ["--sage-attn"], {})),  # env differs
+        ((RESIDENT, {}), (OFFLOAD, {})),
+        ((RESIDENT, {}), (RESIDENT + ["--sage-attn"], SAGE_ENV)),
+        ((RESIDENT + ["--sage-attn"], SAGE_ENV), (RESIDENT + ["--sage-attn"], {})),
     ],
 )
 def test_slot_respawns_when_the_signature_changes(life, first, second):
@@ -552,7 +641,7 @@ def test_slot_respawns_when_the_signature_changes(life, first, second):
     old = slot.get(*first)
     new = slot.get(*second)
     assert new is not old
-    assert old.is_alive() is False  # never two resident copies
+    assert old.is_alive() is False
     assert [s["offload"] for s in _LifeSrv.spawns] == [first[0], second[0]]
     assert slot.last_release_reason == "signature changed"
 
@@ -593,11 +682,10 @@ def test_a_new_render_cancels_the_idle_timer(life, monkeypatch):
     server = slot.get(RESIDENT, {})
     slot.end_render()
     first = slot._timer
-    slot.begin_render()  # the next render starts before the window ends
+    slot.begin_render()
     assert slot._timer is None
     first.join(1.0)
     assert server.is_alive() is True
-    # A stale firing (the timer raced the cancel) is ignored too.
     slot._on_idle(slot._timer_token - 1)
     assert server.is_alive() is True
     slot.end_render()
@@ -662,14 +750,12 @@ def test_pressure_thresholds():
         vram_free = 40 * gib, vram_total = 80 * gib, host_available = 100 * gib, host_total = 200 * gib
     )
     assert h3.h3_native_server_pressure(**ok) is None
-    # 15% of an 80 GiB card is 12 GiB.
     assert "VRAM" in h3.h3_native_server_pressure(**{**ok, "vram_free": 11 * gib})
-    # A 16 GiB card: the 4 GiB floor wins over 15%.
+    # 16 GiB card: the 4 GiB floor wins over 15%.
     assert "VRAM" in h3.h3_native_server_pressure(
         **{**ok, "vram_free": 3 * gib, "vram_total": 16 * gib}
     )
     assert "host RAM" in h3.h3_native_server_pressure(**{**ok, "host_available": 29 * gib})
-    # Unknown readings decide nothing.
     assert (
         h3.h3_native_server_pressure(
             vram_free = None, vram_total = None, host_available = None, host_total = None
@@ -690,7 +776,6 @@ def test_release_stops_an_idle_server_and_defers_a_busy_one(life, monkeypatch):
     assert h3.release_h3_native_servers("export subprocess starting") >= 2
     assert idle_server.is_alive() is False and idle._timer is None
     assert idle.last_release_reason == "export subprocess starting"
-    # The render in flight finishes on its server; the server goes as it ends.
     assert busy_server.is_alive() is True
     assert busy.end_render() == "export subprocess starting"
     assert busy_server.is_alive() is False
@@ -706,7 +791,7 @@ def test_gpu_arbiter_releases_idle_video_servers_for_other_owners(monkeypatch):
     gpu_arbiter.acquire_for(gpu_arbiter.CHAT, account_id = "a")
     assert seen == ["GPU acquired for chat"]
     gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, account_id = "a", allow_evict = True)
-    assert seen == ["GPU acquired for chat"]  # the video owner itself keeps its server
+    assert seen == ["GPU acquired for chat"]
 
 
 def test_render_hands_the_cli_flags_and_env_to_the_slot(tmp_path, monkeypatch):
@@ -733,9 +818,6 @@ def test_kill_switch_stops_a_live_server_and_uses_the_cli(tmp_path, monkeypatch,
     monkeypatch.setenv(h3.H3_NATIVE_SERVER_ENV, "0")
     assert _render(slot, tmp_path) is None
     assert server.is_alive() is False and slot._timer is None
-
-
-# -- through VideoBackend.generate ----------------------------------------------------------------
 
 
 def _generate_backend(
@@ -798,7 +880,6 @@ def test_a_live_resident_server_is_not_pushed_back_to_offload_by_its_own_usage(
     gib = 1024**3
     resident = tuple(f for f in AUTO_FLAGS if f not in ("--offload-to-cpu", "--stream-layers"))
     slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
-    # The live server holds the 32 GiB bundle, so the card reads only 10 GiB free: enough for this clip's activations.
     monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
     backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
     result = backend.generate(prompt = "a fox", width = 960, height = 544)
@@ -817,7 +898,7 @@ def test_a_live_resident_server_does_not_hide_a_clip_too_large_for_the_card(monk
     slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
     monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
     backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
-    # 8x the pixel volume: ~43 GiB of activations on top of the weights, more than the 10 GiB the card has left.
+    # 8x pixel volume: ~43 GiB of activations, more than the 10 GiB left.
     result = backend.generate(prompt = "a fox", width = 1920, height = 1088, num_frames = 241)
     assert "--offload-to-cpu" in slot.got[0][0]
     assert result["offload_policy"] == "group"
@@ -830,7 +911,7 @@ def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
     server = slot.get(RESIDENT, {})
     holder_ready, done = threading.Event(), threading.Event()
 
-    def hold():  # stands in for a render spawning its server under the slot lock
+    def hold():
         with slot._lock:
             holder_ready.set()
             done.wait(5)
@@ -845,7 +926,6 @@ def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
     assert _time.monotonic() - t0 < 2.0
     done.set()
     th.join(2)
-    # The pending release is honoured when that render ends.
     assert slot.end_render() == "chat load"
     assert server.is_alive() is False
 
@@ -867,6 +947,7 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -891,7 +972,6 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
         slot.get(RESIDENT, {}, cancel_event = cancel)
     assert loading.is_set() and _time.monotonic() - t0 < 5
     assert slot.alive_signature() is None and slot.disabled_reason is None
-    # Already cancelled: nothing is spawned at all.
     with pytest.raises(SdCppCancelled):
         slot.get(RESIDENT, {}, cancel_event = cancel)
 
@@ -918,12 +998,10 @@ def test_host_reserve_is_a_share_of_the_cgroup_limit(monkeypatch):
 
     gib_mib = 1024
     monkeypatch.setattr(video, "_h3_card_memory_bytes", lambda *_a: (None, None))
-    # A 32 GiB container on a 512 GiB host with 20 GiB still chargeable: 15% of 32 GiB is under 20 GiB.
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (512 * gib_mib, 400 * gib_mib))
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 20 * gib_mib)
     monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: 32 * gib_mib)
     assert video._h3_native_server_pressure("cuda", None) is None
-    # Without a limit the physical total stands.
     monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: None)
     assert "host RAM" in video._h3_native_server_pressure("cuda", None)
 
@@ -941,6 +1019,7 @@ def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -950,7 +1029,6 @@ def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
             return self.alive
 
         def stop(self):
-            # SIGTERM sent, process not reaped yet: an install must still stand down.
             seen.append(sd_cpp_backend._external_tree_holder_alive())
             self.alive = False
 

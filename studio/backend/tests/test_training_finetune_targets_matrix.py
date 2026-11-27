@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Full [training type] x [model branch] x [worker] x [selector combination] sweep.
-
-The four finetune_* selectors are read by exactly two branches on CUDA (vision VLM and audio
-VLM) and by every LoRA branch on MLX, and every other branch builds its adapter from
-target_modules alone. This file pins that map so a guard cannot start firing on a branch that
-never read the selectors, which would turn a previously working run into a hard error.
-"""
+"""Maps which branches read the finetune_* selectors, so no guard fires where they are ignored."""
 
 import ast
 import inspect
@@ -31,8 +25,7 @@ from models import TrainingStartRequest
 
 TRAINING_TYPES = ("LoRA/QLoRA", "Full Finetuning", "Continued Pretraining")
 
-# The branch pre_detect settles on. Only "vlm" and "audio_vlm" forward the selectors on CUDA;
-# prepare_model_for_training's other arms pass target_modules and never the four.
+# Only "vlm" and "audio_vlm" forward the selectors on CUDA.
 BRANCHES = ("text", "vlm", "audio_vlm", "codec", "whisper", "snac")
 _CUDA_BRANCHES_READING_SELECTORS = ("vlm", "audio_vlm")
 
@@ -79,8 +72,7 @@ SELECTOR_CASES = {
 
 _DEFAULT_LEAVES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-# target_modules changes which guard applies at all: "all-linear" turns every selector on
-# inside get_peft_model, and MLX's filter only strips names it recognises as attention or MLP.
+# "all-linear" turns every selector on; MLX's filter strips only attention/MLP names.
 TARGET_MODULE_CASES = {
     "unset": None,
     "empty": [],
@@ -184,11 +176,10 @@ def _mlx_targets(config: dict) -> str:
     _, language, attention, mlp = _finetune_selectors(config)
     explicit = config.get("target_modules")
     if explicit and not (attention or mlp):
-        # The filter drops only recognised attention and MLP leaves; whatever is left trains.
         return f"whatever survives the filter of {list(explicit)}"
     vision = bool(config.get("finetune_vision_layers", False)) if is_vlm else False
     if (attention or mlp) and not language and not vision:
-        language = True  # the back-fill at the MLX LoRA branch
+        language = True
     families = [name for name, on in (("vision", vision), ("language", language)) if on]
     modules = [name for name, on in (("attention", attention), ("mlp", mlp)) if on]
     return f"{'+'.join(families)} x {'+'.join(modules)}"
@@ -237,9 +228,8 @@ def test_mlx_guard_only_fires_on_an_empty_module_selection(
     vision, language, attention, mlp = _finetune_selectors(config)
     targets = config.get("target_modules")
 
-    # Two rules, because the loader has two. With no explicit list the default seven are
-    # wholly attention and MLP, so an empty module selection leaves nothing. With one, the
-    # text branch also needs a layer family, and only a CPT target trains without one.
+    # Two rules, as in the loader: no explicit list means the default seven (all attn/MLP);
+    # with one, the text branch also needs a layer family unless it is a CPT target.
     if not targets:
         empty = not (attention or mlp)
     else:
@@ -321,9 +311,6 @@ def test_cuda_guard_matches_get_peft_regex_for_the_whole_product(flags):
     assert _cuda_guard_fires(config, "vlm") is get_peft_regex_would_raise
 
 
-# --- defaults for a config that never went through the request model ---
-
-
 def test_selector_defaults_match_the_cuda_consumer():
     """A config assembled outside the request model (an old job record, the CLI adapter)
     can omit the keys entirely. 4d reads all four with config.get(..., True), so a guard that
@@ -340,9 +327,6 @@ def test_vision_only_run_with_missing_keys_is_not_rejected():
     }
 
     _check_finetune_targets_after_detect(_Trainer("vlm"), config)
-
-
-# --- call sites, so deleting the wiring fails a test ---
 
 
 def _fake_trainer_with_detect(branch: str):
@@ -381,8 +365,8 @@ def test_pre_detect_training_model_leaves_a_valid_run_alone():
 
 
 def test_mlx_worker_calls_the_guard_in_its_lora_branch():
-    """_run_mlx_training imports mlx, so it cannot be invoked off Apple Silicon. Pin the call
-    site structurally instead: inside `if use_lora:` and above the from_pretrained below it."""
+    """_run_mlx_training imports mlx, so it cannot be invoked off Apple Silicon. Run its guard
+    statement alone instead, and pin it above the from_pretrained below it."""
     source = textwrap.dedent(inspect.getsource(_run_mlx_training))
     tree = ast.parse(source)
     calls = [
@@ -395,16 +379,36 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
 
     assert len(calls) == 1
 
-    guarded = [
+    guard = next(
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name)
-        and node.test.id == "use_lora"
-        and any(call in ast.walk(node) for call in calls)
-    ]
+        for node in tree.body[0].body
+        if isinstance(node, ast.If) and any(call in ast.walk(node) for call in calls)
+    )
+    code = compile(ast.Module(body = [guard], type_ignores = []), "<guard>", "exec")
 
-    assert guarded, "_check_mlx_finetune_targets must sit under `if use_lora:`"
+    def guarded_call(
+        use_lora,
+        model_format = None,
+        is_cpt = False,
+    ):
+        checked = []
+        exec(
+            code,
+            {
+                "use_lora": use_lora,
+                "is_cpt": is_cpt,
+                "config": {"model_format": model_format},
+                "_check_mlx_finetune_targets": checked.append,
+            },
+        )
+        return bool(checked)
+
+    assert guarded_call(True)
+    assert not guarded_call(False)
+    # A continued adapter keeps its own targets, so the requested ones are not checked.
+    assert not guarded_call(True, model_format = "adapter")
+    # CPT builds its adapter from target_modules alone, as on CUDA.
+    assert not guarded_call(True, is_cpt = True)
 
     from_pretrained_lines = [
         node.lineno
@@ -413,19 +417,12 @@ def test_mlx_worker_calls_the_guard_in_its_lora_branch():
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "from_pretrained"
     ]
-
     assert from_pretrained_lines
     assert calls[0].lineno < min(from_pretrained_lines)
 
 
-# --- the guard must never be stricter than the code it guards ---
-
-
 def test_all_linear_vlm_run_with_the_selectors_off_is_not_rejected():
-    """prepare_model_for_training collapses ["all-linear"] to the bare keyword, and
-    get_peft_model forces all five selectors True for it, so this trains every linear layer.
-    Rejecting it would break a working request, and a resumed run can carry it: target_modules
-    is one of the resume structure fields restored from the stored config."""
+    """An all-linear VLM run with the selectors off is valid, since it trains every linear layer."""
     for branch in _CUDA_BRANCHES_READING_SELECTORS:
         config = _request_config("LoRA/QLoRA", branch, SELECTOR_CASES["all_false"], ["all-linear"])
 
@@ -456,9 +453,8 @@ def test_all_linear_alongside_other_leaves_is_not_the_keyword():
 
 @pytest.mark.parametrize("target_modules", [["lm_head"], ["embed_tokens"], ["lm_head", "Wqkv"]])
 def test_mlx_keeps_a_target_the_loader_trains_whatever_the_flags_say(target_modules):
-    """embed_tokens and lm_head go down get_peft_model's CPT path, applied without consulting
-    the layer families. Something trains, so the preflight must not refuse these however the
-    four selectors are set."""
+    """embed_tokens and lm_head train through the get_peft_model CPT path, so preflight must not
+    refuse them however the four selectors are set."""
     config = _request_config("LoRA/QLoRA", "text", SELECTOR_CASES["all_false"], target_modules)
 
     _check_mlx_finetune_targets(config)
@@ -512,13 +508,7 @@ def test_the_error_names_every_field_the_caller_has_to_set():
 
 
 def test_mlx_reads_the_vision_selector_with_the_mlx_default_not_the_cuda_one():
-    """A config that never carried the selectors at all must not be waved through.
-
-    `_finetune_selectors` answers an omitted key with the CUDA consumer's default, and for
-    vision that is True. The MLX call site defaults it False and forces it False for a text
-    model, so taking True from a missing key would let every config written before these
-    fields existed past the guard with nothing to train.
-    """
+    """MLX reads a missing vision selector as False, not the CUDA default True, or old configs pass."""
     config = {
         "training_type": "LoRA/QLoRA",
         "target_modules": ["Wqkv"],
@@ -550,9 +540,7 @@ def test_the_preflight_still_lets_a_vision_only_selection_through():
 
 
 def test_the_effective_check_refuses_a_text_run_whose_only_selection_was_vision():
-    """The call site has already forced vision False for a text model and run the language
-    back-fill, so both layer families are off and get_peft_model would apply no adapter at
-    all -- a warning, and a model with no trainable parameters."""
+    """Vision-only selection on a text run leaves no layer family on; get_peft_model applies no adapter."""
     config = {"training_type": "LoRA/QLoRA", "target_modules": ["Wqkv"]}
 
     with pytest.raises(ValueError, match = "Nothing to train"):
@@ -586,8 +574,12 @@ def test_the_effective_check_runs_after_the_back_fill_at_the_mlx_call_site():
     source = inspect.getsource(worker)
     call = source.index("_check_mlx_effective_targets(\n            config,")
     backfill = source.index("            finetune_language = True")
-    forced = source.index('config.get("finetune_vision_layers", False) if is_vlm else False')
+    forced = source.index(
+        'config.get("finetune_vision_layers", False) if is_vlm and is_dataset_image else False'
+    )
     assert (
         forced < backfill < call
     ), "the effective check must follow both the is_vlm narrowing and the back-fill"
-    assert call < source.index("FastMLXModel.get_peft_model("), "and precede the loader"
+    assert call < source.index(
+        "FastMLXModel.get_peft_model(model, **peft_kwargs)"
+    ), "and precede the loader"

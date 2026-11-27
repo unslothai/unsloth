@@ -196,6 +196,51 @@ def test_loss_through_distributed_wrapper(model):
     torch.testing.assert_close(wrapped, plain)
 
 
+class _ScatteringDataParallel(torch.nn.DataParallel):
+    """nn.DataParallel's contract without GPUs: tensors split on dim 0, every other object shared by all replicas."""
+
+    def __init__(
+        self,
+        inner,
+        replicas = 2,
+    ):
+        torch.nn.Module.__init__(self)
+        self.module = inner
+        self.replicas = replicas
+
+    def forward(self, **kwargs):
+        rows = next(v for v in kwargs.values() if torch.is_tensor(v)).shape[0]
+        bounds = torch.arange(rows).chunk(self.replicas)
+        outs = [
+            self.module(
+                **{
+                    k: v[b[0] : b[-1] + 1]
+                    if torch.is_tensor(v) and v.dim() and v.shape[0] == rows
+                    else v
+                    for k, v in kwargs.items()
+                }
+            )
+            for b in bounds
+        ]
+        return types.SimpleNamespace(
+            logits = torch.cat([o.logits for o in outs]),
+            encoder_last_hidden_state = torch.cat([o.encoder_last_hidden_state for o in outs]),
+        )
+
+
+def test_loss_through_data_parallel_scatter(model):
+    # Each replica must decode from a cache holding its own rows, not one built for the whole batch.
+    batch = _batch(model.config.text_config.vocab_size, model.config.canvas_length)
+    torch.manual_seed(0)
+    plain = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())[0]
+    torch.manual_seed(0)
+    wrapped = DIFFUSION_GEMMA_PROFILE.compute_loss(_ScatteringDataParallel(model), batch, _args())[
+        0
+    ]
+    torch.testing.assert_close(wrapped, plain)
+    assert not model._forward_pre_hooks and not model._forward_hooks
+
+
 @pytest.mark.parametrize("attn", ["eager", "sdpa"])
 def test_decoder_sees_the_prefix_window_inference_sees(attn):
     # The encoder runs on the whole sequence, but sliding decoder layers must keep the window ending at the
@@ -250,6 +295,23 @@ def test_batch_without_encoder_ar_targets_is_finite(model, rows):
     loss, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(model, batch, _args())
     assert torch.isfinite(loss) and loss.requires_grad
     assert float(metrics["encoder_ar_loss"]) == 0.0 and float(metrics["diffusion_loss"]) == 0.0
+
+
+class _ZeroWeight(torch.nn.Module):
+    def forward(self, w):
+        return w * 0
+
+
+def test_encoder_ar_loss_uses_the_fake_quantized_head():
+    m = transformers.DiffusionGemmaForBlockDiffusion.from_pretrained(TINY, dtype = torch.float32)
+    m._unsloth_diffusion_eos_token_id = 1
+    m.train()
+    m.get_output_embeddings().weight_fake_quantizer = _ZeroWeight()
+    batch = _batch(m.config.text_config.vocab_size, m.config.canvas_length)
+    torch.manual_seed(0)
+    _, _, metrics = DIFFUSION_GEMMA_PROFILE.compute_loss(m, batch, _args())
+    expected = torch.log(torch.tensor(float(m.config.text_config.vocab_size)))
+    torch.testing.assert_close(metrics["encoder_ar_loss"], expected)
 
 
 def test_reloaded_adapter_still_refuses_merge(tmp_path):
@@ -330,6 +392,19 @@ def test_full_finetuning_skips_lora():
     )
     assert FastModel.get_peft_model(m, r = 4) is m
     assert not any("lora_" in name for name, _ in m.named_parameters())
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "the CPU backend refuses qat_scheme")
+def test_full_finetuning_applies_qat():
+    pytest.importorskip("torchao")
+    from torchao.quantization.qat import FakeQuantizedLinear
+
+    from unsloth import FastModel
+
+    m, _ = FastModel.from_pretrained(
+        TINY, dtype = torch.float32, full_finetuning = True, qat_scheme = "int8-int4"
+    )
+    assert any(isinstance(x, FakeQuantizedLinear) for x in m.modules())
 
 
 def test_caller_config_is_the_one_loaded():

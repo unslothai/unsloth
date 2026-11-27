@@ -18,11 +18,11 @@
 # Strix APUs / RDNA4 cards (AMD per-arch wheels, see Dockerfile.rocm):
 #   ROCM_GFX=gfx1151 TAG=unsloth-rocm-strix:test bash docker/test_locally-rocm.sh
 #
-# All output is teed to $LOG_DIR (default /tmp/unsloth-rocm-test/).
+# All output is teed to $LOG_DIR (default ${TMPDIR:-/tmp}/unsloth-rocm-test-<uid>/).
 set -uo pipefail
 
 TAG="${TAG:-unsloth-rocm:test}"
-LOG_DIR="${LOG_DIR:-/tmp/unsloth-rocm-test}"
+LOG_DIR="${LOG_DIR:-${TMPDIR:-/tmp}/unsloth-rocm-test-$(id -u)}"
 SKIP_BUILD=0
 SKIP_NOTEBOOK=0
 ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
@@ -41,6 +41,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$LOG_DIR"
+# The container runs $LOG_DIR/host/run_notebook.sh as root with the HF cache and HF_TOKEN: refuse a
+# directory another user owns or can write (a pre-created shared /tmp path), and keep ours go-w.
+if [[ -L "$LOG_DIR" || ! -O "$LOG_DIR" ]]; then
+    echo "ERROR: $LOG_DIR is a symlink or not owned by $(id -un); pass --log-dir to a directory you own." >&2
+    exit 1
+fi
+chmod go-w "$LOG_DIR" || exit 1
 
 GREEN='\033[1;32m'; RED='\033[1;31m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; NC='\033[0m'
 banner() { printf "\n${BLUE}==== %s ====${NC}\n" "$*"; }
@@ -49,9 +56,7 @@ warn()   { printf "${YELLOW}WARN${NC}  %s\n" "$*"; }
 err()    { printf "${RED}ERROR${NC} %s\n" "$*" >&2; }
 fail()   { err "$*"; exit 1; }
 
-# AMD GPU device flags used for all `docker run` invocations. --group-add needs
-# NUMERIC gids: a name is resolved inside the container, where the host's
-# video/render groups do not exist.
+# --group-add needs NUMERIC gids: names resolve inside the container.
 AMD_DEVICE_FLAGS=(--device /dev/kfd --device /dev/dri)
 for _grp in video render; do
     _gid="$(getent group "$_grp" 2>/dev/null | cut -d: -f3)" || _gid=""
@@ -97,7 +102,6 @@ else
     warn "Then: sudo usermod -aG video,render \$USER  (log out and back in)"
 fi
 
-# Check the user is in the video group -- required for /dev/dri access.
 if id -nG 2>/dev/null | grep -qw video; then
     echo "  video group:  ok (current user is a member)"
 else
@@ -128,9 +132,7 @@ else
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
 
-    # Through build.sh, not a bare docker build: it freezes UNSLOTH_REF and
-    # UNSLOTH_ZOO_REF to commits first, so a rerun after main moved cannot reuse
-    # the install layer of an earlier build and validate stale code.
+    # Through build.sh: it freezes the git refs so a rerun cannot reuse a stale install layer.
     IMAGE_NAME="${TAG%%:*}" TAG="${TAG#*:}" ROCM_VERSION="$ROCM_VERSION" \
         TORCH_INDEX_URL="$TORCH_INDEX_URL" ROCM_GFX="$ROCM_GFX" \
         bash "$BUILD_SH" --rocm 2>&1 | tee "$BUILD_LOG"
@@ -139,7 +141,6 @@ else
         fail "build exited $rc -- see $BUILD_LOG"
     fi
 
-    # Sanity-check the build's own self-test ran and passed.
     if grep -q "FAIL: missing packages\|Expected a ROCm torch wheel" "$BUILD_LOG"; then
         fail "build-time sanity check failed -- see $BUILD_LOG"
     fi
@@ -258,7 +259,6 @@ INNER
 fi
 
 # ============================================================================
-# Summary
 # ============================================================================
 banner "summary"
 echo "  image:    $TAG"

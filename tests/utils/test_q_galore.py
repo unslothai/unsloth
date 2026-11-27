@@ -77,12 +77,8 @@ def requires_bnb_optimizer(device):
 
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
 def test_optimizer_constructs_against_the_installed_bitsandbytes():
-    """Runs on every version in the CI matrix, unlike the tests that need a step.
-
-    Construction needs no optimizer kernels, so this is the only check the 0.45.x-0.49.x
-    matrix jobs can actually execute. It has to assert on the bound arguments because the
-    0.50.x misbinding left the arity intact and raised nothing.
-    """
+    """Construction needs no kernels, so it also runs in the 0.45.x-0.49.x jobs; it must assert
+    bound arguments, since 0.50.x misbinding kept the arity and raised nothing."""
     signature = inspect.signature(_adamw_mod.Optimizer2State.__init__)
     captured = {}
     original = _adamw_mod.Optimizer2State.__init__
@@ -241,6 +237,79 @@ def test_resume_from_weights_only_checkpoint_matches_uninterrupted(quant):
     assert torch.equal(bias, bias2)
     # The adaptive schedule widened the gap after resume, so its saved queue was used.
     assert projector.update_proj_gap == optimizer.state[weight]["projector"].update_proj_gap == 4
+
+
+def _projected_optimizer(weight, quant, weight_decay):
+    group = {"params": [weight], "rank": 4, "update_proj_gap": 2, "quant": quant}
+    group.update(queue_size = 2, cos_threshold = 0.0, weight_decay = weight_decay)
+    return _adamw_mod.QGaLoreAdamW8bit([group], lr = 1e-2)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("quant", [True, False])
+def test_projected_step_keeps_the_weight_storage_instead_of_a_copy(quant):
+    """The low-rank swap holds the original weight by reference, not a clone."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    weight = nn.Parameter(torch.randn(128, 64, device = device))
+    optimizer = _projected_optimizer(weight, quant, weight_decay = 0.1)
+    seen = []
+    update_step = optimizer.update_step
+
+    def spy(group, p, gindex, pindex):
+        seen.append((p._saved_data.data_ptr(), p.data.data_ptr()))
+        return update_step(group, p, gindex, pindex)
+
+    optimizer.update_step = spy
+    for i in range(3):
+        torch.manual_seed(i)
+        weight.grad = torch.randn(weight.shape, device = device)
+        before = weight.data.data_ptr()
+        optimizer.step()
+        saved_ptr, zeros_ptr = seen[-1]
+        assert saved_ptr == before != zeros_ptr
+        assert weight.data.data_ptr() == before
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_failed_projected_step_restores_the_untouched_weight_then_retries_exactly():
+    """An OOM in the 8-bit update (auto_find_batch_size) leaves state intact; the retry matches bitwise."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    torch.manual_seed(0)
+    init = torch.randn(128, 64, device = device)
+    grads = [torch.randn(128, 64, device = device) for _ in range(3)]
+
+    def run(fail_at):
+        weight = nn.Parameter(init.clone())
+        optimizer = _projected_optimizer(weight, False, weight_decay = 0.1)
+        update_step = optimizer.update_step
+        calls = {"n": 0}
+
+        def flaky(group, p, gindex, pindex):
+            calls["n"] += 1
+            if calls["n"] == fail_at:
+                raise torch.OutOfMemoryError("out of memory (simulated)")
+            return update_step(group, p, gindex, pindex)
+
+        optimizer.update_step = flaky
+        for i, grad in enumerate(grads):
+            torch.manual_seed(i)
+            weight.grad = grad.clone()
+            before = weight.detach().clone()
+            try:
+                optimizer.step()
+            except torch.OutOfMemoryError:
+                assert torch.equal(weight, before)
+                assert torch.equal(weight.grad, grad)
+                assert optimizer.param_groups[0]["weight_decay"] == 0.1
+                assert not hasattr(weight, "_saved_data")
+                torch.manual_seed(i)
+                optimizer.step()
+        return weight.detach()
+
+    assert torch.equal(run(fail_at = 2), run(fail_at = 0))
 
 
 # ======================================================================
@@ -822,3 +891,49 @@ def test_weight_quant_unrouted_weights_return_to_placeholders():
     optimizer.step()
     assert weight.shape == (1,)
     assert torch.equal(weight._q_data, q_data)
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+@pytest.mark.parametrize("where", ["update_step", "project_back"])
+def test_failed_projected_step_restores_weight_grad_and_decay(monkeypatch, where):
+    """auto_find_batch_size catches an OOM from optimizer.step() and retries: the retry must see the
+    real weight, the full-rank gradient and the configured weight decay, not the zeroed low-rank swap."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+    param = nn.Parameter(torch.full((2, 2), 1.0, device = device))
+    reference = nn.Parameter(param.detach().clone())
+    group = {"params": [param], "rank": 2, "scale": 1.0, "quant": False}
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([group], lr = 0.1, weight_decay = 0.1)
+    reference_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.1)
+    gradient = torch.diag(torch.tensor([2.0, 1.0], device = device))
+    (param * gradient).sum().backward()
+    (reference * gradient).sum().backward()
+    weight_before = param.detach().clone()
+    grad_before = param.grad
+
+    if where == "update_step":
+        target, name = optimizer, "update_step"
+    else:
+        # The projector is built lazily inside step(): patch the class.
+        target, name = _projector_mod.GaLoreProjector, "project_back"
+    original = getattr(target, name)
+    calls = []
+
+    def fail_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, fail_once)
+    with pytest.raises(torch.cuda.OutOfMemoryError):
+        optimizer.step()
+    assert torch.equal(param.detach(), weight_before)
+    assert param.grad is grad_before
+    assert optimizer.param_groups[0]["weight_decay"] == 0.1
+    assert "_wd_saved" not in optimizer.param_groups[0]
+    assert not hasattr(param, "_saved_data")
+
+    optimizer.step()
+    reference_optimizer.step()
+    torch.testing.assert_close(param, reference)

@@ -4,7 +4,7 @@
 import os
 import sys
 
-__all__ = ["apply_debug_distributed_env"]
+__all__ = ["apply_debug_distributed_env", "keep_debug_nccl_env"]
 
 # Read at process group / communicator creation, so they only need to precede init_process_group.
 _DEBUG_DISTRIBUTED_ENV = (
@@ -20,6 +20,10 @@ _FR_BUFFER_NAMES = ("TORCH_FR_BUFFER_SIZE", "TORCH_NCCL_TRACE_BUFFER_SIZE")
 _FR_BUFFER_SIZE = "2000"
 
 
+def _enabled(environ):
+    return environ.get("UNSLOTH_DEBUG_DISTRIBUTED", "0").lower() in ("1", "true", "yes", "on")
+
+
 def apply_debug_distributed_env(environ = None):
     """Under UNSLOTH_DEBUG_DISTRIBUTED=1, enable NCCL / c10d hang diagnostics.
 
@@ -28,7 +32,7 @@ def apply_debug_distributed_env(environ = None):
     TORCH_NCCL_TRACE_BUFFER_SIZE=0 is not overridden. Returns the names that were set.
     """
     environ = os.environ if environ is None else environ
-    if environ.get("UNSLOTH_DEBUG_DISTRIBUTED", "0").lower() not in ("1", "true", "yes", "on"):
+    if not _enabled(environ):
         return []
     dist = sys.modules.get("torch.distributed")
     try:
@@ -56,3 +60,20 @@ def apply_debug_distributed_env(environ = None):
             environ[name] = given[0] if given else _FR_BUFFER_SIZE
             changed.append(name)
     return changed
+
+
+def keep_debug_nccl_env(environ = None):
+    """Under UNSLOTH_DEBUG_DISTRIBUTED=1, snapshot NCCL_DEBUG and return a callable restoring it.
+
+    unsloth_zoo's import sets NCCL_DEBUG=WARN unconditionally when UNSLOTH_ENABLE_LOGGING=1 or
+    UNSLOTH_COMPILE_DEBUG=1, which would drop the INFO logs (or the user's own value) chosen here.
+    Off, or with NCCL_DEBUG unset, the callable does nothing.
+    """
+    environ = os.environ if environ is None else environ
+    saved = environ.get("NCCL_DEBUG") if _enabled(environ) else None
+
+    def restore():
+        if saved is not None and environ.get("NCCL_DEBUG") != saved:
+            environ["NCCL_DEBUG"] = saved
+
+    return restore

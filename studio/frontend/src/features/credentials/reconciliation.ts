@@ -47,8 +47,6 @@ export async function reconcileLegacyHfToken<T extends HfCredentialStatus>(
   try {
     migrated = await dependencies.saveLegacyToken(legacyToken);
   } catch (error) {
-    // Keep upgraded users working from their retained legacy token while the
-    // backend is unavailable. The caller still sees the failure and can retry.
     dependencies.applyToken(legacyToken);
     throw error;
   }
@@ -102,7 +100,6 @@ export async function reconcileLegacyProviderKeys<
         dependencies.removeLegacyKey(config.id, legacyKey);
       }
     } catch {
-      // Preserve local input for retry and per-request fallback.
     }
   }
   return reconciled;
@@ -124,19 +121,21 @@ export interface CredentialBootstrapDependencies<T> {
   setProviders: (providers: T[]) => void;
 
   isCurrent?: () => boolean;
+  onFailure?: (task: "hfToken" | "providers") => void;
 }
 
-/** Wait for both server-first reconciliations before releasing app content. */
 export async function runCredentialBootstrap<T>(
   dependencies: CredentialBootstrapDependencies<T>,
 ): Promise<void> {
 
   if (dependencies.isCurrent && !dependencies.isCurrent()) return;
   const providerSync = dependencies.syncProviders(dependencies.getProviders());
-  const [, providerResult] = await Promise.allSettled([
+  const [hfResult, providerResult] = await Promise.allSettled([
     dependencies.hydrateHfToken(),
     providerSync,
   ]);
+  if (hfResult.status === "rejected") dependencies.onFailure?.("hfToken");
+  if (providerResult.status === "rejected") dependencies.onFailure?.("providers");
   if (
     providerResult.status === "fulfilled" &&
     (!dependencies.isCurrent || dependencies.isCurrent())

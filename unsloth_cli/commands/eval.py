@@ -2,18 +2,21 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import functools
 import json
+import math
 import os
 import re
 import shutil
 import sys
 import tempfile
+import time
+from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from pathlib import Path
-from typing import List, Optional, Tuple
+from pathlib import Path, PureWindowsPath
+from typing import Dict, List, Optional, Tuple
 
 import typer
-import yaml
 
 _HUB_REPO_RE = re.compile(r"[\w.\-]+/[\w.\-]+")
 _TOKENIZER_FILES = ("tokenizer_config.json", "tokenizer.json", "tokenizer.model")
@@ -22,8 +25,8 @@ _YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 @contextlib.contextmanager
-def _silence():
-    """Send fd 1/2 to devnull (lm-eval/transformers progress bars); yield a Console on the real stdout."""
+def _silence(log: Optional[Path] = None):
+    """Send fd 1/2 to devnull or `log` (lm-eval/transformers progress bars); yield a Console on the real stdout."""
     from rich.console import Console
 
     sys.stdout.flush()
@@ -37,7 +40,11 @@ def _silence():
         errors = "replace",
     )
     saved_out, saved_err = os.dup(1), os.dup(2)
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    devnull_fd = (
+        os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        if log
+        else os.open(os.devnull, os.O_WRONLY)
+    )
     try:
         os.dup2(devnull_fd, 1)
         os.dup2(devnull_fd, 2)
@@ -73,6 +80,35 @@ def resolve_base_model(model: str) -> Optional[str]:
     except (ValueError, OSError):
         return None
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
+
+
+_WINDOWS = os.name == "nt"
+_LOCAL_SHARE_HOSTS = ("", ".", "?", "localhost", "127.0.0.1", "wsl$", "wsl.localhost")
+
+
+def _is_network_share(path: str) -> bool:
+    """Same rule as unsloth_zoo.vision_utils._is_network_share, kept import-free: the hf and vllm
+    backends never import unsloth. On Windows a UNC path opens an SMB connection (NTLM leak)."""
+    if not _WINDOWS or not isinstance(path, str):
+        return False
+    p = path.replace("\\", "/")
+    if p[:5].lower() == "file:":
+        p = p[5:]
+    if p[:8].upper() == "//?/UNC/":
+        p = "//" + p[8:]
+    elif p.startswith(("//?/", "//./")):
+        return re.match(r"([A-Za-z]:|Volume\{[0-9A-Fa-f-]+\})(/|$)", p[4:]) is None
+    return p.startswith("//") and p[2:].split("/", 1)[0].lower() not in _LOCAL_SHARE_HOSTS
+
+
+def _refuse_network_share_adapter_base(model: str, base: Optional[str]) -> None:
+    """A Hub adapter's base_model_name_or_path is chosen by the repo; never let it reach a share.
+    Local adapter folders and an explicit --base-model are the user's own and are left alone."""
+    if base and not Path(model).is_dir() and _is_network_share(base):
+        _fail(
+            f"The adapter {model} names a base model on a network share ({base!r}). Refusing to "
+            "load it: download the base model and pass it with --base-model."
+        )
 
 
 def _is_studio_output(path: Path) -> bool:
@@ -185,19 +221,171 @@ def _hflm_4bit(HFLM):
     return _HFLM4bit
 
 
+# vLLM's accepted max_lora_rank values (vllm/config/lora.py MaxLoRARanks)
+_VLLM_LORA_RANKS = (16, 32, 64, 128, 256, 320, 512)
+_BNB_SUFFIX_RE = re.compile(r"(-unsloth)?-bnb-4bit$")
+
+
+def _vllm_error() -> Optional[str]:
+    if sys.platform == "darwin":
+        return "--backend vllm needs an NVIDIA or AMD GPU. On a Mac use --backend hf."
+    if find_spec("vllm") is None:
+        return (
+            "--backend vllm needs vllm (`pip install vllm`). "
+            "Use --backend unsloth to evaluate without it."
+        )
+    try:
+        lm_eval_version = version("lm_eval")
+    except PackageNotFoundError:
+        lm_eval_version = None
+    # older lm-eval's vllm wrapper breaks on current vLLM (imports ray, passes the removed swap_space)
+    installed = tuple(int(n) for n in re.findall(r"\d+", lm_eval_version or "")[:3])
+    if installed and installed < (0, 4, 12):
+        return (
+            f"--backend vllm needs lm-eval 0.4.12 or newer, but {lm_eval_version} is installed. "
+            "Upgrade it with `pip install -U lm-eval`."
+        )
+    # as vLLM does on import: the default probe initialises CUDA, which its forked engine cannot reuse
+    os.environ["PYTORCH_NVML_BASED_CUDA_CHECK"] = "1"
+    import torch
+
+    if not torch.cuda.is_available():
+        return (
+            "--backend vllm needs an NVIDIA or AMD GPU, but none is visible. "
+            "Use --backend hf to evaluate on CPU."
+        )
+    return None
+
+
+def _vllm_base(model: str) -> str:
+    # vLLM has no bitsandbytes loader
+    stripped = _BNB_SUFFIX_RE.sub("", model)
+    if stripped != model and model.lower().startswith("unsloth/"):
+        typer.echo(f"Note: vLLM cannot load '{model}', using its 16-bit repo '{stripped}'.")
+        return stripped
+    return model
+
+
+def _local_adapter(model: str) -> str:
+    if Path(model).is_dir():
+        return str(Path(model).resolve())
+    from huggingface_hub import snapshot_download
+    return snapshot_download(model)
+
+
+def _adapter_header(adapter_dir: str) -> dict:
+    """The adapter_model.safetensors header (names, shapes; no tensor reads), {} if unreadable."""
+    file = Path(adapter_dir) / "adapter_model.safetensors"
+    try:
+        with open(file, "rb") as f:
+            header = json.loads(f.read(int.from_bytes(f.read(8), "little")))
+    except (OSError, ValueError):
+        return {}
+    return header if isinstance(header, dict) else {}
+
+
+def _adapter_rank(adapter_dir: str) -> int:
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    r = config.get("r")
+    patterns = config.get("rank_pattern") or {}
+    if not isinstance(patterns, dict):
+        patterns = {}
+    names = _adapter_module_names(adapter_dir)
+    if names:
+        # each saved module's rank as PEFT resolves it (first matching rank_pattern key, else r):
+        # unmatched or shadowed patterns do not count, and fused-expert A stacks (E * r rows) are not read as rank
+        ranks = [_pattern_value(patterns, name, r) for name in names]
+    else:
+        # no readable safetensors header (e.g. adapter_model.bin): keep every pattern that may match an adapted
+        # module (it matches a target as PEFT would, or it is a regex); only a literal name that matches no target
+        # module is known to match nothing
+        targets = config.get("target_modules")
+        targets = [t for t in targets if isinstance(t, str)] if isinstance(targets, list) else None
+        ranks = [
+            rank
+            for key, rank in patterns.items()
+            if targets is None
+            or re.escape(key) != key.replace(".", r"\.")
+            or any(_pattern_value({key: rank}, t, None) is not None for t in targets)
+            or key.rsplit(".", 1)[-1] in {t.rsplit(".", 1)[-1] for t in targets}
+        ]
+    ranks.append(r)
+    return max((x for x in ranks if isinstance(x, int) and not isinstance(x, bool)), default = 0)
+
+
+def _adapter_module_names(adapter_dir: str) -> List[str]:
+    """LoRA module names from the adapter_model.safetensors header (no tensor reads)."""
+    header = _adapter_header(adapter_dir)
+    names = set()
+    for key in header:
+        name, sep, _ = key.partition(".lora_")
+        if sep:
+            prefix = "base_model.model."
+            names.add(name[len(prefix) :] if name.startswith(prefix) else name)
+    return sorted(names)
+
+
+def _pattern_value(patterns: dict, module: str, default):
+    # PEFT get_pattern_key: first key matching the module name as a dotted suffix (regex allowed)
+    for key in patterns:
+        try:
+            if re.match(rf"(.*\.)?({key})$", module):
+                return patterns[key]
+        except re.error:
+            continue
+    return default
+
+
+def _mixed_lora_scale(adapter_dir: str) -> bool:
+    """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
+
+    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    Patterns are resolved per module like PEFT does, against the module names stored in the
+    adapter weights; without readable weights the pattern keys stand in for module names.
+    """
+    config = _read_config(Path(adapter_dir) / "adapter_config.json") or {}
+    ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
+    if not isinstance(ranks, dict) or not isinstance(alphas, dict):
+        return False
+    if not ranks and not alphas:
+        return False
+    norm = math.sqrt if config.get("use_rslora") else float
+
+    def scale(rank, alpha):
+        ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (rank, alpha))
+        return alpha / norm(rank) if ok and rank > 0 else None
+
+    default = scale(config.get("r"), config.get("lora_alpha"))
+    if default is None:
+        return False
+    modules = _adapter_module_names(adapter_dir) or list(dict.fromkeys([*ranks, *alphas]))
+    for name in modules:
+        module = scale(
+            _pattern_value(ranks, name, config["r"]),
+            _pattern_value(alphas, name, config["lora_alpha"]),
+        )
+        if module is not None and not math.isclose(module, default):
+            return True
+    return False
+
+
 def _base_vocab_size(model: str) -> int:
     from transformers import AutoConfig
     config = AutoConfig.from_pretrained(model)
     return getattr(getattr(config, "text_config", None) or config, "vocab_size", 0) or 0
 
 
-class _TaskYamlLoader(yaml.SafeLoader):
-    """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
+@functools.cache
+def _task_yaml_loader():
+    import yaml
 
+    class _TaskYamlLoader(yaml.SafeLoader):
+        """safe_load that tolerates lm-eval's custom tags (!function utils.fn)."""
 
-_TaskYamlLoader.add_multi_constructor(
-    "!", lambda loader, suffix, node: getattr(node, "value", None)
-)
+    _TaskYamlLoader.add_multi_constructor(
+        "!", lambda loader, suffix, node: getattr(node, "value", None)
+    )
+    return _TaskYamlLoader
 
 
 def _doc_column(key: str) -> str:
@@ -208,42 +396,145 @@ def _doc_column(key: str) -> str:
     return key
 
 
+def _gold_options(value, top = True):
+    # None alternates drop, an option-less list matches its literal text; rstrip: responses are stripped
+    if isinstance(value, list):
+        options = [o for item in value if item is not None for o in _gold_options(item, False)]
+        return options or ([str(value)] if top else [])
+    return [str(value).rstrip()]
+
+
+# the task's scorer; doc_to_target is a callable because lm-eval parses bracketed template results as lists
+_TASK_MODULE = """
+GOLD_OPTIONS
+
+def doc_to_target(row):
+    value = row[TARGET_KEY]
+    return value if isinstance(value, list) else str(value)
+
+
+def process_results(doc, results):
+    # few-shot examples still show gold as written
+    golds = _gold_options(doc_to_target(doc))
+    response = results[0]
+    # a single-line option ends at the first newline, where a single-line dataset's stop ends it
+    first_line = response.split("\\n")[0]
+    for gold in golds:
+        candidate = (response if "\\n" in gold else first_line).rstrip()
+        if candidate == gold or candidate.lstrip() == gold:
+            return {"exact_match": 1.0}
+    return {"exact_match": 0.0}
+"""
+
+
+def _csv_text(value):
+    import pyarrow as pa
+
+    # a typed scalar survives pandas' NA pass ("NA" stays text) and keeps all-empty columns string
+    return pa.scalar(value or None, type = pa.string())
+
+
+def _stop_sequence(data_file: Path, target_key: str) -> str:
+    # a newline run longer than any answer holds, so multi-line answers are generated whole
+    text = data_file.read_text(encoding = "utf-8-sig")
+    if data_file.suffix.lower() == ".csv":
+        import csv
+        import io
+
+        limit = csv.field_size_limit(2**31 - 1)
+        try:
+            rows = list(csv.DictReader(io.StringIO(text)))
+        finally:
+            csv.field_size_limit(limit)
+    else:
+        try:
+            rows = json.loads(text)
+        except json.JSONDecodeError:
+            rows = []
+            for number, line in enumerate(text.split("\n"), 1):
+                try:
+                    rows += [json.loads(line)] if line.strip() else []
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Dataset file '{data_file}' line {number} is not valid JSON: {e.msg}"
+                    ) from None
+    rows = rows if isinstance(rows, list) else [rows]
+    values = [row.get(target_key) for row in rows if isinstance(row, dict)]
+    targets = [option for value in values for option in _gold_options(value)]
+    longest = max((len(run) for t in targets for run in re.findall(r"\n+", t)), default = 0)
+    return "\n" * (longest + 1)
+
+
 def make_dataset_task(
     data_file: Path, input_key: str, target_key: str, out_dir: Path, name: str
 ) -> None:
     """Write an exact-match generate_until task over a .jsonl/.json/.csv file."""
+    import inspect
+
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
+    stop = _stop_sequence(data_file, target_key)
     spec = {
         "task": name,
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file.resolve())},
         "test_split": "train",
         "fewshot_split": "train",
+        "fewshot_delimiter": max(stop, "\n\n", key = len),
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "doc_to_target": _doc_column(target_key),
-        "generation_kwargs": {"until": ["\n"]},
-        # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
-        "filter_list": [
-            {
-                "name": "strip",
-                "filter": [
-                    {"function": "regex", "regex_pattern": r"^\s*(.*?)\s*$", "group_select": 0},
-                    {"function": "take_first"},
-                ],
-            },
-        ],
+        "generation_kwargs": {"until": [stop]},
+        # process_results strips and compares; the filter keeps its name for the exact_match,strip key
+        "filter_list": [{"name": "strip", "filter": [{"function": "take_first"}]}],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
+    import yaml
+
     out_dir.mkdir(parents = True, exist_ok = True)
-    (out_dir / f"{name}.yaml").write_text(yaml.safe_dump(spec, sort_keys = False), encoding = "utf-8")
+    with tempfile.NamedTemporaryFile(
+        mode = "w",
+        prefix = "_target_",
+        suffix = ".py",
+        dir = out_dir,
+        encoding = "utf-8",
+        delete = False,
+    ) as target:
+        target.write(
+            _TASK_MODULE.replace("GOLD_OPTIONS", inspect.getsource(_gold_options)).replace(
+                "TARGET_KEY", repr(target_key)
+            )
+        )
+        if builder == "csv":
+            # Datasets fingerprints the converter; a stable import lets repeated runs reuse the cache.
+            target.write("\nfrom unsloth_cli.commands.eval import _csv_text\n")
+    module = Path(target.name).stem
+    dumper = yaml.SafeDumper
+    if builder == "csv":
+        spec["dataset_kwargs"]["converters"] = dict.fromkeys((input_key, target_key), _csv_text)
+
+        class CsvTaskDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                return True
+
+        CsvTaskDumper.add_representer(
+            type(_csv_text),
+            lambda dumper, fn: dumper.represent_scalar("!function", f"{module}.{fn.__name__}"),
+        )
+        dumper = CsvTaskDumper
+    (out_dir / f"{name}.yaml").write_text(
+        yaml.dump(spec, Dumper = dumper, sort_keys = False)
+        + f"doc_to_target: !function {module}.doc_to_target\n"
+        + f"process_results: !function {module}.process_results\n",
+        encoding = "utf-8",
+    )
 
 
 def _yaml_task_name(path: Path) -> Tuple[str, bool]:
     """(registered name, needs its directory on the include path)."""
+    import yaml
+
     text = path.read_text(encoding = "utf-8")
     try:
-        spec = yaml.load(text, Loader = _TaskYamlLoader)
+        spec = yaml.load(text, Loader = _task_yaml_loader())
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in custom task file '{path}': {e}") from e
     if not isinstance(spec, dict):
@@ -270,7 +561,17 @@ def resolve_tasks(
     entries = [e.strip() for e in tasks.split(",") if e.strip()]
     if not entries:
         raise ValueError("No tasks provided. Pass --tasks with at least one task.")
-    plain = {e for e in entries if Path(e).suffix.lower() not in _DATASET_SUFFIXES | _YAML_SUFFIXES}
+    reserved = {
+        e for e in entries if Path(e).suffix.lower() not in _DATASET_SUFFIXES | _YAML_SUFFIXES
+    }
+    yaml_tasks: Dict[str, Tuple[str, bool]] = {}
+    for entry in entries:
+        path = Path(entry)
+        if path.suffix.lower() in _YAML_SUFFIXES:
+            if not path.exists():
+                raise FileNotFoundError(f"Custom task file not found: {entry}")
+            yaml_tasks[entry] = _yaml_task_name(path)
+            reserved.add(yaml_tasks[entry][0])
     names: List[str] = []
     include_paths: List[str] = []
 
@@ -285,24 +586,22 @@ def resolve_tasks(
         path = Path(entry)
         suffix = path.suffix.lower()
         if suffix in _YAML_SUFFIXES:
-            if not path.exists():
-                raise FileNotFoundError(f"Custom task file not found: {entry}")
-            name, needs_dir = _yaml_task_name(path)
+            name, needs_dir = yaml_tasks[entry]
             if needs_dir:
                 add(name, path.resolve().parent)
             else:
                 # copied alone so an unrelated broken yaml beside it cannot break lm-eval's index
                 custom_dir = (tmp_dir / "custom").resolve()
                 custom_dir.mkdir(parents = True, exist_ok = True)
-                shutil.copy2(path, custom_dir / f"{name}.yaml")
+                # lm-eval indexes by content, so a fixed file name keeps a task name like "../x" inside custom_dir.
+                shutil.copy2(path, custom_dir / f"task_{len(names)}.yaml")
                 add(name, custom_dir)
         elif suffix in _DATASET_SUFFIXES:
             if not path.exists():
                 raise FileNotFoundError(f"Dataset file not found: {entry}")
-            # an include-path task overrides a registered one of the same name, so keep clear of
-            # names requested alongside (gsm8k,./gsm8k.jsonl)
+            # An include-path task overrides a registered one of the same name, so avoid names requested alongside (gsm8k,./gsm8k.jsonl).
             name, counter = path.stem, 2
-            while name in names or name in plain:
+            while name in names or name in reserved:
                 name, counter = f"{path.stem}_{counter}", counter + 1
             if name != path.stem:
                 typer.echo(f"Note: running dataset '{path.name}' as task '{name}'.")
@@ -380,6 +679,41 @@ def _render_results(results: dict) -> None:
     Console().print(table)
 
 
+def _run_dir_name(model: str) -> str:
+    # Mirrors utils.paths.default_run_dir_name, which cannot be imported here: the Studio backend fails on Python 3.9.
+    raw = model.strip()
+    is_path = (
+        "\\" in raw or raw.startswith(("/", "~", ".")) or os.path.isabs(raw) or raw[1:2] == ":"
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
+
+
+def _backend_tokenizer(eval_kwargs: dict):
+    model = eval_kwargs["model"]
+    if not isinstance(model, str):
+        return getattr(model, "tokenizer", None)
+    if model == "vllm":
+        # vLLM may pick Mistral's own tokenizer, which cannot re-encode a rendered template's control tokens
+        from lm_eval.models.vllm_causallms import get_tokenizer as load
+    else:
+        from transformers import AutoTokenizer
+        load = functools.partial(AutoTokenizer.from_pretrained, trust_remote_code = False)
+    args = eval_kwargs["model_args"]
+    with _silence():
+        return load(args.get("tokenizer") or args["pretrained"])
+
+
+def _thinking_off(model_cls) -> dict:
+    # Qwen3-style templates otherwise open a <think> block, which the dataset task's newline stop cuts mid-thought
+    import inspect
+    return (
+        {"enable_thinking": False}
+        if "enable_thinking" in inspect.signature(model_cls).parameters
+        else {}
+    )
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -425,7 +759,8 @@ def evaluate(
         "unsloth",
         "--backend",
         help = "Model backend: 'unsloth' (fast kernels; needs an NVIDIA/AMD/Intel "
-        "GPU) or 'hf' (plain transformers; works on CPU/MPS/Mac). "
+        "GPU), 'hf' (plain transformers; works on CPU/MPS/Mac) or 'vllm' (fastest on "
+        "generation tasks; needs vllm and an NVIDIA/AMD GPU, loads 16-bit weights). "
         "Auto-falls back to 'hf' on Apple Silicon.",
     ),
     device: Optional[str] = typer.Option(
@@ -433,20 +768,34 @@ def evaluate(
         "--device",
         help = "Device for the hf backend (e.g. cpu, mps, cuda). Default: auto.",
     ),
+    gpu_memory_utilization: Optional[float] = typer.Option(
+        None,
+        "--gpu-memory-utilization",
+        help = "Fraction of GPU memory vLLM may use (vllm backend). Default: vLLM's own.",
+    ),
     input_key: str = typer.Option(
         "question", "--input-key", help = "Prompt field for a .jsonl/.csv dataset task."
     ),
     target_key: str = typer.Option(
         "answer", "--target-key", help = "Answer field for a .jsonl/.csv dataset task."
     ),
-    output_dir: Path = typer.Option(
-        Path("./eval_results"), "--output-dir", "-o", help = "Directory for results.json."
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help = "Directory for results.json. Default: a new eval_results/<model>_<time> folder per run.",
     ),
     confirm_run_unsafe_code: bool = typer.Option(
         False,
         "--confirm-run-unsafe-code",
         help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
         "model-generated code on this machine. Off by default.",
+    ),
+    chat_template: Optional[bool] = typer.Option(
+        None,
+        "--chat-template/--no-chat-template",
+        help = "Prompt through the model's chat template. Default: on when every task is a "
+        ".jsonl/.json/.csv dataset, the tokenizer has a chat template and lm-eval is 0.4.10+.",
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
@@ -458,8 +807,10 @@ def evaluate(
         bs = int(batch_size) if batch_size.isdigit() else 0
         if bs <= 0:
             _fail("--batch-size must be a positive integer or 'auto'.")
-    if backend not in ("unsloth", "hf"):
-        _fail(f"--backend must be 'unsloth' or 'hf', got '{backend}'.")
+    if backend not in ("unsloth", "hf", "vllm"):
+        _fail(f"--backend must be 'unsloth', 'hf' or 'vllm', got '{backend}'.")
+    if gpu_memory_utilization is not None and not 0 < gpu_memory_utilization <= 1:
+        _fail("--gpu-memory-utilization must be between 0 and 1.")
     if num_fewshot is not None and num_fewshot < 0:
         _fail("--num-fewshot must be >= 0.")
     if limit is not None:
@@ -469,21 +820,31 @@ def evaluate(
         limit = int(limit) if limit >= 1 else limit
     if max_seq_length <= 0:
         _fail("--max-seq-length must be a positive integer.")
+    if output_dir is None:
+        run_name, stamp = _run_dir_name(model), int(time.time())
     # find_spec, not import: lm_eval imports transformers, which must come after unsloth
     if "lm_eval" not in sys.modules and find_spec("lm_eval") is None:
         _fail("evaluation requires lm-eval. Install it with `pip install unsloth[eval]`.", code = 1)
 
+    if backend == "vllm":
+        if (error := _vllm_error()) is not None:
+            _fail(error)
+        if device is not None:
+            typer.echo("Note: --backend vllm ignores --device; set CUDA_VISIBLE_DEVICES instead.")
     if backend == "unsloth":
         with _silence():
             import unsloth
         if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
             typer.echo("Note: Apple Silicon (MLX) detected, falling back to --backend hf.")
             backend = "hf"
+    # only the vllm branch forwards it, and a silently dropped memory cap reads as an OOM
+    if backend != "vllm" and gpu_memory_utilization is not None:
+        typer.echo(f"Note: --gpu-memory-utilization applies to --backend vllm, not {backend}.")
     # a pre-loaded model makes lm-eval single-process, so every rank would run every task
-    if backend == "unsloth" and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
+    if backend in ("unsloth", "vllm") and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
         _fail(
             "multi-process launches (accelerate/torchrun) are not supported with "
-            "--backend unsloth. Use --backend hf for multi-GPU evaluation."
+            f"--backend {backend}. Use --backend hf for multi-GPU evaluation."
         )
 
     import inspect
@@ -492,9 +853,21 @@ def evaluate(
     from lm_eval.models.huggingface import HFLM
     from lm_eval.tasks import TaskManager
 
+    is_dataset = [
+        Path(e.strip()).suffix.lower() in _DATASET_SUFFIXES for e in tasks.split(",") if e.strip()
+    ]
+    # only the dataset task's "\n" stop needs it; built-in reasoning tasks keep lm-eval's default
+    thinking_off = _thinking_off(HFLM) if all(is_dataset) else {}
+
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if not base_model:
+        _refuse_network_share_adapter_base(model, effective_base)
+    if backend == "vllm":
+        if load_in_4bit:
+            typer.echo("Note: --backend vllm loads 16-bit weights; --load-in-4bit has no effect.")
+        load_in_4bit = False
     if load_in_4bit is None:
         load_in_4bit = _trained_in_4bit(model)
         if not load_in_4bit:
@@ -554,6 +927,7 @@ def evaluate(
                     model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             model_args["max_length"] = max_seq_length
+            model_args.update(thinking_off)
             if load_in_4bit and device.startswith("cuda"):
                 if find_spec("bitsandbytes") is not None:
                     model_args["load_in_4bit"] = True
@@ -566,6 +940,44 @@ def evaluate(
                     )
             else:
                 eval_kwargs.update(model = "hf", model_args = model_args, batch_size = bs, device = device)
+        elif backend == "vllm":
+            model_args = {"pretrained": model, "max_model_len": max_seq_length}
+            if effective_base:
+                model_args["pretrained"] = _vllm_base(effective_base)
+                model_args["lora_local_path"] = _local_adapter(model)
+                rank = _adapter_rank(model_args["lora_local_path"])
+                merge_hint = (
+                    "Use --backend unsloth or --backend hf to evaluate it, or merge it with "
+                    "`unsloth export <adapter> <output_dir> --format merged-16bit` "
+                    "and evaluate the merged model with --backend vllm."
+                )
+                if rank > _VLLM_LORA_RANKS[-1]:
+                    _fail(
+                        f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
+                        f"but this adapter was trained with rank {rank}. {merge_hint}"
+                    )
+                if _mixed_lora_scale(model_args["lora_local_path"]):
+                    _fail(
+                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
+                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
+                        f"wrong weights. {merge_hint}"
+                    )
+                if rank > 16:
+                    model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)
+                if _has_tokenizer_files(model):
+                    model_args["tokenizer"] = model_args["lora_local_path"]
+                typer.echo(
+                    f"Evaluating adapter '{model}' on base '{model_args['pretrained']}' with vLLM."
+                )
+            else:
+                model_args["pretrained"] = _vllm_base(model)
+            if gpu_memory_utilization is not None:
+                model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            with _silence():
+                from lm_eval.models.vllm_causallms import VLLM
+            thinking_off = _thinking_off(VLLM) if all(is_dataset) else {}
+            model_args.update(thinking_off)
+            eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
 
@@ -608,13 +1020,59 @@ def evaluate(
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)
                 eval_kwargs["model"] = HFLM(
-                    pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
+                    pretrained = lmodel,
+                    tokenizer = tokenizer,
+                    batch_size = bs,
+                    max_length = max_seq_length,
+                    **thinking_off,
                 )
 
-        with _silence() as ui:
-            from rich.status import Status
-            with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
-                results = lm_eval.simple_evaluate(**eval_kwargs)
+        if chat_template is None:
+            # lm-eval < 0.4.10 has no enable_thinking and doubles the BOS of templates that render one
+            chat_template = (
+                all(is_dataset)
+                and bool(thinking_off)
+                and bool(getattr(_backend_tokenizer(eval_kwargs), "chat_template", None))
+            )
+            if all(is_dataset) and not thinking_off:
+                typer.echo(
+                    "Note: dataset tasks run without the chat template on this lm-eval. "
+                    "Upgrade to lm-eval 0.4.10 or newer (`pip install -U lm-eval`) to use it."
+                )
+            elif chat_template:
+                typer.echo(
+                    "Note: prompting with the model's chat template (pass --no-chat-template to turn off)."
+                )
+            elif any(is_dataset) and not all(is_dataset):
+                typer.echo(
+                    "Note: dataset tasks run without the chat template alongside other tasks. "
+                    "Run them on their own to use the model's chat template, if it has one."
+                )
+        elif chat_template:
+            tokenizer = _backend_tokenizer(eval_kwargs)
+            # vLLM renders any HF tokenizer through its own fallback templates; its Mistral tokenizer has none
+            if backend == "vllm":
+                usable = hasattr(tokenizer, "chat_template")
+            else:
+                usable = bool(getattr(tokenizer, "chat_template", None))
+            if not usable:
+                _fail(
+                    f"--chat-template: the tokenizer --backend {backend} loads has no chat template."
+                )
+        eval_kwargs["apply_chat_template"] = chat_template
+
+        engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
+        try:
+            with _silence(engine_log) as ui:
+                from rich.status import Status
+                with Status(f"Evaluating {', '.join(task_names)}…", console = ui, spinner = "dots"):
+                    results = lm_eval.simple_evaluate(**eval_kwargs)
+        except Exception:
+            # vLLM's engine runs in its own process and logs the real cause there, not in the traceback
+            if engine_log is not None and engine_log.exists():
+                lines = engine_log.read_text(encoding = "utf-8", errors = "replace").splitlines()
+                typer.echo("\n".join(line.rsplit("\r", 1)[-1] for line in lines[-40:]), err = True)
+            raise
     finally:
         shutil.rmtree(tmp_dir, ignore_errors = True)
 
@@ -625,7 +1083,20 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
-    output_dir.mkdir(parents = True, exist_ok = True)
+    # lm-eval does not record it, and scores differ with and without the template
+    results.setdefault("config", {})["apply_chat_template"] = bool(chat_template)
+    if output_dir is None:
+        # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
+        Path("eval_results").mkdir(exist_ok = True)
+        while True:
+            output_dir = Path("eval_results") / f"{run_name}_{stamp}"
+            try:
+                output_dir.mkdir()
+                break
+            except FileExistsError:
+                stamp += 1
+    else:
+        output_dir.mkdir(parents = True, exist_ok = True)
     results_path = output_dir / "results.json"
     results_path.write_text(json.dumps(results, indent = 2, default = _json_default), encoding = "utf-8")
     typer.echo(f"Saved results to: {results_path}")

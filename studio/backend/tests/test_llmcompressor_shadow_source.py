@@ -52,7 +52,7 @@ def shadow(monkeypatch, tmp_path):
     monkeypatch.setattr(studio_utils, "hf_proxy_for_endpoint", lambda url = None: None)
     monkeypatch.setattr(tv, "_llmcompressor_shadow_is_valid", lambda: False)
     monkeypatch.setattr(tv, "_llmcompressor_main_disabled", lambda: False)
-    monkeypatch.setattr(tv, "_env_offline", lambda: False)
+    monkeypatch.setattr(tv, "hf_env_offline", lambda: False)
     monkeypatch.setattr(tv, "_VENV_LLMCOMPRESSOR_DIR", str(tmp_path / "shadow"))
     return tmp_path
 

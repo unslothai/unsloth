@@ -1,38 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness page for tests/studio/playwright_collapse_layout.py.
-// It answers one question: when a collapsible toggles, does the browser lay out the WHOLE document,
-// and does that cost scale with how big the document is?
-// The design point that makes the answer readable is that the COLLAPSIBLE'S OWN CONTENT IS
-// IDENTICAL IN EVERY RUN. Only the filler around it changes size. So if a toggle gets more
-// expensive as `fillers` grows, the extra cost cannot be the pane's own content -- it is the rest
-// of the document being laid out because of a toggle that has nothing to do with it.
-// Four arms, selected with `?arm=`:
-//   radix-height     Radix `CollapsibleContent` + the `animate-collapsible-*` height keyframes.
-//                    Today's mechanism.
-//   radix-grid       Radix `CollapsibleContent` + a `grid-template-rows: 0fr -> 1fr` transition,
-//                    with nothing anywhere reading `--radix-collapsible-content-height`. This is
-//                    the CSS-ONLY version of the fix, and it exists to be disproved: Radix's
-//                    layout effect measures whether or not the variable is consumed, so this arm
-//                    should still force a full-document layout. If it does, a keyframe swap alone
-//                    is not the fix.
-//   unmeasured-grid  The local `UnmeasuredCollapsible` + the same grid transition. No measurement
-//                    at all.
-//   reasoning        The real `ReasoningRoot` / `ReasoningTrigger` / `ReasoningContent` /
-//                    `ReasoningText`, which follow GRID_COLLAPSE_REASONING_ENABLED. Run the page
-//                    once per flag value to get the real before/after rather than a model of it.
-// No backend, no runtime: the reasoning primitives are plain components, and giving them a
-// synthetic runtime would only add nodes that are not part of what is being measured.
+// Harness for tests/studio/playwright_collapse_layout.py: does a collapsible toggle lay out the
+// whole document? Pane content is fixed; only filler size varies. Arms selected with `?arm=`.
 
 import "@/index.css";
 
-// FIRST, and load-bearing. `reasoning.tsx` sits in an import cycle with `markdown-text.tsx` and the
-// `@/features/chat` barrel, and `thread.tsx` reads `MarkdownText` at module scope. Entering that
-// cycle from `reasoning.tsx` evaluates `thread.tsx` while `markdown-text.tsx` is still
-// initialising, and the page dies with "Cannot access 'MarkdownText' before initialization".
-// Entering from `thread.tsx`, which is what the app and smoke-heavy-thread.html both do, orders it
-// correctly. This is a property of the app's module graph, not of anything under test here.
+// Import first: entering the reasoning.tsx import cycle elsewhere hits MarkdownText in TDZ.
 import "@/components/assistant-ui/thread";
 
 import {
@@ -61,9 +35,6 @@ const WORDS =
     " ",
   );
 
-// One filler row is a block with a dozen inline boxes, which is roughly the shape of a line of
-// rendered prose. Layout objects, not characters, are the unit that Blink's layout cost is
-// proportional to, so the filler is built out of boxes rather than out of one long string.
 function Filler({ index }: { index: number }) {
   return (
     <div className="filler-row px-4 py-1 text-sm">
@@ -89,20 +60,8 @@ function PaneBody({ extra }: { extra: number }) {
   );
 }
 
-// The two Radix arms use the RAW primitive rather than `@/components/ui/collapsible`, so that the
-// class list under test is exactly the one written here. The project wrapper prepends
-// `animate-collapsible-down` / `animate-collapsible-up`, and tailwind-merge does not know those as
-// members of its `animate` group, so a wrapper-based grid arm would silently keep the height
-// keyframes and the comparison would be between two things that both animate height.
-// `heightContentClass` is `reasoning.tsx`'s own list with the duration inlined. The two grid arms
-// do NOT share a class string, and the first attempt at this got it wrong in a way worth recording.
-// Radix has no "presence separate from state", so its arm has to drive the row size off
-// `data-state`. `UnmeasuredCollapsibleContent` drives it off its own staged `expanded`, which lags
-// `data-state` by two frames precisely so the `0fr` start value exists. Giving the unmeasured arm
-// the `data-[state=open]:grid-rows-[1fr]` variant as well let the attribute selector -- higher
-// specificity than the plain class -- win at mount, and the pane snapped open with no transition
-// while still reporting a clean layout count. A cheap-looking number for an animation that was not
-// running.
+// Raw Radix primitive: the project wrapper adds height keyframes that tailwind-merge cannot drop.
+// The two grid arms must not share classes: data-state would snap the unmeasured arm open.
 const heightContentClass =
   "overflow-hidden ease-out data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down data-[state=closed]:fill-mode-forwards data-[state=open]:duration-200 data-[state=closed]:duration-200";
 
@@ -180,10 +139,7 @@ function App() {
   if (!Arm) {
     throw new Error(`unknown arm: ${arm}`);
   }
-  // Content streaming into an OPEN pane is the case a height-based collapse gets wrong: the height
-  // it animated to was measured once, at toggle time, so content arriving afterwards either
-  // overflows the clip or needs a fresh measurement. `1fr` re-resolves every frame, so the driver
-  // grows the pane mid-flight and checks the rendered height followed it.
+  // Streaming into an open pane: `1fr` must re-resolve every frame, unlike a measured height.
   const [extra, setExtra] = useState(0);
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__probeGrow = (n: number) =>
@@ -191,12 +147,7 @@ function App() {
     (window as unknown as Record<string, unknown>).__probeReset = () => setExtra(0);
   }, []);
 
-  // Readiness is published from HERE, after this component and its filler tree have committed,
-  // and not from module scope after two frames of the initial render. `createRoot` renders
-  // concurrently, so a large `fillers` cell can still be mid-mount two frames in, and a count
-  // taken then reports the document as far smaller than it ends up. That number is the x axis of
-  // the whole experiment, so getting it from a pre-commit DOM would silently flatten the curve.
-  // The frames are still waited out, so the count is taken after layout rather than during it.
+  // Publish readiness after commit: concurrent createRoot may still be mounting large fillers.
   useEffect(() => {
     let inner = 0;
     const outer = requestAnimationFrame(() => {
@@ -216,9 +167,6 @@ function App() {
   }, []);
   return (
     <div>
-      {/* The collapsible sits FIRST so that the filler is all after it in document order. A
-          full-document layout has to walk it either way; a correctly scoped subtree layout does
-          not. */}
       <div data-probe="pane-host">
         <Arm extra={extra} />
       </div>
@@ -238,6 +186,3 @@ if (!root) {
 
 createRoot(root).render(<App />);
 
-// `__probeReady` is published from an effect inside `App` (see above), not from here. At module
-// scope the only thing that can be waited on is frames, and frames do not imply that a concurrent
-// initial mount has committed.

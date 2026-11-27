@@ -21,22 +21,37 @@ RUNTIME_MIRROR = REPO / "studio" / "backend" / "requirements" / "no-torch-runtim
 RL_REPLACEMENTS = REPO / "unsloth" / "models" / "rl_replacements.py"
 
 # Newest TRL the matrix was run against; moving it means re-running the sweep first.
-TESTED_CEILING = Version("1.15.0")
+TESTED_CEILING = Version("1.19.0")
 
 REJECTED = ("0.19.0",)
 
-NEWLY_ADMITTED = ("0.29.1", "1.0.0", "1.6.0", "1.7.0", "1.13.0", "1.14.2", "1.15.0")
+NEWLY_ADMITTED = (
+    "0.29.1",
+    "1.0.0",
+    "1.6.0",
+    "1.7.0",
+    "1.13.0",
+    "1.14.2",
+    "1.15.0",
+    "1.16.0",
+    "1.17.0",
+    "1.17.1",
+    "1.18.0",
+    "1.18.1",
+    "1.18.2",
+    "1.19.0",
+)
 
 ZOO_TRL_CEILING_BEFORE_THE_LIFT = Version("0.24.0")
 
 ZOO_FLOOR_WITH_LIFTED_TRL_CAP = Version("2026.9.5")
 
-# unsloth_zoo 2026.9.5+ caps trl here.
-ZOO_TRL_CEILING_OF_LIFTED_FLOOR = Version("1.13.0")
+# unsloth_zoo 2026.11.9 up to the declared floor caps trl here.
+ZOO_TRL_CEILING_OF_LIFTED_FLOOR = Version("1.18.2")
 
 # First published unsloth_zoo admitting TESTED_CEILING; None defers the gate until it ships.
-# 2026.10.4 admits trl <=1.15.0, and pyproject.toml's unsloth_zoo floor is already there.
-ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = Version("2026.10.4")
+# No published unsloth_zoo admits trl 1.19.0 yet (2026.11.9 up to the floor cap at 1.18.2).
+ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING = None
 
 # Every unsloth_zoo up to 2026.9.7 caps datasets here; pip intersects, so users stay under it.
 ZOO_DATASETS_CEILING_BEFORE_THE_LIFT = SpecifierSet("<4.4.0")
@@ -980,6 +995,7 @@ def test_the_zoo_trl_expiry_can_fail(monkeypatch) -> None:
     module = sys.modules[__name__]
     monkeypatch.setattr(module, "ZOO_FLOOR_ADMITTING_TESTED_TRL_CEILING", None)
     monkeypatch.setattr(module, "TESTED_CEILING", Version("1.15.0"))
+    monkeypatch.setattr(module, "ZOO_TRL_CEILING_OF_LIFTED_FLOOR", Version("1.13.0"))
     monkeypatch.setattr(
         module,
         "_newest_published_zoo_trl_windows",

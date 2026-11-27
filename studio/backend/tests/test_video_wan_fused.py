@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``video_wan_fused.py``: the fused Wan block forward engages only for an fp16 Wan load (bf16 / fp32 keep
-the stock forward), is bit-identical to the stock block on a real GPU, survives group-offload hooks, falls back to
+"""Tests for ``video_wan_fused.py``: the fused Wan block forward engages for an fp16 or bf16 Wan load (fp32 keeps the
+stock forward; UNSLOTH_DIFFUSION_WAN_FUSED_BF16=0 keeps bf16 on stock), is bit-identical to the stock block on a real GPU, survives group-offload hooks, falls back to
 stock on a self-check mismatch, and is restored on teardown."""
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ import pytest
 from core.inference import video_wan_fused as wf
 
 torch = pytest.importorskip("torch")
+from torch.torch_version import TorchVersion  # noqa: E402
+
+# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
+# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+_CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
+
 transformer_wan = pytest.importorskip("diffusers.models.transformers.transformer_wan")
 WanTransformerBlock = transformer_wan.WanTransformerBlock
 
@@ -26,6 +32,7 @@ needs_cuda = pytest.mark.skipif(not _CUDA, reason = "needs an NVIDIA GPU")
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(wf.WAN_FUSED_ENV, raising = False)
+    monkeypatch.delenv(wf.WAN_FUSED_BF16_ENV, raising = False)
     wf.uninstall()
     stock = WanTransformerBlock.forward
     yield
@@ -37,6 +44,7 @@ def _fake_kernels(monkeypatch):
     # install logic without a GPU; on ROCm torch wanted() refuses HIP, so pretend a CUDA build too
     monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
     monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
 
 
 def test_stock_block_matches_the_fingerprint():
@@ -44,11 +52,26 @@ def test_stock_block_matches_the_fingerprint():
     assert _digest(WanTransformerBlock.forward) in wf._FINGERPRINTS
 
 
-@pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
-def test_bf16_and_fp32_loads_keep_the_stock_forward(dtype):
+def test_fp32_load_keeps_the_stock_forward():
     stock = WanTransformerBlock.forward
-    assert wf.install(getattr(torch, dtype), "cuda") is False
+    assert wf.install(torch.float32, "cuda") is False
     assert WanTransformerBlock.forward is stock and not wf.is_installed()
+
+
+def test_bf16_load_installs(monkeypatch):
+    _fake_kernels(monkeypatch)
+    assert wf.install(torch.bfloat16, "cuda") is True
+    assert wf.is_installed()
+
+
+@pytest.mark.parametrize("value", ["0", "off", "false", "no"])
+def test_bf16_kill_switch_keeps_fp16(monkeypatch, value):
+    _fake_kernels(monkeypatch)
+    monkeypatch.setenv(wf.WAN_FUSED_BF16_ENV, value)
+    stock = WanTransformerBlock.forward
+    assert wf.install(torch.bfloat16, "cuda") is False
+    assert WanTransformerBlock.forward is stock and not wf.is_installed()
+    assert wf.install(torch.float16, "cuda") is True
 
 
 def test_cpu_load_keeps_the_stock_forward():
@@ -102,7 +125,6 @@ def test_install_for_pipe_scopes_to_wan(monkeypatch):
     wan = types.SimpleNamespace(transformer = _Wan())
     assert wf.install_for_pipe(wan, torch.float16, "cuda") is True
     assert WanTransformerBlock.forward is not stock
-    # a later non-Wan load puts the stock forward back
     assert wf.install_for_pipe(other, torch.float16, "cuda") is False
     assert WanTransformerBlock.forward is stock
 
@@ -162,19 +184,19 @@ def _inputs(
 
 
 @needs_cuda
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize("per_token", [True, False], ids = ["temb_per_token", "temb_per_sample"])
 @pytest.mark.parametrize("cross_attn_norm", [True, False], ids = ["norm2_affine", "norm2_identity"])
 @pytest.mark.parametrize("batch", [1, 2])
-def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm, batch):
+def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm, batch, dtype):
     D = 256
-    blk = _block(
-        dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16, cross_attn_norm = cross_attn_norm
-    )
-    x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", torch.float16, per_token = per_token)
-    x[0, :3, :5] = 300.0  # rows far from zero mean, where a different reduction order would show
+    dt = getattr(torch, dtype)
+    blk = _block(dim = D, ffn = 512, heads = 4, device = "cuda", dtype = dt, cross_attn_norm = cross_attn_norm)
+    x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", dt, per_token = per_token)
+    x[0, :3, :5] = 300.0
     with torch.no_grad():
         want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
-        assert wf.install(torch.float16, "cuda") is True
+        assert wf.install(dt, "cuda") is True
         got = blk(x, enc, temb, rot)
         direct = wf._fused_forward(blk, x, enc, temb, rot)
     assert torch.equal(want, got)
@@ -183,15 +205,17 @@ def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm
 
 
 @needs_cuda
-def test_fused_kernels_match_the_stock_op_chain_elementwise():
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_fused_kernels_match_the_stock_op_chain_elementwise(dtype):
     """Each kernel against the exact stock expression, on Wan2.2-TI2V-5B's width (3072)."""
     import torch.nn.functional as F
 
+    dt = getattr(torch, dtype)
     B, L, D = 1, 512, 3072
     g = torch.Generator(device = "cpu").manual_seed(3)
-    x = (torch.randn(B, L, D, generator = g) * 8).half().cuda()
-    a = (torch.randn(B, L, D, generator = g) * 3).half().cuda()
-    t = (torch.randn(B, L, 6, D, generator = g) * 0.5).half().cuda()
+    x = (torch.randn(B, L, D, generator = g) * 8).to(dt).cuda()
+    a = (torch.randn(B, L, D, generator = g) * 3).to(dt).cuda()
+    t = (torch.randn(B, L, 6, D, generator = g) * 0.5).to(dt).cuda()
     tbl = (torch.randn(1, 6, D, generator = g) / D**0.5).cuda()
     k = wf._kernels()
     sh, sc, gate, csh, csc, cgate = (tbl.unsqueeze(0) + t.float()).chunk(6, dim = 2)
@@ -217,7 +241,7 @@ def test_modulation_kernels_index_past_two_gib_of_temb():
     if torch.cuda.mem_get_info()[0] < 8 << 30:
         pytest.skip("needs ~8 GiB free on the GPU")
     g = torch.Generator(device = "cuda").manual_seed(5)
-    # fp16 straight from randn (and scaled in place): an fp32 temb here alone would be 8 GiB, twice over with "* 0.5"
+    # fp16 straight from randn: an fp32 temb here alone would be 8 GiB.
     x = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
     a = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
     t = torch.randn(B, L, 6, D, device = "cuda", dtype = torch.half, generator = g).mul_(0.5)
@@ -502,7 +526,6 @@ def test_self_attention_rotary_is_bit_identical_and_scoped(monkeypatch):
         assert got is not None and torch.equal(want, got) and len(calls) == 2
         # an fp16 table rounds each product to fp16 in the stock path: not this kernel's arithmetic
         assert wf._self_attention(blk.attn1, x, (rot[0].half(), rot[1].half())) is None
-        # a replaced processor (another attention backend's) is left alone
         blk.attn1.processor = type(
             "OtherProcessor",
             (transformer_wan.WanAttnProcessor,),
@@ -526,9 +549,8 @@ def test_attention_processor_matches_the_fingerprint():
 
 
 def test_regional_compile_traces_the_stock_block_without_recompiles(monkeypatch):
-    """Under torch.compile the installed forward must trace the stock block and leave the module counters alone:
-    dynamo guards on the globals a traced frame reads, so a bumped counter recompiles the block on every call (it hit
-    the recompile limit and dropped the Wan regional compile to eager)."""
+    """Under torch.compile the installed forward must trace the stock block and leave module
+    counters alone; a bumped counter makes dynamo recompile every call."""
     import torch._dynamo as dynamo
 
     _fake_kernels(monkeypatch)

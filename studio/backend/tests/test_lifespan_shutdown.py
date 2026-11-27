@@ -28,7 +28,6 @@ def test_run_lifespan_shutdown_survives_dead_default_executor():
 
     async def _drive():
         loop = asyncio.get_running_loop()
-        # Kill the default executor to mimic the teardown race.
         await asyncio.to_thread(lambda: None)
         loop._default_executor.shutdown(wait = True)
         await run_lifespan_shutdown(terminate, clear, hw)

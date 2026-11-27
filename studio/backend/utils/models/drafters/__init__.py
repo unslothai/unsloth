@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speculative drafter discovery, ranking and budgeting.
-
-One home for the rules a drafter sidecar obeys. Import from this facade rather
-than from the submodules, so the internal split can change without touching
-every call site.
-"""
+"""Speculative drafter discovery, ranking and budgeting facade; import from here, not submodules."""
 
 from utils.models.drafters.common import (
     _drafter_launch_path,
@@ -25,6 +20,7 @@ from utils.models.drafters.preference import (
     dflash_repo_preference_key,
     dspark_precision_rank,
     dspark_preference_key,
+    dspark_preferred_first,
 )
 from utils.models.drafters.budget import dflash_budget_bytes
 from utils.models.drafters.dflash import (
@@ -49,5 +45,6 @@ __all__ = [
     "dflash_repo_preference_key",
     "dspark_precision_rank",
     "dspark_preference_key",
+    "dspark_preferred_first",
     "is_dflash_architecture",
 ]

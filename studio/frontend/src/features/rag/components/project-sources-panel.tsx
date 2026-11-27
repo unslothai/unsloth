@@ -6,16 +6,16 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { MAX_FOLDER_FILES, openFolderPicker } from "@/lib/dropped-folders";
-import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import {
   announceProjectSourcesUpdated,
   invalidateProjectSources,
   listProjectDocuments,
-  subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
 import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
@@ -36,9 +36,8 @@ import {
   useRagDocuments,
 } from "./use-rag-documents";
 import { useUploadQueue } from "./use-upload-queue";
+import { linkedFolderDocumentsSummary } from "./source-folder-copy";
 
-/** Project "Sources" tab: documents indexed for retrieval in every chat that
- * belongs to the project. */
 export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lister = useCallback(
@@ -49,17 +48,15 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     documents,
     loading,
     uploading,
-    refresh,
     upload,
     remove,
     retry,
     canRetry,
   } = useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before each mutation so a chat sent mid-upload
-  // cannot cache "no sources" for the probe's TTL, and announce after it, which
-  // is the half other instances and other tabs listen for. Announcing before
-  // would refetch and resurrect the row this panel has already dropped.
+  // Invalidate the sources probe before each mutation so a mid-upload chat cannot cache no sources
+  // for its TTL; announce after, since other tabs listen and a refetch before would resurrect a
+  // dropped row.
   const uploadNow = useCallback(
     (items: RagUploadItem[]) => {
       if (items.length === 0) return;
@@ -115,8 +112,6 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [handleItems],
   );
 
-  // Desktop drops arrive as paths; the upload mints a lease per file rather
-  // than reading a document through the webview.
   const handleNativeIntents = useCallback(
     (intents: NativeIntent[]) =>
       handleItems(
@@ -139,26 +134,14 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     },
     [projectId, remove],
   );
+  // No refresh here: useRagDocuments refetches on this announce, and a second one doubles each sync tick.
   const handleLinkedSourcesChanged = useCallback(() => {
     announceProjectSourcesUpdated(projectId);
-    void refresh({ quiet: true });
-  }, [projectId, refresh]);
-
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
-  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
-  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
-  useEffect(
-    () =>
-      subscribeProjectSourcesUpdated(projectId, () => {
-        void refresh({ quiet: true });
-      }),
-    [projectId, refresh],
-  );
+  }, [projectId]);
 
   const empty = documents.length === 0;
 
-  // Tauri suppresses webview drop events, so the plain `onDrop` this panel
-  // carried never fired on desktop: no border, file ignored (#9036).
+  // Tauri suppresses webview drop events, so a plain onDrop never fires on desktop.
   const {
     ref: dropRef,
     dragging,
@@ -180,6 +163,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       onClick={pickFolder}
       title="Upload every supported file in a folder. Linking a folder that stays in sync needs the desktop app."
     >
+      <HugeiconsIcon icon={FolderAddIcon} data-icon="inline-start" />
       Add folder
     </Button>
   );
@@ -198,7 +182,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           void handleItems(fileItems(files));
         }}
       />
-      <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
+      <div className="mb-4 rounded-2xl bg-muted/30 px-5 py-4">
         <LinkedFoldersManager
           scope={{ type: "project", id: projectId }}
           compact={true}
@@ -208,17 +192,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       {empty ? (
         <div
           className={cn(
-            "flex flex-col items-center justify-center gap-3 rounded-[26px] border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            "flex flex-col items-center justify-center gap-3 rounded-2xl border border-transparent bg-muted/30 px-6 py-16 text-center transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5",
           )}
         >
-          <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-            <HugeiconsIcon
-              icon={FolderPlusIcon}
-              strokeWidth={1.75}
-              className="size-6"
-            />
-          </span>
           <div className="space-y-1">
             <p className="text-ui-15 font-semibold text-foreground">
               Give this project context
@@ -236,6 +214,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
               disabled={loading}
               onClick={() => fileInputRef.current?.click()}
             >
+              <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
               Add sources
             </Button>
             {addFolderButton}
@@ -247,12 +226,16 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       ) : (
         <div
           className={cn(
-            "flex flex-col gap-4 rounded-[26px] border border-transparent bg-muted/30 px-6 py-5 transition-colors",
-            dragging && "border-primary/60 bg-primary/5",
+            "flex flex-col gap-4 rounded-2xl border border-transparent bg-muted/30 px-6 py-5 transition-colors",
+            dragging &&
+              "border-wash-30 bg-wash-3 dark:border-wash-60 dark:bg-wash-5",
           )}
         >
           <div className="flex items-center justify-between gap-3">
-            <p className="text-sm text-muted-foreground">
+            <p
+              className="text-sm text-muted-foreground"
+              title="Files added to this project, counting each file from a source folder. A folder that is still syncing adds its files as it reaches them."
+            >
               {documents.length === 1
                 ? "1 source"
                 : `${documents.length} sources`}
@@ -266,6 +249,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 className="border-none bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] hover:bg-background/80 dark:bg-card dark:shadow-none dark:hover:bg-accent/50"
                 onClick={() => fileInputRef.current?.click()}
               >
+                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                 Add sources
               </Button>
             </div>
@@ -281,6 +265,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 <DocumentStatusChip
                   key={`folder:${folderId}`}
                   filename={`${name} · ${docs.length} file${docs.length === 1 ? "" : "s"}`}
+                  title={
+                    indexing > 0
+                      ? linkedFolderDocumentsSummary(name, docs.length, indexing).title
+                      : undefined
+                  }
                   status={indexing > 0 ? "running" : "completed"}
                   progress={
                     indexing > 0 ? (docs.length - indexing) / docs.length : null

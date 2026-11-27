@@ -42,10 +42,7 @@ test("a file edit_file created gets the files row", () => {
   assert.ok(!hasCreatedFiles("mcp__fs__write_file", wrapped));
 });
 
-// Asserted against the source like the other chat-adapter tests: importing the adapter
-// drags in the whole app. The backend keeps a well-formed `__IMAGES__` line from a tool
-// that does not emit the envelope as content the model reads, so the card must not slice
-// it off and fetch a sandbox file that was never written.
+// Only tools that emit the envelope may be sliced; otherwise the card fetches a file never written.
 test("the adapter slices the image envelope only for the tools that emit it", () => {
   const source = readSrc("features/chat/api/chat-adapter.ts");
   const gate = source.indexOf(

@@ -14,14 +14,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioModelLabel } from "../audio-workspace-utils";
 import { sourceFileUrl } from "../audio-run-request";
 import { ABCompare } from "../components/convert-ab-compare";
-import { Field } from "../components/field";
+import { Field, FieldLabel, FieldTag } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -32,6 +32,7 @@ import {
 } from "../hooks/use-convert-generation";
 import { useAudioConvertStore } from "../stores/audio-convert-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -122,7 +123,7 @@ function ConvertInputs({
       </div>
 
       {caps && caps.modes.length > 1 ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           <span className="text-ui-13 font-medium text-foreground">
             The recording is
           </span>
@@ -145,9 +146,9 @@ function ConvertInputs({
       ) : null}
 
       {pitchSupport.show ? (
-        <div className="grid gap-1.5">
+        <div className="grid gap-2">
           {pitchSupport.auto ? (
-            <label
+            <FieldLabel
               htmlFor="convert-pitch-auto"
               className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
             >
@@ -158,12 +159,12 @@ function ConvertInputs({
                 disabled={disabled}
                 onCheckedChange={store.setPitchAuto}
               />
-            </label>
+            </FieldLabel>
           ) : null}
           {pitchSupport.auto &&
           convert.pitchAuto &&
           !pitchSupport.shiftWithAuto ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12 leading-normal text-muted-foreground">
               Turn off to set the pitch shift yourself.
             </p>
           ) : (
@@ -206,26 +207,26 @@ function SourceTextField({
     convert.sourceStatus.phase !== "uploading";
   if (convert.style !== "target") return null;
   return (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <div className="flex items-center justify-between gap-2">
-        <label
+        <FieldLabel
           htmlFor={CONVERT_SOURCE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           What's said in the recording
-          <span className="ml-1.5 font-normal text-muted-foreground">
+          <FieldTag>
             Required
-          </span>
-        </label>
+          </FieldTag>
+        </FieldLabel>
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-auto px-2 py-1 text-ui-11p5"
+          className="h-auto gap-1 px-0 py-0 text-ui-12 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
           disabled={!sourceUsable || transcriber.transcribing || disabled}
           onClick={() => void transcriber.transcribe(source)}
         >
-          <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+          <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
           {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
         </Button>
       </div>
@@ -251,7 +252,7 @@ function SourceTextField({
           </Button>
         </p>
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-12 leading-normal text-muted-foreground">
           Taking the target's style rebuilds the delivery from these words.
         </p>
       )}
@@ -332,7 +333,7 @@ export function ConvertFooter({
         handleGenerate={convert.handleGenerate}
       />
       {notice ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {notice}
         </p>
       ) : null}
@@ -342,15 +343,19 @@ export function ConvertFooter({
 
 function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
+  fileUrl?: string;
   unavailable?: string;
 } {
-  // The saved copy outlives the upload it was made from.
   const savedUrl = clip?.source_saved
     ? `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`
     : null;
   const sourceId = clip?.source_clip_id ?? clip?.source_input_id ?? null;
   const kind = clip?.source_clip_id ? "clip" : "input";
-  const [side, setSide] = useState<{ src?: string; unavailable?: string }>({});
+  const [side, setSide] = useState<{
+    src?: string;
+    fileUrl?: string;
+    unavailable?: string;
+  }>({});
   useEffect(() => {
     if (!savedUrl && !sourceId) {
       setSide({ unavailable: "The source is not saved with this clip." });
@@ -363,10 +368,14 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     const original = sourceId
       ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
       : null;
+    let fileUrl = original ?? (savedUrl as string);
     const fetchSide = (): Promise<Blob> =>
       original
         ? fetchAudioBlob(original).catch((error) => {
-            if (savedUrl) return fetchAudioBlob(savedUrl);
+            if (savedUrl) {
+              fileUrl = savedUrl;
+              return fetchAudioBlob(savedUrl);
+            }
             throw error;
           })
         : fetchAudioBlob(savedUrl as string);
@@ -374,7 +383,7 @@ function useSourceSide(clip: AudioGalleryClip | null): {
       .then((blob) => {
         if (cancelled) return;
         url = URL.createObjectURL(blob);
-        setSide({ src: url });
+        setSide({ src: url, fileUrl });
       })
       .catch(() => {
         if (!cancelled)
@@ -403,14 +412,12 @@ export function ConvertOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   const compareSide = useAudioConvertStore((state) => state.compareSide);
   const setCompareSide = useAudioConvertStore((state) => state.setCompareSide);
   const sourceSide = useSourceSide(props.selectedClip);
   return (
     <TtsOutput
       {...props}
-      // The selected clip's line already names the model.
       clipBadge={(clip, place) =>
         place === "history" ? audioModelLabel(clip.model) : null
       }
@@ -420,7 +427,11 @@ export function ConvertOutput({
           key={clip.id}
           ariaLabel="Compare the source and the converted voice"
           a={{ label: "Source", ...sourceSide }}
-          b={{ label: "Converted", src }}
+          b={{
+            label: "Converted",
+            src,
+            fileUrl: `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/file`,
+          }}
           side={compareSide === "source" ? "a" : "b"}
           onSideChange={(side) =>
             setCompareSide(side === "a" ? "source" : "converted")
@@ -429,29 +440,15 @@ export function ConvertOutput({
         />
       )}
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Converted recordings will appear here"
       emptyText={
         modelReady
-          ? "Converted recordings land here. Add a recording and the target voice, and press Generate."
-          : "Converted recordings land here. Load a model that can convert a voice, add a recording, and press Generate."
+          ? "Add a recording and the target voice, and press Generate."
+          : "Load a model that can convert a voice, add a recording and a target voice, and press Generate."
       }
     />
   );

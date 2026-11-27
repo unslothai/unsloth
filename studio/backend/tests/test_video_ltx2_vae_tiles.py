@@ -38,7 +38,7 @@ def _ltx_vae():
 
 
 def _line_error(x, ref):
-    d = (x - ref).abs().mean(1)[0]  # (T, H, W)
+    d = (x - ref).abs().mean(1)[0]
     return max(float(d.mean(1).max()), float(d.mean(2).max()))
 
 
@@ -59,14 +59,12 @@ def free(monkeypatch):
 
 def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(
-        1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1)
-    )  # 1216x704, 9 frames
+    z = torch.randn(1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1))
     vae.use_tiling = False
     untiled = _decode(vae, z)
-    vae.enable_tiling()  # what Studio does on every LTX load
+    vae.enable_tiling()
     stock = _decode(vae, z)
-    free["bytes"] = 0  # nothing fits: the stock-size 16-latent tiles, with the wide overlap
+    free["bytes"] = 0
     assert vt.install(vae)
     wide = _decode(vae, z)
     assert vae._unsloth_last_decode_tile == (16, 16)
@@ -74,16 +72,12 @@ def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert stock_err > 3 * wide_err, (stock_err, wide_err)
     monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
-    assert torch.equal(
-        _decode(vae, z), stock
-    )  # kill switch set after install: the stock tiled decode
+    assert torch.equal(_decode(vae, z), stock)
 
 
 def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(
-        1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2)
-    )  # 768x512, the default preset
+    z = torch.randn(1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2))
     vae.use_tiling = False
     untiled = _decode(vae, z)
     vae.enable_tiling()
@@ -99,8 +93,8 @@ def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
 
 def test_more_free_memory_means_fewer_larger_tiles(free, monkeypatch):
     vae = _ltx_vae()
-    monkeypatch.setattr(vt, "_itemsize", lambda vae: 2)  # the bf16 decoder Studio loads
-    z = torch.zeros(1, 128, 16, 22, 38)  # 1216x704x121, the largest the UI offers
+    monkeypatch.setattr(vt, "_itemsize", lambda vae: 2)
+    z = torch.zeros(1, 128, 16, 22, 38)
     for fused in (False, True):
         vae._unsloth_vae_fused_installed = int(fused)
         sizes = []
@@ -137,7 +131,24 @@ def test_temb_and_causal_reach_every_tile(free):
     assert len(seen) > 1 and all(t is temb and c is False for t, c in seen)
 
 
-def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: torch.cuda.OutOfMemoryError("fake"),
+        # CPU tiles plan from host RAM; Windows refuses past its commit limit with this, not an OOM type
+        lambda: RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: not enough memory: "
+            "you tried to allocate 123 bytes."
+        ),
+        # Linux / macOS: posix_memalign's ENOMEM
+        lambda: RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:127] err == 0. DefaultCPUAllocator: can't allocate memory: "
+            "you tried to allocate 123 bytes. Error code 12 (Cannot allocate memory)"
+        ),
+    ],
+    ids = ["cuda", "cpu_allocator", "posix_allocator"],
+)
+def test_oom_retries_in_stock_size_tiles(free, monkeypatch, error):
     vae = _ltx_vae()
     z = torch.randn(1, 8, 1, 22, 38)
     vae.enable_tiling()
@@ -157,7 +168,7 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
     ):
         calls.append((th, tw, fp32_accum))
         if len(calls) == 1:
-            raise torch.cuda.OutOfMemoryError("fake")
+            raise error()
         return real(vae_, z_, temb, causal, th, tw, fp32_accum)
 
     monkeypatch.setattr(vt, "_decode_tiles", flaky)
@@ -169,13 +180,12 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
 
 @pytest.mark.parametrize("free_bytes, fp32_accum", [(0, False), (None, False), (1000 * GIB, True)])
 def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32_accum):
-    # Unbudgeted plans must not add a full-frame fp32 buffer on top of stock-size tiles.
     vae = _ltx_vae().to(torch.bfloat16)
     z = torch.randn(1, 8, 1, 22, 38, dtype = torch.bfloat16)
     vae.enable_tiling()
     assert vt.install(vae)
     free["bytes"] = free_bytes
-    monkeypatch.setenv(U.UNTILED_ENV, "0")  # keep >= 2 tiles so the accumulator is used
+    monkeypatch.setenv(U.UNTILED_ENV, "0")
     seen = []
     zeros = torch.zeros
 
@@ -188,6 +198,27 @@ def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32
     assert out.dtype == torch.bfloat16 and torch.isfinite(out.float()).all()
     assert (torch.float32 if fp32_accum else torch.bfloat16) in seen
     assert (torch.bfloat16 if fp32_accum else torch.float32) not in seen
+
+
+def test_repeat_tiled_decode_reuses_its_blend_weights(free, monkeypatch):
+    vae = _ltx_vae()
+    z = torch.randn(1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1))
+    vae.enable_tiling()
+    free["bytes"] = 0
+    assert vt.install(vae)
+    real, calls = vt.axis_weights, []
+    monkeypatch.setattr(vt, "axis_weights", lambda *a: calls.append(a) or real(*a))
+    first = _decode(vae, z)
+    assert vae._unsloth_last_decode_tile == (16, 16) and len(calls) == 2
+    second = _decode(vae, z)
+    assert len(calls) == 2 and torch.equal(first, second)
+    for (starts, tile, length, scale, _t, device), got in zip(
+        calls, vae.__dict__[vt._WEIGHTS_ATTR].values()
+    ):
+        want = real(starts, tile, length, scale, torch, device)
+        assert all(torch.equal(a, b) and a.device == b.device for a, b in zip(got, want))
+    vt.uninstall(vae)
+    assert vt._WEIGHTS_ATTR not in vae.__dict__
 
 
 def test_install_is_scoped_idempotent_and_reversible(monkeypatch):
@@ -219,7 +250,6 @@ def test_tile_layout_full_tiles_and_weights_sum_to_one(length):
         assert torch.allclose(total, torch.ones_like(total), atol = 1e-6)
 
 
-# Untiled decode peaks of the LTX-2.3 VAE (bf16, B200, MiB): (w, h, frames) -> peak. The estimate must cover each.
 MEASURED = {
     (768, 512, 25): 1011,
     (768, 512, 121): 4755,
@@ -275,9 +305,7 @@ def test_video_load_installs_wide_tiles_on_every_tiling_load():
     tiling = src.index("pipe.vae.enable_tiling()")
     install = src.index("from .video_ltx2_vae_tiles import install")
     resident = src.index("from .video_vae_untiled import install_untiled_decode")
-    assert (
-        tiling < install < resident
-    )  # after tiling is enabled, before (so beneath) the resident untiled wrapper
+    assert tiling < install < resident
 
 
 def test_axis_weights_share_the_image_tile_blend(monkeypatch):
@@ -285,3 +313,91 @@ def test_axis_weights_share_the_image_tile_blend(monkeypatch):
     monkeypatch.setattr(vt, "_axis_weights", lambda *args: calls.append(args) or "weights")
     assert vt.axis_weights([0, 22], 16, 38, 4, torch, "mps") == "weights"
     assert calls == [([0, 22], 16, 38, 4, torch, "mps", vt.MARGIN_LATENTS, vt.RAMP_LATENTS)]
+
+
+def _old_tiles(vae, z, th, tw, monkeypatch):
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: False)
+    with torch.no_grad():
+        return vt._decode_tiles(vae, z, None, False, th, tw, True)
+
+
+@pytest.mark.parametrize(
+    "shape, tile",
+    [
+        ((1, 8, 2, 22, 38), (22, 16)),  # one row of tiles: column bands
+        ((1, 8, 1, 30, 38), (16, 16)),  # 3 x 4 tiles, rows 14-15 shared by three tiles
+        ((1, 8, 1, 30, 22), (16, 22)),  # one column of tiles: row bands
+        ((2, 8, 1, 22, 38), (16, 22)),  # batch 2, 2 x 2 tiles
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, shape, tile, dtype):
+    vae = _ltx_vae().to(dtype)
+    z = torch.randn(*shape, generator = torch.Generator().manual_seed(3)).to(dtype)
+    ref = _old_tiles(vae, z, *tile, monkeypatch)
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: True)
+    zeros, seen = torch.zeros, []
+
+    def spy(*args, **kwargs):
+        seen.append(tuple(args[0]) if args and isinstance(args[0], tuple) else args)
+        return zeros(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "zeros", spy)
+    to_host, moved = vt._to_host, []
+    monkeypatch.setattr(
+        vt, "_to_host", lambda c, t, *a: moved.append(c.is_contiguous()) or to_host(c, t, *a)
+    )
+    with torch.no_grad():
+        out = vt._decode_tiles(vae, z, None, False, *tile, True)
+    hs, ws = vt.tile_starts(shape[-2], tile[0]), vt.tile_starts(shape[-1], tile[1])
+    assert all(moved) and len(moved) == len(hs if len(hs) > 1 else ws) - 1
+    assert out.dtype == ref.dtype and out.shape == ref.shape
+    assert torch.equal(out, ref)
+    assert seen and len(set(seen)) == 1  # one band shape per band, never the clip
+    band = seen[0]
+    h, w = ref.shape[-2:]
+    assert band[:3] == tuple(ref.shape[:3])
+    assert (band[-2] < h and band[-1] == w) or (band[-2] == h and band[-1] < w)
+
+
+def test_banded_output_needs_a_discrete_card_host_room_and_the_switch(monkeypatch):
+    import core.inference.diffusion_memory as dm
+    import core.inference.host_pinning as hp
+
+    vae = _ltx_vae()
+    cpu_z = torch.zeros(1, 8, 16, 22, 40)
+
+    class _Z:
+        shape, device = cpu_z.shape, torch.device("cuda", 0)
+
+    monkeypatch.delenv(vt.BANDED_OUTPUT_ENV, raising = False)
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
+    assert vt._host_band_output(vae, _Z(), 32, 2)
+    assert not vt._host_band_output(vae, cpu_z, 32, 2)
+    monkeypatch.setenv(vt.BANDED_OUTPUT_ENV, "0")
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.delenv(vt.BANDED_OUTPUT_ENV)
+    # 0.61 GiB clip: below reserve + clip
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 4 * 1024 + 600)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: True)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+
+
+def test_unbudgeted_decode_never_bands(monkeypatch):
+    vae = _ltx_vae().to(torch.bfloat16)
+    z = torch.randn(1, 8, 1, 22, 38).to(torch.bfloat16)
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: True)
+    monkeypatch.setattr(
+        vt, "_decode_bands", lambda *a: pytest.fail("banded without an fp32 accumulator")
+    )
+    with torch.no_grad():
+        out = vt._decode_tiles(vae, z, None, False, 16, 16, False)
+    assert out.dtype == torch.bfloat16

@@ -68,6 +68,7 @@ def _build(
         "torch": types.SimpleNamespace(cuda = cuda),
         "DEVICE_TYPE_TORCH": "cuda",
         "is_distributed": lambda: False,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         keep = (
@@ -77,6 +78,7 @@ def _build(
                 in (
                     "requested_device_map",
                     "resolve_unsloth_device_map",
+                    "_placement_report",
                     "_as_bytes",
                     "unmarked_device_map",
                 )
@@ -451,9 +453,8 @@ def test_gpus_the_caller_withheld_are_never_probed():
 
 
 def test_a_refusing_card_outside_the_requested_set_does_not_cost_the_plan():
-    """Dropping to "sequential" because GPU 3 is in Exclusive_Process mode is the wrong
-    answer when the caller asked for GPUs 0 and 1 -- and "sequential" is the placement that
-    then OOMs."""
+    """A card in Exclusive_Process mode outside the requested set (GPU 3) must not drop the plan to
+    sequential, which OOMs when the caller asked for GPUs 0 and 1."""
     planner = _Recorder(plan = _Plan())
     ns = _build(
         devices = 4,

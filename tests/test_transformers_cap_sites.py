@@ -20,7 +20,7 @@ PYPROJECT = REPO / "pyproject.toml"
 WORKFLOWS = REPO / ".github" / "workflows"
 
 # Newest transformers tested; moving it means re-running the sweep first.
-TESTED_CEILING = Version("5.17.0")
+TESTED_CEILING = Version("5.18.0")
 
 # Not 4.51.3: peft 0.18.0 needs GradientCheckpointingLayer (4.52.0+); 4.52.0-4.52.3 rejected.
 TESTED_FLOOR = Version("4.52.4")
@@ -42,7 +42,15 @@ REJECTED = (
     "5.1.0",
 )
 
-NEWLY_ADMITTED = ("5.6.0", "5.10.1", "5.14.1", "5.15.1", "5.16.1", "5.17.0")
+NEWLY_ADMITTED = (
+    "5.6.0",
+    "5.10.1",
+    "5.14.1",
+    "5.15.1",
+    "5.16.1",
+    "5.17.0",
+    "5.18.0",
+)
 
 # Keyed on (workflow, exact requirement), never the workflow alone.
 PINNED_BY_DESIGN: dict[tuple[str, str], str] = {}
@@ -181,9 +189,8 @@ def test_the_declared_zoo_floor_can_supply_the_declared_transformers_window() ->
 
 
 def test_pyproject_declares_one_unsloth_zoo_floor() -> None:
-    """Two floors across the extras means one is what users hit and the other what CI reads; an
-    unbounded `unsloth_zoo` admits every old release. Both hold at 2026.9.5.
-    """
+    """Two floors across the extras would split what users install from what CI reads; an unbounded
+    unsloth_zoo admits every old release; both are 2026.9.5."""
     reqs = _pyproject_zoo()
     assert reqs, "pyproject.toml names no versioned unsloth_zoo requirement at all"
     floors = {}
@@ -277,9 +284,8 @@ def test_the_floor_lanes_run_the_declared_floor() -> None:
 
 
 def test_the_floor_excludes_the_release_that_could_not_import() -> None:
-    """Negative control: both checks above are equality checks, which a constant edited in the
-    wrong direction satisfies too. 4.51.3 is the release that actually failed.
-    """
+    """Negative control: the equality checks above also pass if a constant is edited in the wrong
+    direction; 4.51.3 is the release that actually failed."""
     window = _declared_window()
     assert "4.51.3" not in window, (
         "the transformers window admits 4.51.3 again. peft 0.18.0 imports "
@@ -341,9 +347,7 @@ def test_no_workflow_lane_sits_below_the_declared_ceiling() -> None:
 
 
 def test_every_exemption_names_a_lane_that_exists_today() -> None:
-    """A dormant exemption is a pre-authorisation: the day its string returns, the scan finds it and
-    skips it, which is the failure this file exists to prevent.
-    """
+    """A dormant exemption pre-authorises its string, so the scan skips it once it reappears."""
     spelled = {
         (path.name, raw.strip())
         for path in sorted(WORKFLOWS.glob("*.yml"))
@@ -410,9 +414,7 @@ def test_this_file_is_triggered_by_everything_it_scans() -> None:
 
 
 def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, monkeypatch) -> None:
-    """NEGATIVE CONTROL: keyed on the filename, one intentional pin exempted every other
-    transformers requirement in that file, so a range cap could go stale in the scanned workflow.
-    """
+    """Filename-keyed exemptions would hide a stale cap on other requirements in that file."""
     workflows = tmp_path / "workflows"
     workflows.mkdir()
     (workflows / "version-compat-ci.yml").write_text(
@@ -432,9 +434,7 @@ def test_a_stale_range_cap_is_caught_even_in_an_allowlisted_workflow(tmp_path, m
 
 
 def _matrix_module(urlopen):
-    """The pinned-symbols module, imported fresh with `urlopen` replaced, under its own name: the
-    matrix is built at import, so the substitution must precede the module body.
-    """
+    """Imports the module fresh so urlopen is replaced before the import-time matrix is built."""
     import importlib.util
     import urllib.request
 
@@ -471,9 +471,8 @@ def test_a_pypi_outage_keeps_every_load_bearing_tag() -> None:
 
 
 def test_the_outage_fallback_reaches_the_declared_floor() -> None:
-    """An outage must not quietly move the floor up: the frozen fallback began at 4.57.6, so any PyPI
-    failure dropped every 4.52-4.56 check. `_ALWAYS` cannot restore them, both its anchors are 5.x.
-    """
+    """An outage must not raise the floor: the frozen fallback began at 4.57.6, so a PyPI failure
+    dropped every 4.52-4.56 check; `_ALWAYS` cannot restore them, both anchors are 5.x."""
     import urllib.error
 
     def refuses(*args, **kwargs):
@@ -494,9 +493,7 @@ def test_the_outage_fallback_reaches_the_declared_floor() -> None:
 
 
 def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
-    """NEGATIVE CONTROL: a reachable PyPI yielding no usable release takes a different return
-    path, which has to merge the anchors too.
-    """
+    """Negative control: a reachable PyPI with no usable release must also merge the anchors."""
     import io
     import json as _json
 
@@ -517,9 +514,7 @@ def test_an_empty_release_index_keeps_every_load_bearing_tag() -> None:
 
 
 def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> None:
-    """One tag per minor means a 5.17.1 would evict 5.17.0, the exact maximum the window admits, and
-    check a version no user can resolve instead. The anchor derives from pyproject's cap.
-    """
+    """Per-minor tags let 5.17.1 evict 5.17.0 (window's maximum); anchor from pyproject's cap."""
     import io
     import json as _json
 
@@ -532,8 +527,8 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
             return False
 
     published = {
-        "5.17.0": [{"yanked": False}],
-        "5.17.1": [{"yanked": False}],
+        "5.18.0": [{"yanked": False}],
+        "5.18.1": [{"yanked": False}],
     }
 
     def releases(*args, **kwargs):
@@ -542,18 +537,17 @@ def test_the_declared_ceiling_stays_in_the_matrix_after_a_patch_release() -> Non
     module = _matrix_module(releases)
 
     assert module._declared_ceiling_tag() == (
-        "v5.17.0",
+        "v5.18.0",
     ), "the anchor is no longer read from pyproject's transformers cap"
-    assert "v5.17.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
+    assert "v5.18.1" in module.TRANSFORMERS_TAGS, "the newest patch is still measured"
     assert (
-        "v5.17.0" in module.TRANSFORMERS_TAGS
+        "v5.18.0" in module.TRANSFORMERS_TAGS
     ), "a patch release evicted the declared ceiling from the matrix"
 
 
 def test_the_matrix_is_shared_between_xdist_workers(tmp_path, monkeypatch) -> None:
-    """Each worker resolves the matrix during collection, so one timing out takes the fallback list,
-    the parameter sets diverge and xdist aborts. With the cache set, the first to resolve publishes.
-    """
+    """Each worker resolves the matrix during collection, so one timing out would take the fallback
+    list and diverge the parameter sets, aborting xdist; with the cache set, the first publishes."""
     import io
     import json as _json
     import urllib.error
@@ -599,9 +593,7 @@ def test_without_the_cache_a_failed_read_still_falls_back(tmp_path, monkeypatch)
 
 
 def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
-    """Notebooks pin 5.10.1; with 5.10.4 published the (5, 10) slot becomes 5.10.4, so a symbol
-    arriving in a later 5.10 patch would break them while this matrix stayed green.
-    """
+    """Notebooks pin 5.10.1; 5.10.4 takes the (5,10) slot, so a later symbol would break them."""
     import io
     import json as _json
 
@@ -632,9 +624,7 @@ def test_a_pinned_patch_release_is_not_evicted_by_a_later_one() -> None:
 
 
 def test_an_import_lane_pins_the_declared_ceiling() -> None:
-    """The `latest` lane is unpinned, so once upstream publishes above the cap it resolves a
-    combination no user can install. The static symbol suite cannot see import-time breakage.
-    """
+    """Past the cap, latest resolves uninstallable combos; static checks miss import breakage."""
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
@@ -675,8 +665,7 @@ def test_the_ceiling_lane_moves_with_the_declared_window() -> None:
 
 def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
     """Two lanes on one interpreter share a key, so whichever saves first wins and the other
-    re-downloads. The restore step cannot take `matrix.slug`: the name must be a literal lowercase.
-    """
+    re-downloads; the restore step needs a literal lowercase name, not `matrix.slug`."""
     import yaml
 
     workflow = yaml.safe_load((WORKFLOWS / "version-compat-ci.yml").read_text(encoding = "utf-8"))
@@ -689,9 +678,7 @@ def test_no_two_import_lanes_mint_the_same_pip_cache_key() -> None:
 
 
 def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> None:
-    """The published file can come from another revision or an earlier run, and returning it verbatim
-    dropped the floor, the old ceiling and the notebook pins while the suite reported green.
-    """
+    """A published matrix may predate the anchors; returning it verbatim drops them."""
     import json as _json
     import urllib.error
 
@@ -712,9 +699,7 @@ def test_a_published_matrix_still_carries_the_anchors(tmp_path, monkeypatch) -> 
 
 
 def test_the_declared_ceiling_anchor_uses_the_tag_upstream_pushed() -> None:
-    """NEGATIVE CONTROL: upstream does not always tag a release under its own name, so a ceiling
-    landing on one must resolve to the tag pushed or every check fails on the fetch.
-    """
+    """Upstream may tag under another name; a ceiling must resolve to the tag actually pushed."""
     import importlib.util
 
     path = (
@@ -768,9 +753,7 @@ def _newest_published_zoo_transformers_ceiling(timeout: float = 10.0):
 
 
 def test_the_zoo_deferral_expires_when_the_zoo_release_ships() -> None:
-    """The gate above skips on a hand-written constant, so this asks PyPI what the newest zoo allows
-    and fails only on POSITIVE evidence it is obsolete; an offline runner stays skipped.
-    """
+    """Asks PyPI: fails only on proof the deferral is obsolete; offline stays skipped."""
     if ZOO_FLOOR_WITH_LIFTED_TRANSFORMERS_CAP is not None:
         pytest.skip(
             "the floor already names a zoo release carrying the lift, so the deferral is "

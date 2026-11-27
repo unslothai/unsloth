@@ -66,7 +66,6 @@ def test_unload_attempts_every_engine_even_after_one_raises(monkeypatch):
 
     assert list(made) == list(stt_registry.STT_ENGINES)
     assert failed == ["transformers"]
-    # The engines after the failure still released.
     assert made["gguf"].unloaded and made["mtmd"].unloaded
 
 
@@ -90,11 +89,12 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
     target = sidecars["mtmd"]
     target.load = lambda model, request_cancel_event = None, device = None: order.append("load:mtmd")
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+    # Not on disk: the load must answer before anything is released.
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda engine, model: False)
 
     stt_registry.load("qwen3-asr-0.6b", "mtmd")
 
-    # Two engines resident at once doubles VRAM for the whole keep-alive window, but the
-    # release follows the load: a 409 must not cost the user the engine they were using.
+    # The release follows the load, so a 409 does not cost the engine in use.
     assert order == ["load:mtmd", "unload:transformers", "unload:gguf", "unload:audiocpp"]
 
 
@@ -147,7 +147,6 @@ def test_an_unimportable_engine_never_takes_the_status_down(monkeypatch):
         return _Sidecar(name, model = "small" if name == "mtmd" else None)
 
     monkeypatch.setattr(stt_registry, "sidecar_for", make)
-    # gguf raising must not hide the model mtmd is holding.
     assert stt_registry.resident()["model"] == "small"
 
 
@@ -178,8 +177,7 @@ def test_a_cold_process_loads_without_building_an_orchestrator(monkeypatch):
 
     monkeypatch.setattr(orch, "peek_inference_backend", lambda: None)
     monkeypatch.setattr(orch, "get_inference_backend", _never)
-    # Same functions the orchestrator's methods forward to, so neither path
-    # can drift from the other.
+    # Same functions the orchestrator's methods forward to, so the two paths cannot drift.
     assert ri._stt_lifecycle() == (stt_registry.load, stt_registry.unload)
 
 
@@ -192,17 +190,12 @@ def test_load_never_blocks_on_an_engine_that_is_serving_a_request(monkeypatch):
 
     assert sidecars["transformers"].unload_waits == [False]
     assert sidecars["gguf"].unload_waits == [False]
-    # A caller releasing every engine on purpose still waits for each one.
     stt_registry.unload()
     assert sidecars["mtmd"].unload_waits == [True]
 
 
 def test_a_busy_sidecar_keeps_its_model_and_an_idle_one_releases_it():
-    """Against the real sidecars: `wait=False` must decline a live request, not block.
-
-    RLock.locked() is 3.14-only and the mtmd sidecar drops _lock before its HTTP call, so
-    the busy probe cannot be either.
-    """
+    """wait=False declines a busy sidecar; RLock.locked() is 3.14-only and mtmd drops _lock."""
     from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
     from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
 
@@ -252,9 +245,8 @@ def test_a_failed_load_leaves_the_engine_the_user_was_using(monkeypatch):
 
 
 def test_a_non_curated_whisper_cache_row_cannot_chat():
-    """`_hidden_stt` comes from the config sniff, so it covers distil-whisper and a user's own
-    fine-tune, not just the seven curated ids. can_chat is what auto-load and the chat picker
-    filter on, and neither looks at the task."""
+    """_hidden_stt comes from the config sniff, covering distil-whisper and user fine-tunes;
+    can_chat gates auto-load and the picker, which ignore the task."""
     from hub.services.models.cache_inventory import _cache_inventory_fields
 
     fields = _cache_inventory_fields(
@@ -283,7 +275,6 @@ def test_a_wait_false_unload_rechecks_active_requests_under_the_lock():
     released = []
     sidecar._release_locked = lambda: released.append(True)
 
-    # The racing transcription claims the slot after the unlocked probe has already passed.
     real_lock = sidecar._lock
 
     class _RacingLock:
@@ -377,9 +368,8 @@ def _racing_sidecar():
 
 
 def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
-    """The under-lock recheck only guarded wait=False, so the blocking unload training
-    uses could reap llama-server underneath a transcription that had just started, losing
-    the recording rather than honoring the drain window."""
+    """The under-lock recheck only guarded wait=False; a blocking unload could reap llama-server
+    under a new transcription and lose the recording."""
     import threading
 
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
@@ -397,7 +387,6 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
         ):
             acquires.append(True)
             if len(acquires) == 1:
-                # Claimed after the unlocked drain has already passed.
                 sidecar._active_requests = 1
                 threading.Timer(0.15, lambda: setattr(sidecar, "_active_requests", 0)).start()
             return real_lock.acquire(blocking, *args, **kwargs)
@@ -407,15 +396,13 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
 
     sidecar._lock = _RacingLock()
     MtmdSttSidecar.unload(sidecar, wait = True)
-    # Released, but only once the transcription that raced in had finished.
     assert sidecar.released == [True]
     assert len(acquires) >= 2
     assert sidecar._active_requests == 0
 
 
 def test_a_blocking_unload_still_gives_up_after_the_drain_window(monkeypatch):
-    """Training claiming the VRAM cannot wait forever, so a request that never finishes
-    must not turn the bounded window into a permanent block."""
+    """Training needs the VRAM, so a stuck request must not turn the drain window into a hang."""
     from core.inference import stt_mtmd_sidecar
     from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
 
@@ -427,12 +414,7 @@ def test_a_blocking_unload_still_gives_up_after_the_drain_window(monkeypatch):
 
 
 def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
-    """Each sidecar loads its own model, but only the registry frees the others.
-
-    An API client alternating between engines through /v1/audio/transcriptions never
-    calls /audio/stt/load, so without this both models stayed resident until their
-    independent idle timers fired, which OOMs a device that fits either alone.
-    """
+    """Transcribe loads must release the other engine's model, or alternating clients hold both."""
     import asyncio
 
     import routes.inference as ri
@@ -452,7 +434,9 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
         ri,
         "_stt_lifecycle",
         lambda: (
-            lambda model, engine, cancel = None, device = None: loaded.append((model, engine)),
+            lambda model, engine, cancel = None, device = None, **options: loaded.append(
+                (model, engine)
+            ),
             lambda *a: [],
         ),
     )
@@ -471,8 +455,7 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
 
 
 def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
-    """The lifecycle the route calls is the registry's, whose contract is single
-    residency; this pins that it releases the others rather than only allocating."""
+    """Registry load must free the other engines (single residency), not only allocate."""
     from core.inference import stt_registry
 
     released: list = []
@@ -492,9 +475,8 @@ def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
 
 
 def test_a_scoped_unload_leaves_another_surfaces_newer_model_alone():
-    """Ownership is decided by the caller, so a queued Eject can arrive after another
-    surface switched the same engine. The comparison happens under the sidecar's own
-    lock, which is the only place the answer cannot go stale."""
+    """The caller decides ownership; a queued Eject can arrive after another surface switched the
+    engine, so compare under the sidecar's lock, where the answer cannot go stale."""
     import threading
 
     from core.inference.stt_sidecar import WhisperSttSidecar
@@ -505,11 +487,9 @@ def test_a_scoped_unload_leaves_another_surfaces_newer_model_alone():
     released = []
     sidecar._release_engine_locked = lambda: released.append(True)
 
-    # The caller owned "small"; "base" belongs to whoever loaded it after.
     WhisperSttSidecar.unload(sidecar, expected_model = "small")
     assert released == []
 
-    # Its own model still goes, and so does an unscoped release.
     WhisperSttSidecar.unload(sidecar, expected_model = "base")
     assert released == [True]
     WhisperSttSidecar.unload(sidecar)
@@ -671,3 +651,18 @@ def test_no_stt_sidecar_points_at_a_settings_path_for_downloads():
         "stt_sidecar.py",
     ):
         assert "Settings, then Voice" not in (inference / name).read_text(encoding = "utf-8"), name
+
+
+@pytest.mark.parametrize("engine", stt_registry.STT_ENGINES)
+def test_registry_forwards_voice_context_only_to_mtmd(monkeypatch, engine):
+    calls = []
+    sidecar = _Sidecar(engine)
+    sidecar.load = lambda *args, **kwargs: calls.append(kwargs)
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecar)
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda *args: True)
+    monkeypatch.setattr(stt_registry, "unload", lambda *args, **kwargs: [])
+    stt_registry.load("qwen3-asr-0.6b", engine, context_length = 4096)
+    if engine == "mtmd":
+        assert calls[0]["context_length"] == 4096
+    else:
+        assert "context_length" not in calls[0]
