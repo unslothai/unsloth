@@ -4699,8 +4699,7 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 )
 
 
-# The branch header that owns TRL's add_adapter("ref"): GRPO (beta != 0) and RLOO (always) on TRL 0.27+, written
-# `if is_peft_available() and is_peft_model(model)...:` through 1.3 and `elif is_peft_model(model)...:` from 1.4.
+# Owner of TRL 0.27+ add_adapter("ref") in GRPO (beta != 0) / RLOO: `if is_peft_available() and ...` to 1.3, `elif` after.
 _RL_REF_ADAPTER_HEADER = re.compile(
     r"^(?P<head>[ \t]*(?:el)?if\s+)(?:is_peft_available\(\)\s+and\s+)?is_peft_model\(model\)"
     r"(?:\s+and\s+args\.beta\s*!=\s*0(?:\.0)?)?\s*:(?P<tail>[ \t]*(?:#.*)?)$"
@@ -4708,9 +4707,8 @@ _RL_REF_ADAPTER_HEADER = re.compile(
 
 
 def _skip_rl_ref_adapter(init):
-    """Turn off the branch that copies the adapter into a frozen "ref" adapter (as the older GRPO pattern above
-    does): the base model is Unsloth's reference, and the vLLM LoRA sync would also send the ref weights, which
-    vLLM rejects. The header stays and its body goes under `if False:`, so an elif / else chain keeps its meaning."""
+    """Disable the frozen "ref" adapter copy (vLLM's LoRA sync rejects its weights; the base model is the reference).
+    The header stays and its body goes under `if False:`, so an elif / else chain keeps its meaning."""
     lines = init.split("\n")
     for i, line in enumerate(lines):
         if line.lstrip().startswith("#") or not re.search(r"\.add_adapter\(\s*[\"']ref[\"']", line):
