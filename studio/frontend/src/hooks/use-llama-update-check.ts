@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+// eslint-disable-next-line no-restricted-imports -- the barrel would load the model picker components here.
+import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   signalRunningLlamaJob,
@@ -63,6 +65,18 @@ export interface LlamaUpdateStatus {
   from_backend: string | null;
   to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+const folderChangedListeners = new Set<() => void>();
+
+export function afterLlamaInstallChanged(): void {
+  invalidateLlamaFlagCatalog();
+  void refreshHardwareInfo();
+}
+
+export function afterLlamaFolderChanged(): void {
+  afterLlamaInstallChanged();
+  for (const listener of folderChangedListeners) listener();
 }
 
 export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
@@ -568,8 +582,8 @@ export function useLlamaUpdateCheck({
         if (presentation.running) return;
         clearPollTimer();
         notifySettledOnce(s.job);
+        afterLlamaInstallChanged();
         if (s.job.state === "success") {
-          void refreshHardwareInfo();
           // Fires here, not only in apply's onDone, so cross-tab updates are covered.
           notifyReloadIfNeeded(s.job);
           onDone?.({
@@ -704,9 +718,17 @@ export function useLlamaUpdateCheck({
 
   useEffect(() => {
     if (!enabled) return;
-    return subscribeToLlamaJobStarted(() => {
-      readStatus().then(surfaceIfAvailable);
-    });
+    const reread = () =>
+      void readStatus().then((next) => {
+        if (activeRef.current) surfaceIfAvailable(next);
+      });
+    // A llama.cpp folder change runs no job, so the installed tag held here would stay the old folder's.
+    folderChangedListeners.add(reread);
+    const unsubscribe = subscribeToLlamaJobStarted(reread);
+    return () => {
+      folderChangedListeners.delete(reread);
+      unsubscribe();
+    };
   }, [enabled, readStatus, surfaceIfAvailable]);
 
   const dismiss = useCallback((): string | null => {
