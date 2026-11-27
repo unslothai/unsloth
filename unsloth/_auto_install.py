@@ -13,7 +13,10 @@ try: import torch
 except: raise ImportError('Install torch via `pip install torch`')
 from packaging.version import Version as V
 import re
-v = V(re.match(r"[0-9\.]{3,}", torch.__version__).group(0))
+# Nightly / dev builds carry a .devNNNNNNNN suffix ("2.10.0.dev20260101+cu126"): stop the match
+# at whole digit groups so the trailing dot before "dev" cannot reach Version() (InvalidVersion
+# crash). They take their base release's extra, like the alpha builds the matcher already accepts.
+v = V(re.match(r"[0-9]+(?:\.[0-9]+)+", torch.__version__).group(0))
 cuda = str(torch.version.cuda)
 is_ampere = torch.cuda.get_device_capability()[0] >= 8
 USE_ABI = torch._C._GLIBCXX_USE_CXX11_ABI
