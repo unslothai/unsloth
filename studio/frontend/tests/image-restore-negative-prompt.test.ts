@@ -149,14 +149,15 @@ test("restoring an image-input recipe reopens its own tab and leaves the Create 
   }
 });
 
-test("restoring a recipe whose tab the loaded model lacks warns instead of claiming a restore", () => {
+test("restoring a recipe whose tab the loaded model lacks applies nothing and warns", () => {
   const image = { prompt: "a fox", guidance: 5, steps: 20, seed: 7, width: 1024, height: 1024, workflow: "inpaint" };
   const lacking = restoreSettingsWith(true, ["create", "edit"]);
-  lacking.restore(image);
+  assert.equal(lacking.restore(image), false);
   assert.match(String(lacking.state.toastWarning), /Inpaint, which the loaded model cannot run/);
-  assert.equal("toastSuccess" in lacking.state, false);
+  for (const key of ["setWorkflow", "setPromptFor", "setSeed", "setSteps", "toastSuccess"])
+    assert.equal(key in lacking.state, false, key);
   const capable = restoreSettingsWith(true, ["create", "inpaint"]);
-  capable.restore(image);
-  assert.equal("toastWarning" in capable.state, false);
+  assert.equal(capable.restore(image), true);
+  assert.equal(capable.state.setWorkflow, "inpaint");
   assert.ok(capable.state.toastSuccess);
 });
