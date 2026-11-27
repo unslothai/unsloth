@@ -533,8 +533,9 @@ def _exchange(shard, calls, like):
     tie = got_x[
         :0
     ].sum()  # keeps this rank's backward exchanges in the graph when it receives nothing
+    grouped = _grouped_locals(shard, lst, got_x, perm, counts)
     pieces, start = [], 0
-    for j, count in enumerate(counts):
+    for j, count in enumerate(counts if grouped is None else ()):
         if count == 0:
             continue  # no rank routed to it: its gradients stay None, as in one process
         expert = lst._modules[str(lo + j)]
@@ -545,7 +546,9 @@ def _exchange(shard, calls, like):
             )
         )
         start += count
-    if pieces:
+    if grouped is not None:
+        y_got = grouped
+    elif pieces:
         out_width = pieces[0][1].shape[-1]
         y_got = pieces[0][1].new_zeros((got_x.shape[0], out_width))
         for index, y in pieces:
@@ -563,6 +566,131 @@ def _exchange(shard, calls, like):
         outputs[i] = (calls[i][0], y_back[start : start + n])
         start += n
     return outputs, y_back
+
+
+# Local experts as one grouped GEMM per projection instead of a module call each: the received rows are already
+# sorted by local expert. The per-expert MLPs whose forward is down(act(gate(x)) * up(x)) (transformers 4.x).
+_GROUPED_MLPS = {
+    "Qwen3MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "Qwen2MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "OlmoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "MixtralBlockSparseTop2MLP": ("w1", "w3", "w2"),
+    "DeepseekV3MLP": ("gate_proj", "up_proj", "down_proj"),
+    "Glm4MoeMLP": ("gate_proj", "up_proj", "down_proj"),
+    "Qwen3NextMLP": ("gate_proj", "up_proj", "down_proj"),
+    "HunYuanMoEV1MLP": ("gate_proj", "up_proj", "down_proj"),
+}
+_GROUPED_ENV = "UNSLOTH_EP_GROUPED_EXPERTS"
+
+
+def _grouped_spec(shard, lst, counts):
+    """(the experts that received rows as one ModuleList, projection names), or a reason. Only routed experts go in,
+    so an expert with no rows keeps unset gradients, as in the loop. The checks run every call (hooks and patched
+    forwards can appear later); the ModuleList, which the zoo kernels cache their dequant tables on, is reused."""
+    lo, hi = shard.lo, shard.hi
+    if hi <= lo or os.environ.get(_GROUPED_ENV, "1") == "0":
+        return "no local experts" if hi <= lo else f"{_GROUPED_ENV}=0"
+    experts = [lst._modules[str(lo + j)] for j, count in enumerate(counts) if count]
+    kind = type(experts[0])
+    names = _GROUPED_MLPS.get(kind.__name__)
+    if (
+        names is None
+        or kind.forward.__module__ != kind.__module__
+        or not callable(getattr(experts[0], "act_fn", None))
+    ):
+        return f"{kind.__name__} is not a known expert MLP"
+    if any(
+        type(m) is not kind or "forward" in m.__dict__ or m._forward_hooks or m._forward_pre_hooks
+        for m in experts
+    ):
+        return "experts of different types, or with hooks"
+    if _fake_quantized(experts, names):
+        return "fake-quantized (QAT) expert projections"
+    if _projection_hooks(experts, names):
+        return "hooks on expert projections"
+    cache = shard.__dict__.setdefault("_grouped", {})
+    key = tuple(id(m) for m in experts)
+    hit = cache.get(key)
+    if hit is None:
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = hit = nn.ModuleList(experts)  # not attached to the model
+    return hit, names
+
+
+def _fake_quantized(experts, names):
+    # QAT: the grouped builders read raw weights and would skip the projections' fake quantizers.
+    from ..kernels.fast_lora import _has_activation_fake_quantizer
+    for expert in experts:
+        for name in names:
+            proj = expert._modules[name]
+            base = proj._modules.get("base_layer", proj)
+            if getattr(
+                base, "weight_fake_quantizer", None
+            ) is not None or _has_activation_fake_quantizer(proj):
+                return True
+    return False
+
+
+def _projection_hooks(experts, names):
+    # The grouped builders read the weights without calling the projections, so their hooks would not run.
+    for expert in experts:
+        for name in names:
+            for m in expert._modules[name].modules():
+                if m._forward_hooks or m._forward_pre_hooks:
+                    return True
+    return False
+
+
+def _grouped_locals(shard, lst, got_x, perm, counts):
+    """This rank's experts over the received rows with unsloth_zoo's grouped GEMMs (bitsandbytes 4-bit or 16-bit
+    frozen bases, one LoRA adapter), rows in got_x order; None keeps the per-expert loop (reason on the shard)."""
+    found = (
+        f"{got_x.device.type} {got_x.dtype} rows"
+        if not got_x.is_cuda
+        or got_x.dtype not in (torch.float16, torch.bfloat16)
+        or got_x.shape[0] == 0
+        else _grouped_spec(shard, lst, counts)
+    )
+    if isinstance(found, str):
+        shard.grouped_declined = found
+        return None
+    experts, names = found
+    try:
+        from unsloth_zoo.temporary_patches import moe_grouped_modulelist as zoo
+        from unsloth_zoo.temporary_patches.moe_utils import _grouped_mm_supported_on
+    except Exception as exc:
+        shard.grouped_declined = f"unsloth_zoo grouped MoE unavailable: {type(exc).__name__}"
+        return None
+    if not _grouped_mm_supported_on(got_x.device):
+        shard.grouped_declined = "grouped GEMM unsupported on this GPU"
+        return None
+    spec = (*names, None)
+    dtype = got_x.dtype
+    lora = zoo._experts_grouped_state(experts, spec, got_x.device, dtype)
+    if not isinstance(lora, dict):
+        shard.grouped_declined = lora
+        return None
+    projs = zoo._expert_projs(experts, spec)
+    routed = [count for count in counts if count]
+    offsets = torch.tensor(routed, dtype = torch.int64).cumsum(0).to(torch.int32).to(got_x.device)
+    x = got_x.index_select(0, perm)
+    gate_up = zoo._grouped_expert_gemm(
+        x, offsets, lambda: zoo._build_gate_up_stack(experts, spec, dtype, projs), True
+    )
+    gate, up = gate_up.chunk(2, dim = -1)
+    if lora["gate"] is not None:
+        gate = gate + zoo._lora_delta(x, offsets, projs.gate, lora["gate"], dtype)
+    if lora["up"] is not None:
+        up = up + zoo._lora_delta(x, offsets, projs.up, lora["up"], dtype)
+    inter = experts[0].act_fn(gate) * up
+    down = zoo._grouped_expert_gemm(
+        inter, offsets, lambda: zoo._build_down_stack(experts, spec, dtype, projs), True
+    )
+    if lora["down"] is not None:
+        down = down + zoo._lora_delta(inter, offsets, projs.down, lora["down"], dtype)
+    shard.grouped_calls = getattr(shard, "grouped_calls", 0) + 1
+    return down.new_zeros((got_x.shape[0], down.shape[-1])).index_copy(0, perm, down)
 
 
 class _Zeros(nn.Module):

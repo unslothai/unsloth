@@ -686,7 +686,14 @@ def cancel_generation_for_account(account_id: str) -> bool:
     for module_name, attribute in _ENGINE_SINGLETONS:
         module = sys.modules.get(module_name)
         engine = getattr(module, attribute, None) if module is not None else None
-        if engine is None or engine._active_generate_account != account_id:
+        if engine is None:
+            continue
+        # The native engine's card replicas render beside its primary.
+        lanes = getattr(engine, "_replica_backends", None)
+        if engine._active_generate_account != account_id and not any(
+            getattr(lane, "_active_generate_account", None) == account_id
+            for lane in (lanes() if callable(lanes) else ())
+        ):
             continue
         # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
