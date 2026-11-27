@@ -21,13 +21,52 @@ def _rec(
     xformers = None,
     caps = (RTX50,),
     platform = "win32",
+    route_host = True,
+    driver = (13, 0),
 ):
     versions = {"torch": torch, "xformers": xformers}
     return wr.windows_repair_recommendation(
         platform = platform,
         dist_version = versions.get,
         capabilities = lambda: dict(enumerate(caps)),
+        managed_route_host = lambda: route_host,
+        driver_cuda_version = lambda: driver,
     )
+
+
+def test_a_driver_too_old_for_the_managed_route_asks_for_a_driver_update_first():
+    # Repair alone would keep the cu128 torch, so the recommendation names the driver instead.
+    assert _rec(driver = (12, 8))["reason"] == "driver_older_than_managed"
+    assert _rec(driver = None)["reason"] == "torch_older_than_managed"  # unknown driver: Repair
+
+
+def test_a_host_off_the_managed_route_gets_no_recommendation():
+    # Windows on ARM, or a venv Python other than 3.13: Repair would not move torch.
+    assert _rec(route_host = False) is None
+
+
+def test_the_driver_header_is_parsed_as_install_ps1_reads_it(monkeypatch):
+    from types import SimpleNamespace
+
+    from utils.hardware import gpu_query
+
+    header = "| NVIDIA-SMI 576.88   Driver Version: 576.88   CUDA Version: 12.9     |"
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", lambda *a, **k: SimpleNamespace(stdout = header))
+    wr._driver_cuda_version.cache_clear()
+    try:
+        assert wr._driver_cuda_version() == (12, 9)
+    finally:
+        wr._driver_cuda_version.cache_clear()
+
+
+def test_the_route_gate_matches_install_ps1():
+    install = Path(__file__).resolve().parents[3] / "install.ps1"
+    body = re.search(
+        r"function Test-Cu130Torch213Platform \{.*?\n    \}",
+        install.read_text(encoding = "utf-8"),
+        re.S,
+    ).group(0)
+    assert '-ne "cu130"' in body and '-ne "x86_64"' in body and '"3.13 win-amd64"' in body
 
 
 def test_an_old_torch_on_rtx50_recommends_repair():

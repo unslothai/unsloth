@@ -3,7 +3,11 @@
 
 /** `/api/system` `repair_recommendation`: an existing Windows home older than the managed torch / xFormers. */
 export interface RepairRecommendation {
-  reason: "torch_older_than_managed" | "xformers_older_than_managed" | string;
+  reason:
+    | "torch_older_than_managed"
+    | "xformers_older_than_managed"
+    | "driver_older_than_managed"
+    | string;
   torch?: string | null;
   xformers?: string | null;
   managed_torch?: string | null;
@@ -29,6 +33,9 @@ export function repairRecommendationText(
   }
   if (rec.reason === "xformers_older_than_managed") {
     return t("settings.general.repairInstall.recommendedXformers" as never, values);
+  }
+  if (rec.reason === "driver_older_than_managed") {
+    return t("settings.general.repairInstall.recommendedDriver" as never, values);
   }
   return null;
 }

@@ -44,6 +44,15 @@ test("an old xFormers on a current torch gets its own wording", () => {
   assert.match(text ?? "", /xFormers 0\.0\.33, older than the managed 0\.0\.35/);
 });
 
+test("a driver too old for the managed route asks for a driver update first", () => {
+  const text = repairRecommendationText(
+    { reason: "driver_older_than_managed", torch: "2.10.0+cu128", managed_torch: "2.13" },
+    t,
+  );
+  assert.match(text ?? "", /Update the GPU driver first, then repair/);
+  assert.doesNotMatch(text ?? "", /\{/);
+});
+
 test("nothing recommended, or an unknown reason, shows nothing", () => {
   assert.equal(repairRecommendationText(null, t), null);
   assert.equal(repairRecommendationText(undefined, t), null);

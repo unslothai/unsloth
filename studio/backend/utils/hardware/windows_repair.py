@@ -10,6 +10,8 @@ Torch-free: package metadata and the cached nvidia-smi capability query, so the 
 
 from __future__ import annotations
 
+import functools
+import platform as _platform
 import re
 import sys
 from typing import Callable, Optional
@@ -19,6 +21,8 @@ WINDOWS_MANAGED_TORCH_FLOOR = (2, 13)
 # The first xFormers whose sm_120 build ships the backward kernels, paired with that torch.
 WINDOWS_MANAGED_XFORMERS_FLOOR = (0, 0, 35)
 _SM120 = 12
+# The managed torch comes from the cu130 index, which install.ps1 picks only for a driver supporting CUDA 13.0.
+_MANAGED_ROUTE_DRIVER_CUDA = (13, 0)
 
 
 def _dist_version(name: str) -> Optional[str]:
@@ -42,13 +46,44 @@ def _capabilities() -> dict:
         return {}
 
 
+@functools.lru_cache(maxsize = 1)
+def _driver_cuda_version() -> Optional[tuple[int, int]]:
+    """The CUDA version the driver supports, from nvidia-smi's header as install.ps1 reads it; None when
+    unreadable. Cached: the driver does not change under a running server."""
+    try:
+        from utils.hardware import gpu_query
+        from utils.hardware.nvidia import _nvidia_smi_executable
+
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable()],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+        )
+        match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout or "")
+        return (int(match.group(1)), int(match.group(2))) if match else None
+    except Exception:  # noqa: BLE001 -- unknown driver
+        return None
+
+
+def _managed_route_host() -> bool:
+    """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows with the Python 3.13 venv."""
+    return _platform.machine().lower() in ("amd64", "x86_64") and sys.version_info[:2] == (3, 13)
+
+
 def windows_repair_recommendation(
     platform: str = sys.platform,
     dist_version: Callable[[str], Optional[str]] = _dist_version,
     capabilities: Callable[[], dict] = _capabilities,
+    managed_route_host: Callable[[], bool] = _managed_route_host,
+    driver_cuda_version: Callable[[], Optional[tuple[int, int]]] = _driver_cuda_version,
 ) -> Optional[dict]:
     """``{"reason", "torch", "xformers", "managed_torch", "managed_xformers"}`` when this Windows CUDA install
-    has an sm_120+ card and a torch (or an installed xFormers) older than the managed pair; else None."""
+    has an sm_120+ card and a torch (or an installed xFormers) older than the managed pair, and Repair can
+    reach that pair; else None. A driver too old for the cu130 route gets ``driver_older_than_managed``
+    instead, since Repair alone would keep the old torch."""
     if platform != "win32":
         return None
     torch_version = dist_version("torch")
@@ -66,6 +101,12 @@ def windows_repair_recommendation(
         reason = "xformers_older_than_managed"
     else:
         return None
+    # Only x64 with the Python 3.13 venv takes the managed torch; elsewhere Repair would not change it.
+    if not managed_route_host():
+        return None
+    driver = driver_cuda_version()
+    if driver is not None and driver < _MANAGED_ROUTE_DRIVER_CUDA:
+        reason = "driver_older_than_managed"
     return {
         "reason": reason,
         "torch": torch_version,

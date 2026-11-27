@@ -2456,6 +2456,8 @@ export const en = {
         confirmAction: "Repair now",
         recommendedTorch:
           "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch}. Training attention on RTX 50-series GPUs needs PyTorch {managedTorch} with xFormers {managedXformers}.",
+        recommendedDriver:
+          "PyTorch {torch} is older than the managed {managedTorch}, which training attention on RTX 50-series GPUs needs, but this GPU driver does not support CUDA 13. Update the GPU driver first, then repair the installation.",
         recommendedXformers:
           "Repair recommended: this install has xFormers {xformers}, older than the managed {managedXformers}, whose RTX 50-series build has the kernels training needs.",
       },
