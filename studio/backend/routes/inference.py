@@ -38780,6 +38780,7 @@ async def produce_openai_chat_completions(
                                     retry_text,
                                     parse_think_markers = _sf_parse_think,
                                     reasoning_prefilled = _sf_reasoning_prefilled,
+                                    think_provenance = _sf_thought_ledger(None, retry_text),
                                 )
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:
