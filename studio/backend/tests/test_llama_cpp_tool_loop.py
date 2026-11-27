@@ -7781,6 +7781,17 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
         ("checkpoint", None, True, 0, 0, False, False, "Large document " * 50, "Partial passage"),
         ("checkpoint", None, True, 0, 0, True, False, "Complete document", "Partial passage"),
         ("checkpoint", None, True, 2, 0, False, True, "Medium document " * 25, "Partial passage"),
+        (
+            "checkpoint",
+            None,
+            True,
+            2,
+            0,
+            False,
+            True,
+            "Small whole document",
+            "Small whole document",
+        ),
         ("checkpoint", None, False, 0, 0, False, False, "", None),
     ],
 )
@@ -7911,7 +7922,8 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     recall = retrieval_budget(1000, 80, prompt, reply_returns = True)
     if expected_passage == complete:
         target = prompt_budget(1000, 80)
-        recall = min(recall, target - int(target * 0.25) - prompt)
+        ceiling = min(target - int(target * 0.25), truncation["prompt_tokens_before"])
+        recall = min(recall, ceiling - prompt)
     assert recall_budgets[0] == recall
     if isinstance(tool_choice, dict):
         assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]

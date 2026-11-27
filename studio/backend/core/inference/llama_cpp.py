@@ -42318,9 +42318,16 @@ class LlamaCppBackend:
                                             truncation["prompt_tokens_before"],
                                         ),
                                     ):
-                                        # A larger prompt leaves this fit's recall the room up to the headroom, not into it.
+                                        # A larger prompt leaves this fit's recall only the room under both ceilings.
                                         if measured > fitted_tokens:
-                                            _fit_recall_cap = max(0, headroom_line - measured)
+                                            _fit_recall_cap = max(
+                                                0,
+                                                min(
+                                                    headroom_line,
+                                                    truncation["prompt_tokens_before"],
+                                                )
+                                                - measured,
+                                            )
                                         _auto = refreshed
                                         conversation = candidate
                                         truncation["prompt_tokens_after"] = measured
