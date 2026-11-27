@@ -5105,6 +5105,9 @@ export const ptBR = {
       saveHistoryDescription: "Fica guardado apenas neste navegador.",
       showPrompt: "Mostrar prompt",
       showPromptDescription: "Veja as instruções exatas enviadas ao modelo.",
+      keepNames: "Manter nomes originais",
+      keepNamesDescription:
+        "Mostra a grafia original de cada nome depois dele, como डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Não foi salva no histórico: o armazenamento do navegador está cheio.",

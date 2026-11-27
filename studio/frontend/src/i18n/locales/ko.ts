@@ -5065,6 +5065,9 @@ export const ko = {
       saveHistoryDescription: "이 브라우저에만 보관됩니다.",
       showPrompt: "프롬프트 표시",
       showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
+      keepNames: "원래 이름 유지",
+      keepNamesDescription:
+        "각 이름 뒤에 원래 철자를 표시합니다. 예: डेविन वे (Devin Way)",
     },
     history: {
       notSaved: "기록에 저장되지 않았습니다: 브라우저 저장 공간이 가득 찼습니다.",

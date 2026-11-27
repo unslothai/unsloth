@@ -5416,6 +5416,9 @@ export const tr = {
       saveHistoryDescription: "Yalnızca bu tarayıcıda saklanır.",
       showPrompt: "İstemi göster",
       showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
+      keepNames: "Orijinal adları koru",
+      keepNamesDescription:
+        "Her adın ardından orijinal yazılışını gösterir, örneğin डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Geçmişe kaydedilmedi: tarayıcı depolama alanı dolu.",

@@ -5190,6 +5190,9 @@ export const th = {
       saveHistoryDescription: "เก็บไว้ในเบราว์เซอร์นี้เท่านั้น",
       showPrompt: "แสดงพรอมต์",
       showPromptDescription: "ดูคำสั่งที่ส่งไปยังโมเดลอย่างละเอียด",
+      keepNames: "คงชื่อดั้งเดิมไว้",
+      keepNamesDescription:
+        "แสดงการสะกดดั้งเดิมของแต่ละชื่อต่อท้าย เช่น डेविन वे (Devin Way)",
     },
     history: {
       notSaved: "ไม่ได้บันทึกลงในประวัติ: พื้นที่จัดเก็บของเบราว์เซอร์เต็มแล้ว",

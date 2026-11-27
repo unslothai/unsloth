@@ -5076,6 +5076,9 @@ export const ar = {
       saveHistoryDescription: "يُحفظ في هذا المتصفح فقط.",
       showPrompt: "إظهار الموجّه",
       showPromptDescription: "اطّلع على التعليمات الدقيقة المرسلة إلى النموذج.",
+      keepNames: "الاحتفاظ بالأسماء الأصلية",
+      keepNamesDescription:
+        "عرض التهجئة الأصلية لكل اسم بعده، مثل डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "لم تُحفظ في السجل: مساحة تخزين المتصفح ممتلئة.",

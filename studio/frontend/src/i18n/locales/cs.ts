@@ -5436,6 +5436,9 @@ export const cs = {
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
       showPrompt: "Zobrazit prompt",
       showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
+      keepNames: "Zachovat původní jména",
+      keepNamesDescription:
+        "Za každým jménem zobrazit jeho původní pravopis, např. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Neuloženo do historie: úložiště prohlížeče je plné.",

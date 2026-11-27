@@ -5467,6 +5467,9 @@ export const pl = {
       saveHistoryDescription: "Przechowywana tylko w tej przeglądarce.",
       showPrompt: "Pokaż prompt",
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
+      keepNames: "Zachowaj oryginalne nazwy",
+      keepNamesDescription:
+        "Pokazuj oryginalną pisownię po każdym imieniu, np. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",

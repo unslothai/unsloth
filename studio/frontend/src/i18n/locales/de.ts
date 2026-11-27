@@ -5150,6 +5150,9 @@ export const de = {
       saveHistoryDescription: "Wird nur in diesem Browser gespeichert.",
       showPrompt: "Prompt anzeigen",
       showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
+      keepNames: "Originalnamen beibehalten",
+      keepNamesDescription:
+        "Zeigt nach jedem Namen seine Originalschreibweise, z. B. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Nicht im Verlauf gespeichert: Der Browserspeicher ist voll.",

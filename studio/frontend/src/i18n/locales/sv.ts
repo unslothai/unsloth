@@ -5291,6 +5291,9 @@ export const sv = {
       saveHistoryDescription: "Sparas bara i den här webbläsaren.",
       showPrompt: "Visa prompt",
       showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
+      keepNames: "Behåll ursprungliga namn",
+      keepNamesDescription:
+        "Visa varje namns ursprungliga stavning efter det, till exempel डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Inte sparad i historiken: webbläsarens lagring är full.",

@@ -5414,6 +5414,9 @@ export const vi = {
       saveHistoryDescription: "Chỉ lưu trong trình duyệt này.",
       showPrompt: "Hiển thị lời nhắc",
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
+      keepNames: "Giữ tên gốc",
+      keepNamesDescription:
+        "Hiển thị cách viết gốc của mỗi tên ngay sau tên đó, ví dụ डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",

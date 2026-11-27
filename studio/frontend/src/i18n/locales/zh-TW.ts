@@ -5148,6 +5148,9 @@ export const zhTW = {
       saveHistoryDescription: "僅保存在這個瀏覽器中。",
       showPrompt: "顯示提示詞",
       showPromptDescription: "查看傳送給模型的確切指示。",
+      keepNames: "保留原名",
+      keepNamesDescription:
+        "在每個名字後顯示其原始拼寫，例如 डेविन वे (Devin Way)。",
     },
     history: {
       notSaved: "未儲存到歷史記錄：瀏覽器儲存空間已滿。",

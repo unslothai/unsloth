@@ -5158,6 +5158,9 @@ export const he = {
       saveHistoryDescription: "נשמרת בדפדפן הזה בלבד.",
       showPrompt: "הצג פרומפט",
       showPromptDescription: "הצגת ההוראות המדויקות שנשלחות למודל.",
+      keepNames: "שמירת שמות מקוריים",
+      keepNamesDescription:
+        "הצגת האיות המקורי של כל שם אחריו, למשל डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "לא נשמר בהיסטוריה: האחסון של הדפדפן מלא.",

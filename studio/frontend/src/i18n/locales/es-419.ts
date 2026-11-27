@@ -5503,6 +5503,9 @@ export const es419 = {
       showPrompt: "Mostrar prompt",
       showPromptDescription:
         "Consulta las instrucciones exactas enviadas al modelo.",
+      keepNames: "Conservar nombres originales",
+      keepNamesDescription:
+        "Muestra la ortografía original de cada nombre después de él, como डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "No se guardó en el historial: el almacenamiento del navegador está lleno.",
