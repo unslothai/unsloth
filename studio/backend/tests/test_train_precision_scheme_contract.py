@@ -12,7 +12,7 @@ from typing import get_args
 import pytest
 
 import core.training.diffusion_train_common as common
-from core.inference.diffusion_lora import _DIFFUSERS_LORA_BLOCKED_QUANT
+from core.inference.diffusion_lora import _DIFFUSERS_LORA_BAKED_QUANT
 from core.inference.diffusion_precision import TE_QUANT_MODES, TE_QUANT_NVFP4
 from core.training.diffusion_train_common import DiffusionLoraConfig, train_precision_modes
 from models.inference import DiffusionLoadRequest, VideoLoadRequest
@@ -85,8 +85,8 @@ def test_nvfp4_is_a_real_inference_scheme_and_not_a_training_one():
     assert TE_QUANT_NVFP4 in TE_QUANT_MODES
     assert "nvfp4" in _literal_names(DiffusionLoadRequest, "transformer_quant")
     assert "nvfp4" in _literal_names(DiffusionLoadRequest, "text_encoder_quant")
-    # It is also the scheme the diffusers LoRA path refuses to attach to, so it is genuinely live.
-    assert "nvfp4" in _DIFFUSERS_LORA_BLOCKED_QUANT
+    # It is also a scheme the diffusers LoRA path bakes adapters into at load, so it is genuinely live.
+    assert "nvfp4" in _DIFFUSERS_LORA_BAKED_QUANT
     assert "nvfp4" in _INFERENCE_ONLY
     assert "nvfp4" not in _TRAIN_PRECISIONS
 

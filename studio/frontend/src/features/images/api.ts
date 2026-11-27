@@ -34,8 +34,14 @@ export interface DiffusionResolvedControl {
   modules?: number;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface DiffusionStatus {
   loaded: boolean;
+  /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
+  /** The GPU index precision_options was judged on (probe verdicts are per card); null when unknown. */
+  precision_options_card?: number | null;
   // False when the resident model belongs to another account; the response then carries nothing else.
   yours?: boolean;
   repo_id: string | null;
@@ -70,6 +76,10 @@ export interface DiffusionStatus {
   baked_loras?: string[] | null;
   // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
   baked_lora_specs?: LoraSpecInput[] | null;
+  // Whether the attached LoRA set is folded into the weights, and why not; null without LoRAs or on older backends.
+  lora_fuse?: string | null;
+  // Multi-card placement (component split, layer split, guidance replica) and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -227,6 +237,8 @@ export interface DiffusionLoadRequest {
     | "aiter"
     | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
+  // Omitted = auto (env switch, else off).
+  lora_fuse?: "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -531,6 +543,8 @@ export interface DiffusionDownloadPlan {
   incompatible_reason?: string | null;
   /** Absent on an older backend. */
   incompatible_code?: string | null;
+  /** Per transformer scheme, why the planned family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
 }
 
 export async function getDiffusionDownloadPlan(
@@ -987,6 +1001,8 @@ export interface DiffusionTrainableFamily {
     lr_scheduler?: string;
     lr_warmup_steps?: number;
   } | null;
+  // The step count a sweep measured for this family and the set size it ran on; null where no sweep exists.
+  step_guidance?: { steps: number; items: number; batch_size?: number } | null;
   vram_note?: string | null;
   gated?: boolean | null;
   params?: string | null;

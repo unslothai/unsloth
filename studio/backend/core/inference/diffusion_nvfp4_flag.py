@@ -10,7 +10,10 @@ from typing import Iterable, Optional
 
 NVFP4_DIFFUSION_ENV = "UNSLOTH_NVFP4_DIFFUSION"
 
-# Flip to True once the hosted *-NVFP4 repos are public.
+# Off until the hosted *-NVFP4 repos are public. Runtime NVFP4 stays behind it too: every reviewed gate record
+# (nvfp4_gate_record.json) is a hosted per-layer checkpoint on B200 flashinfer, nothing gates a whole-model runtime
+# build, and FLUX.2 klein 4B's runtime build on a G4 (sm120, 16 renders) scored LPIPS-vgg 0.30 vs bf16 against fp8's
+# 0.15: +0.15 (CI95 0.13..0.17), three times the gate's 0.05 bar over fp8.
 NVFP4_DIFFUSION_DEFAULT = False
 
 NVFP4_SCHEME = "nvfp4"

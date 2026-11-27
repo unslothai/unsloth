@@ -163,6 +163,9 @@ class FrozenInt8Linear(nn.Module):
         if in_f % 8 or out_f % 8:
             raise ValueError(f"int8 W8A8 needs 8-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
+        # The int8 weight buffer is storage, not the input dtype: callers that cast inputs to a Linear's
+        # weight dtype (MOSS-Image's _compute_dtype) read this instead.
+        self.compute_dtype = linear.weight.dtype
         q, s = quantize_weight(linear.weight.detach())
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())

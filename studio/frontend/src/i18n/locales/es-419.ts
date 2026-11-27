@@ -2661,6 +2661,10 @@ export const es419 = {
         confirmDescriptionChatOnly:
           "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan los chats y la configuración. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
+        recommendedTorch:
+          "Se recomienda reparar: esta instalación tiene PyTorch {torch}, anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} es anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50, pero este controlador de GPU no admite CUDA 13. Actualiza primero el controlador de GPU y luego repara la instalación.",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
@@ -4491,8 +4495,8 @@ export const es419 = {
       summary: {
         single: "Entrenando en una GPU",
         layerSplit: "El modelo se divide capa por capa entre {count} GPU",
-        ddp: "El modelo cabe en una GPU: paralelismo de datos en {count} GPU",
-        fsdp2: "El modelo no cabe en una GPU: fragmentado entre {count} GPU",
+        ddp: "Cada GPU entrena una copia completa: paralelismo de datos en {count} GPU",
+        fsdp2: "Pesos y estado del optimizador fragmentados entre {count} GPU",
         tp: "Cada capa se divide entre {count} GPU",
         pp: "Las capas se ejecutan como {count} etapas de pipeline, una por GPU",
         cp: "Cada secuencia se divide entre {count} GPU",
@@ -4503,7 +4507,7 @@ export const es419 = {
         noGpu: "Selecciona al menos una GPU.",
         singleNeedsOne: "Una sola GPU usa exactamente una GPU. Desmarca las demás.",
         needsTwo: "Este modo necesita al menos dos GPU.",
-        customSpec: "Escribe una distribución, por ejemplo dp=2,tp=2.",
+        customSpec: "Escribe una distribución, por ejemplo {example}.",
       },
     },
     preview: {
@@ -5495,6 +5499,7 @@ export const es419 = {
         "Consulta las instrucciones exactas enviadas al modelo.",
     },
     history: {
+      notSaved: "No se guardó en el historial: el almacenamiento del navegador está lleno.",
       title: "Historial",
       search: "Buscar en el historial",
       empty: "Tus traducciones aparecen aquí.",
@@ -6534,6 +6539,12 @@ export const es419 = {
     maximize: "Maximizar ventana",
     restore: "Restaurar ventana",
     close: "Cerrar ventana",
+    mediaCodecs: {
+      title: "Es posible que los videos generados no se reproduzcan",
+      // {command}: an apt command line, never translated.
+      description: "A este sistema le faltan los decodificadores de video de GStreamer. Instálalos con: {command}",
+      copy: "Copiar comando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instalar el runtime de audio",

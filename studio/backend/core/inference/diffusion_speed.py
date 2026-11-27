@@ -604,6 +604,19 @@ def apply_speed_optims(
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
     filter_reductions = compile_config.family_filters_reductions(family)
 
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from . import diffusion_rocm_weight_pitch as rocm_weight_pitch
+            applied["rocm_weight_pitch"] = sum(
+                rocm_weight_pitch.install(
+                    getattr(pipe, name, None),
+                    logger,
+                    family = family if isinstance(family, str) else getattr(family, "name", None),
+                )
+                for name in ("transformer", "transformer_2", "unet")
+            )
+        except Exception as exc:  # noqa: BLE001 - contiguous weights stay
+            _warn(logger, "rocm weight pitch", exc)
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
     applied["channels_last"] = _vae_channels_last(

@@ -554,6 +554,7 @@ def decide_small_host(
     pread_libraries: tuple[str, ...] = (),
     spill_free_mib: Optional[int] = None,
     dense_denoiser: bool = False,
+    force: bool = False,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
@@ -585,7 +586,7 @@ def decide_small_host(
     reserve = host_reserve_mib(host_total_mib)
     dense_commit = _dense_commit_mib(converted, dense, pread_libraries)
     storage = {name: comp.dtype for name, comp in converted.items()}
-    forced = small_host_forced()
+    forced = force or small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
     commit = None if host_commit_mib is None else int(host_commit_mib)
@@ -632,7 +633,11 @@ def decide_small_host(
     ):
         refuse = _refusal(need, reserve, host_available_mib, "even the low-memory route")
     why = (
-        f"{SMALL_HOST_ENV}=1"
+        (
+            f"{SMALL_HOST_ENV}=1"
+            if small_host_forced()
+            else f"forced by the load (dense {compute} would fit)"
+        )
         if forced and fits
         else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
         f"{host_available_mib} MiB available{commit_note}"

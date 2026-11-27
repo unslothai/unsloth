@@ -212,8 +212,22 @@ def test_pp2_trainer_step_keeps_the_trl_router_aux_loss(cell):
             assert diff <= 1e-6 + 1e-4 * scale, (cell, group, diff, scale)
 
 
-def test_pp2_trainer_step_refuses_split_aux_on_trl118():
-    # Summing per-micro-batch aux losses is a different objective: refused.
-    results = _spawn(n_mb = 2, **CELLS["trl118_on"])
+@pytest.mark.parametrize(
+    "cell", ["trl118_on", "trl117_on", "plain_trainer_config_on", "trl118_on_zoo_cpu"]
+)
+def test_pp2_trainer_step_forms_split_aux_over_the_whole_batch(cell):
+    # A batch split into 2 micro-batches (GPipe) takes the aux loss over the whole batch, as the one-process
+    # forward does, not one per micro-batch. Failing before: refused (the pipeline summed per micro-batch).
+    results = _spawn(n_mb = 2, **CELLS[cell])
+    ref_loss, ref_aux = results[0]["ref"]
+    assert ref_aux > 0, (cell, ref_aux)
     for res in results:
-        assert "micro-batch" in (res["refused"] or ""), res["refused"]
+        assert res["refused"] is None, res["refused"]
+        assert res["loss"] == pytest.approx(ref_loss, rel = 1e-5, abs = 1e-6), (
+            cell,
+            res["loss"],
+            ref_loss,
+        )
+        assert res["aux"] == pytest.approx(ref_aux, rel = 1e-5, abs = 1e-6), (cell, res["aux"], ref_aux)
+        for group, (diff, scale) in res["diffs"].items():
+            assert diff <= 1e-6 + 1e-4 * scale, (cell, group, diff, scale)
