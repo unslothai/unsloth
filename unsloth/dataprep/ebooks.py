@@ -418,18 +418,28 @@ def _chunk_text(text, tokenizer, chunk_size, overlap):
             end -= 1
             char_end = ends[end - 1] if end > start else char_start
         if end == start:
-            raise ValueError(
-                "chunk_size is too small to represent a complete character with this tokenizer"
-            )
+            # No token boundary remains to land on: the window sits inside one source token. Cut it
+            # at a character boundary -- the same mid-token slice the boundary path already emits.
+            char_end = ends[start]
+            while char_end > char_start + 1:
+                char_end -= 1
+                chunk = text[char_start:char_end].strip()
+                if chunk and len(tokenizer.encode(chunk, add_special_tokens = False)) <= chunk_size:
+                    break
+            else:
+                raise ValueError(
+                    "chunk_size is too small to represent a complete character with this tokenizer"
+                )
         yield chunk
         # Consume every byte token of the final character, even when it spans the token window.
         consumed = bisect_right(ends, char_end)
         if consumed == len(offsets):
             break
-        if overlap:
+        if overlap and end > start:
             start = max(consumed - overlap, bisect_right(starts, char_start))
             char_start = starts[start]
         else:
+            # A mid-token slice resumes inside its token; a boundary emit resumes at char_end.
             start, char_start = consumed, char_end
 
 
