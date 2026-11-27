@@ -166,15 +166,22 @@ def run_case(
     experts0 = dict(PACKED_EXPERT_STATS)
     mx = {"n": 0}
     try:
-        import unsloth_zoo.mxfp4_stacked_experts as mxs
+        # MXFP4 expert stacks run either the fused decode-in-GEMM kernel or a dequantize + grouped GEMM.
+        import unsloth_zoo.mxfp4_gemm as mxg
+        from unsloth_zoo.mxfp4_dequant import Mxfp4ExpertParam
 
-        real_grouped = mxs._grouped
+        real_fused, real_deq = mxg.mxfp4_expert_grouped_mm, Mxfp4ExpertParam.dequantize
 
-        def counted_grouped(*args, **kwargs):
+        def counted_fused(*args, **kwargs):
             mx["n"] += 1
-            return real_grouped(*args, **kwargs)
+            return real_fused(*args, **kwargs)
 
-        mxs._grouped = counted_grouped
+        def counted_deq(self, *args, **kwargs):
+            mx["n"] += 1
+            return real_deq(self, *args, **kwargs)
+
+        mxg.mxfp4_expert_grouped_mm = counted_fused
+        Mxfp4ExpertParam.dequantize = counted_deq
     except Exception:
         pass
     for step in range(steps):

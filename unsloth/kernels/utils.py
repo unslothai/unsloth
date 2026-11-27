@@ -31,6 +31,10 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .fp8 import _is_transposed_view as _nvfp4_is_transposed_view
+
+# Kill switch for the traced NVFP4 base GEMM routing in matmul_lora (0: the dense-dequantize order).
+_NVFP4_TRACED_OPAQUE = os.environ.get("UNSLOTH_NVFP4_TRACED_OPAQUE", "1") != "0"
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -2260,6 +2264,17 @@ def matmul_lora(
     elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
         # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
         out = _int4_matmul(X, W, W_quant, out = out)
+    elif (
+        type(W_quant) is NVFP4QuantState
+        and _is_compiling()
+        and not _nvfp4_is_transposed_view(W)
+        and _NVFP4_TRACED_OPAQUE
+    ):
+        # Traced forward: decode inside the opaque NVFP4 op. A dense weight as a graph intermediate is saved by
+        # AOTAutograd for backward in every layer (+2 GB peak at Qwen3-1.7B); the LoRA term is added below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
+        if out.dtype != dtype:
+            out = out.to(dtype)
     elif _is_packed_state(W_quant) and not (
         lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
     ):
