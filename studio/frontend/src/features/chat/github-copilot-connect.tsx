@@ -207,7 +207,7 @@ export function GitHubCopilotConnect({
           ? "Connected securely on this Unsloth installation."
           : expired
             ? "Your saved authorization is no longer valid. Reconnect to continue."
-            : "Open GitHub in your browser to approve access with a one-time code."
+            : "Authorize in your system browser with a GitHub device code. Tokens never enter browser storage."
       }
     >
       {flow && !loadingModels ? (

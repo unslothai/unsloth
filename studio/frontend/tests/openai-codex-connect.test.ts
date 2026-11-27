@@ -146,6 +146,10 @@ test("Copilot uses the same subscription section and sign-in button as ChatGPT",
 
   assert.ok(sectionClass(codex));
   assert.equal(sectionClass(copilot), sectionClass(codex));
+  assert.match(
+    copilot,
+    /Authorize in your system browser with a GitHub device code\. Tokens never enter browser storage\./,
+  );
   for (const markup of [codex, copilot]) {
     assert.match(markup, /<button[^>]+data-variant="dark"[^>]*>Connect in browser<\/button>/);
   }
