@@ -7,6 +7,7 @@ MXFP8 fails. So fused stacks become packed placeholders, their converters are dr
 filled with exact checkpoint bytes. ``UNSLOTH_PACKED_EXPERTS=0`` installs them dequantized to 16 bit instead.
 """
 
+import math
 import os
 import re
 from typing import Optional
@@ -370,6 +371,10 @@ def _fill(item, shards):
         )
         del holders
         E, rows = codes.shape[0], codes.shape[1] // len(projs)
+        if cut is not None:
+            _check_headers(
+                item, projs, rows, codes.shape[2], scales.shape[2], code_key, glob_key, glob
+            )
 
         def _exact(tensor, target, what):
             # copy_ would broadcast a malformed (rows, 1) scale over the whole slice.
@@ -424,6 +429,24 @@ def _fill(item, shards):
     module._unsloth_packed_expert_format = fmt if keep else None
 
 
+def _check_headers(item, projs, rows, code_cols, scale_cols, code_key, glob_key, glob):
+    """Every expert's tensor shapes from the shard headers, read on each rank before it reads only its own experts,
+    so a malformed checkpoint fails on every rank alike instead of on the rank owning the bad expert."""
+    want = {code_key: (rows, code_cols), "weight_scale": (rows, scale_cols)}
+    if glob is not None:
+        want[glob_key] = None
+    for e in range(item["cut"][2][0]):
+        for proj in projs:
+            for suffix, shape in want.items():
+                entry = item["entries"].get((e, proj, suffix))
+                got = None if entry is None else tuple(entry[1])
+                if got is None or (got != shape if shape is not None else math.prod(got) != 1):
+                    raise RuntimeError(
+                        f"Unsloth: {item['name']} expert {e}.{proj}.{suffix} has shape {got}, expected "
+                        f"{shape if shape is not None else 'one element'}; the checkpoint does not match the model."
+                    )
+
+
 def _mark_cut(module, stack, packed, cut):
     """A stack read for this rank's experts only: marked as expert parallel loading's cut, its logical shape the
     whole stack (PEFT sizes the expert LoRA for every expert), so apply_expert_parallel finishes the shard."""
@@ -437,7 +460,27 @@ def _mark_cut(module, stack, packed, cut):
     else:  # UNSLOTH_PACKED_EXPERTS=0: a plain 16-bit stack, sized for PEFT by the preload wrapper
         tpn._patch_param_wrapper_preloaded_shape()
     setattr(new, _EXPERT_PRELOAD, mark)
-    tpn.ep_packed_load_count(packed.nbytes_packed())
+    kept = packed.nbytes_packed() if new is packed else new.numel() * new.element_size()
+    tpn.ep_packed_load_count(packed.nbytes_packed(), kept)
+
+
+def _drop_idle_decompress_hook(model):
+    """compressed-tensors decompresses on the first forward; with every packed expert stack filled here and no
+    compressed module left, that pass has nothing to decompress but still rebuilds the model's offload state
+    (newer compressed-tensors), which breaks expert parallel's sharded stacks. Drop it then, as
+    mxfp4_compressed_linear does."""
+    hook = getattr(model, "ct_decompress_hook", None)
+    if hook is None:
+        return
+    for module in model.modules():
+        status = getattr(module, "quantization_status", None)
+        if str(getattr(status, "value", status)).lower() == "compressed":
+            return
+    hook.remove()
+    try:
+        delattr(model, "ct_decompress_hook")
+    except AttributeError:
+        pass
 
 
 def finalize_packed_experts(model) -> int:
@@ -452,6 +495,7 @@ def finalize_packed_experts(model) -> int:
     with torch.no_grad():
         for item in plan:
             _fill(item, shards)
+    _drop_idle_decompress_hook(model)
     fmt = plan[0]["fmt"]
     kind = {"nvfp4": "NVFP4", "nvfp4_modelopt": "ModelOpt NVFP4", "mxfp8": "MXFP8"}[fmt]
     if packed_experts_enabled():

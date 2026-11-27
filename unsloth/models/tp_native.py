@@ -5355,9 +5355,10 @@ def ep_packed_load_cut(model, experts):
     info = _EP_PACKED_LOAD.get()
     if (
         info is None
+        or _TP_QUANTIZE_OWNER.get()
+        is not info["owner"]  # a nested load inside it is an ordinary load
         or not isinstance(model, info["cls"])
-        or info.setdefault("model", model)
-        is not model  # the model this load builds, not a nested one
+        or info.setdefault("model", model) is not model
     ):
         return None
     tp, rank = info["tp"], info["rank"]
@@ -5374,13 +5375,13 @@ def ep_packed_load_cut(model, experts):
     return None
 
 
-def ep_packed_load_count(nbytes):
-    """packed_expert_loader read one packed expert stack for this rank's experts only (`nbytes` held)."""
+def ep_packed_load_count(loaded_bytes, kept_bytes):
+    """packed_expert_loader read one packed expert stack for this rank's experts only."""
     info = _EP_PACKED_LOAD.get()
     if info is not None:
         info["sharded_expert_stacks"] += 1
-        info["loaded_bytes"] += nbytes
-        info["kept_bytes"] += nbytes
+        info["loaded_bytes"] += loaded_bytes
+        info["kept_bytes"] += kept_bytes
 
 
 def _guard_preloaded_modules(model):
@@ -5398,7 +5399,9 @@ def _guard_preloaded_modules(model):
 def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
     """transformers' own (full) load of an otherwise quantized checkpoint under expert parallel loading, where
     packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut)."""
+    owner = object()
     info = {
+        "owner": owner,
         "cls": cls,
         "tp": mesh.size(),
         "rank": mesh.get_local_rank(),
@@ -5407,11 +5410,16 @@ def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
         "loaded_bytes": 0,
         "kept_bytes": 0,
     }
+    # As _tp_load_quantizing: an enclosing sharded_loading passes this load through, a nested one is ordinary.
+    state["active"] = True
+    owner_token = _TP_QUANTIZE_OWNER.set(owner)
     token = _EP_PACKED_LOAD.set(info)
     try:
         loaded = original(cls, name, *args, **kwargs)
     finally:
         _EP_PACKED_LOAD.reset(token)
+        _TP_QUANTIZE_OWNER.reset(owner_token)
+        state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
     if info["sharded_expert_stacks"] and info.get("model") is model:
         _guard_preloaded_modules(model)

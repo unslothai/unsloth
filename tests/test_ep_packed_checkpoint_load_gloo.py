@@ -206,7 +206,7 @@ def _case_load(
 
     rows = [packed_ep._rows(128, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
-    full, model = packed_ep._lora(full), packed_ep._lora(model)
+    full, model = _peft(full), _peft(model)
     lora = lambda m: {k: p.detach().clone() for k, p in m.named_parameters() if "lora_" in k}  # noqa: E731
     want_lora, got_lora = lora(full), lora(model)
     out["lora_equal"] = set(want_lora) == set(got_lora) and all(
@@ -215,6 +215,48 @@ def _case_load(
     out["full"] = _step(epn, full, rank, world, mesh, rows, n)
     out["sharded"] = _step(epn, model, rank, world, mesh, rows, n)
     return out
+
+
+def _peft(model):
+    """PEFT's own (seeded) expert LoRA init: equal only when it sizes the cut stacks for every expert."""
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(1)
+    config = LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
+        init_lora_weights = False,
+    )
+    return get_peft_model(model, config).train()
+
+
+def _case_bad_header(rank, world, tmp):
+    """A malformed expert owned by rank 1 fails the load on every rank, not only on its owner."""
+    import torch.distributed as dist
+    from safetensors.torch import load_file, save_file
+    from torch.distributed.device_mesh import init_device_mesh
+
+    packed_ep._zoo_backend()
+    tpn, epn, loader = packed_ep._modules()
+    assert loader.install_packed_expert_loading()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ckpt = os.path.join(tmp, "ckpt")
+    if rank == 0:
+        _write_checkpoint(ckpt, "nvfp4")
+        path = os.path.join(ckpt, "model.safetensors")
+        state = load_file(path)
+        key = f"model.layers.1.mlp.experts.{E - 1}.gate_proj.weight_scale"
+        state[key] = state[key][:, :1].contiguous()
+        save_file(state, path, metadata = {"format": "pt"})
+    dist.barrier()
+    try:
+        with epn.expert_parallel_loading(mesh):
+            _load(ckpt)
+        return {"loaded": True}
+    except RuntimeError as exc:
+        return {"loaded": False, "message": str(exc)}
 
 
 def _check(results, packed = True):
@@ -310,3 +352,10 @@ def test_ep_packed_checkpoint_reads_only_local_experts_and_matches_full_load(fmt
 
 def test_ep_packed_checkpoint_kill_switch_16bit_stacks_are_cut_alike():
     _check(_spawn("_case_load", fmt = "nvfp4", packed = False), packed = False)
+
+
+def test_ep_packed_checkpoint_malformed_remote_expert_fails_every_rank():
+    results = _spawn("_case_bad_header")
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["loaded"] is False and "does not match the model" in r["message"], r
