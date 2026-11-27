@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 int8 / fp8 denoisers where torchao's runtime does not run (Ampere fp8, ROCm, MPS, stubbed torchao):
-the file's codes go to the 1-byte ``NativeWeightOnlyLinear`` twin by the image path's rules instead of widening to
-the 40 GB bf16 model. ``UNSLOTH_H3_NATIVE_QUANT=0`` restores the torchao-only refusal."""
+"""MiniMax-H3 int8 / fp8 denoisers torchao cannot run (Ampere fp8, ROCm, MPS): 1-byte
+NativeWeightOnlyLinear twins, not a 40 GB bf16 widen; UNSLOTH_H3_NATIVE_QUANT=0 restores refusal."""
 
 from __future__ import annotations
 
@@ -53,18 +52,27 @@ def h3_fp8_storage(target: Any, base_repo: Optional[str] = None) -> bool:
         return False
 
 
-def h3_hosted_fp8_native(target: Any, base_repo: Optional[str] = None) -> bool:
-    """Hosted fp8 checkpoint as stored fp8: a CUDA card where torchao's fp8 runtime does not run (below sm_89)."""
+def h3_hosted_fp8_storage_host(target: Any) -> bool:
+    """The host half of :func:`h3_hosted_fp8_native`, without the torchao probe: a bf16 CUDA card that can hold the
+    hosted fp8 codes stored. Where torchao's fp8 GEMM failed, an explicit H3 fp8 load runs this way, so a cached fp8
+    probe failure does not refuse it. Never raises."""
     if not h3_native_quant_enabled() or getattr(target, "device", None) != "cuda":
         return False
     try:
         import torch
 
         from .diffusion_comfy_quant import comfy_fp8_storage
-        from .diffusion_transformer_quant import TQ_FP8, select_transformer_quant_scheme
+        return getattr(target, "dtype", None) is torch.bfloat16 and comfy_fp8_storage(target)
+    except Exception:  # noqa: BLE001 -- unanswerable: the torchao rule decides, as before
+        return False
 
-        if getattr(target, "dtype", None) is not torch.bfloat16 or not comfy_fp8_storage(target):
-            return False
+
+def h3_hosted_fp8_native(target: Any, base_repo: Optional[str] = None) -> bool:
+    """Hosted fp8 checkpoint as stored fp8: a CUDA card where torchao's fp8 runtime does not run (below sm_89)."""
+    if not h3_hosted_fp8_storage_host(target):
+        return False
+    try:
+        from .diffusion_transformer_quant import TQ_FP8, select_transformer_quant_scheme
         return (
             select_transformer_quant_scheme(target, TQ_FP8, family = H3_FAMILY, base_repo = base_repo)
             != TQ_FP8
@@ -96,8 +104,7 @@ def _fp8_parts(weight: Any) -> Optional[tuple]:
 
 
 def h3_hosted_fp8_to_native(model: Any, logger: Any = None) -> int:
-    """Rebuild every ``Float8Tensor`` Linear as a stored-fp8 twin (same codes and per-row scales). Raises
-    ``ValueError`` on a layout the twin cannot hold: it could not run here."""
+    """Float8Tensor Linears: stored-fp8 twins, same codes and scales; ValueError if unholdable."""
     import torch
 
     from .diffusion_comfy_quant import FP8_STORED_ATTR

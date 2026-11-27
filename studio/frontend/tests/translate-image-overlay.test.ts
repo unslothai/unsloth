@@ -23,6 +23,17 @@ import { readSrc } from "./helpers/kit.ts";
 // One unit per character, so widths are easy to reason about.
 const chars = (text: string) => Array.from(text).length;
 
+test("a long Chinese block on an image is translated into spaced English", async () => {
+  const long = "这是海报上一段很长的文字中的一句话。".repeat(80);
+  const out = await translateTextList(
+    [long],
+    async (source) =>
+      source.replace(/[^。]+。/g, "A sentence from the poster. ").trim(),
+    { signal: new AbortController().signal, onPhase: () => {} },
+  );
+  assert.equal(out[0], "A sentence from the poster. ".repeat(80).trim());
+});
+
 test("the background is the median around the box, ignoring the text pixels and transparency", () => {
   const rgba = [
     ...[200, 100, 50, 255],

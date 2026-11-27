@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * adopt_load_intent_if_matched also checks server-wide memory state and VRAM fraction,
- * which a load intent cannot see; without these the setting never reaches the child.
+ * Without adopt_load_intent_if_matched's memory and VRAM checks, settings never reach the child.
  */
 
 import assert from "node:assert/strict";

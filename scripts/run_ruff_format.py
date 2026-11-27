@@ -53,8 +53,7 @@ def pinned_ruff_version(config_text: str) -> str | None:
 
 
 def installed_ruff_version(python: str = sys.executable) -> str | None:
-    """Read from the distribution, not --version: the binary reports its base ruff (0.6.9), which
-    does not change across ruff-unsloth releases; None when it cannot say."""
+    """Read the distribution, not --version (base ruff 0.6.9 never changes); None when unknown."""
     probe = f"from importlib.metadata import version; print(version({DISTRIBUTION!r}))"
     try:
         out = subprocess.run([python, "-c", probe], capture_output = True, text = True, timeout = 60)
@@ -179,8 +178,7 @@ def chunk_files(files: list[str], jobs: int) -> list[list[str]]:
 
 
 def run_chunks(head: list[str], chunks: list[list[str]]) -> int:
-    """Chunks run in parallel with output replayed in chunk order, first failure code wins; Ctrl+C
-    or a timeout kills the chunks still running instead of waiting."""
+    """Output replays in order; first failure code wins; Ctrl+C/timeout kills running chunks."""
     if not chunks:
         return 0
     if len(chunks) == 1:

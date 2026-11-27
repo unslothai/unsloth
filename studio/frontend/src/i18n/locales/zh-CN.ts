@@ -882,7 +882,7 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
-    addScheduledTask: "添加定时任务…",
+    addScheduledTask: "添加定时任务",
     compact: "压缩对话",
     compactEmpty: "暂无可压缩的内容",
     compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
@@ -2389,6 +2389,10 @@ export const zhCN = {
         confirmDescriptionChatOnly:
           "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
+        recommendedTorch:
+          "建议修复：此安装的 PyTorch {torch} 早于受管理的 {managedTorch}，而 RTX 50 系列 GPU 需要该版本才受支持。",
+        recommendedDriver:
+          "PyTorch {torch} 早于受管理的 {managedTorch}（RTX 50 系列 GPU 需要该版本才受支持），但此 GPU 驱动不支持 CUDA 13。请先更新 GPU 驱动，再修复安装。",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -4064,8 +4068,8 @@ export const zhCN = {
       summary: {
         single: "在一个 GPU 上训练",
         layerSplit: "模型按层拆分到 {count} 个 GPU 上",
-        ddp: "模型可放入单个 GPU：在 {count} 个 GPU 上进行数据并行",
-        fsdp2: "模型太大，单个 GPU 放不下：分片到 {count} 个 GPU 上",
+        ddp: "每个 GPU 训练一份完整副本：在 {count} 个 GPU 上进行数据并行",
+        fsdp2: "权重和优化器状态分片到 {count} 个 GPU 上",
         tp: "每一层都拆分到 {count} 个 GPU 上",
         pp: "各层组成 {count} 个流水线阶段，每个 GPU 一个",
         cp: "每个序列都拆分到 {count} 个 GPU 上",
@@ -4076,7 +4080,7 @@ export const zhCN = {
         noGpu: "请至少选择一个 GPU。",
         singleNeedsOne: "单 GPU 模式只使用一个 GPU，请取消勾选其他 GPU。",
         needsTwo: "此模式至少需要两个 GPU。",
-        customSpec: "请输入布局，例如 dp=2,tp=2。",
+        customSpec: "请输入布局，例如 {example}。",
       },
     },
     preview: {
@@ -4374,6 +4378,8 @@ export const zhCN = {
       unsupportedFileType: "不支持的文件类型",
       uploadOneFileType: "上传一个 {types} 文件。",
       datasetUploaded: "数据集已上传",
+      importPandasJson: "将 .json 作为 pandas 列格式导入",
+      importSemicolonCsv: "对 .csv 使用分号作为分隔符",
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",
@@ -4442,6 +4448,12 @@ export const zhCN = {
       epochs: "轮数",
       useMaxSteps: "使用最大步数",
       useEpochs: "使用轮数",
+      stepGuidancePass: "在有效批次 {batch} 下，约 {steps} 步可完整遍历一次你的 {rows} 行数据。",
+      stepGuidanceFloor: "在有效批次 {batch} 下，遍历一次你的 {rows} 行数据只需 {passSteps} 步，因此约 {steps} 步（数次遍历）是合理的下限。",
+      stepGuidanceCap: "在有效批次 {batch} 下，遍历一次你的 {rows} 行数据需要 {passSteps} 步；{steps} 步只训练其中一部分，对首次运行通常已足够。",
+      stepGuidanceEpoch: "在有效批次 {batch} 下，一轮约为遍历你的 {rows} 行数据的 {passSteps} 步。",
+      stepGuidancePacking: "打包会合并较短的行，因此一次遍历可能需要更少的步数。",
+      useSuggestedSteps: "使用 {steps}",
       maxStepsTooltip: "覆盖优化器总步数。",
       epochsTooltip: "完整遍历数据集的次数。",
       contextLength: "上下文",
@@ -4968,6 +4980,7 @@ export const zhCN = {
       showPromptDescription: "查看发送给模型的确切指令。",
     },
     history: {
+      notSaved: "未保存到历史记录：浏览器存储空间已满。",
       title: "历史记录",
       search: "搜索历史记录",
       empty: "你的翻译会显示在这里。",
@@ -5933,6 +5946,12 @@ export const zhCN = {
     maximize: "最大化窗口",
     restore: "还原窗口",
     close: "关闭窗口",
+    mediaCodecs: {
+      title: "生成的视频可能无法播放",
+      // {command}: an apt command line, never translated.
+      description: "此系统缺少 GStreamer 视频解码器。请使用以下命令安装：{command}",
+      copy: "复制命令",
+    },
   },
   runtimeUpdate: {
     installAudio: "安装音频运行时",

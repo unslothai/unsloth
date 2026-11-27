@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The "Mask from text" segmenter routes, kept out of api.ts like the prompt upsampler's: only the lazily loaded Images
-// page uses them.
+// Segmenter routes for Mask from text; kept out of api.ts, only the Images page uses them.
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";

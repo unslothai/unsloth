@@ -15,8 +15,7 @@ import {
   keylessBaseEligible,
 } from "../src/features/settings/components/keyless-example-eligibility.ts";
 
-// Mirrors test_what_the_ui_advertises_matches_what_admission_accepts in
-// studio/backend/tests/test_keyless_api_access_adversarial.py: change both together.
+// Mirrors test_what_the_ui_advertises_matches_what_admission_accepts; change both together.
 const TABLE: [string, boolean, string][] = [
   ["http://127.0.0.1:8888", true, "loopback"],
   ["http://127.0.0.2:8888", true, "loopback, whole 127/8"],

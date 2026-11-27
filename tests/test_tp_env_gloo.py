@@ -279,11 +279,13 @@ def _case_env(
         trainer_b.train(resume_from_checkpoint = ckpt2)
         res["b"] = summary(trainer_b)
         if layout is not None:
-            # A checkpoint written on another layout is refused before anything is loaded.
+            # A checkpoint written on another layout without the 1-GPU optimizer.pt (an older Unsloth) is refused
+            # before anything is loaded; with it, it resumes resharded (test_layout_portable_resume_gloo).
             bad = os.path.join(tmp, "bad")
             if rank == 0:
                 import shutil
                 shutil.copytree(ckpt2, bad)
+                os.remove(os.path.join(bad, "optimizer.pt"))
             dist.barrier()
             path = os.path.join(bad, "unsloth_tp", f"rank{rank:05d}.pt")
             payload = torch.load(path, weights_only = True)
@@ -389,6 +391,48 @@ def _case_dp_average_dtypes(rank, world, tmp):
         out[str(dtype)]["got"] = [p.grad.clone() for p in pair]
         out[str(dtype)]["dtype"] = [p.grad.dtype for p in pair]
     return out
+
+
+def _case_dp_average_buckets(rank, world, tmp):
+    """64-byte cap: every grad (any dtype, over the cap, non-contiguous) equals its own all-reduce mean."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import ep_native, tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    params, reference = [], []
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        for shape in ((3,), (5, 4), (40,), (7,), (2, 3)):
+            p = torch.nn.Parameter(torch.zeros(shape, dtype = dtype))
+            g = (torch.randn(shape[::-1]) * 2e4).to(dtype)
+            p.grad = g.t() if g.dim() == 2 else g  # 2-D: a non-contiguous gradient
+            params.append(p)
+            want = p.grad.float() if dtype == torch.float16 else p.grad.clone()
+            dist.all_reduce(want)
+            reference.append(want.div_(world).to(dtype))
+    calls = []
+    all_reduce = dist.all_reduce
+
+    def counting(tensor, *args, **kwargs):
+        calls.append(tensor.numel())
+        return all_reduce(tensor, *args, **kwargs)
+
+    ep_native._REPLICA_BUCKET_BYTES, dist.all_reduce = 64, counting
+    try:
+        tp_native._dp_average(params, mesh["dp"])
+    finally:
+        dist.all_reduce = all_reduce
+    return {
+        "equal": [torch.equal(p.grad, want) for p, want in zip(params, reference)],
+        "dtypes": [p.grad.dtype == want.dtype for p, want in zip(params, reference)],
+        "reduces": len(calls) - 1,  # the first one is the has-gradient vote
+    }
 
 
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
@@ -509,13 +553,80 @@ def _case_model_init(
     }
 
 
+def _case_prebuilt_optimizer(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    kwargs_params = False,
+):
+    """Trainer(optimizers = (optimizer, None)) under UNSLOTH_TP_SIZE alone, on a model get_peft_model did not shard
+    (PEFT's own get_peft_model): the split in Trainer.__init__ replaces the trainable parameters."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    model = AutoModelForCausalLM.from_pretrained(ckpt, torch_dtype = torch.float32)
+    torch.manual_seed(1)
+    model = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = "all-linear", init_lora_weights = False)
+    )
+    params = [p for p in model.parameters() if p.requires_grad]
+    extra = {}
+    if kwargs_params is None:
+        pass  # control: the Trainer builds the optimizer after the split
+    elif kwargs_params:
+        extra["optimizer_cls_and_kwargs"] = (torch.optim.AdamW, {"params": params, "lr": 1e-2})
+    else:
+        extra["optimizers"] = (torch.optim.AdamW(params, lr = 1e-2), None)
+    trainer = []
+
+    def run():
+        trainer.append(
+            transformers.Trainer(
+                model = model,
+                args = _trainer_args(tmp, 2, max_steps = 2),
+                train_dataset = _Rows([torch.arange(9)] * 8),
+                **extra,
+            )
+        )
+        before = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer[0].train()
+        after = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer.append(max((after[n] - before[n]).abs().max().item() for n in before))
+
+    refused = _raised(run)
+    return {
+        "refused": refused,
+        "max_update": trainer[1] if len(trainer) > 1 else None,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
 CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
     "dp_average_dtypes": _case_dp_average_dtypes,
+    "dp_average_buckets": _case_dp_average_buckets,
     "accelerate_fsdp": _case_accelerate_fsdp,
     "model_init": _case_model_init,
+    "prebuilt_optimizer": _case_prebuilt_optimizer,
 }
 
 
@@ -551,7 +662,7 @@ def _spawn(
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case in ("env", "accelerate_fsdp", "model_init"):
+        if case in ("env", "accelerate_fsdp", "model_init", "prebuilt_optimizer"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -753,6 +864,13 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
         assert res["none"] is None and res["frozen"] is None, res
 
 
+def test_dp_average_caps_buckets_and_matches_per_tensor_mean():
+    for res in _spawn("dp_average_buckets", 2):
+        assert all(res["equal"]) and all(res["dtypes"]), res
+        # An uncapped flatten makes one buffer per dtype (3 all-reduces); a 64-byte cap must split them.
+        assert res["reduces"] > 3, res
+
+
 def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
     results = _spawn("dp_average_dtypes", 2)
     for res in results:
@@ -822,3 +940,22 @@ def test_env_tp_model_init_is_refused_after_plain_import(hooked):
     for res in _spawn("model_init", 2, env, hooked = hooked, import_only = True):
         assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
         assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+@pytest.mark.parametrize(
+    "kwargs_params", [False, True], ids = ["optimizers", "optimizer_cls_and_kwargs"]
+)
+def test_env_tp_prebuilt_optimizer_on_an_unsharded_model_is_refused(kwargs_params):
+    """Unrefused, the optimizer stepped the parameters the tensor parallel split replaced: no update at all."""
+    for res in _spawn(
+        "prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = kwargs_params
+    ):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "optimizers = (optimizer" in res["refused"], res
+
+
+def test_env_tp_trainer_built_optimizer_on_an_unsharded_model_trains():
+    """The control: without a prebuilt optimizer the same model is split in Trainer.__init__ and trains."""
+    for res in _spawn("prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = None):
+        assert res["refused"] is None and res["is_tp"], res
+        assert res["max_update"] > 0, res

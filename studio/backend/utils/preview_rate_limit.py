@@ -25,8 +25,7 @@ def _prune(bucket: deque, now: float) -> None:
 
 
 def _evict_aged(now: float) -> None:
-    """Drops only fully aged-out buckets; evicting an active one would reset a throttled key's
-    counter, so a flood of distinct keys could cycle the table and clear limits."""
+    """Drops only aged-out buckets; evicting an active one lets a flood of keys reset limits."""
     for key in list(_buckets.keys()):
         _prune(_buckets[key], now)
         if not _buckets[key]:

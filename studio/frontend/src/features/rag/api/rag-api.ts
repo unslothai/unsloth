@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
@@ -24,18 +24,9 @@ import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
 
-function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const { detail, message } = body as { detail?: unknown; message?: unknown };
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
-}
-
 export function ragError(status: number, body: unknown): Error & { status: number } {
-  return Object.assign(new Error(parseErrorText(status, body)), { status });
+  const message = formatApiErrorBody(body) ?? `Request failed (${status})`;
+  return Object.assign(new Error(message), { status });
 }
 
 /** True for a definitive server answer, so retrying cannot help. */

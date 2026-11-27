@@ -49,8 +49,7 @@ def artifact_tag(scheme: str, rotated: bool = False) -> str:
     return scheme + ("-convrot" if rotated else "")
 
 
-# Early ViT blocks kept bf16 per file: smallest set from the sensitivity scan that brings it inside
-# the gate tolerance (for fp8, closest to it).
+# ViT blocks kept bf16 per file: smallest set inside the gate tolerance (fp8: closest).
 SEGMENTER_EXCLUDE_TOKENS: dict[str, tuple[str, ...]] = {
     "fp8": _first_vision_blocks(8),
     "int8": _first_vision_blocks(4),
@@ -77,8 +76,7 @@ def segmenter_filter_fn(
     select: Any = None,
     min_features: int = SEGMENTER_MIN_FEATURES,
 ) -> Any:
-    """The torchao ``quantize_`` filter for ``scheme``: the diffusion runtime's filter with SAM's exclusions.
-    ``select(fqn)`` narrows it further (the sensitivity scan quantizes one group at a time)."""
+    """Diffusion torchao filter for ``scheme`` plus SAM exclusions; ``select`` narrows it."""
     from .diffusion_transformer_quant import (
         _REQUIRE_BF16_SCHEMES,
         divisible_for_scheme,
@@ -416,8 +414,7 @@ def unsupported_reason(
         return "quantized kernels run on CUDA only"
     from core._torchao_stub import is_stubbed, torch_is_rocm
 
-    # ROCm reports gfx versions through the CUDA capability API and these dynamic INT8 / FP8 paths are NVIDIA-only
-    # (diffusion_transformer_quant.dense_transformer_supported refuses ROCm for the same reason).
+    # ROCm reports gfx via the CUDA capability API; dynamic INT8/FP8 paths are NVIDIA-only.
     if torch_is_rocm():
         return "quantized kernels run on NVIDIA CUDA only (ROCm build)"
     if is_stubbed("torchao"):
@@ -448,9 +445,8 @@ def resolve_precision(
     available: tuple[str, ...] = QUANT_PRECISIONS,
     memory_tight: bool = False,
 ) -> tuple[str, str]:
-    """``(precision, why)`` for a run on ``device``. ``available`` is the quantized arms the variant ships (and, at
-    load, has on disk). bf16 when asked for, when nothing quantized can run here, when auto has no gated arm, or for
-    auto on CUDA unless ``memory_tight``. An explicit fp8 / int8 is honoured either way."""
+    """(precision, why) on ``device`` from ``available``: bf16 if asked or nothing quantized runs;
+    auto: bf16 with no gated arm or on CUDA unless memory_tight; explicit fp8/int8 honoured."""
     requested = requested_precision()
     if requested == PRECISION_BF16:
         return PRECISION_BF16, f"{ENV_PRECISION}=bf16"

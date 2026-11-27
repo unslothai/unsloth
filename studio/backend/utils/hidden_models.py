@@ -79,8 +79,7 @@ def is_curated_tts_repo_id(value: str | None) -> bool:
 
 
 def is_audio_cpp_repo_id(value: str | None) -> bool:
-    """True for audio.cpp's umbrella repo. Hidden from chat like a curated STT repo, and like one still
-    emitted as a Model Hub management row, since that row is where its downloaded packages are deleted."""
+    """Hidden from chat like STT repos; listed in Model Hub, where its packages get deleted."""
     return bool(value and value.strip().lower() in _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER)
 
 
@@ -280,7 +279,6 @@ def is_hidden_model(*values: str | None) -> bool:
             continue
         low = v.lower()
         if _HF_REPO_ID_RE.match(v):
-            # A repo id ("owner/name"): match the hidden set exactly.
             if low in hidden_repo_ids:
                 return True
             continue

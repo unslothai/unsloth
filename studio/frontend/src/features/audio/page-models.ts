@@ -70,6 +70,13 @@ export const PAGE_ORDER: Partial<Record<AudioWorkflowId, readonly string[]>> = {
     "BS-RoFormer-ep368-GGUF",
     "HTDemucs-6stems-GGUF",
     "Mel-Band-RoFormer-GGUF",
+    "voice-isolator-GGUF",
+    "Sidon-GGUF",
+    "Apollo-GGUF",
+    "UniverSR-GGUF",
+    "AudioSR-GGUF",
+    "MossFormer2-GGUF",
+    "TF-GridNet-GGUF",
   ],
 };
 
@@ -211,23 +218,8 @@ export function emptyStateModels<T extends PageModelRow>(
   return (picks.length > 0 ? picks : gguf).slice(0, 3);
 }
 
-/** The two models a page's footer note offers. */
-export function recommendedPageModels<T extends PageModelRow>(
-  page: AudioWorkflowId,
-  rows: readonly T[],
-  prefs: PageModelPrefs,
-): T[] {
-  const listed = pageModels(page, rows, prefs);
-  if (page !== "music") return listed.slice(0, 2);
-  return listed
-    .filter(
-      (row) =>
-        rankIn(RECOMMENDED_MUSIC_MODELS, row.id) <
-        RECOMMENDED_MUSIC_MODELS.length,
-    )
-    .sort(
-      (a, b) =>
-        rankIn(RECOMMENDED_MUSIC_MODELS, a.id) -
-        rankIn(RECOMMENDED_MUSIC_MODELS, b.id),
-    );
+const GGUF_SUFFIX = /-GGUF$/i;
+
+export function pickLabel(name: string): string {
+  return name.replace(GGUF_SUFFIX, "");
 }

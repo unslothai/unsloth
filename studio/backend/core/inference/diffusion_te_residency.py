@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-encoder residency on a discrete CUDA card, re-decided per render: encoders stay on the card
-(whole or in resident groups) only while the priced peak plus slack fits free memory, else stream
-from host before denoise; outputs are bit-identical; UNSLOTH_DIFFUSION_TE_RESIDENCY=0 keeps the
-load's placement."""
+"""Per-render residency on a discrete CUDA card: encoders stream from host when priced peak plus
+slack won't fit; outputs bit-identical; UNSLOTH_DIFFUSION_TE_RESIDENCY=0 keeps load placement."""
 
 from __future__ import annotations
 
@@ -62,9 +60,8 @@ def slack_mib(total_mib: int) -> int:
 
 
 def live_free_mib(device: Any) -> Optional[tuple[int, int]]:
-    """``(free MiB, total MiB)`` on ``device``: driver free plus the allocator cache an ordinary allocation can reuse
-    (not a CUDA graph pool's), less the user's VRAM Budget reserve, as ``release_for_decode`` reads it. Driver free is
-    the load planner's reading (``trusted_mem_get_info``: Windows ROCm over-reports it). None when unreadable."""
+    """(free MiB, total MiB) on device: driver free plus reusable allocator cache, less the VRAM
+    Budget reserve; None if unreadable; trusted_mem_get_info (Windows ROCm over-reports free)."""
     try:
         import torch
 
@@ -200,8 +197,7 @@ class EncoderResidency:
         self.names = tuple(_encoders(pipe))
         self.mib = sum(_nbytes(m) for m in _encoders(pipe).values()) >> 20
         self.streamed = False
-        # torchao / tensor-subclass encoder weights cannot move under inference_mode (aliasing check): renders that may
-        # stream or restore them run under no_grad (diffusion._torchao_render_needs_no_grad).
+        # torchao weights cannot move under inference_mode; moving renders run under no_grad.
         self.moves_need_grad_mode = any(
             _holds_subclass_weights(m) for m in _encoders(pipe).values()
         )
@@ -357,7 +353,6 @@ class EncoderResidency:
         return freed
 
     def restore(self, reason: str) -> bool:
-        """Put the encoders back on the card; True when they are resident afterwards."""
         with self._lock:
             if not self.streamed:
                 return True
@@ -411,9 +406,8 @@ class EncoderResidency:
         return slack_mib(total_mib)
 
     def release_slack_mib(self, total_mib: int) -> int:
-        """Kept free beside the render's priced peak before resident encoders stream. Whole-resident encoders: the
-        planner's residency slack. Resident groups were packed into the room the planner left after its own slack, so
-        they keep the decode lend's slack (``release_for_decode``), else a steady render would stream them."""
+        """Whole-resident encoders keep the planner's residency slack; resident groups keep the
+        decode lend's slack (release_for_decode), else a steady render would stream them."""
         if self.kind == KIND_GROUPS:
             from .diffusion_memory import _DECODE_SLACK_MIB
             return int(_DECODE_SLACK_MIB)
@@ -440,8 +434,7 @@ class EncoderResidency:
             return self.last
 
     def after_encode(self, need_mib: Optional[int]) -> Optional[dict]:
-        """Prompt encoded: keep resident encoders when the rest of the render still fits with the slack, else stream
-        the shortfall from the host before the denoise allocates."""
+        """Keep resident encoders if rest fits with slack; else stream shortfall pre-denoise."""
         with self._lock:
             if self.streamed and (self.kind != KIND_GROUPS or self.resident_mib() <= 0):
                 return None
@@ -468,9 +461,8 @@ class EncoderResidency:
         at_least_mib: int = 0,
         need_mib: Optional[int] = None,
     ) -> int:
-        """Another load wants the card: stream the encoders now (they come back at a later encode if they fit). Not
-        when they hold less than ``at_least_mib``: the caller would have to free the whole model anyway. Not when
-        ``need_mib`` (the other load's size) and the slack already fit in live free memory: nothing is short."""
+        """Stream the encoders now for another load; skipped when under at_least_mib (caller would
+        free the whole model) or if need_mib plus slack already fit live free memory."""
         with self._lock:
             resident = self.resident_mib()
             if resident <= 0 or resident < int(at_least_mib or 0):
@@ -490,8 +482,7 @@ class EncoderResidency:
 
 
 def _apply_stream(module: Any, device: Any, logger: Any) -> None:
-    """Leaf-level group offload from pageable host memory (no stream, no pinned copy): the VAE out-of-memory path's
-    apply, with the streamed-encoder tier's hook fixes."""
+    """Leaf-level group offload from pageable host memory: no stream and no pinned copy."""
     import torch
     from diffusers.hooks import apply_group_offloading
 
@@ -652,9 +643,8 @@ def lend_from_loaded_engine(
     at_least_mib: int = 0,
     need_mib: Optional[int] = None,
 ) -> int:
-    """For a load outside the image engine (dictation, a chat model beside an image model): the loaded image engine,
-    if any and idle, streams its resident text encoders first. ``need_mib``: the other load's size when known (it
-    lends nothing while that already fits). Never imports the engine; never raises. MiB freed."""
+    """For a load outside the image engine: an idle loaded engine streams its resident encoders
+    first, unless need_mib already fits; never imports the engine; never raises; MiB freed."""
     import sys
     try:
         module = sys.modules.get("core.inference.diffusion")

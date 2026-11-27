@@ -75,8 +75,7 @@ from utils.subprocess_compat import (
 )
 from utils.utils import hf_env_offline
 
-# Safe at module scope, unlike utils.models below: utils.training_runs is stdlib-only, so it
-# cannot pin a transformers version into sys.modules before the sidecar is activated.
+# Safe at module scope: utils.training_runs is stdlib-only and cannot pin transformers early.
 from utils.training_runs import base_model_from_run_dir_name
 
 logger = get_logger(__name__)
@@ -304,7 +303,6 @@ TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma4-12b",
 )
 
-# Lowercase substrings for models that require the transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
@@ -332,8 +330,7 @@ _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
     "gemma4_unified_assistant",
 }
 
-# DeepSeek-OCR remote code subclasses transformers 4.x DeepseekV2 modules (DeepseekV2MoE, removed in 5.x)
-# and its config fails 5.x validation (kv_lora_rank: null), so it only loads on 4.57.x (#8732).
+# DeepSeek-OCR needs 4.57.x: code subclasses 4.x DeepseekV2 modules; config fails 5.x (#8732).
 _TRANSFORMERS_457_ARCHITECTURES: frozenset[str] = frozenset(
     {"DeepseekOCRForCausalLM", "DeepseekOCR2ForCausalLM"}
 )
@@ -433,7 +430,6 @@ _VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 _VENV_T5_LATEST_DIR = str(_studio_root() / ".venv_t5_latest")
 _LATEST_PIN_MARKER = ".unsloth_pinned_transformers"
 
-# Tier precedence: higher rank wins in _higher_tier. "latest" outranks every fixed tier.
 _TIER_RANK = {"default": 0, "457": 0.5, "530": 1, "550": 2, "510": 3, "latest": 4}
 
 
@@ -908,7 +904,6 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if hf_env_offline():
         return False
 
-    # --- Fall back to fetching from HuggingFace ---
     import urllib.error
     import urllib.request
 
@@ -1350,8 +1345,7 @@ def _request_latest_repair() -> None:
 
 
 def _clear_latest_repair_request() -> None:
-    """Drop the flag once a scan finds the sidecar healthy, so a request left by a
-    lost race costs one extra scan instead of looping forever."""
+    """Drop the repair flag after a healthy scan, so a lost race costs one scan, not a loop."""
     try:
         _latest_repair_marker_path().unlink()
     except OSError:
@@ -1380,7 +1374,6 @@ def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     global _latest_repair_failed_at
     if tier != "default":
-        # latest requires a valid pin and the kill switch off.
         if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
             return None
         root = {
@@ -1433,8 +1426,7 @@ def _overlay_transformers_dir(tier: str) -> str | None:
 
 
 def _mapping_first_keys(value: ast.AST) -> set[str]:
-    """First keys of a dict literal, or of an OrderedDict(...)/dict(...)/.update(...)
-    built from 2-tuple lists and **{...} unpacking."""
+    """Keys of dict literals, OrderedDict/dict/.update calls, 2-tuple lists and dict unpacking."""
 
     def keys_of(node):
         if isinstance(node, ast.Dict):
@@ -1505,8 +1497,7 @@ def _config_model_types(tier: str) -> frozenset[str]:
 
 
 def _model_types_from_config(cfg: dict) -> list[str]:
-    """All model_types in the config, primary first; nested types matter for routing too, since
-    wrappers build sub-configs via CONFIG_MAPPING."""
+    """All model_types, primary first; nested ones count too since wrappers use CONFIG_MAPPING."""
     seen: list[str] = []
 
     def add(value):
@@ -1932,8 +1923,7 @@ def _tier_from_name(name: str) -> tuple[str, str] | None:
 
 
 def _higher_tier_name_override(name_hint: str | None) -> str | None:
-    """510/550 tier if *name_hint* names a higher-tier model, else ``None``. Qwen3.6
-    reuses Qwen3.5 config ids but needs the 5.5 sidecar, so a name hint overrides 530."""
+    """510/550 for a higher-tier name_hint, else None; Qwen3.6 reuses Qwen3.5 ids, needs 5.5."""
     if not name_hint:
         return None
     hint = _tier_from_name(name_hint)
@@ -2616,7 +2606,6 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
-# An unavailable wheel is asked for once per session.
 _OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
 
 
@@ -3180,8 +3169,7 @@ def _drop_offline_staging(staging: str) -> None:
 
 
 def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
-    """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap
-    only once every package landed; a cold cache leaves the tree exactly as it was."""
+    """Rebuild from uv's cache beside venv_dir; swap once all land, so a cold cache is a no-op."""
     base = venv_dir.rstrip("/\\")
     # Per process: a shared staging path would have one worker deleting the other's build.
     staging = f"{base}{_OFFLINE_STAGING_SUFFIX}{os.getpid()}"
@@ -3353,9 +3341,8 @@ def latest_venv_pinned_version() -> str | None:
 
 
 def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ()) -> tuple[str, ...]:
-    """Package set for the latest sidecar; mirrors the fixed .venv_t5_* sidecars.
-    *extra_packages* carries dep-compat shadows (e.g. a newer tokenizers) computed by
-    utils.transformers_latest before install."""
+    """Latest sidecar's packages, mirroring fixed .venv_t5_* sidecars; extra_packages are dep-compat
+    shadows (e.g. newer tokenizers) computed by utils.transformers_latest before install."""
     base = (
         f"transformers=={version}",
         "huggingface_hub==1.8.0",
@@ -3474,8 +3461,7 @@ def _read_swap_lock(path: Path) -> dict | None:
 
 
 def try_begin_sidecar_swap(kind: str = "install") -> bool:
-    """Reserve the sidecar swap window; False if one is held here or, via the lock file, by any
-    worker subprocess. kind is install (consented) or repair (lazy venv repair)."""
+    """Reserve sidecar swap (kind: install or repair); False if held here or by any worker."""
     global _sidecar_swap_active, _sidecar_swap_token, _sidecar_swap_kind
     with _sidecar_swap_lock:
         if _sidecar_swap_active:
@@ -3584,7 +3570,6 @@ def _stage_and_swap_latest_venv(
         try:
             os.rename(staging, _VENV_T5_LATEST_DIR)
         except OSError:
-            # Restore the previous sidecar if the final swap fails.
             if not os.path.isdir(_VENV_T5_LATEST_DIR) and os.path.isdir(retired):
                 os.rename(retired, _VENV_T5_LATEST_DIR)
             raise
@@ -3600,8 +3585,7 @@ def _stage_and_swap_latest_venv(
 
 
 def _workers_active_for_repair() -> bool:
-    """Best-effort: any parent-visible chat/training/export worker alive. Never
-    raises; unavailable backends (worker subprocess, early startup) count idle."""
+    """Best-effort: live chat/training/export worker; never raises; unavailable counts idle."""
     try:
         from core.training import get_training_backend
         if get_training_backend().is_training_active():
@@ -3729,8 +3713,7 @@ def ensure_latest_transformers_venv(
 _LLMC_MAIN_TRANSFORMERS = "5.10.2"
 _LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
 _LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
-# Content digest of GitHub's source archive of _LLMC_MAIN_SHA (_archive_content_digest), and
-# `git describe` of that commit. GitHub keeps an archive's contents stable, not its bytes.
+# Digest of _LLMC_MAIN_SHA (GitHub keeps contents stable, not bytes); plus git describe.
 _LLMC_MAIN_ARCHIVE_DIGEST = "63ccb4f99833e3b24602f18a1e386e6c1127c1a84f7fc4e8ff56336c929138f8"
 _LLMC_MAIN_DESCRIBE = "0.12.0-40"
 # --no-deps keeps torch untouched; pins are the full runtime llm-compressor main needs.
@@ -4028,7 +4011,6 @@ def ensure_transformers_version(model_name: str) -> None:
         in_memory,
     )
 
-    # --- Already correct? ---
     if in_memory is not None:
         if in_memory == target_version:
             logger.info(
@@ -4048,9 +4030,7 @@ def ensure_transformers_version(model_name: str) -> None:
             )
             return
 
-    # --- Switch version ---
     if venv_dir is not None:
-        # First remove any other 5.x venv from sys.path.
         _deactivate_5x()
         if not ensure_fn():
             raise RuntimeError(

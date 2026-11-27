@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""vllm_importance_sampling_correction = True defaults to token-level truncated importance sampling.
+"""The vLLM importance sampling correction is on by default, with token-level truncated importance sampling.
 
 TRL's default vllm_importance_sampling_mode = "sequence_mask" weights every token of a completion by
 the product of its token ratios. Unsloth's vLLM logprobs are renormalised over the min_p / top_p kept
 set while the trainer scores the full vocabulary, so each token ratio sits below 1 and the product
-decays with length. Unsloth resolves an unset mode to "token_truncate"; an explicit mode is kept, and
-the correction itself stays off by default."""
+decays with length. Unsloth resolves an unset mode to "token_truncate"; an explicit mode is kept. The
+correction itself defaults on (as in TRL): colocated vLLM and the trainer score the same weights
+differently, so even num_iterations = 1 rollouts are slightly off-policy."""
 
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ def _grpo_config():
 def test_unset_mode_resolves_to_token_truncate():
     cfg = _grpo_config()(output_dir = "unused")
     assert cfg.vllm_importance_sampling_mode == "token_truncate"
-    assert cfg.vllm_importance_sampling_correction is False
+    assert cfg.vllm_importance_sampling_correction is True
     assert cfg.vllm_importance_sampling_clip_max == 3.0
     assert cfg.vllm_importance_sampling_clip_min is None
 
@@ -66,12 +67,13 @@ def test_explicit_mode_is_kept(mode, capsys):
         vllm_importance_sampling_mode = mode,
     )
     assert cfg.vllm_importance_sampling_mode == mode
-    assert "now defaults to token-level" not in capsys.readouterr().out
+    assert "on by default" not in capsys.readouterr().out
 
 
 def test_correction_off_prints_nothing(capsys):
-    _grpo_config()(output_dir = "unused")
-    assert "now defaults to token-level" not in capsys.readouterr().out
+    cfg = _grpo_config()(output_dir = "unused", vllm_importance_sampling_correction = False)
+    assert cfg.vllm_importance_sampling_correction is False
+    assert "on by default" not in capsys.readouterr().out
 
 
 def _is_weights(
@@ -80,8 +82,7 @@ def _is_weights(
     length,
     clip_max = 3.0,
 ):
-    """Mean applied IS weight and normalised ESS for rows of `length` tokens, each token log ratio d,
-    through unsloth_zoo.rl_replacements.grpo_compute_loss (flat_is_ratio is the applied weight)."""
+    """Mean flat_is_ratio and normalised ESS via unsloth_zoo.rl_replacements.grpo_compute_loss."""
     import unsloth_zoo.rl_replacements as rr
 
     rows = len(length)

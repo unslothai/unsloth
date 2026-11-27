@@ -87,8 +87,7 @@ def load_whisper(
     _ensure_backend_on_path()
     from utils.transformers_backports import install as guard_transformers_parsing
 
-    # This child never imports unsloth: install its tokenizer / config back-ports before the
-    # repo's tokenizer files are parsed, so they cannot name a host file as the vocabulary.
+    # No unsloth here; back-ports load before tokenizer files so they cannot name a host file.
     guard_transformers_parsing()
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
@@ -230,8 +229,7 @@ def _supports_segment_timestamps(generation_config) -> bool:
 
 
 def _error_response(exc: BaseException) -> dict:
-    """Sends the class name and message, since an unpicklable exception would cost the caller the
-    timeout."""
+    """Sends class name and message; an unpicklable exception would cost the caller a timeout."""
     from core.inference.stt_sidecar import _is_missing_local_model_error
 
     kind = type(exc).__name__
@@ -538,8 +536,7 @@ class WhisperWorker:
             self._cancel_event.set()
 
     def close(self, graceful_timeout: float = _SHUTDOWN_TIMEOUT_SECONDS) -> bool:
-        """A child that survives kill keeps its handle and pid record, so terminate_all can still
-        find it."""
+        """A child surviving kill keeps its handle and pid record for terminate_all to find."""
         process = self._process
         self.cancel()  # unblock a generation before asking the loop to exit
         if process is not None:

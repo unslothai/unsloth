@@ -4,8 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** Stop this account's runs on a saved image connection. Kept out of api.ts, which is in the startup
- *  bundle; same no-retry, abortable contract as cancelDiffusionGeneration. */
+/** Cancel this account's connection runs; no retry, abortable. Not in api.ts (startup bundle). */
 export async function cancelConnectionImageGeneration(
   signal?: AbortSignal,
 ): Promise<{ cancelled: boolean }> {

@@ -7,7 +7,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { allowedPages, emptyStateModels, pageModels, recommendedPageModels, rowOnPage } =
+const { allowedPages, emptyStateModels, pageModels, pickLabel, rowOnPage } =
   await import("../src/features/audio/page-models.ts");
 const { audioModelsForTask } = await import("../src/features/audio/catalog.ts");
 const { AUDIO_CPP_MODELS, audioCppWorkflowsFor } = await import(
@@ -62,16 +62,6 @@ test("each page lists the seed models whose catalog entry runs there, in the pag
   assert.deepEqual(
     music,
     SEED.filter((row) => music.includes(row.id)).map((row) => row.id),
-  );
-  assert.deepEqual(
-    recommendedPageModels("music", SEED, { isMac: false }).map((r) =>
-      folder(r.id),
-    ),
-    ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"],
-  );
-  assert.equal(
-    recommendedPageModels("clone", SEED, { isMac: false }).length,
-    2,
   );
 });
 
@@ -240,4 +230,18 @@ test("an empty output pane offers GGUF models only, and Speak and Music name the
       for (const name of offered) assert.match(String(name), /-GGUF$/, `${page}: ${name}`);
     }
   }
+});
+
+test("the blocker menu offers the empty pane's picks, under the same names", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /emptyStateModels\(page, MODELS_BY_MODE\.speak, pagePrefs\)\.map\(\s*\(model\) => \(\{\s*label: `use \$\{pickLabel\(model\.name\)\}`,/,
+  );
+  assert.doesNotMatch(page, /recommendedPageModels/);
+  const picks = readSrc("features/audio/components/recommended-model-picks.tsx");
+  assert.match(picks, /\{pickLabel\(model\.name\)\}/);
+  assert.equal(pickLabel("HTDemucs-GGUF"), "HTDemucs");
+  assert.equal(pickLabel("BS-RoFormer-ep368-GGUF"), "BS-RoFormer-ep368");
+  assert.equal(pickLabel("Kokoro-82M"), "Kokoro-82M");
 });

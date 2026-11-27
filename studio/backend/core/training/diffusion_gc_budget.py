@@ -50,9 +50,8 @@ def _mem_get_info() -> tuple[int, int]:
 
 
 def rocm_windows_discrete(device = "cuda") -> bool:
-    """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
-    other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
-    the budgets were measured only on a unified-memory gfx1151. Never raises: unknown answers False."""
+    """Discrete Radeon under Windows ROCm: WDDM reports the whole card free and spills to host RAM,
+    so OOM step-down never fires; measured only on gfx1151. Never raises; unknown is False."""
     import sys
 
     if sys.platform != "win32":
@@ -104,8 +103,7 @@ def _memory_allocated() -> int:
 
 
 SAVE_ATTENTION_ENV = "UNSLOTH_DIFFUSION_GC_SAVE_ATTENTION"
-# Attention calls with at least this many keys keep their outputs; shorter ones (Wan's 512-token text cross-attention)
-# cost little to recompute next to the bytes they would hold.
+# Calls with >= this many keys keep outputs; Wan's 512-token text cross-attn is cheap to redo.
 _SAVE_ATTENTION_MIN_KEYS = 1024
 
 
@@ -160,17 +158,68 @@ def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
     if not ops:
         return None
 
+    def keeps(op: Any, args: tuple) -> bool:
+        if op not in ops:
+            return False
+        key = args[1] if len(args) > 1 else None
+        return getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS
+
     def policy(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> Any:
-        if op in ops:
-            key = args[1] if len(args) > 1 else None
-            if getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS:
-                # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
-                if on_save is not None and not getattr(ctx, "is_recompute", False):
-                    on_save(_attention_bytes(args))
-                return save
+        if keeps(op, args):
+            # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
+            if on_save is not None and not getattr(ctx, "is_recompute", False):
+                on_save(_attention_bytes(args))
+            return save
         return recompute
 
-    return functools.partial(create, policy)
+    def contexts() -> tuple:
+        forward, recompute_ctx = create(policy)
+        return _private_saved_outputs(forward, keeps), recompute_ctx
+
+    return contexts
+
+
+def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
+    """Hand the caller a copy of each kept output: Inductor reuses the buffer in place, corrupting the cache (pytorch #201158)."""
+    cls = _private_caching_class(type(caching))
+    if cls is None:
+        return caching
+    caching.__class__ = cls
+    caching._unsloth_keeps = keeps
+    return caching
+
+
+@functools.lru_cache(maxsize = None)
+def _private_caching_class(base: type) -> Optional[type]:
+    """Subclass (not a second stacked mode) of torch's caching mode; None if not a TorchDispatchMode."""
+    try:
+        import torch
+        from torch.utils._python_dispatch import TorchDispatchMode
+        if not (isinstance(base, type) and issubclass(base, TorchDispatchMode)):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    def _copy(t: Any) -> Any:
+        # Fake / functional tensors mean compile tracing: nothing is replayed.
+        return t.clone() if type(t) is torch.Tensor else t
+
+    class _PrivateSavedOutputs(base):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = super().__torch_dispatch__(func, types, args, kwargs)
+            if self._unsloth_keeps(func, args):
+                # Mode is off the stack here, so the copy is not cached.
+                return torch.utils._pytree.tree_map(_copy, out)
+            return out
+
+    _PrivateSavedOutputs.__name__ = base.__name__
+    return _PrivateSavedOutputs
 
 
 class _Checkpoint:
@@ -189,7 +238,6 @@ class _Checkpoint:
         self.saved_attention_bytes += int(nbytes)
 
     def drop_saved_attention(self) -> bool:
-        """Recompute attention again from the next call on; returns whether outputs were being kept."""
         had = self.context_fn is not None and self.saved_attention > 0
         self.context_fn = None
         return had
@@ -252,10 +300,8 @@ class BudgetedCheckpoint:
     def __call__(self, function: Any, *args: Any, **kwargs: Any) -> Any:
         owner = _owner(function)
         if getattr(owner, SWAPPED_ATTR, False):
-            # A block-swapped block streams its weights from host RAM: kept activations would hold them on the card
-            # until backward, so it is always checkpointed and never measured or planned. Plainly: its swap hooks
-            # copy the next block's weights inside the region, in the other direction during the recompute, which a
-            # selective checkpoint (saved attention) rejects as a mismatched op.
+            # Swapped blocks are always checkpointed (never measured or planned): swap hooks copy
+            # next block's weights in reverse on recompute, which selective checkpoints reject.
             return self.swapped(function, *args, **kwargs)
         idx = self._block_index(owner)
         if self.probing and not self.disabled:
@@ -324,7 +370,6 @@ class BudgetedCheckpoint:
 
     @property
     def spare_bytes(self) -> int:
-        """Planned room the kept activations leave unused (0 once disabled or stepped down)."""
         if self.disabled or self.step_downs:
             return 0
         return max(0, self.headroom - self.kept_bytes)
@@ -392,8 +437,7 @@ class BudgetedCheckpoint:
 
     @property
     def can_retry(self) -> bool:
-        """A fully checkpointed rerun would use less memory than this step: measuring, blocks kept, or attention
-        outputs kept for the checkpointed blocks."""
+        """True if measuring or anything is kept; a fully checkpointed rerun uses less."""
         return not self.disabled and (self.probing or bool(self.keep) or self._saving_attention)
 
     @property
@@ -627,8 +671,7 @@ def is_out_of_memory(exc: BaseException) -> bool:
 
 
 def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedCheckpoint]:
-    """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
-    (the caller then checkpoints every block as before)."""
+    """None when the mode, device or model disallows it; callers then checkpoint every block."""
     if gc_budget_mode() != "auto" or device != "cuda":
         return None
     # Off on a discrete Windows ROCm card until measured; UNSLOTH_DIFFUSION_GC_MODE=auto (set explicitly) opts in.

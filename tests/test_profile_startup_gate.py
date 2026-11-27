@@ -64,7 +64,6 @@ def _nt(mod, monkeypatch, returncode):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, returncode, "", "")
 
-    # Patch the module's own references, not the real os/subprocess.
     monkeypatch.setattr(mod, "os", SimpleNamespace(name = "nt"))
     monkeypatch.setattr(mod, "subprocess", SimpleNamespace(run = _run))
     return calls

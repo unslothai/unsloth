@@ -602,6 +602,7 @@ def _sf_route_message(
     model_info = None,
     seen = None,
     status = 200,
+    batch_rows = None,
     **body,
 ):
     """POST a safetensors chat completion and return the assistant message, joined if streamed."""
@@ -638,6 +639,14 @@ def _sf_route_message(
         def resize_image(self, image):
             return image
 
+        effective_parallel_slots = len(batch_rows or ())
+
+        def generate_chat_batch(self, rows, **_kwargs):
+            for row in range(len(rows)):
+                for snapshot in batch_rows[row]:
+                    yield row, snapshot
+                yield row, None
+
     monkeypatch.setattr(
         inference_route,
         "_detect_safetensors_features",
@@ -662,7 +671,7 @@ def _sf_route_message(
     if status != 200:
         return resp.json()["error"]
     if not body.get("stream"):
-        return resp.json()["choices"][0]["message"]
+        return resp.json()["choices"][-1]["message"]
     message = {"content": "", "reasoning_content": ""}
     for line in resp.text.splitlines():
         if line.startswith("data: {"):
@@ -846,6 +855,130 @@ def test_route_carries_the_effort_field_into_the_gate(monkeypatch):
     )
     assert message["content"] == answer
     assert not message["reasoning_content"]
+
+
+# Inkling 2's effort dial and thinking channel, trimmed to what detection reads.
+_INKLING2_TPL = (
+    '{%- set effort_map = {"none": 0.0, "low": 0.2, "high": 0.9} -%}'
+    '{{- "<|message_system|><|content_text|>Thinking effort level: " -}}'
+    '{{- effort_map[reasoning_effort or "high"] ~ "<|end_message|>" -}}'
+    "{%- for message in messages -%}"
+    '{%- if message.role == "assistant" and message.reasoning_content -%}'
+    '{{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}'
+    "{%- endif -%}"
+    '{{- "<|message_user|><|content_text|>" ~ message.content ~ "<|end_message|>" -}}'
+    "{%- endfor -%}"
+    '{%- if add_generation_prompt -%}{{- "<|message_model|>" -}}{%- endif -%}'
+)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+@pytest.mark.parametrize(
+    "reply, content, reasoning",
+    [
+        ("<think>Paris.</think>Paris it is.", "Paris it is.", "Paris."),
+        # The normalizer marks the first thought even after visible text.
+        ("Hi. <think>t</think>Bye.", "Hi. Bye.", "t"),
+    ],
+    ids = ["thought", "text_then_thought"],
+)
+def test_route_splits_the_inkling_thought_at_effort_none(
+    monkeypatch, stream, reply, content, reasoning
+):
+    from types import SimpleNamespace
+
+    from routes.inference import _detect_safetensors_features
+
+    features = _detect_safetensors_features(
+        SimpleNamespace(active_model_name = "m", models = {"m": {}}), _INKLING2_TPL
+    )
+    assert features["reasoning_style"] == "reasoning_effort"
+    assert not features["reasoning_always_on"]
+    message = _sf_route_message(
+        monkeypatch,
+        _INKLING2_TPL,
+        [reply],
+        is_mlx = True,
+        features = features,
+        reasoning_effort = "none",
+        stream = stream,
+    )
+    assert message["content"] == content
+    assert (message["reasoning_content"] or "") == reasoning
+
+
+def _inkling_snapshots(raw):
+    """What the MLX backend yields for a raw Inkling reply: normalized snapshots carrying the thought's spans."""
+    from core.inference.chat_template_helpers import make_reasoning_normalizer, with_thought_spans
+
+    normalizer = make_reasoning_normalizer(("<|content_thinking|>", "<|end_message|>"))
+    out, snapshots = "", []
+    for i in range(0, len(raw), 5):
+        delta = normalizer.feed(raw[i : i + 5])
+        if delta:
+            out += delta
+            snapshots.append(with_thought_spans(out, normalizer))
+    out += normalizer.finish()
+    snapshots.append(with_thought_spans(out, normalizer))
+    return snapshots
+
+
+_M, _T, _E = "<|message_model|>", "<|content_text|>", "<|end_message|>"
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+@pytest.mark.parametrize(
+    "raw, content, reasoning",
+    [
+        (
+            f"<|content_thinking|>t</think>u{_E}{_M}{_T}A <think>x</think>.{_E}",
+            "A <think>x</think>.",
+            "t</think>u",
+        ),
+        (f"{_T}Hi. {_E}{_M}<|content_thinking|>t{_E}{_M}{_T}Bye.{_E}", "Hi. Bye.", "t"),
+        (f"{_T}<think>x</think> is a tag.{_E}", "<think>x</think> is a tag.", ""),
+    ],
+    ids = ["thought_then_literal", "text_then_thought", "literal_only"],
+)
+def test_route_reads_only_the_reported_inkling_thought(
+    monkeypatch, stream, raw, content, reasoning
+):
+    message = _sf_route_message(
+        monkeypatch,
+        _INKLING2_TPL,
+        _inkling_snapshots(raw),
+        is_mlx = True,
+        features = {
+            "supports_reasoning": True,
+            "reasoning_style": "reasoning_effort",
+            "reasoning_always_on": False,
+        },
+        reasoning_effort = "none",
+        stream = stream,
+    )
+    assert (message["content"], message["reasoning_content"] or "") == (content, reasoning)
+
+
+def test_route_reads_each_batched_choices_own_inkling_thought(monkeypatch):
+    rows = [
+        _inkling_snapshots(f"{_T}Hi.{_E}"),
+        _inkling_snapshots(f"<|content_thinking|>t{_E}{_M}{_T}A <think>x</think>.{_E}"),
+    ]
+    message = _sf_route_message(
+        monkeypatch,
+        _INKLING2_TPL,
+        [],
+        is_mlx = True,
+        features = {
+            "supports_reasoning": True,
+            "reasoning_style": "reasoning_effort",
+            "reasoning_always_on": False,
+        },
+        batch_rows = rows,
+        reasoning_effort = "none",
+        n = 2,
+    )
+    assert (message["content"], message["reasoning_content"]) == ("A <think>x</think>.", "t")
 
 
 def test_parse_think_markers_gates_on_capability_and_request():

@@ -55,8 +55,7 @@ def test_instantiating_it_raises_too():
 
 
 def test_it_never_pretends_to_be_a_real_value():
-    """A stub returning None or 0 would flow into a float8 config and produce
-    silently wrong behaviour instead of an error."""
+    """A stub returning None or 0 would silently misconfigure float8 instead of raising."""
     ph = _make_torch_symbol_placeholder("ScalingType", "d")
     for attr in ("DYNAMIC", "STATIC", "value", "name"):
         with pytest.raises(RuntimeError):
@@ -74,8 +73,7 @@ def test_it_is_marked_as_ours():
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
-    """On torch >= 2.10 overwriting the real enum with a raising placeholder
-    would BREAK float8 rather than fix anything."""
+    """On torch >= 2.10 a raising placeholder over the real enum would break float8."""
     import torch.nn.functional as F
 
     added = [n for n in _TORCHAO_TORCH_SYMBOLS if not hasattr(F, n)]
@@ -84,8 +82,7 @@ def test_it_is_a_no_op_when_torch_already_has_the_symbols():
 
 
 def test_a_healthy_torchao_is_left_alone():
-    """0.17 and earlier guard their own import, so patching there would put a
-    placeholder into torch for no reason."""
+    """torchao 0.17 and earlier guard their own import, so the fix must leave them alone."""
     if importlib.util.find_spec("torchao") is None:
         pytest.skip("torchao not installed")
     from importlib.metadata import version
@@ -119,8 +116,7 @@ def test_calling_it_twice_is_stable():
 
 
 def test_it_runs_before_unsloth_zoo_is_imported():
-    """unsloth_zoo pulls in transformers and therefore torchao, so calling the
-    fix after that import would be pointless."""
+    """unsloth_zoo pulls in torchao via transformers, so the fix must run before importing it."""
     lines = GPU_INIT.read_text(encoding = "utf-8").splitlines()
     call = next(i for i, l in enumerate(lines) if l.strip() == "fix_torchao_torch_symbol_skew()")
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
@@ -157,8 +153,7 @@ def test_symbols_torch_already_provides_are_never_replaced():
 
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
-    """The decisive test: run torchao 0.18's own import line on this torch and
-    show it goes from raising to succeeding. Everything above is gating."""
+    """The decisive test: torchao 0.18's own import line goes from raising to succeeding."""
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
@@ -195,8 +190,7 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
 
 
 def test_the_cleanup_in_the_test_above_is_real():
-    """Guards the fixture, not the product: a failed delattr above would let
-    every later test see a patched torch and pass vacuously."""
+    """Guards the fixture: a failed delattr leaves torch patched; later tests pass vacuously."""
     import torch.nn.functional as F
     for n in _TORCHAO_TORCH_SYMBOLS:
         obj = getattr(F, n, None)
@@ -209,8 +203,7 @@ INIT = ROOT / "unsloth" / "__init__.py"
 
 
 def test_the_mlx_path_applies_the_fix_too():
-    """The MLX branch imports unsloth_zoo directly without reaching _gpu_init, so without the fix
-    Apple Silicon hits the same dead import."""
+    """MLX imports unsloth_zoo without _gpu_init, so the fix must precede it on Apple Silicon."""
     lines = INIT.read_text(encoding = "utf-8").splitlines()
     fix = next(i for i, l in enumerate(lines) if "_fix_torchao()" in l)
     zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
@@ -248,8 +241,7 @@ def test_the_mlx_call_is_inside_the_mlx_branch():
 
 
 def test_the_mlx_call_cannot_break_the_import():
-    """On Mac this runs first, so an exception here would replace a torchao
-    problem with an unsloth problem."""
+    """On Mac it runs first: an exception would replace a torchao problem with an unsloth one."""
     src = INIT.read_text(encoding = "utf-8")
     i = src.index("_fix_torchao()")
     window = src[max(0, i - 400) : i + 200]
@@ -269,8 +261,7 @@ def test_the_mlx_call_cannot_break_the_import():
     ],
 )
 def test_the_version_gate(version, affected):
-    """The gate decides whether we touch torch at all, so it must cope with
-    local versions and dev builds, not just clean releases."""
+    """The gate decides if torch is touched; it must handle local versions and dev builds."""
     from unsloth.import_fixes import Version
     assert (Version(version) >= Version("0.18.0")) is affected
 

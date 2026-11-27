@@ -21,8 +21,7 @@ const RENDERERS = [
   "features/settings/tabs/about-tab.tsx",
 ];
 
-// `[^`$]*` keeps the match inside one literal segment, so an unrelated "GB"
-// later in the file cannot be paired with an earlier total.
+// Bounded to one literal segment, so a later unrelated GB cannot pair with an earlier total.
 const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb|gpuMemoryGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
 
 test("VRAM and RAM totals are labelled GiB, not GB", () => {
@@ -94,8 +93,7 @@ test("helper-formatted totals pick the GiB helper, not the disk one", () => {
   }
 });
 
-// Both memory surfaces format through one module dividing by 1024 throughout. Listed by name
-// so deleting a formatter fails here.
+// Both memory surfaces use one module dividing by 1024; deleting a listed formatter fails.
 const BINARY_FORMATTERS: [string, string][] = [
   ["lib/memory/format.ts", "formatGiB"],
   ["lib/memory/format.ts", "formatBytesGiB"],

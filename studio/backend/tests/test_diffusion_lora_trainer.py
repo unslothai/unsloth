@@ -38,6 +38,26 @@ def test_discover_prefers_sidecar_then_metadata_then_instance(tmp_path):
     assert pairs[str(tmp_path / "c.webp")] == "from instance"
 
 
+def test_discover_reads_caption_files_in_any_case(tmp_path):
+    for name in ("IMG.PNG", "DSC.jpg", "mixed.png", "both.png", "meta.png"):
+        _touch(tmp_path / name)
+    (tmp_path / "IMG.TXT").write_text("from txt", encoding = "utf-8")
+    (tmp_path / "DSC.CAPTION").write_text("from caption", encoding = "utf-8")
+    (tmp_path / "mixed.Txt").write_text("from mixed", encoding = "utf-8")
+    (tmp_path / "both.TXT").write_text("uppercase loses", encoding = "utf-8")
+    (tmp_path / "both.txt").write_text("lowercase wins", encoding = "utf-8")
+    (tmp_path / "Metadata.JSONL").write_text(
+        json.dumps({"file_name": "meta.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+    )
+    assert dict(discover_image_caption_pairs(tmp_path)) == {
+        str(tmp_path / "IMG.PNG"): "from txt",
+        str(tmp_path / "DSC.jpg"): "from caption",
+        str(tmp_path / "mixed.png"): "from mixed",
+        str(tmp_path / "both.png"): "lowercase wins",
+        str(tmp_path / "meta.png"): "from metadata",
+    }
+
+
 def test_discover_sidecar_overrides_metadata_row(tmp_path):
     _touch(tmp_path / "a.png")
     (tmp_path / "metadata.jsonl").write_text(

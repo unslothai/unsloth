@@ -133,8 +133,7 @@ def test_notebook_validator_reads_the_bounds_in_invocation_order():
 
 
 def test_notebook_validator_honours_a_torchcodec_uninstall():
-    """Removing the codec answers the mismatch, so the post-2.11 branch must not report one.
-    parse_pip_line drops the action word, so without it an uninstall reads as an install."""
+    """A codec uninstall must clear the mismatch; parse_pip_line drops the action word."""
     nv = _load_notebook_validator_module()
 
     removed = '!pip uninstall -y torchcodec\n!pip install "torch==2.12.0"'
@@ -153,8 +152,7 @@ def test_notebook_validator_honours_a_torchcodec_uninstall():
 
 
 def test_notebook_validator_keeps_an_absent_package_unknown():
-    """Only `==` names a version: a floor on an absent package resolves to the newest release
-    satisfying it, so the pairing stays unknown rather than being pinned to the floor."""
+    """Only == names a version; a floor on an absent package stays unknown, not pinned to it."""
     nv = _load_notebook_validator_module()
 
     reinstalled = '!pip uninstall -y torchcodec\n!pip install "torchcodec>=0.10"'
@@ -198,8 +196,7 @@ def test_notebook_validator_splits_chained_shell_commands():
 
 
 def test_notebook_validator_skips_the_fallback_side_of_an_or_chain():
-    """`A || B` runs B only when A failed, so replaying both reports a codec the notebook
-    does not have. The left side still counts."""
+    """Only A counts: B in A || B runs only if A failed, so replaying both invents a codec."""
     nv = _load_notebook_validator_module()
 
     fallback = (
@@ -248,8 +245,7 @@ def test_notebook_validator_stops_at_a_shell_comment():
 
 
 def test_notebook_validator_resumes_after_an_or_list():
-    """`A || B; C` runs C whatever A did. Only the conditional tail is dropped, and a `;`
-    ends it."""
+    """`A || B; C` runs C whatever A did; a `;` ends the conditional tail that is dropped."""
     nv = _load_notebook_validator_module()
 
     assert nv._split_chained(
@@ -266,8 +262,7 @@ def test_notebook_validator_resumes_after_an_or_list():
 
 
 def test_notebook_validator_respects_escaped_separators():
-    """A backslash-escaped `;` is part of the argument, the way shlex reads it in
-    parse_pip_line. Split on it and the fragment ends in a backslash and parses as nothing."""
+    """A backslash-escaped `;` is argument text (shlex in parse_pip_line), not a separator."""
     nv = _load_notebook_validator_module()
 
     escaped = "!pip install torch==2.12.0\\;\\ python_version\\ \\>\\=\\ \\'3.10\\'"
@@ -279,8 +274,7 @@ def test_notebook_validator_respects_escaped_separators():
 
 
 def test_notebook_validator_merges_repeated_requirements_in_one_command():
-    """pip intersects a project named twice in one command, so the bounds are one window.
-    Applied one argument at a time the floor lands first and the ceiling then clears it."""
+    """A project named twice in one command intersects; applied singly, the floor lands first."""
     nv = _load_notebook_validator_module()
 
     split_window = '!pip install "torchcodec>=0.10" "torchcodec<0.11"'
@@ -311,8 +305,7 @@ def test_notebook_validator_resumes_after_an_and_following_an_or():
 
 
 def test_notebook_validator_will_not_name_a_multi_minor_window():
-    """Moving down lands on the newest release the window admits, which the floor only names
-    when there is one minor to land in."""
+    """Moving down lands on the newest admitted release; it is named only when one minor fits."""
     nv = _load_notebook_validator_module()
 
     assert nv._window_names_one_minor("0.10", "0.11")
@@ -327,8 +320,7 @@ def test_notebook_validator_will_not_name_a_multi_minor_window():
 
 
 def test_notebook_validator_reads_a_direct_wheel_install():
-    """pip takes an archive URL as an install target and parse_spec skips it, so a wheel that
-    replaces the codec used to read as no install at all."""
+    """parse_spec skips archive URL installs, so a wheel replacing the codec must still count."""
     nv = _load_notebook_validator_module()
 
     assert nv._archive_requirement(TORCHCODEC_WHEEL) == ("torchcodec", "0.13.0")
@@ -347,8 +339,7 @@ def test_notebook_validator_reads_a_direct_wheel_install():
 
 
 def test_notebook_validator_replays_exclusions():
-    """`!=` rules out what is installed, so keeping it reports a version pip cannot leave in
-    place. Without a floor to fall back on the pairing is unknown, not stale."""
+    """`!=` rules out the installed version; with no floor the pairing is unknown, not stale."""
     nv = _load_notebook_validator_module()
 
     assert nv._version_is_excluded("0.11.0+cu128", "0.11.*")
@@ -388,16 +379,14 @@ def test_notebook_validator_keeps_or_fallbacks_visible_to_other_rules():
 
 
 def test_notebook_validator_will_not_name_an_exclusive_floor():
-    """`>V` says the install moved but not where; only a ceiling pinning the minor does. The
-    bound is KEPT as inexact, for the checks that hold over the whole admitted range."""
+    """`>V` says it moved, not where; only a minor-pinning ceiling names it (kept as inexact)."""
     nv = _load_notebook_validator_module()
 
     for cell in ('!pip install "torch>2.12"', '!pip install "torch>2.11.999"'):
         version, exact = nv._effective_version(cell, "torch", "2.11.0+cu128")
         assert exact is False, cell  # never read as the version pip landed on
         assert version is not None, cell
-    # Above 2.12 nothing pairs with the image's codec 0.11, which holds for every release the
-    # bound admits, so the finding does not depend on naming one.
+    # No release above 2.12 pairs with codec 0.11, so the finding needs no named version.
     assert [
         f.rule
         for f in nv.rule_inst_004_torchcodec_torch(
@@ -427,14 +416,12 @@ def test_notebook_validator_will_not_name_an_exclusive_floor():
 
 
 def test_notebook_validator_treats_an_open_floor_as_a_floor():
-    """pip takes the newest release above an open `>=`, so the floor bounds rather than answers.
-    Enough for the ABI check, where everything above it agrees, and not for the table."""
+    """An open `>=` floor bounds rather than answers: enough for the ABI check, not the table."""
     nv = _load_notebook_validator_module()
 
     old_pair = {"torch": "2.9.0+cu128", "torchcodec": "0.7.0+cu128"}
 
-    # 0.8 is in the torch 2.9 row, but `>=0.8` can just as easily land on 0.16, so nothing is
-    # proven either way and the rule stays quiet.
+    # 0.8 is in the torch 2.9 row, but `>=0.8` could also land on 0.16, so nothing is proven.
     assert (
         nv.rule_inst_004_torchcodec_torch('!pip install "torchcodec>=0.8"', old_pair, "nb.ipynb", 0)
         == []
@@ -464,8 +451,7 @@ def test_notebook_validator_treats_an_open_floor_as_a_floor():
 
 
 def test_notebook_validator_ignores_a_conditional_pin_when_seeding():
-    """resolved_set seeds the replay, so it has to skip the `||` fallback as well or the
-    conditional pin comes back in through the seed."""
+    """resolved_set seeds the replay, so a `||` fallback's pins must be skipped there too."""
     nv = _load_notebook_validator_module()
 
     cell = '!pip install foo || pip install "torch==2.12.0"'
@@ -486,8 +472,7 @@ def test_notebook_validator_pads_release_segments_when_excluding():
 
 
 def test_notebook_validator_unwraps_shell_groups():
-    """A grouped command still runs, so leaving the bracket on it hides it from PIP_LINE_RE
-    and with it from R-INST-001's git+ ban."""
+    """Grouped commands still run, but a bracket hides them from PIP_LINE_RE and the git+ ban."""
     nv = _load_notebook_validator_module()
 
     for evil in (
@@ -508,8 +493,7 @@ def test_notebook_validator_unwraps_shell_groups():
 
 
 def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatch):
-    """resolved_set drops a fallback's pins, so a rule reading both has to drop the
-    invocation as well or it checks that install against an environment it never made."""
+    """resolved_set drops a fallback's pins, so a rule reading both must skip that invocation."""
     nv = _load_notebook_validator_module()
     monkeypatch.setattr(
         nv,
@@ -525,8 +509,7 @@ def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatc
         "R-INST-002"
     ]
 
-    # Behind an `||`, its pins never reach resolved_set, so checking it compares against an
-    # environment this branch did not build.
+    # Pins behind `||` never reach resolved_set, so the check uses an unbuilt environment.
     fallback = '!pip install foo || pip install --no-deps "transformers==5.5.0"'
     assert [inv.conditional for inv in nv.iter_pip_invocations(fallback)] == [False, True]
     assert nv.rule_inst_002_no_deps_transitive(fallback, colab, "nb.ipynb", 0) == []
@@ -556,13 +539,11 @@ def test_notebook_validator_bounds_the_minor_with_an_inclusive_cap():
 
 
 def test_notebook_validator_applies_exclusions_to_where_it_landed():
-    """An exclusion has to hold for the version the requirement leaves in place, not only for
-    the one that was there before it ran."""
+    """An exclusion applies to where pip lands, not to the version present before the run."""
     nv = _load_notebook_validator_module()
 
     newer = {"torch": "2.10.0+cu128", "torchcodec": "0.15.0"}
-    # The cap says 0.11, the exclusion rules that whole line out, and pip lands below it, so
-    # recording the cap reported a 0.11 codec where a 0.10 the row allows is what installs.
+    # Recording the cap as the landing is wrong: pip lands below the excluded 0.11, on 0.10.
     capped = '!pip install "torchcodec==0.15"\n!pip install "torchcodec<=0.11,!=0.11.*"'
     assert nv.rule_inst_004_torchcodec_torch(capped, newer, "nb.ipynb", 0) == []
 
@@ -577,8 +558,7 @@ def test_notebook_validator_applies_exclusions_to_where_it_landed():
 
 
 def test_notebook_validator_skips_conditional_invocations_in_rule_003():
-    """The torchao floor helper reads the same cell, so a fallback that never runs must not
-    satisfy the floor R-INST-003 is checking."""
+    """A fallback that never runs must not satisfy the torchao floor R-INST-003 checks."""
     nv = _load_notebook_validator_module()
 
     colab = {"peft": "0.19.1", "torchao": "0.15.0"}
@@ -599,8 +579,7 @@ def test_notebook_validator_skips_conditional_invocations_in_rule_003():
 
 
 def test_notebook_validator_moves_off_an_exclusive_endpoint():
-    """`>V` is not satisfied by V, so an installed version sitting exactly on the endpoint
-    still has to be replaced."""
+    """Installed V on the `>V` endpoint is not satisfied, so it must be replaced."""
     nv = _load_notebook_validator_module()
 
     on_the_endpoint = {"torch": "2.11.0+cu128", "torchcodec": "0.8.0"}
@@ -625,8 +604,7 @@ def test_notebook_validator_moves_off_an_exclusive_endpoint():
 
 
 def test_every_rule_reads_the_filtered_invocations():
-    """Every reader asks what the cell leaves installed and takes the filtered iterator.
-    R-INST-001 asks what could run at all, and answers it from whole lines instead."""
+    """Rules read the filtered iterator; R-INST-001 reads whole lines to see what could run."""
     nv = _load_notebook_validator_module()
 
     cell = "!pip install foo || pip install --no-deps git+https://example.com/evil.git"
@@ -738,8 +716,7 @@ def test_notebook_validator_reads_an_archive_given_as_a_path():
 
 
 def test_git_allowlist_is_scoped_to_each_source():
-    """One allowlisted repository on a line must not clear a prohibited one beside it. The
-    line-level scan finds every `git+` target; the allowlist then applies to each."""
+    """An allowlisted repo must not clear a prohibited `git+` target beside it; check each."""
     nv = _load_notebook_validator_module()
 
     allowed = "git+https://github.com/unslothai/unsloth-zoo.git"
@@ -777,8 +754,7 @@ def test_notebook_validator_keeps_the_stricter_of_two_equal_floors():
 
 
 def test_notebook_validator_reads_a_named_direct_reference():
-    """`name @ url` replaces the package even when the archive filename does not name it, so
-    the old version cannot be reported as if it were still installed."""
+    """`name @ url` replaces the package even when the archive filename does not name it."""
     nv = _load_notebook_validator_module()
 
     tag = "torchcodec @ https://github.com/meta-pytorch/torchcodec/archive/refs/tags/v0.13.0.zip"
@@ -803,8 +779,7 @@ def test_notebook_validator_reads_a_named_direct_reference():
 
 
 def test_git_allowlist_matches_the_repository_not_a_substring():
-    """An arbitrary repository can carry an allowlisted path inside its own, so the allowlist
-    is compared against the normalised host and path."""
+    """Allowlist compares the normalised host and path; a repo can hold an allowlisted path."""
     nv = _load_notebook_validator_module()
 
     assert (
@@ -886,8 +861,7 @@ def test_notebook_validator_keeps_a_minor_a_narrow_exclusion_cannot_remove():
 
 
 def test_notebook_validator_keeps_an_outer_fallback_across_a_nested_or():
-    """Each group keeps its own tail, so an inner `||` cannot hand the outer one back. A
-    command is conditional when any level above it is in a fallback."""
+    """Any fallback level above a command makes it conditional, even past an inner `||`."""
     nv = _load_notebook_validator_module()
 
     nested = (
@@ -920,12 +894,10 @@ def test_notebook_validator_lands_an_upward_move_on_an_inclusive_cap():
 
 
 def test_notebook_validator_will_not_keep_a_version_through_an_upgrade():
-    """A bare name with `--upgrade` takes the newest release, so the installed version is not
-    what the cell ends on. Without the flag pip leaves a satisfied requirement alone."""
+    """Install-forcing flags resolve from the index; without them a satisfied version is kept."""
     nv = _load_notebook_validator_module()
 
-    # None of these let the installed version satisfy the requirement, so pip resolves from
-    # the index and the old version is not what the cell ends on.
+    # Install-forcing flags make pip resolve from the index, not the installed version.
     for flag in ("--upgrade", "-U", "--force-reinstall", "--ignore-installed", "-I"):
         cell = f'!pip install {flag} "torch==2.12.0" torchcodec'
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], flag
@@ -986,8 +958,7 @@ def test_notebook_validator_keeps_the_flag_of_the_command_in_hand():
 
 
 def test_notebook_validator_reads_a_compound_only_line():
-    """With no standalone pip command on the line, every piece kept a keyword and none
-    parsed, so the git+ ban never looked. The body runs, but only if its test did."""
+    """With no standalone pip command, no piece parsed, so the git+ ban never looked."""
     nv = _load_notebook_validator_module()
 
     for evil in (
@@ -1063,8 +1034,7 @@ def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
 
 
 def test_git_ban_only_reads_pip_commands():
-    """A `git+` in an `echo` beside an install installs nothing. The scan is per command, and
-    only the ones that parse as pip count."""
+    """A `git+` in an `echo` beside an install installs nothing; only pip commands count."""
     nv = _load_notebook_validator_module()
 
     assert (
@@ -1084,8 +1054,7 @@ def test_git_ban_only_reads_pip_commands():
 
 
 def test_notebook_validator_evaluates_environment_markers():
-    """pip skips a requirement whose marker is false, so replaying its bounds moves a version the
-    cell never touches. The environment comes from os-info; without one nothing is judged."""
+    """Replay skips false-marker requirements, as pip does; without os-info nothing is judged."""
     nv = _load_notebook_validator_module()
 
     assert nv._colab_python_version() is not None
@@ -1132,8 +1101,7 @@ def test_notebook_validator_evaluates_environment_markers():
 
 
 def test_notebook_validator_expands_bundled_short_flags():
-    """pip takes `-Uq`, and parse_pip_line keeps it as one token, so the letters are what
-    gets compared."""
+    """parse_pip_line keeps `-Uq` as one token, so the letters are what gets compared."""
     nv = _load_notebook_validator_module()
 
     assert nv._forces_resolution({"-Uq"})
@@ -1161,8 +1129,7 @@ def _one_cell_notebook(source: str) -> dict:
 
 
 def test_install_cell_discovery_finds_compound_commands():
-    """The rules see only what `install_cells` hands them, and it wanted `pip` right after the
-    `!`, so every compound form was invisible whatever the splitter did with it."""
+    """install_cells needed `pip` right after `!`, so compound forms never reached the rules."""
     nv = _load_notebook_validator_module()
 
     for source in (
@@ -1209,8 +1176,7 @@ def test_notebook_validator_splits_on_single_control_operators():
 
 
 def test_torchao_floor_ignores_a_requirement_pip_skips():
-    """R-INST-003 reads the floor from the same cell, so a requirement whose marker is false
-    must not satisfy it either."""
+    """A false-marker requirement must not satisfy the torchao floor that R-INST-003 checks."""
     nv = _load_notebook_validator_module()
 
     colab = {"peft": "0.20.0", "torchao": "0.10.0"}
@@ -1267,8 +1233,7 @@ def test_install_cell_discovery_glues_continuations():
 
 
 def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
-    """R-INST-002 and R-INST-005 read the raw pins themselves, so a marker-false `--no-deps`
-    requirement must not be treated as installed by either."""
+    """R-INST-002 and R-INST-005 read raw pins, so skip marker-false `--no-deps` requirements."""
     nv = _load_notebook_validator_module()
     monkeypatch.setattr(
         nv,
@@ -1292,8 +1257,7 @@ def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
 
 
 def test_notebook_validator_splits_keywords_on_any_whitespace():
-    """A tab after `then` is the same command to the shell. Splitting on a literal space left
-    `then\\tpip` as one word, which parses as nothing and hides the install."""
+    """A tab after then parses like a space; splitting only on spaces hid the install."""
     nv = _load_notebook_validator_module()
 
     tabbed = "!if true; then\tpip install git+https://example.com/pkg.git; fi"
@@ -1451,8 +1415,7 @@ def test_notebook_validator_quotes_inside_a_substitution():
     cell = "!echo \"$(printf 'X)'; pip install git+https://example.com/pkg.git)\""
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0))
 
-    # A backtick body survives the assignment-prefix strip, since the bodies are read off the
-    # raw pieces.
+    # Backtick bodies are read from raw pieces, so they survive the assignment-prefix strip.
     assert any(
         f.rule == "R-INST-001"
         for f in nv.rule_inst_001_git_plus(
@@ -1603,8 +1566,7 @@ def test_notebook_validator_keeps_redirections_and_quoted_process_forms():
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
-    """A `>=X,<Y` pair is the constraint `~=X`, and the guard's own remedy is spelled that way,
-    so the rule has to read it back. A `<` with nothing under it names no version."""
+    """A >=X,<Y pair is ~=X, the spelling the guard's remedy uses; a bare < names no version."""
     nv = _load_notebook_validator_module()
 
     # Colab is on 0.11, which this window excludes, so pip drops into the 0.10 line.
@@ -1614,16 +1576,14 @@ def test_notebook_validator_reads_a_range_as_one_window():
     matching = '!pip install "torchcodec>=0.11,<0.12.0"'
     assert nv.rule_inst_004_torchcodec_torch(matching, COLAB_TORCH211, "nb.ipynb", 0) == []
 
-    # A ceiling on a minor boundary DOES name the landing, whatever the major: `<2.11` drops
-    # the installed 2.11 to the 2.10 line, which the image's codec 0.11 does not pair with.
+    # A minor ceiling names the landing: `<2.11` drops 2.11 to 2.10, unpaired with codec 0.11.
     assert [
         f.rule
         for f in nv.rule_inst_004_torchcodec_torch(
             '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
         )
     ] == ["R-INST-004"]
-    # A ceiling on a MAJOR boundary names nothing: which 1.x minor sits below `<2.0` is only
-    # in the index, so no stale baseline is kept either.
+    # A ceiling on a major boundary like <2.0 names no minor, so no stale baseline is kept.
     assert nv._highest_minor_below("2.0") == ""
     assert (
         nv.rule_inst_004_torchcodec_torch('!pip install "torch<2.0"', COLAB_TORCH211, "nb.ipynb", 0)
@@ -1635,8 +1595,7 @@ def test_notebook_validator_reads_a_range_as_one_window():
 
 
 def test_notebook_validator_reads_the_compatible_release_ceiling():
-    """`~=` pins a window, so it moves the baseline down as well as up. PEP 440 drops the
-    last component: `~=2.10.0` allows `<2.11`, `~=2.10` allows `<3`."""
+    """~= moves the baseline both ways; PEP 440 drops the last part, so ~=2.10.0 allows <2.11."""
     nv = _load_notebook_validator_module()
 
     assert nv._compatible_release_ceiling("2.10.0") == "2.11"
@@ -1714,8 +1673,7 @@ def test_an_arm_close_paren_is_not_stripped_off_a_substitution():
 
 
 def test_operators_inside_a_parameter_expansion_stay_literal():
-    """`${X:-a||b}` is one word to bash, the `||` being part of the fallback, and splitting
-    there manufactured a pip command bash never runs. A false positive, unlike the rest."""
+    """${X:-a||b} is one word to bash; splitting on || invented a pip command bash never runs."""
     nv = _load_notebook_validator_module()
 
     line = "!echo ${X:-plain||pip install git+https://example.com/pkg.git}"
@@ -1731,8 +1689,7 @@ def test_operators_inside_a_parameter_expansion_stay_literal():
 
 
 def test_a_cap_only_install_after_an_uninstall_lands_on_the_cap():
-    """`pip install "x<=V"` on an absent package installs V, so it is not still absent, and
-    treating a cap-only requirement as nothing made R-INST-004 silent on a downgrade."""
+    """A cap-only spec on an absent package installs V; treating it as nothing hid a downgrade."""
     nv = _load_notebook_validator_module()
 
     cell = '!pip uninstall -y torchcodec\n!pip install "torchcodec<=0.10"'
@@ -1752,8 +1709,7 @@ def test_a_cap_only_install_after_an_uninstall_lands_on_the_cap():
 
 
 def test_the_os_oracle_is_documented_as_feeding_marker_evaluation():
-    """os-info stopped being human-only when markers began reading its Python version, so the
-    workflow refreshes it with the pip snapshot. Asserted here so the two cannot drift."""
+    """Markers read Python from os-info, so the workflow refreshes it with the pip snapshot."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -1833,8 +1789,7 @@ def test_the_marker_oracle_follows_the_selected_pip_snapshot(tmp_path, monkeypat
 
 
 def test_the_cron_refreshes_both_oracles_not_just_the_packages():
-    """The scheduled job refreshed the pip snapshot against a stale os-info, judging new
-    packages with the old interpreter. The PR-time step uses --all; this one has to match."""
+    """The cron must refresh both oracles like the PR step's --all, not just the pip snapshot."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text(
         encoding = "utf-8"
     )
@@ -1843,8 +1798,7 @@ def test_the_cron_refreshes_both_oracles_not_just_the_packages():
 
 
 def test_python_dash_m_pip_is_a_pip_invocation():
-    """`python -m pip` is pip's recommended invocation and the cell regex already selected it,
-    so a notebook using it reached the rules with zero invocations."""
+    """`python -m pip` is pip's recommended form, so it must parse to an invocation, not zero."""
     nv = _load_notebook_validator_module()
 
     for line in (
@@ -1874,8 +1828,7 @@ def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
     assert not list(nv.unconditional_pip_invocations(conditional))
 
     colab = {"peft": "0.20.0", "torchao": "0.10.0"}
-    # The rule itself still reports on the bare oracle; the gate in cmd_lint is what keeps
-    # such a cell away from it, so assert the property the gate reads.
+    # Rule still reports on the bare oracle; cmd_lint's gate keeps conditional cells off it.
     assert nv.rule_inst_003_peft_torchao(conditional, colab, "nb/T.ipynb", 0)
 
     notebook = {
@@ -1916,8 +1869,7 @@ def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
 
 
 def test_python_version_drift_in_the_os_oracle_fails_strict():
-    """_marker_environment reads the Python version from os-info, so that key is rule-bearing; an
-    interpreter bump with unchanged packages must fail strict, not stay green."""
+    """Python version from os-info feeds markers, so an interpreter bump must fail strict."""
     nv = _load_notebook_validator_module()
 
     assert nv.COLAB_STRICT_ORACLE == "pip-freeze.gpu.txt"
@@ -2111,8 +2063,7 @@ def test_a_codec_range_is_read_in_order_and_only_when_unconditional():
 
 
 def test_a_ceiling_only_request_is_unknown_rather_than_the_excluded_oracle():
-    """`pip install "torchcodec<0.10.0"` on a 0.11 image downgrades to a version only the index
-    names, and returning the excluded oracle reported the pairing the cell just ruled out."""
+    """A ceiling-only install lands on a version only the index names, not the excluded oracle."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2198,8 +2149,7 @@ def test_a_bounded_window_lands_on_its_newest_candidate():
 
 
 def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
-    """A window wider than one minor still names the MINOR pip lands on. `<0.10.5` admits 0.10.0
-    to 0.10.4, so only a ceiling ON a minor boundary excludes the whole minor."""
+    """<0.10.5 still names minor 0.10; only a ceiling on a minor boundary excludes that minor."""
     from scripts import notebook_validator as nv
 
     assert nv._highest_minor_below("0.10.5") == "0.10"
@@ -2225,8 +2175,7 @@ def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
 
 
 def test_a_strict_lower_bound_excludes_the_installed_version():
-    """`>0.11.0` rules out the 0.11.0 the image ships, and which release pip picks instead is
-    only in the index, so the bound comes back inexact and the rule declines to judge."""
+    """`>0.11.0` excludes the shipped 0.11.0; landing release is index-only, so it abstains."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2240,8 +2189,7 @@ def test_a_strict_lower_bound_excludes_the_installed_version():
 
 
 def test_a_later_install_keeps_what_an_earlier_one_landed_on():
-    """pip does not reinstall a package that already satisfies the requirement, so `>=0.12.0`
-    then the broader `>=0.10.0` ends on 0.12, while a command excluding it moves back down."""
+    """pip does not reinstall a satisfying package, so a later broader `>=0.10.0` keeps 0.12."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2282,8 +2230,7 @@ def test_an_exclusion_rules_out_the_installed_version():
 
 
 def test_versions_are_compared_with_pep440_zero_padding():
-    """PEP 440 pads the shorter release, so `0.11` and `0.11.0` are one version; raw tuples
-    sorted `0.11` below it and changed which branch answered."""
+    """PEP 440 zero-pads releases, so 0.11 equals 0.11.0; raw tuples sorted 0.11 below it."""
     from scripts import notebook_validator as nv
 
     assert nv.cmp_versions("0.11", "0.11.0") == 0
@@ -2355,8 +2302,7 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
 
 
 def test_a_torch_range_is_replayed_before_the_pair_is_judged():
-    """`pip install "torch>=2.12.0"` does not satisfy the image's 2.11, so pip upgrades torch
-    while the codec stays on 0.11. Both sides have to be replayed, not just the codec."""
+    """A torch>=2.12.0 install upgrades torch but not the codec, so both sides must be replayed."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2374,8 +2320,7 @@ def test_a_torch_range_is_replayed_before_the_pair_is_judged():
 
 
 def test_each_pip_command_owns_the_packages_it_names():
-    """A chained line carries several verbs, so a package belongs to the command naming it: an
-    uninstall of a third package must not clear what an earlier install put in place."""
+    """Packages belong to their naming command; an uninstall must not clear earlier installs."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2396,8 +2341,7 @@ def test_each_pip_command_owns_the_packages_it_names():
 
 
 def test_a_fallback_after_a_successful_install_does_not_run():
-    """`A || B` runs B only when A fails, and the rules read a cell as it runs on a working
-    host, so replaying the fallback finished on a 0.12 that never gets installed."""
+    """A || B runs B only if A fails, so B must not run after a successful install."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.10.0+cu128", "torchcodec": "0.11.0+cu128"}
@@ -2427,8 +2371,7 @@ def test_a_package_is_attributed_by_token_not_substring():
 
 
 def test_a_dry_run_install_changes_nothing():
-    """`--dry-run` prints what would be installed and changes nothing, so replaying it raised a
-    false R-INST-004 about a version the cell never installed."""
+    """`--dry-run` changes nothing, so replaying it must not raise a false R-INST-004."""
     from scripts import notebook_validator as nv
 
     assert nv._effective_version("!pip install --dry-run torch==2.12.0", "torch", "2.11.0") == (
@@ -2462,8 +2405,7 @@ def test_an_exclusive_ceiling_beats_an_inclusive_cap():
 
 
 def test_a_direct_archive_keeps_its_version_beside_a_marker():
-    """The `; marker` suffix rode into the archive regex, so the filename version was
-    unrecoverable and the package read as replaced by an unknown one."""
+    """The `; marker` suffix must not reach the archive regex, or the filename version is lost."""
     from scripts import notebook_validator as nv
 
     wheel = "https://example.com/torchcodec-0.11.0-cp313-cp313-manylinux_2_28_x86_64.whl"
@@ -2545,9 +2487,7 @@ def test_a_substitution_keeps_its_whitespace_inside_an_assignment():
 
 
 def test_a_nested_backtick_substitution_is_read_through():
-    """Legacy nesting escapes the inner delimiters so they do not close the outer one, and `find`
-    stopped at the first escaped backtick. The body is unescaped on the way out, or the inner
-    substitution never opens on the second pass."""
+    """Inner backticks are escaped; unescape the body or the inner substitution never opens."""
     nv = _load_notebook_validator_module()
 
     nested = "!echo `echo \\`pip install git+https://evil.example/pkg.git\\``"
@@ -2589,8 +2529,7 @@ def test_env_split_string_carries_the_command():
 
 
 def test_a_dry_run_does_not_seed_the_resolved_set():
-    """Skipping `--dry-run` in the replay was not enough: `resolved_set` had already taken the
-    starting version from the same command's pins."""
+    """Skipping `--dry-run` is not enough: the same command's pins already seed resolved_set."""
     nv = _load_notebook_validator_module()
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
 
@@ -2798,8 +2737,7 @@ def test_env_split_string_reads_the_escaped_space():
         "pip install git+https://x/e.git",
         True,
     )
-    # The escape belongs to the OPERAND. A trailing argument is bash's to unescape, and
-    # `a\\_b` is one package there rather than two.
+    # Escapes in a trailing argument are bash's to undo: an escaped underscore is one package.
     assert [
         (inv.action, inv.packages)
         for inv in nv.unconditional_pip_invocations('!env -S "pip install" a\\_b')
@@ -2970,8 +2908,7 @@ def test_an_intervening_command_breaks_the_and_chain():
             '!pip install "torch==2.11.0" && some_probe && pip install "torchcodec==0.11.0"'
         )
     ] == [False, False, True]
-    # The ordinary chained idiom is untouched, and `||` still carries the list either way,
-    # because one branch succeeding is enough.
+    # The && idiom is untouched; || carries the list, since one succeeding branch is enough.
     assert [flag for _, flag in nv._split_chained("!pip install a && pip install b")] == [
         False,
         False,
@@ -3150,8 +3087,7 @@ def test_a_compound_body_stays_conditional_past_its_separators():
 def test_a_dependency_the_cell_removes_is_reported(monkeypatch):
     """A dependency the cell removes is reported, not treated as missing resolution data."""
     nv = _load_notebook_validator_module()
-    # Stubbed like the neighbouring rule tests: the live PyPI path makes this assert nothing
-    # at all wherever the network is blocked, which is a test that cannot fail.
+    # Stubbed, since the live PyPI path makes the assert vacuous when the network is blocked.
     monkeypatch.setattr(
         nv,
         "pypi_metadata",
@@ -3621,8 +3557,7 @@ def test_an_unconditional_exit_ends_the_command_list():
         == []
     )
     assert nv._split_chained("!exit; pip install a") == [("!exit", False)]
-    # `env exit 0` asks env for a program called exit, which does not exist; a subshell exit
-    # and a conditional one leave the parent shell running. All three verified against bash.
+    # env seeks a program named exit; subshell and conditional exits leave the parent running.
     for cell in (
         "!env exit 0; pip install a",
         "!(exit 0); pip install a",
@@ -3689,8 +3624,7 @@ def test_a_known_branch_outcome_decides_which_body_is_replayed():
         ("!pip install a", True),
         ("!pip install b", True),
     ]
-    # The first arm certainly failed, so the `elif` TEST is reached; its own outcome is
-    # unknown, so only the branch behind it is conditional.
+    # Only the branch behind an unknown elif test is conditional; the test itself is reached.
     assert nv._split_chained(
         "!if false; then pip install a; elif maybe; then pip install b; fi"
     ) == [
@@ -3730,8 +3664,7 @@ def test_a_shell_function_body_is_not_hidden_behind_its_name():
         "!function setup () { pip install a; }; setup",
     ):
         assert ("!pip install a", False) in nv._split_chained(spelling), spelling
-    # Defined and never called, the body is unreachable rather than conditional, so it is
-    # dropped: bash only defines the function.
+    # Defined but never called, a function body is unreachable, so bash only defines it.
     assert nv._split_chained("!setup () { pip install a; }") == []
     # Empty parens are required, so a grouped command and a substitution are untouched.
     assert nv._split_chained("!X=$(pip install a)") == [("!pip install a", False)]
@@ -4404,8 +4337,7 @@ def test_an_upgrade_under_a_ceiling_stays_in_the_line_it_is_in():
         None,
         True,
     )
-    # A ceiling well above what is installed leaves the landing to the index, since which
-    # of the admitted minors carries a release is not written in the cell.
+    # A ceiling well above the installed version leaves the landing to the index, not the cell.
     assert nv._effective_version(
         '!pip install --upgrade "torchcodec<0.16"', "torchcodec", "0.11.1"
     ) == (None, True)
@@ -4447,8 +4379,7 @@ def test_a_project_name_is_canonicalized_the_way_pep_503_says():
 
 
 def test_a_for_list_is_read_across_any_shell_whitespace():
-    """A for loop with tabs around in is the same loop to bash; partitioning on literal spaces found
-    no list, so a body that certainly runs was marked conditional."""
+    """Tabs also separate for-list words; spaces alone marked a certain body conditional."""
     nv = _load_notebook_validator_module()
 
     assert ("!pip install torch==2.11", False) in nv._split_chained(
@@ -4525,8 +4456,7 @@ def test_a_condition_that_fails_whatever_pip_does_stays_known():
         "!if pip install x && false; then :; else pip install torchcodec==0.11; fi",
     ):
         assert ("!pip install torchcodec==0.11", False) in nv._split_chained(cell), cell
-    # The assumption still counts where it really decides the condition: this body runs
-    # exactly when the install fails, and R-INST-001 has to see the source in it.
+    # This body runs only when the install fails, so R-INST-001 must still see its source.
     assert [
         f.rule
         for f in nv.rule_inst_001_git_plus(

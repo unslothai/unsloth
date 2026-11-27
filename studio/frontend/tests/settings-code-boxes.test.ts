@@ -53,7 +53,6 @@ test("long API examples are capped and scroll inside a keyboard-reachable region
   assert.match(cls, /\[html:not\(\[data-code-wrap\]\)_&_pre\]:!whitespace-pre(?!-)/);
   assert.doesNotMatch(cls, /break-words|break-all|whitespace-pre-wrap/);
   assert.match(cls, /\[html:not\(\[data-code-wrap\]\)_&_\[data-streamdown=code-block\]\]:!min-w-max\b/);
-  // all three example sections share one code box
   for (const caller of [USAGE, AUDIO, MEDIA]) {
     assert.match(
       caller,

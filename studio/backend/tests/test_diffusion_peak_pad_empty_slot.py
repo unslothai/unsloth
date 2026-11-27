@@ -50,7 +50,6 @@ def test_streamed_group_window_skips_an_empty_denoiser_slot(streamed):
 
 
 def test_an_unhooked_off_card_denoiser_still_reads_unknown(streamed):
-    # unhooked off-card weights stay unknown
     other = torch.nn.Linear(8, 8)
     pipe = types.SimpleNamespace(components = {"transformer": streamed, "transformer_2": other})
     assert dm.stream_window_pad_mib(pipe) is None

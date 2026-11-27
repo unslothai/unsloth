@@ -20,6 +20,12 @@ from core.rag import config, embeddings
 from core.rag import embed_llama_server as mod
 from core.rag.embed_llama_server import LlamaServerBackend
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._symlinks import skip_without_symlinks
+except ImportError:
+    from _symlinks import skip_without_symlinks
+
 
 def _shared_setup_1(monkeypatch):
     import utils.embedding_model_settings as ems
@@ -993,6 +999,7 @@ def _seed_cache(
     snapshot = repo_dir / "snapshots" / revision
     blobs = repo_dir / "blobs"
     blobs.mkdir(parents = True, exist_ok = True)
+    skip_without_symlinks(blobs)
     for name in filenames:
         blob = blobs / name.replace("/", "_")
         blob.write_text("gguf")

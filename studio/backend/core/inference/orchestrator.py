@@ -445,6 +445,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
         "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
         "audio_server_task": model_info.get("audio_server_task"),
+        "audio_separation": model_info.get("audio_separation"),
         "audio_convert": model_info.get("audio_convert"),
         "audio_convert_route": model_info.get("audio_convert_route"),
         "audio_convert_rules": model_info.get("audio_convert_rules"),
@@ -1627,6 +1628,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        generation_progress: bool = False,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -1679,6 +1681,8 @@ class InferenceOrchestrator:
             cmd["tool_protocol_active"] = tool_protocol_active
         if diffusion_frames and not rows:
             cmd["diffusion_frames"] = True
+        if generation_progress and not rows:
+            cmd["generation_progress"] = True
         if prompt_ids is not None:
             cmd["prompt_ids"] = list(prompt_ids)
         if penalty_window is not None:
@@ -1702,8 +1706,10 @@ class InferenceOrchestrator:
         mark_started: bool = True,
         rows: Optional[int] = None,
         frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[Any, None, None]:
-        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts."""
+        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts.
+        ``perf_callback`` receives the worker's live progress samples, which are never yielded."""
         # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
@@ -1798,6 +1804,12 @@ class InferenceOrchestrator:
                     yield {
                         key: value for key, value in resp.items() if key not in ("request_id", "ts")
                     }
+            elif rtype == "generation_progress":
+                if perf_callback is not None and rows is None and not stop_sent:
+                    try:
+                        perf_callback(resp.get("sample") or {})
+                    except Exception:
+                        logger.debug("Ignoring a live progress callback failure", exc_info = True)
             elif rtype == "gen_done":
                 if stats_holder is not None and rows is None:
                     stats_holder["stats"] = resp.get("stats")
@@ -1958,6 +1970,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -2014,6 +2027,7 @@ class InferenceOrchestrator:
             rows = rows,
             videos_b64 = videos,
             diffusion_frames = diffusion_frames,
+            generation_progress = perf_callback is not None,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
             grammar = grammar,
@@ -2091,6 +2105,7 @@ class InferenceOrchestrator:
                     mark_started = False,
                     rows = len(rows) if rows else None,
                     frames = diffusion_frames,
+                    perf_callback = perf_callback,
                 )
         finally:
             # Covers streams that end without a gen_done (never sent, cancel, disconnect, dead worker).
@@ -3224,12 +3239,14 @@ class InferenceOrchestrator:
         force_reset: bool = False,
         keeps_boundary: bool = False,
         images: Optional[list] = None,
+        on_compacting: Optional[Callable[[], None]] = None,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
         A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
         one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
         ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
+        ``on_compacting`` is called once if the fit starts dropping turns, as on GGUF.
         Never raises: a failed fit returns the request unchanged.
         """
         unchanged = {
@@ -3377,7 +3394,10 @@ class InferenceOrchestrator:
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(
-                conversation, context_length = context_length, **fit_kwargs
+                conversation,
+                context_length = context_length,
+                on_compacting = on_compacting,
+                **fit_kwargs,
             )
             # The bound overprices, so its refusal is served as a rescue: the irreducible suffix, judged by the engine.
             if (
@@ -3664,6 +3684,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[str, None, None]:
         """stats_holder is per request so concurrent streams never read each other stats; presence_penalty 0 disables it."""
         yield from self._generate_inner(
@@ -3696,6 +3717,7 @@ class InferenceOrchestrator:
             reasoning_is_extracted = reasoning_is_extracted,
             videos = videos,
             diffusion_frames = diffusion_frames,
+            perf_callback = perf_callback,
         )
 
     def generate_chat_batch(
@@ -3809,10 +3831,12 @@ class InferenceOrchestrator:
         tool_choice = None,
         disable_parallel_tool_use: bool = False,
         mcp_match_exchange: Optional[dict] = None,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         **_unused,
     ):
         """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
         GGUF's."""
+        from core.inference.llama_cpp import _compaction_reporter
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
@@ -3863,6 +3887,7 @@ class InferenceOrchestrator:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 stop = stop,
+                perf_callback = perf_callback,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -3901,6 +3926,7 @@ class InferenceOrchestrator:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -3952,6 +3978,7 @@ class InferenceOrchestrator:
                 live_branch = live_branch,
                 keeps_boundary = _loop_cut,
                 images = loop_images,
+                on_compacting = _compaction_reporter(perf_callback),
             )
             _loop_cut = _loop_cut or any(
                 event.get("dropped_messages") for event in result.get("events") or ()
@@ -3967,6 +3994,9 @@ class InferenceOrchestrator:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),
@@ -4070,6 +4100,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -4081,7 +4112,14 @@ class InferenceOrchestrator:
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             kwargs = dict(locals())
-            for key in ("self", "managed", "kwargs", "diffusion_frames", "n_probs"):
+            for key in (
+                "self",
+                "managed",
+                "kwargs",
+                "diffusion_frames",
+                "perf_callback",
+                "n_probs",
+            ):
                 kwargs.pop(key, None)
             from .engine_transport import EngineHTTPError
 
@@ -4139,6 +4177,7 @@ class InferenceOrchestrator:
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
+                perf_callback = perf_callback,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
@@ -4185,6 +4224,7 @@ class InferenceOrchestrator:
                 rows = rows,
                 videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
+                generation_progress = perf_callback is not None,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
@@ -4210,6 +4250,7 @@ class InferenceOrchestrator:
                     stats_holder = stats_holder,
                     rows = len(rows) if rows else None,
                     frames = diffusion_frames,
+                    perf_callback = perf_callback,
                 )
             finally:
                 self._release_worker(cancel_event)
@@ -4323,7 +4364,7 @@ class InferenceOrchestrator:
         audio_options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict]:
-        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        """Split a prepared WAV into stems under ``output_dir`` (or filter it into one file); the full token budget
         gives the watchdog the same hour the runtime request has."""
         outputs, _sample_rate = self.generate_audio_response(
             text = "",

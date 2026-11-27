@@ -114,8 +114,7 @@ def _no_tensor_cores_sm75(dev) -> bool:
 
 
 def scaled_mm_supported(device) -> bool:
-    """fp16 x fp16 -> fp32 cuBLAS GEMM (``torch.mm(out_dtype=)``) runs on ``device`` (``"cuda"``, ``"cuda:1"``,
-    a ``torch.device``) and this torch, on tensor cores."""
+    """Whether fp16 x fp16 -> fp32 torch.mm(out_dtype=) runs on tensor cores on this device."""
     import os
 
     import torch
@@ -335,8 +334,7 @@ def install_fp32_islands(
     autocast_type = torch.device(device_type).type
     n_scaled = 0
     for n in names:
-        # Scaled GEMM first: when the island root is the bare nf4 linear, the island must wrap the scaled forward
-        # (fp32 input, fp32 output), not be replaced by it.
+        # Scaled GEMM first: a bare nf4 island root wraps it (fp32 in/out), not replaced.
         if use_scaled and n in targets:
             n_scaled += install_scaled_mm(mods[n])
         make_fp32_island(mods[n], autocast_type)

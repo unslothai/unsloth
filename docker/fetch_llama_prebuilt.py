@@ -191,8 +191,7 @@ def main() -> None:
         f"release_tag={marker['release_tag']} published_repo={RELEASE_REPO}"
     )
 
-    # Mirror into build/bin/ so setup.sh skips its CPU-only source build. Hardlinks keep the
-    # $ORIGIN rpath.
+    # Mirror into build/bin/ so setup.sh skips its CPU build; hardlinks keep the $ORIGIN rpath.
     build_bin = os.path.join(install_dir, "build", "bin")
     os.makedirs(build_bin, exist_ok = True)
     for entry in os.listdir(install_dir):

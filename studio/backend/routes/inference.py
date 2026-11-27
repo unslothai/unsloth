@@ -36,6 +36,7 @@ from typing import (
     Any,
     Callable,
     Collection,
+    Hashable,
     List,
     Literal,
     NamedTuple,
@@ -293,6 +294,8 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 # Queued renders wait for the one-render slot inside their thread; on the default executor they would hold every worker.
 _IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
 _IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
+# Reserved-turn calls run here: queued waiters may hold every worker of the pool above.
+_IMAGE_BATCH_EXECUTOR = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "image-batch")
 
 
 async def _image_generate_in_thread(func, /, *args, **kwargs):
@@ -307,6 +310,12 @@ async def _image_generate_in_thread(func, /, *args, **kwargs):
     loop = asyncio.get_running_loop()
     call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
     return await loop.run_in_executor(_IMAGE_GENERATE_EXECUTOR, call)
+
+
+async def _image_generate_on_reserved_turn(func, /, *args, **kwargs):
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
+    return await loop.run_in_executor(_IMAGE_BATCH_EXECUTOR, call)
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -4691,12 +4700,16 @@ def _sf_parse_think_markers(
     features: dict,
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    inkling_channel: bool = False,
 ) -> bool:
     """A hybrid template reads enable_thinking before reasoning_effort when both are sent (Kimi-K3)."""
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
         return False
+    # Inkling still reasons at effort none, so its thought is split as at any other effort.
+    if inkling_channel:
+        return True
     style = features.get("reasoning_style")
     resolved: dict = {}
     if style == "reasoning_effort":
@@ -4708,6 +4721,32 @@ def _sf_parse_think_markers(
         resolved["reasoning_effort"] = reasoning_effort
     # No launch default on this backend: an empty dict leaves the template's own.
     return _resolved_kwargs_think(None, resolved)
+
+
+def _sf_thought_ledger(
+    ledger: Optional[dict],
+    snapshot,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Mirror a snapshot's thought spans into an extractor ledger, growing lengths in place; None until spans arrive."""
+    spans = getattr(snapshot, "thought_spans", None)
+    if spans is None:
+        return ledger
+    if ledger is None:
+        ledger = {"split": True}
+    seen = ledger.setdefault("spans", [])
+    for index, (at, length) in enumerate(spans):
+        if index < len(seen):
+            seen[index]["len"] = length
+            continue
+        entry = {"len": length}
+        if at + offset:
+            entry["at"] = at + offset
+            ledger.setdefault("later", []).append(entry)
+        else:
+            ledger.setdefault("wraps", []).append(entry)
+        seen.append(entry)
+    return ledger
 
 
 def _memory_tool_requested(payload) -> bool:
@@ -5215,12 +5254,22 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     return bool(getattr(llama_backend, "reasoning_default", True))
 
 
+def _llama_inkling_channel(llama_backend) -> bool:
+    from core.inference.chat_template_helpers import replays_reasoning_content
+    from core.inference.llama_cpp import _rendered_chat_template
+
+    template = _rendered_chat_template(llama_backend)
+    return isinstance(template, str) and replays_reasoning_content(None, template = template)
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Literal think tags in prose stay text unless the model can reason, so the splitter runs only then."""
     if getattr(llama_backend, "reasoning_always_on", False):
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
+    if _llama_inkling_channel(llama_backend):
+        return True
     # Use the effective template kwargs: effort-dial templates map enable_thinking=False to low.
     args = _anthropic_reasoning_args(payload)
     resolved = (
@@ -7870,7 +7919,7 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    """Wait for a local generator step, yielding keep-alives on stall and, when live, progress frames.
     Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
@@ -8457,6 +8506,27 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _serving_reasoning_flags(tools = None) -> Optional[dict]:
+    """The serving model's reasoning flags, read as /status reads them; None when nothing is loaded."""
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return {
+            name: getattr(llama_backend, name)
+            for name in (
+                "supports_reasoning",
+                "reasoning_style",
+                "reasoning_always_on",
+                "reasoning_effort_levels",
+            )
+        }
+    backend = _peek_inference_backend()
+    if backend is None or not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    return _sf_rendered_features(backend, model_info, tools)[0]
+
+
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
     clean = public_model_id(model) or model or "model"
@@ -8763,17 +8833,21 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     )
     from utils.openai_auto_switch_settings import (
         model_override_load_kwargs,
+        resolve_fit_max_seq_length,
         resolve_override_for_load,
         stored_gpu_index_kind,
     )
 
     load_path, variant = request.model_path, request.gguf_variant
-    alias = _snapshot_repo_or_self(load_path, require_cache = True)
+    alias = request._override_alias_id or _snapshot_repo_or_self(load_path, require_cache = True)
     # A row may be keyed by the snapshot path; the scan also warms the index local_target_is_gguf reads.
     ref = f"{load_path}:{variant}" if variant else load_path
-    local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
-        resolve_local_gguf, ref
-    )
+    # Set only by a caller that already resolved the on-disk copy; a second resolution can pick another row.
+    local = None
+    if not request._override_alias_id:
+        local = resolve_trusted_cached_local_gguf(ref) or await asyncio.to_thread(
+            resolve_local_gguf, ref
+        )
     if local:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -8799,6 +8873,24 @@ async def _with_saved_settings(request: LoadRequest) -> LoadRequest:
     if any(name in sent for name in _PLACEMENT_FIELDS):
         for name in _PLACEMENT_FIELDS:
             fill.pop(name, None)
+        if "max_seq_length" not in sent:
+            from core.inference.llama_server_args import parse_gpu_layers_override
+
+            # The saved context depends on placement (--fit sizes it under manual auto layers); a sent -ngl wins, as in the loader.
+            try:
+                parsed = parse_gpu_layers_override(request.llama_extra_args)
+            except ValueError:
+                parsed = None
+            layers = request.gpu_layers if parsed is None else parsed
+            placed = {
+                **override,
+                "gpu_memory_mode": request.gpu_memory_mode,
+                "gpu_layers": layers if layers >= 0 else None,
+            }
+            context = resolve_fit_max_seq_length(placed, is_gguf = is_gguf)
+            fill.pop("max_seq_length", None)
+            if context is not None:
+                fill["max_seq_length"] = context
     # A filled gpu_ids would strip the sent --device / --main-gpu (_gpu_ids_own_placement).
     if _extra_args_set_any_flag(request.llama_extra_args, _DEVICE_FLAGS):
         fill.pop("gpu_ids", None)
@@ -9152,6 +9244,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_options_by_workflow = None,
         audio_workflow_tasks = None,
         audio_server_task = None,
+        audio_separation = None,
         audio_convert = None,
         audio_convert_route = None,
         audio_clone = None,
@@ -13124,13 +13217,19 @@ async def _maybe_auto_switch_model(
                             async def _switch_load(load_request: LoadRequest) -> None:
                                 nonlocal target_backend
                                 if not beside:
-                                    await _load_model_impl(
+                                    response = await _load_model_impl(
                                         load_request,
                                         fastapi_request,
                                         current_subject,
                                         current_request_counted = True,
                                         **load_internal_kw,
                                     )
+                                    if isinstance(response, LoadResponse) and not target_is_gguf:
+                                        from core.inference.chat_media_swap import (
+                                            remember_transformers_load,
+                                        )
+                                        load_request._advertised_id = override_id
+                                        remember_transformers_load(load_request, response, False)
                                     model_slots.mark_used(None)
                                     return
                                 await load_model_gated(
@@ -13466,13 +13565,16 @@ def _chat_fit_kwargs(
     credit_gb: Optional[dict] = None,
     mlx_need_mib: Optional[int] = None,
     mlx_credit_mib: int = 0,
+    *,
+    restoring_chat_swap: bool = False,
 ) -> dict:
     """How the CHAT acquire shares the GPU under When they fit / Always.
 
     audio.cpp and native audio are priced from the placement estimate, an MLX load on Apple Silicon from
     ``mlx_need_mib``. A GGUF launch prices itself (it refuses a partial fit and load_model_gated makes room).
     Anything else has no estimate before launch: When they fit evicts first, Always tries the load and turns an
-    out-of-memory failure into its refusal. ``credit_gb`` is what the outgoing primary frees per GPU when this
+    out-of-memory failure into its refusal. A discrete GPU chat restored during an image swap tries its previous
+    placement beside the remaining media first. ``credit_gb`` is what the outgoing primary frees per GPU when this
     load replaces it.
     """
     if policy is None:
@@ -13499,7 +13601,8 @@ def _chat_fit_kwargs(
         from core.inference.gpu_residency import ChatNeed
         kwargs["need_mib"] = ChatNeed({0: int(mlx_need_mib)}, credit_mib = mlx_credit_mib)
     elif not (config.is_gguf and _primary_can_retry_fit.get()) and (
-        policy == "fit" or (not config.is_gguf and _unified_metal_host())
+        (policy == "fit" and not restoring_chat_swap)
+        or (not config.is_gguf and _unified_metal_host())
     ):
         # Unified memory pages past the budget: Always gets no OOM to refuse on.
         kwargs["evict_first"] = True
@@ -13809,7 +13912,7 @@ async def load_model_for_preview(
                 prior_marker = _get_preview_resident()
                 loaded_ok = False
                 try:
-                    await _load_model_impl(
+                    response = await _load_model_impl(
                         request,
                         fastapi_request,
                         current_subject,
@@ -13824,6 +13927,9 @@ async def load_model_for_preview(
                         allow_gpu_owner_eviction = False,
                     )
                     loaded_ok = True
+                    if isinstance(response, LoadResponse):
+                        from core.inference.chat_media_swap import remember_transformers_load
+                        remember_transformers_load(request, response, False)
                 except (GpuOwnerBusyError, MultiModelAlwaysRefusal) as exc:
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -19230,13 +19336,15 @@ async def load_model_gated(
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
     background: bool = False,
+    swap_gates_held: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
     path returns a StreamingResponse nobody in-process drains, so awaiting it would
     return mid-load and hide a late failure in an unread body. This blocks until the
-    model is resident and raises the real exception.
+    model is resident and raises the real exception. A chat-image restore already
+    holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
         raise HTTPException(
@@ -19284,7 +19392,7 @@ async def load_model_gated(
     try:
         _raise_if_sidecar_swap_in_progress()
         # Hold the gate so idle auto-unload can't unload mid-load; auto-switch already holds it.
-        async with model_load_gate():
+        async with nullcontext() if swap_gates_held else model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
@@ -19298,7 +19406,7 @@ async def load_model_gated(
                 extra.llama._llama_update_in_progress = getattr(
                     _llama_cpp_backend, "_llama_update_in_progress", False
                 )
-            async with nullcontext() if new_slot else inference_lifecycle_gate():
+            async with nullcontext() if new_slot or swap_gates_held else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if not new_slot:
                     # An auto-switch beside checked before this gate: this load replaces a loaded model.
@@ -19351,6 +19459,15 @@ async def load_model_gated(
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
+                                if (impl_kwargs or {}).get("restoring_chat_swap"):
+                                    from core.inference.gpu_residency import current_policy
+                                    if (
+                                        await asyncio.to_thread(current_policy) == "fit"
+                                        and not _unified_metal_host()
+                                    ):
+                                        # Retry the layout that already fit; real memory pressure still falls back to Fit.
+                                        impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
+                                        continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
                             # A non-GGUF load reports no fit up front: its out-of-memory failure
                             # makes room the same way, one idle kept model at a time.
@@ -19399,7 +19516,11 @@ async def load_model_gated(
                         if await _free_for_chat(exc, evicted, media_only = True):
                             continue
                         # No chat may start on a victim between its pick and teardown.
-                        async with inference_lifecycle_gate() if new_slot else nullcontext():
+                        async with (
+                            inference_lifecycle_gate()
+                            if new_slot and not swap_gates_held
+                            else nullcontext()
+                        ):
                             _check_switch_precondition(fastapi_request)
                             _require_load_keeps_chat(fastapi_request, request)
                             victims = await asyncio.to_thread(
@@ -19445,7 +19566,11 @@ async def load_model_gated(
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}
                             )
-                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                            async with (
+                                inference_lifecycle_gate()
+                                if new_slot and not swap_gates_held
+                                else nullcontext()
+                            ):
                                 if background:
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
@@ -19498,6 +19623,9 @@ async def load_model_gated(
                             request.model_path,
                         )
                         extra.llama._last_kill_monotonic = time.monotonic()
+            if extra is None and isinstance(response, LoadResponse):
+                from core.inference.chat_media_swap import remember_transformers_load
+                remember_transformers_load(request, response, user_initiated)
             twin, survivor = (
                 await asyncio.to_thread(_served_twice, extra)
                 if new_slot and extra is not None
@@ -19575,6 +19703,7 @@ async def load_model_gated(
             current_request_counted = current_request_counted,
             impl_kwargs = impl_kwargs,
             background = background,
+            swap_gates_held = swap_gates_held,
         )
     finally:
         _replaces_its_repo.reset(token)
@@ -20299,6 +20428,7 @@ async def _load_model_impl(
     cache_environment: Optional[dict[str, str]] = None,
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
+    restoring_chat_swap: bool = False,
 ):
     from core.inference.npu_backend import is_npu_model_path
 
@@ -21085,6 +21215,7 @@ async def _load_model_impl(
                         outgoing_chat_gb,
                         mlx_need_mib = None if mlx_chat_need is None else mlx_chat_need[0],
                         mlx_credit_mib = mlx_credit_mib,
+                        restoring_chat_swap = restoring_chat_swap,
                     )
                 )
                 await asyncio.to_thread(
@@ -21591,6 +21722,7 @@ async def _load_model_impl(
             audio_options_by_workflow = _model_info.get("audio_options_by_workflow"),
             audio_workflow_tasks = _model_info.get("audio_workflow_tasks"),
             audio_server_task = _model_info.get("audio_server_task"),
+            audio_separation = _model_info.get("audio_separation"),
             audio_convert = _model_info.get("audio_convert"),
             audio_convert_route = _model_info.get("audio_convert_route"),
             audio_clone = _model_info.get("audio_clone"),
@@ -24341,6 +24473,7 @@ async def _slot_status(current_subject: str):
             audio_options_by_workflow = model_info.get("audio_options_by_workflow"),
             audio_workflow_tasks = model_info.get("audio_workflow_tasks"),
             audio_server_task = model_info.get("audio_server_task"),
+            audio_separation = model_info.get("audio_separation"),
             audio_convert = model_info.get("audio_convert"),
             audio_convert_route = model_info.get("audio_convert_route"),
             audio_clone = model_info.get("audio_clone"),
@@ -26049,25 +26182,23 @@ _SEPARATE_MAX_SECONDS = 600.0
 _SEPARATE_RATE = 44100
 
 
-def _separation_options(body: AudioRunRequest, family: Optional[str], label: str) -> Optional[dict]:
-    """The run's separation options, checked against what the loaded family takes."""
-    from core.inference.audio_cpp_models import FAMILIES
+def _separation_options(body: AudioRunRequest, model_info: dict, label: str) -> Optional[dict]:
+    """The run's separation options as the policy accepts them; a refusal is a 400."""
+    from core.inference.audio_cpp_models import SeparationOptionsError, separation_options
 
-    options = body.options or {}
-    if not options:
-        return None
-    policy = FAMILIES.get(family or "")
-    if policy is None or policy.separation is None or not policy.separation.overlap_option:
-        raise HTTPException(status_code = 400, detail = f"{label} has no separation options.")
-    for name in options:
-        if name != "num_overlap":
-            raise HTTPException(status_code = 400, detail = f"Unknown option '{name}'.")
-    value = options["num_overlap"]
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
-        raise HTTPException(
-            status_code = 400, detail = "num_overlap must be a whole number from 1 to 8."
+    offered = (model_info.get("audio_options_by_workflow") or {}).get("separate") or (
+        model_info.get("audio_options") or []
+    )
+    try:
+        return separation_options(
+            body.options,
+            server_task = model_info.get("audio_server_task"),
+            family = model_info.get("audio_family"),
+            offered = offered,
+            label = label,
         )
-    return {"num_overlap": value}
+    except SeparationOptionsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
 
 def _clock(seconds: float) -> str:
@@ -26075,8 +26206,8 @@ def _clock(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}"
 
 
-def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
-    """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
+def _probe_audio_with_av(path) -> Optional[tuple[int, float, int]]:
+    """``(channels, seconds, rate)`` of the first audio stream, through FFmpeg; None if unreadable."""
     try:
         import av
 
@@ -26089,13 +26220,14 @@ def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
                 seconds = container.duration / 1_000_000
             else:
                 return None
-            return int(stream.channels), seconds
+            return int(stream.channels), seconds, int(stream.rate or 0)
     except Exception:  # noqa: BLE001 - any failure reads as an unreadable track
         return None
 
 
-def _prepare_separation_source(ref: dict[str, Any]):
-    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
+def _prepare_separation_source(ref: dict[str, Any], rate: int):
+    """``(source, path prepared at ``rate``, source rate)``, after the 10-minute cap; stereo stays
+    stereo."""
     import wave
 
     from core.inference import audio_inputs
@@ -26104,19 +26236,20 @@ def _prepare_separation_source(ref: dict[str, Any]):
     try:
         with wave.open(str(source.path), "rb") as wav:
             channels = wav.getnchannels()
-            seconds = wav.getnframes() / wav.getframerate()
+            native = wav.getframerate()
+            seconds = wav.getnframes() / native
     except Exception:  # noqa: BLE001 - e.g. a float stem from history, which wave cannot open
         probed = _probe_audio_with_av(source.path)
         if probed is None:
             raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
-        channels, seconds = probed
+        channels, seconds, native = probed
     if seconds > _SEPARATE_MAX_SECONDS:
         raise HTTPException(
             status_code = 400,
             detail = "Separate tracks up to 10 minutes long. This one is "
             f"{_clock(seconds)}. Pick a shorter track.",
         )
-    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, stereo = channels == 2)
+    return source, audio_inputs.prepared_path(source, rate, stereo = channels == 2), native
 
 
 def _stem_rank(ids: list[str]):
@@ -26218,16 +26351,21 @@ async def _run_separation(
     if "separate" not in (model_info.get("audio_workflows") or []):
         raise HTTPException(status_code = 400, detail = "Load a model that can separate audio.")
     model_name = _orchestrator_public_model_id(backend)
-    options = _separation_options(
-        body, model_info.get("audio_family"), _audio_model_label(model_name)
-    )
+    options = _separation_options(body, model_info, _audio_model_label(model_name))
     ref = source_ref.model_dump(exclude_none = True)
+    separation = model_info.get("audio_separation") or {}
     try:
-        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref)
+        source, prepared, native = await asyncio.to_thread(
+            _prepare_separation_source, ref, int(separation.get("rate") or _SEPARATE_RATE)
+        )
     except audio_inputs.AudioInputError as exc:
         if exc.status == 404 and source_ref.input_id:
             raise HTTPException(status_code = 404, detail = "This track expired. Add it again.")
         raise _audio_source_error(exc) from None
+    input_rates = separation.get("input_rates")
+    if input_rates and "input_sample_rate" not in (options or {}):
+        bandwidth = max((r for r in input_rates if r <= native), default = min(input_rates))
+        options = {**(options or {}), "input_sample_rate": bandwidth}
 
     staging = await asyncio.to_thread(
         lambda: audio_gallery.gallery_dir() / f".separate-{uuid.uuid4().hex}"
@@ -26273,6 +26411,11 @@ async def _run_separation(
             "settings": {
                 "stems": [stem["id"] for stem in stems],
                 "num_overlap": (options or {}).get("num_overlap"),
+                **(
+                    {"options": options}
+                    if options and model_info.get("audio_server_task") == "s2s"
+                    else {}
+                ),
             },
         }
         if source.kind == "clip":
@@ -30509,12 +30652,10 @@ def _extends_turn(old: Any, new: Any) -> bool:
     return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
 
 
-def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
-    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
-    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+def _active_turn_start(messages: list[dict], branch: Optional[list[dict]]) -> Optional[int]:
     asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
     # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
-    start = next(
+    return next(
         (
             i
             for i in range(len(messages) - 1, -1, -1)
@@ -30524,6 +30665,12 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         ),
         None,
     )
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    start = _active_turn_start(messages, branch)
     if start is None:
         return None
     latest = next(
@@ -30531,6 +30678,46 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         len(messages),
     )
     return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
+def _shorten_turn_tool_results(
+    messages: list[dict],
+    branch: Optional[list[dict]],
+    target: int,
+    count: Callable[[list[dict]], int],
+) -> set[int]:
+    anchors = (
+        _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
+    )
+    start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
+    # The newest call's results stay whole even under a trailing assistant prefill.
+    newest = next(
+        (
+            i
+            for i in range(len(messages) - 1, start, -1)
+            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+        ),
+        len(messages),
+    )
+    for message in messages[start + 1 : newest]:
+        if message.get("role") != "tool" or id(message) in anchors:
+            continue
+        if count(messages) <= target:
+            break
+        content = message.get("content")
+        # In place: the loop's later passes must send the results cut too.
+        if isinstance(content, str):
+            message["content"] = _shorten_tool_result(content)
+        elif isinstance(content, list):
+            message["content"] = [
+                {**part, "text": _shorten_tool_result(part["text"])}
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+                else part
+                for part in content
+            ]
+    return {id(message) for message in messages[start:]}
 
 
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
@@ -30629,6 +30816,74 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
     return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
 
 
+_CLIPPED_RESULT_MIN_CHARS = 400
+_CLIP_NOTICE_CHARS = 128
+
+
+def _clip_text(text: str, keep: int) -> str:
+    half = keep // 2
+    return (
+        f"{text[:half]}\n\n[... {len(text) - 2 * half:,} characters of this result were cut to fit "
+        f"the context window ...]\n\n{text[len(text) - half :]}"
+    )
+
+
+_OVERFLOW_TOOL_RESULT_CHARS = 200
+
+
+def _shorten_tool_result(text: str) -> str:
+    if len(text) <= 2 * _OVERFLOW_TOOL_RESULT_CHARS:
+        return text
+    return (
+        text[:_OVERFLOW_TOOL_RESULT_CHARS]
+        + f"\n\n... (truncated to fit the context window, {len(text)} chars total)"
+    )
+
+
+def _clip_turn_tool_results(
+    messages: list[dict],
+    start: int,
+    kept_ids: set[int],
+    target: int,
+    count_tokens: Callable[[list[dict]], int],
+) -> bool:
+    # Shortens only when that fits the turn, in place: eviction and the archive match by identity.
+    turn = [dict(m) for m in messages[start:]]
+    floor = [
+        m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
+    ] + turn
+    over = count_tokens(floor) - target
+    for message in turn:
+        if over <= 0:
+            break
+        text = message.get("content")
+        if message.get("role") != "tool" or not isinstance(text, str):
+            continue
+        if len(text) - _CLIPPED_RESULT_MIN_CHARS <= _CLIP_NOTICE_CHARS:
+            continue
+        # The caller's counter: chars per token differ by script (CJK vs Latin).
+        low, high = _CLIPPED_RESULT_MIN_CHARS, len(text) - _CLIP_NOTICE_CHARS
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+        if over > 0:
+            continue
+        while high - low > 64:
+            middle = (low + high) // 2
+            message["content"] = _clip_text(text, middle)
+            if count_tokens(floor) <= target:
+                low = middle
+            else:
+                high = middle
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+    if over > 0:
+        return False
+    for original, clipped in zip(messages[start:], turn):
+        if clipped.get("content") is not original.get("content"):
+            original["content"] = clipped["content"]
+    return True
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30647,7 +30902,9 @@ def _fit_external_context(
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one."""
     from core.inference.context_window import (
+        _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
     )
@@ -30700,17 +30957,29 @@ def _fit_external_context(
             can_reset = False,
             compaction_headroom_ratio = ratio,
         )
+    anchors = (
+        (_active_turn_anchors(messages, branch) or set()) if can_reset or replays_manual else set()
+    ) | (keep_ids or set())
+    turn = _active_turn_start(messages, branch) if tool_loop else None
+    if turn is not None:
+        messages = fit_oversized_attachments(
+            messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
+        )
+        # The request always stays; the rest of the turn too, unless clipping cannot fit it.
+        if _clip_turn_tool_results(
+            messages,
+            turn,
+            keep_ids or set(),
+            int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN)),
+            _count,
+        ):
+            anchors |= {id(m) for m in messages[turn:]}
+        anchors.add(id(messages[turn]))
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = (
-            (_active_turn_anchors(messages, branch) or set())
-            if can_reset or replays_manual
-            else set()
-        )
-        | (keep_ids or set())
-        or None,
+        anchor_ids = anchors or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -30778,6 +31047,7 @@ class _ExternalCompactionPlan:
         "summarise",
         "summary_failed",
         "summary_error",
+        "record",
     )
 
 
@@ -30789,6 +31059,8 @@ def _plan_external_compaction(
     auto: bool = True,
     force: Optional[str] = None,
     summarise: bool = True,
+    branch: Optional[list[dict]] = None,
+    written: tuple[dict, ...] = (),
 ) -> _ExternalCompactionPlan:
     """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
     replayed. ``force`` summarises everything before the newest user turn whether or not the
@@ -30806,6 +31078,7 @@ def _plan_external_compaction(
     plan.summarise = summarise
     plan.summary_failed = None
     plan.summary_error = None
+    plan.record = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30823,7 +31096,7 @@ def _plan_external_compaction(
         plan.pins = set()
 
     thread_id = str(payload.thread_id) if payload.thread_id else None
-    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body, written) if summarise else None
     plan.covered = int(record["covered_messages"]) if record else 0
     plan.summary = record["summary"] if record else None
     plan.current = (
@@ -30840,14 +31113,16 @@ def _plan_external_compaction(
         plan.summary_failed = True
     elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        # A tool loop's re-prompts are user turns too: the reply in progress is never summarised.
+        turn = _active_turn_start(plan.body, branch)
         cut = cloud_compaction.tail_start(
-            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens, turn
         )
         if cut <= plan.covered and tail_tokens:
             # The tail is within its share and the prompt still does not fit (a large tool
             # catalogue, a long system prompt): summarise up to the newest turn before evicting.
             cut = cloud_compaction.tail_start(
-                plan.body, estimate_message_tokens_without_unpriced_media, 0
+                plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
         if cut > plan.covered:
             plan.cut = cut
@@ -30873,6 +31148,7 @@ async def _finish_external_compaction(
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
         retrieval_budget,
     )
     from core.inference.llama_cpp import _archive_and_recall
@@ -30953,7 +31229,7 @@ async def _finish_external_compaction(
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
-            await asyncio.to_thread(
+            plan.record = await asyncio.to_thread(
                 cloud_compaction.save_summary,
                 thread_id,
                 covered = plan.body[: plan.cut],
@@ -30971,11 +31247,19 @@ async def _finish_external_compaction(
     refusal = None
     max_tokens = plan.max_tokens
     fit_payload = payload if plan.auto else None
-    if plan.force == "overflow" and not summarised_now:
-        # The provider counted more than the estimate allowed for: evict down to half of it.
-        fit_payload = payload.model_copy(
-            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
-        )
+    turn_ids: set[int] = set()
+    if plan.force == "overflow":
+        # Provider counted more than estimated: aim for half, shortening this turn's tool results.
+        half = max(1, count(current) // 2)
+        target = prompt_budget(half, _effective_max_tokens(payload))
+        turn_ids = _shorten_turn_tool_results(current, branch, target, count)
+        if count(current) > target:
+            # Shortening fell short: leave the turn's older exchanges evictable.
+            turn_ids = set()
+        if not summarised_now:
+            fit_payload = payload.model_copy(
+                update = {"compaction_threshold": half, "context_window": None}
+            )
     if fit_payload is not None:
         fitted, evicted, max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -30984,7 +31268,7 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            keep_ids = cloud_compaction.summary_turn_ids(current),
+            keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -31985,6 +32269,8 @@ async def _proxy_to_external_provider(
     _first_payload = _evicting_payload
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
+    _overflow_shrunk = False
+    _written_summaries: list[dict] = []
 
     # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
     _model_can_reset = managed is not None or provider_model_runs_local_tools(
@@ -32051,18 +32337,22 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
-        nonlocal _evicting_payload, _first_payload, _last_fit
+        nonlocal _evicting_payload, _first_payload, _last_fit, _overflow_shrunk
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
+        if force == "overflow":
+            # Unfitted rounds send the live conversation; _last_fit is then a stale earlier fit.
+            refused = _last_fit if _fit_active and _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
             # the loop's later passes. The window stays: the fit clamps the reply cap against it.
-            refused = _last_fit if _last_fit is not None else messages
-            refused_tokens = _external_token_counter(payload, tools)(refused)
             unbounded, first_unbounded = _evicting_payload, _first_payload
+            # The tightest probe that fit by shortening alone, used when no probe can drop a turn.
+            clipped = None
             for threshold in _overflow_retry_thresholds(
                 refused_tokens, _effective_max_tokens(unbounded)
             ):
@@ -32076,6 +32366,12 @@ async def _proxy_to_external_provider(
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break
+                if clipped is None and truncation is None:
+                    clipped = (fitted, fallback_max_tokens, _evicting_payload, _first_payload)
+            else:
+                if clipped is not None:
+                    fitted, fallback_max_tokens, _evicting_payload, _first_payload = clipped
+                    truncation = None
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
@@ -32087,6 +32383,8 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
+                    branch = _request_branch,
+                    written = tuple(_written_summaries),
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -32099,10 +32397,16 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.record is not None:
+                _written_summaries.append(plan.record)
             if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        # Measured, not read off truncation: a replayed summary reports drops on every fit.
+        _overflow_shrunk = (
+            force == "overflow" and _external_token_counter(payload, tools)(fitted) < refused_tokens
+        )
         _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
@@ -32126,18 +32430,15 @@ async def _proxy_to_external_provider(
 
     async def _external_overflow_refit(messages, tools = _external_fit_tools):
         """The provider refused the prompt as too long: summarise everything before the newest
-        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        turn. ``(None, None, None)`` when the refit is no smaller, so the refusal stands."""
         nonlocal _external_truncation
         earlier, _external_truncation = _external_truncation, None
         async for step in _external_fit_steps(messages, tools, force = "overflow"):
             if isinstance(step, str):
                 yield step
                 continue
-            truncation = _external_truncation or {}
-            changed = truncation.get("checkpoint_started") or (
-                truncation.get("dropped_messages") and not truncation.get("summarized")
-            )
-            if not changed:
+            changed = _overflow_shrunk
+            if not changed or _external_truncation is None:
                 _external_truncation = earlier
             yield step if changed else (None, None, None)
 
@@ -33836,6 +34137,17 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    from core.inference.chat_media_swap import request_image_model
+
+    if payload.image_generator and (
+        current_account().via_api_key
+        or account_access.account_scope() is not None
+        or not _loads_anything()
+        or payload.provider_id
+        or payload.provider_type
+    ):
+        raise HTTPException(status_code = 403, detail = "An image generator requires local owner chat.")
+    request_image_model.set(payload.image_generator)
     # Opt-in per request via UI_STREAM_EVENTS_HEADER; read once so every stream generator shares it.
     _ui_events = _ui_stream_events_enabled(request)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
@@ -34079,6 +34391,16 @@ async def produce_openai_chat_completions(
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
+    if payload._scheduled_reasoning_effort is not None:
+        from core.scheduled_tasks.scheduler import _reasoning_fields
+
+        # A tool run's turns can render the shipped template instead of an override; classify that one.
+        _tool_run = payload.enable_tools and payload.tool_choice != "none"
+        _flags = _serving_reasoning_flags(payload.tools or (({},) if _tool_run else None))
+        for _field, _value in _reasoning_fields(
+            payload._scheduled_reasoning_effort, False, _flags
+        ).items():
+            setattr(payload, _field, _value)
 
     from core.inference.npu_backend import peek_npu_backend
 
@@ -35047,19 +35369,21 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_inkling = _llama_inkling_channel(llama_backend)
         _gguf_think_prov: dict = {"wrapped": 0}
-        if _continue_final_message(payload) and getattr(
-            payload.messages[-1], "reasoning_content", None
+        if _gguf_inkling or (
+            _continue_final_message(payload)
+            and getattr(payload.messages[-1], "reasoning_content", None)
         ):
-            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            # The server splits the reasoning out (always, for Inkling): tags that follow are literal.
             _gguf_think_prov["split"] = True
+        _gguf_parse_think = _gguf_inkling or _responses_should_parse_think_markers(
+            payload, llama_backend
+        )
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
-                parse_think_markers = _responses_should_parse_think_markers(
-                    payload,
-                    llama_backend,
-                ),
+                parse_think_markers = _gguf_parse_think,
                 think_provenance = _gguf_think_prov,
             )
 
@@ -36091,9 +36415,7 @@ async def produce_openai_chat_completions(
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
-                    parse_think_markers = _responses_should_parse_think_markers(
-                        payload, llama_backend
-                    ),
+                    parse_think_markers = _gguf_parse_think,
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
@@ -36752,10 +37074,7 @@ async def produce_openai_chat_completions(
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
-                            parse_think_markers = _responses_should_parse_think_markers(
-                                payload,
-                                llama_backend,
-                            ),
+                            parse_think_markers = _gguf_parse_think,
                             think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
@@ -37134,10 +37453,14 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
+        from core.inference.chat_template_helpers import replays_reasoning_content
+
         parse_think = _sf_parse_think_markers(
             features,
             payload.enable_thinking,
             payload.reasoning_effort,
+            inkling_channel = body is not None
+            and replays_reasoning_content(None, template = body, tools = tools),
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -37190,7 +37513,7 @@ async def produce_openai_chat_completions(
 
     _sf_single_block = _response_format_constrains_decoding(payload)
 
-    def _new_sf_reasoning_extractor():
+    def _new_sf_reasoning_extractor(think_provenance = None):
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
@@ -37199,6 +37522,7 @@ async def produce_openai_chat_completions(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
             single_block = _sf_single_block,
+            think_provenance = think_provenance,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -37388,6 +37712,18 @@ async def produce_openai_chat_completions(
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
+        _sf_tool_progress = _PrefillProgressSignal(
+            None,
+            live = bool(
+                payload.stream
+                and _ui_events
+                and not _wants_multiple_choices(payload)
+                and _accepts_keyword(backend.generate_chat_completion_with_tools, "perf_callback")
+            ),
+        )
+        _sf_tool_progress_kwargs = (
+            {"perf_callback": _sf_tool_progress} if _sf_tool_progress.live else {}
+        )
 
         from core.inference.tools import mcp_match_exchange
 
@@ -37449,6 +37785,7 @@ async def produce_openai_chat_completions(
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
                 **_sf_website_policy_kwargs,
+                **_sf_tool_progress_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -37541,16 +37878,10 @@ async def produce_openai_chat_completions(
                         if approval_flush_pending
                         else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     )
-                    while True:
-                        _sf_done, _ = await asyncio.wait(
-                            {_sf_next_task},
-                            timeout = wait_timeout,
-                        )
-                        if _sf_done:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        approval_flush_pending = False
-                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    async for stall_line in _stall_wait_frames(
+                        _sf_next_task, _sf_tool_progress, wait_timeout
+                    ):
+                        yield stall_line
                     event = _sf_next_task.result()
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
@@ -37610,6 +37941,8 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_end":
+                            _sf_tool_progress.round_ended()
                         if event["type"] == "tool_start":
                             # Gated with the card: the stamp is set once.
                             if _ui_events:
@@ -38102,6 +38435,16 @@ async def produce_openai_chat_completions(
         and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
         else {}
     )
+    _sf_progress = _PrefillProgressSignal(
+        None,
+        live = bool(
+            payload.stream
+            and _sf_ui_events
+            and not _wants_multiple_choices(payload)
+            and _accepts_keyword(backend.generate_chat_response, "perf_callback")
+        ),
+    )
+    _sf_progress_kwargs = {"perf_callback": _sf_progress} if _sf_progress.live else {}
 
     if payload.use_adapter is not None:
 
@@ -38111,6 +38454,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
     else:
@@ -38120,6 +38464,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
 
@@ -38167,6 +38512,7 @@ async def produce_openai_chat_completions(
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
                 images = [image] if image is not None else None,
+                on_compacting = _sf_progress.compacting,
             )
             fitted_kwargs = {
                 **gen_kwargs,
@@ -38232,6 +38578,7 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
@@ -38243,14 +38590,10 @@ async def produce_openai_chat_completions(
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
                     _next_task = asyncio.create_task(gen_step(_DONE))
-                    while True:
-                        _done_tasks, _ = await asyncio.wait(
-                            {_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                        )
-                        if _done_tasks:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    async for stall_line in _stall_wait_frames(
+                        _next_task, _sf_progress, _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    ):
+                        yield stall_line
                     cumulative = _next_task.result()
                     # Done; drop the reference so the finally-block drain no-ops.
                     _next_task = None
@@ -38292,6 +38635,10 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    _ledger = _sf_thought_ledger(_sf_thoughts, cumulative, len(_sf_call_prefix))
+                    if _sf_thoughts is None and _ledger is not None and not prev_text:
+                        reasoning_extractor = _new_sf_reasoning_extractor(think_provenance = _ledger)
+                        _sf_thoughts = _ledger
                     if cumulative:
                         cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
@@ -38572,6 +38919,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                _thoughts = _sf_thought_ledger(None, full_text, len(_sf_call_prefix))
                 if full_text:
                     # The prefill alone is no call: an empty or cancelled reply stays empty.
                     full_text = _sf_call_prefix + full_text
@@ -38584,6 +38932,7 @@ async def produce_openai_chat_completions(
                         _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
                     ),
                     single_block = _sf_single_block,
+                    think_provenance = _thoughts,
                 )
                 # Promotes text-form calls; an opt-in single nudge retry handles unparseable tool markup.
                 _msg = {"role": "assistant", "content": _visible_text}
@@ -38654,6 +39003,7 @@ async def produce_openai_chat_completions(
                                     retry_text,
                                     parse_think_markers = _sf_parse_think,
                                     reasoning_prefilled = _sf_reasoning_prefilled,
+                                    think_provenance = _sf_thought_ledger(None, retry_text),
                                 )
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:
@@ -38974,14 +39324,19 @@ def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
     """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
     import stat as _stat
 
-    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
-    try:
-        entry = os.lstat(path)
-    except OSError:
-        raise HTTPException(status_code = 404, detail = "Not found") from None
-    if not _stat.S_ISREG(entry.st_mode):
-        raise HTTPException(status_code = 404, detail = "Not found")
-    return sandbox_dir, path
+    for _attempt in range(2):
+        sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+        try:
+            entry = os.lstat(path)
+        except FileNotFoundError:
+            # The legacy sandbox move can finish between resolution and lstat.
+            continue
+        except OSError:
+            break
+        if _stat.S_ISREG(entry.st_mode):
+            return sandbox_dir, path
+        break
+    raise HTTPException(status_code = 404, detail = "Not found")
 
 
 def _unmoved_sandbox_file(root: str, path: str) -> str:
@@ -39143,6 +39498,55 @@ async def upload_sandbox_file(
     return saved
 
 
+_SANDBOX_DOWNLOAD_SECRET = _secrets.token_bytes(32)
+_SANDBOX_DOWNLOAD_TTL = 300
+
+
+def _sandbox_download_id(session_id: str, filename: str) -> str:
+    return _hashlib.sha256(json.dumps([session_id, filename]).encode()).hexdigest()
+
+
+def _sandbox_download_signature(payload: str) -> str:
+    return _hmac.new(_SANDBOX_DOWNLOAD_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+
+
+def _sandbox_download_account(token: str, session_id: str, filename: str):
+    try:
+        target, expiration, signature = token.rsplit(".", 2)
+        payload = f"{target}.{expiration}"
+        if int(expiration) <= int(time.time()) or not _hmac.compare_digest(
+            signature.encode(), _sandbox_download_signature(payload).encode()
+        ):
+            return None
+    except ValueError:
+        return None
+    return media_link_account(target, _sandbox_download_id(session_id, filename))
+
+
+@router.post("/sandbox-download-link")
+async def create_sandbox_download_link(
+    session_id: str = Query(max_length = 4096),
+    filename: str = Query(max_length = 4096),
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    from starlette.concurrency import run_in_threadpool
+
+    # The link redeems as the bare account, dropping the API caller's sandbox restrictions.
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Download links can only be created from the Unsloth UI.",
+        )
+    await run_in_threadpool(_sandbox_regular_file, session_id, filename)
+    target = media_link_target(_sandbox_download_id(session_id, filename))
+    payload = f"{target}.{int(time.time()) + _SANDBOX_DOWNLOAD_TTL}"
+    return JSONResponse(
+        {"token": f"{payload}.{_sandbox_download_signature(payload)}"},
+        headers = {"Cache-Control": "no-store"},
+    )
+
+
 @router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
@@ -39150,6 +39554,7 @@ async def serve_sandbox_file(
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    download_token: Optional[str] = None,
 ):
     """
     Serve a file a tool call created in this chat's sandbox.
@@ -39159,16 +39564,23 @@ async def serve_sandbox_file(
     or image/svg+xml would be same-origin script execution. nosniff plus a
     Content-Disposition filename is what makes serving them safe.
 
-    Accepts auth via an Authorization header or a query token. Unsloth uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    Accepts authenticated fetches, older query auth, and file-scoped download links.
     """
-    # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
+    from starlette.concurrency import run_in_threadpool
+
+    # ── Authentication (header, query param, or download link) ──
+    account = None
+    if download_token is None:
+        await _authenticate_header_or_query(request, token)
+    else:
+        account = await run_in_threadpool(
+            _sandbox_download_account, download_token, session or session_id, filename
+        )
+        if account is None:
+            raise HTTPException(status_code = 401, detail = "Invalid or expired download link")
 
     # ── Filename sanitization + path containment ────────────────
     import stat as _stat
-
-    from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
 
@@ -39198,7 +39610,11 @@ async def serve_sandbox_file(
             raise
         return handle, info.st_size
 
-    handle, size = await run_in_threadpool(_open_checked)
+    handle, size = (
+        await run_in_threadpool(_open_checked)
+        if account is None
+        else await run_in_threadpool(run_as, account, _open_checked)
+    )
     head_only = getattr(request, "method", "GET").upper() == "HEAD"
     if head_only:
         # FastAPI adds no HEAD to GET routes; nothing is read since artifacts can be huge.
@@ -41269,6 +41685,54 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
     return items
 
 
+_OPENAI_EMBEDDING_MODELS = frozenset(
+    {
+        "text-embedding-ada-002",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    }
+)
+
+
+def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
+    # Mixed or multimodal inputs pass through: a resident llama-server reads them natively.
+    if all(type(token) is int for token in value):
+        rows = [value]
+    elif all(
+        isinstance(row, list) and row and all(type(token) is int for token in row) for row in value
+    ):
+        rows = value
+    else:
+        return body
+
+    try:
+        from core.inference.openai_embedding_tokenizer import decode_tokens
+    except (OSError, ValueError) as exc:
+        logger.warning("OpenAI embedding tokenizer unavailable: %s", exc)
+        raise HTTPException(
+            status_code = 503, detail = "OpenAI embedding tokenizer unavailable; send text input."
+        ) from None
+
+    try:
+        return {**body, "input": [decode_tokens(row) for row in rows]}
+    except KeyError:
+        raise HTTPException(status_code = 400, detail = "Invalid OpenAI embedding token IDs.") from None
+
+
+async def _with_decoded_openai_embedding_inputs(body: dict) -> dict:
+    model = _raw_body_model(body)
+    value = body.get("input")
+    if (
+        isinstance(model, str)
+        and model in _OPENAI_EMBEDDING_MODELS
+        and isinstance(value, list)
+        and value
+        and (type(value[0]) is int or isinstance(value[0], list))
+    ):
+        return await asyncio.to_thread(_decode_openai_embedding_tokens, body, value)
+    return body
+
+
 def _embeddings_truncate(body: dict) -> bool:
     """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
     truncate = body.get("truncate", True)
@@ -41346,6 +41810,11 @@ def _names_studio_embedder(requested: str) -> Optional[str]:
         current = rag_embeddings.embedding_identity(model)
         if wanted in (current, _public_embedding_identity(current, model, label)):
             return model
+        # A client may echo a tag issued before tags carried the server; it names the current one.
+        if rag_config.is_connection_model(model):
+            legacy = rag_config.embedding_identity("connection", model)
+            if wanted in (legacy, _public_embedding_identity(legacy, model, label)):
+                return model
         return None
     for name in (model, repo, label, _public_embedding_name(repo)):
         if not name:
@@ -41486,6 +41955,7 @@ async def _studio_embeddings(
     # The auto-switch hook admitted this before the route knew it lands here, so untrack the admitted tally; the preview busy guard reads that tally
     untrack_admitted_inference(_scope)
 
+    body = await _with_decoded_openai_embedding_inputs(body)
     texts = _embeddings_texts(body)
     encoding_format = body.get("encoding_format")
     if encoding_format is None:
@@ -41819,7 +42289,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         return await _studio_embeddings(request, body, current_subject)
 
     # No claim here: middleware claims on 2xx, and llama-server can still non-2xx a valid body, stranding a preview model; it ignores dimensions.
-    body = dict(body)
+    body = dict(await _with_decoded_openai_embedding_inputs(body))
     if account_access.managed_account():
         # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
         _embeddings_items(body, tokens_ok = True)
@@ -45288,6 +45758,21 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
+def _refuse_resident_count(entry: dict, *, messages_api: bool = False) -> None:
+    """A resident model a count cannot serve is named, never reported as unloaded."""
+    if entry.get("is_audio"):
+        detail = "Token counting is not available for speech or transcription models."
+    elif entry.get("is_mlx"):
+        return
+    elif entry.get("engine") in ("vllm", "sglang"):
+        if not messages_api:
+            return
+        detail = "Token counting on the Messages API is not available for this engine profile."
+    else:
+        detail = "Token counting is not available on the transformers backend."
+    raise HTTPException(status_code = 503, detail = detail)
+
+
 async def _mlx_count_chat_tokens(
     payload,
     request = None,
@@ -45310,10 +45795,10 @@ async def _mlx_count_chat_tokens(
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    # Audio skips the chat render; vision does not, as it serves text turns through the same render.
-    managed = entry.get("engine") in ("vllm", "sglang")
-    if not (entry.get("is_mlx") or managed) or entry.get("is_audio"):
+    if not entry:
         return None
+    _refuse_resident_count(entry)
+    managed = entry.get("engine") in ("vllm", "sglang")
     if entry.get("engine") == "sglang":
         raise HTTPException(
             status_code = 503,
@@ -45591,6 +46076,9 @@ async def _mlx_count_chat_tokens(
         instructions = system_prompt if include_system else ""
         if instructions and _tools_to_use and not tools:
             instructions = _without_tool_nudge(instructions, _nudge)
+        # The completion refuses instructions alone, so price the next send minus the user's text.
+        if not any(m.get("role") not in ("system", "developer") for m in count_messages):
+            count_messages = [*count_messages, {"role": "user", "content": ""}]
         count, _counted = backend.count_chat_tokens(
             count_messages,
             instructions or "",
@@ -46150,6 +46638,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            tools = payload.tools,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -46230,8 +46719,9 @@ async def _anthropic_in_process_count(
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     entry = (getattr(backend, "models", {}) or {}).get(active) or {}
-    if not active or not entry.get("is_mlx"):
+    if not active or not entry:
         return None
+    _refuse_resident_count(entry, messages_api = True)
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
@@ -46565,7 +47055,10 @@ async def _anthropic_messages_via_connection(
     # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
     # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+        preserve_thinking = True,
+        tools = payload.tools,
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {
@@ -46723,6 +47216,7 @@ async def anthropic_count_tokens(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
@@ -47503,6 +47997,7 @@ async def anthropic_messages(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
@@ -51763,6 +52258,19 @@ async def _route_nvfp4_request(
     return routed, route
 
 
+def _lora_fuse_kwarg(begin_load: Any, lora_fuse: Optional[str]) -> dict:
+    """An explicit on/off only, and only to an engine that folds LoRAs (sd.cpp / MLX take no such argument)."""
+    if not lora_fuse or lora_fuse == "auto":
+        return {}
+    try:
+        import inspect
+        if "lora_fuse" in inspect.signature(begin_load).parameters:
+            return {"lora_fuse": lora_fuse}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
     """Unchanged decisions are passed too so the backend does not re-decide; native engines take no such argument."""
     from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
@@ -52008,6 +52516,35 @@ async def diffusion_download_plan(
             # Keeps the probe: a capability read, never an allocation; without it a GGUF pick reports 21 GB short
             memory_verdict = not training,
         )
+        if fam is not None and planner is backend:
+            from core.inference.diffusion import _memory_request_forces_offload
+            from core.inference.diffusion_transformer_quant import plan_precision_options
+
+            # Probe verdicts need the planned card's target; while training holds the GPU only the family table answers.
+            plan_target = None
+            if not training and gpu_ordinal is not None:
+                try:
+                    plan_target = await asyncio.to_thread(
+                        backend._target_for_ordinal, fam, gpu_ordinal
+                    )
+                except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+                    plan_target = None
+
+            # What an explicit Precision pick would be refused for on this family and card, so the UI disables it.
+            plan = {
+                **plan,
+                "precision_options": plan_precision_options(
+                    getattr(fam, "name", None),
+                    model_kind = kind,
+                    repo_id = request.model_path,
+                    base_repo = request.base_repo,
+                    gpu_ordinal = gpu_ordinal,
+                    target = plan_target,
+                    offload = _memory_request_forces_offload(
+                        request.memory_mode, bool(request.cpu_offload)
+                    ),
+                ),
+            }
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -52560,6 +53097,7 @@ async def load_diffusion_model_gated(
                 attention_backend = request.attention_backend,
                 # Only when set: older engines and test doubles take no such argument.
                 **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
+                **_lora_fuse_kwarg(engine.begin_load, request.lora_fuse),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
@@ -53290,7 +53828,7 @@ async def generate_diffusion_image(
         if request.xy is not None:
             response = await _generate_xy_grid(request)
         else:
-            response = await _generate_diffusion_image_core(request)
+            response = await _generate_diffusion_image_core(request, coalesce = True)
         finished = True
         return response
     finally:
@@ -53353,12 +53891,12 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     try:
         _xy_grid_stops.append(stop)
         with render_fence():
-            for index in plan.order:
+            for position, index in enumerate(plan.order):
                 if ticket.cancelled():
                     raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
-                # The engine binds each cell's cancel to the ticket before it waits for the slot.
-                with generation_ticket(ticket):
+                # Cells after the first continue the grid, so they go first in line.
+                with generation_ticket(ticket), _follow_up_pass() if position else nullcontext():
                     result = await _generate_diffusion_image_run(
                         plan.cells[index].request, captured = captured
                     )
@@ -53407,7 +53945,10 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
 
 
 async def _generate_diffusion_image_core(
-    request: DiffusionGenerateRequest, pinned_load = None
+    request: DiffusionGenerateRequest,
+    pinned_load = None,
+    *,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference.diffusion_segment import render_fence
@@ -53415,13 +53956,38 @@ async def _generate_diffusion_image_core(
     # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
     # render takes the engine's generation slot.
     with render_fence():
-        return await _generate_diffusion_image_run(request, pinned_load = pinned_load)
+        return await _generate_diffusion_image_run(
+            request, pinned_load = pinned_load, coalesce = coalesce
+        )
+
+
+def _plain_txt2img(request: DiffusionGenerateRequest, enhancement: Any, detailer: Any) -> bool:
+    """The only /images/generate shape (plain txt2img Create) that may share a batched call."""
+    return (
+        request.prompts is None
+        and request.seeds is None
+        and request.init_image is None
+        and request.mask_image is None
+        and not request.reference_images
+        and request.workflow is None
+        and request.localized_edit is None
+        and request.controlnet is None
+        and request.upscale is None
+        and request.upscale_model is None
+        and request.hires is None
+        and request.variation_seed is None
+        and not request.variation_strength
+        and request.xy is None
+        and detailer is None
+        and not getattr(enhancement, "captions", None)
+    )
 
 
 async def _generate_diffusion_image_run(
     request: DiffusionGenerateRequest,
     captured: Optional[list] = None,
     pinned_load = None,
+    coalesce: bool = False,
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -53573,8 +54139,7 @@ async def _generate_diffusion_image_run(
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await _image_generate_in_thread(
-                    backend.generate,
+                generate_kwargs = dict(
                     expected_load = expected_load,
                     **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                     prompt = enhancement.encoded(request.prompt),
@@ -53623,6 +54188,22 @@ async def _generate_diffusion_image_run(
                     **_inpaint_mask_kwargs(backend.generate, request),
                     **_hires_kwargs(backend.generate, request),
                 )
+                result = None
+                if coalesce and captured is None and _plain_txt2img(request, enhancement, detailer):
+                    result = await _coalesced_image_generate(
+                        backend,
+                        status,
+                        prompt = generate_kwargs["prompt"],
+                        n = request.batch_size,
+                        seed = request.seed,
+                        generate_kwargs = {
+                            name: value
+                            for name, value in generate_kwargs.items()
+                            if name not in ("prompt", "seed", "batch_size", "prompts", "seeds")
+                        },
+                    )
+                if result is None:
+                    result = await _image_generate_in_thread(backend.generate, **generate_kwargs)
             break
         except ImageActivationShortfallError as exc:
             # Tagged so the Images page can offer "Generate anyway".
@@ -53677,10 +54258,11 @@ async def _generate_diffusion_image_run(
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
-                # Crop inpaints wait on the render slot too, so use the same pool.
-                await _image_generate_in_thread(
-                    _run_detailer, backend, request, result, enhancement, detailer
-                )
+                # Crop inpaints continue this render: same pool, first in line.
+                with _follow_up_pass():
+                    await _image_generate_in_thread(
+                        _run_detailer, backend, request, result, enhancement, detailer
+                    )
         except BaseException:
             _diffusion_persist_active -= 1
             raise
@@ -53731,6 +54313,7 @@ async def _generate_diffusion_image_run(
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
+                        **_coalesced_recipe(result, index),
                         "generation_seconds": generation_seconds,
                         "generation_count": len(result["images"]),
                         "model": result.get("repo_id"),
@@ -54734,7 +55317,18 @@ async def diffusion_status(
     if status_dict.get("loaded") and status_dict.get("resident_mib") is None:
         from core.inference.gpu_residency import media_owner_held_mib
         status_dict = {**status_dict, "resident_mib": media_owner_held_mib("diffusion")}
-    status_dict = {**status_dict, "load_id": load_id, "resident_load_id": resident_load_id}
+    from core.inference.chat_media_swap import chat_can_swap
+
+    status_dict = {
+        **status_dict,
+        "load_id": load_id,
+        "resident_load_id": resident_load_id,
+        "chat_swap_available": not raw_status.get("loaded")
+        and not load_id
+        and _loads_anything()
+        and not account_access.resident_hidden("chat")
+        and chat_can_swap(),
+    }
     # Answered long after the resolving request ended, so no handle is in context.
     return redact_host_paths(DiffusionStatusResponse(**status_dict), via_api_key = via_api_key)
 
@@ -54886,6 +55480,18 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+def _stop_batched_image_work() -> bool:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    try:
+        stop = getattr(get_active_diffusion_engine(), "stop_waiting_work", None)
+    except Exception:  # noqa: BLE001 -- no engine: nothing batched
+        return False
+    if stop is None:
+        return False
+    return bool(stop(account_access.tracked_generation_account()))
+
+
 @studio_router.post("/images/generate/cancel")
 async def cancel_diffusion_generation(
     target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
@@ -54902,6 +55508,8 @@ async def cancel_diffusion_generation(
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
     grids = _stop_xy_grids()
+    # Before the account checks: another account's call may be rendering this account's images.
+    grids = _stop_batched_image_work() or grids
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": grids}
     mine = account_access.generation_is_mine("diffusion")
@@ -55847,6 +56455,275 @@ def _image_generation_defaults(status: dict) -> tuple[int, float]:
     )
 
 
+def _frozen_kwarg(value: Any) -> Hashable:
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _frozen_kwarg(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_kwarg(v) for v in value)
+    if hasattr(value, "model_dump"):
+        return (type(value).__name__, _frozen_kwarg(value.model_dump()))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (type(value).__name__, _frozen_kwarg(dataclasses.asdict(value)))
+    try:
+        hash(value)
+    except TypeError:
+        return (type(value).__name__, repr(value))
+    return value
+
+
+def _coalesced_recipe(result: dict, index: int) -> dict:
+    """Position in a coalesced call; a solo replay of the seed lands close, not exact."""
+    size = result.get("coalesced_batch_size")
+    if not size:
+        return {}
+    return {
+        "coalesced_batch_size": int(size),
+        "coalesced_index": int(result.get("coalesced_index") or 0) + index,
+    }
+
+
+@contextmanager
+def _reserved_turn(turn: Any):
+    if turn is None:
+        yield
+        return
+    from core.inference.diffusion import reserved_slot_turn
+    with reserved_slot_turn(turn):
+        yield
+
+
+@contextmanager
+def _follow_up_pass():
+    from core.inference.diffusion import slot_follow_up
+    with slot_follow_up():
+        yield
+
+
+_COALESCE_KEY_IGNORED = frozenset({"live_preview"})
+
+
+async def _coalesced_image_generate(
+    backend: Any,
+    status: Optional[dict],
+    *,
+    prompt: str,
+    n: int,
+    seed: Optional[int],
+    generate_kwargs: dict,
+) -> Optional[dict]:
+    """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
+    from core.inference import image_request_batching
+    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
+    from core.inference.generation_ticket import (
+        GenerationTicket,
+        TicketStopEvent,
+        generation_ticket,
+    )
+
+    holder = getattr(backend, "generation_holder", None)
+    if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
+        return None
+    if not image_request_batching.collecting():
+        try:
+            if holder() is None:
+                return None
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return None
+    if status is None:
+        status = await asyncio.to_thread(backend.status)
+    family = status.get("family")
+    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
+        return None
+    if family and getattr(detect_family("", family), "layer_count", 0):
+        return None
+    if generate_kwargs.get("expected_load") is None:
+        # Pin to the model read here, so a swapped model is refused rather than rendering every member.
+        from core.inference.diffusion_families import load_identity
+        generate_kwargs = {
+            **generate_kwargs,
+            "expected_load": load_identity(
+                status.get("repo_id"), status.get("base_repo"), status.get("family")
+            ),
+        }
+    # Per-account resources (LoRAs, hosted adapters, embeddings) resolve under the leader: batch own account only.
+    plan = getattr(backend, "coalesce_plan", None)
+    loras = generate_kwargs.get("loras")
+    if plan is not None:
+        decided = await asyncio.to_thread(plan, prompt, bool(loras))
+        if decided is None:
+            return None
+        prompt_key, private = decided
+    else:
+        prompt_key, private = (), bool(loras)
+
+    ticket = GenerationTicket()
+    stopped = TicketStopEvent(ticket)
+
+    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
+    arrived_behind: list = []
+    lead: dict = {}
+    reserve = getattr(backend, "reserve_slot_turn", None)
+    loop = asyncio.get_running_loop()
+    woken = asyncio.Event()
+
+    def on_lead() -> None:
+        if reserve is None:
+            return
+        lead["turn"] = reserve()
+        lead["remove"] = backend.add_slot_listener(lambda: loop.call_soon_threadsafe(woken.set))
+
+    async def wait() -> None:
+        # The timeout covers lock holders outside the line.
+        try:
+            await asyncio.wait_for(woken.wait(), timeout = 0.25)
+        except asyncio.TimeoutError:
+            pass
+        woken.clear()
+
+    def busy() -> bool:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        if "turn" in lead:
+            return not backend.slot_turn_ready(lead["turn"])
+        try:
+            current = holder()
+        except Exception:  # noqa: BLE001 -- no busy signal; render individually
+            return False
+        if current is None:
+            return False
+        if not arrived_behind:
+            arrived_behind.append(current)
+        return current is arrived_behind[0]
+
+    def check() -> None:
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+    async def run_batch(
+        prompts: list[str],
+        seeds: list[int],
+        owners: Optional[list] = None,
+    ) -> dict:
+        call = dict(generate_kwargs)
+        if len(set(owners or ())) > 1:
+            # Row 0 may be another account's image, so a cross-account batch shows no preview.
+            call.update(_live_preview_kwarg(backend.generate, False))
+        runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
+            try:
+                return await runner(
+                    backend.generate,
+                    prompt = prompts[0],
+                    prompts = prompts,
+                    seeds = seeds,
+                    batch_size = len(seeds),
+                    **call,
+                )
+            except Exception as exc:
+                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
+                if ticket.cancelled() and not cancelled(exc):
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
+                raise
+
+    key = (
+        current_account_id() if private else None,
+        prompt_key,
+        tuple(
+            sorted(
+                (name, _frozen_kwarg(value))
+                for name, value in generate_kwargs.items()
+                if name not in _COALESCE_KEY_IGNORED
+            )
+        ),
+    )
+
+    def cancelled(exc: BaseException) -> bool:
+        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
+
+    def splittable(exc: BaseException) -> bool:
+        from core.inference.diffusion_batched import is_oom_error
+        from core.inference.diffusion_memory import unified_memory_refusal_code
+        return (
+            isinstance(exc, ValueError)
+            or unified_memory_refusal_code(exc) is not None
+            or is_oom_error(exc)
+        )
+
+    def salvage(exc: BaseException) -> Optional[dict]:
+        finished = getattr(exc, "_unsloth_finished_images", None)
+        if not finished or not finished.get("images"):
+            return None
+        return {
+            "images": list(finished["images"]),
+            "seeds": list(finished.get("seeds") or []),
+            "seed": (finished.get("seeds") or [0])[0],
+            "repo_id": status.get("repo_id"),
+            "model_kind": status.get("model_kind"),
+            "gguf_filename": status.get("gguf_filename"),
+            "negative_prompt": generate_kwargs.get("negative_prompt") or None,
+            "workflow": "txt2img",
+        }
+
+    sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+
+    def fits(total: int) -> bool:
+        if sizes_of is None:
+            return True
+        try:
+            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            return False
+        return sizes is None or total in sizes
+
+    waiter = getattr(backend, "generation_waiter", None)
+    rider = getattr(backend, "generation_rider", None)
+
+    async def _coalesce_in_line() -> Optional[dict]:
+        result = await image_request_batching.generate(
+            key,
+            prompt,
+            n,
+            seed,
+            busy = busy,
+            run_batch = run_batch,
+            shared_outcome = cancelled,
+            owner = current_account_id(),
+            check = check,
+            ride = (lambda: rider(stopped)) if rider is not None else None,
+            fits = fits,
+            splittable = splittable,
+            salvage = salvage,
+            on_lead = on_lead,
+            wait = wait,
+        )
+        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
+        if result is None and stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+
+    try:
+        with waiter(stopped) if waiter is not None else nullcontext():
+            result = await _coalesce_in_line()
+            if result is None and "turn" in lead and not stopped.is_set():
+                with _reserved_turn(lead["turn"]):
+                    result = await _image_generate_on_reserved_turn(
+                        backend.generate, prompt = prompt, seed = seed, batch_size = n, **generate_kwargs
+                    )
+        # Read after deregistering: a Stop that found the waiter hands back no images.
+        if stopped.is_set():
+            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+        return result
+    finally:
+        if "remove" in lead:
+            lead["remove"]()
+        if "turn" in lead:
+            backend.release_slot_turn(lead["turn"])
+
+
 async def _batched_openai_images(
     backend: Any,
     status: dict,
@@ -55859,97 +56736,25 @@ async def _batched_openai_images(
     loras: Optional[list[tuple[str, float]]] = None,
     expected_load_loras: Optional[tuple] = None,
 ) -> Optional[dict]:
-    from core.inference import image_request_batching
-    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
-    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
-    from core.inference.generation_ticket import (
-        GenerationTicket,
-        TicketStopEvent,
-        generation_ticket,
+    return await _coalesced_image_generate(
+        backend,
+        status,
+        prompt = body.prompt,
+        n = body.n,
+        seed = body.seed,
+        generate_kwargs = dict(
+            negative_prompt = body.negative_prompt,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            expected_load = expected_load,
+            **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
+            **({"loras": loras} if loras else {}),
+            # Headless: no client polls generate-progress, so skip the per-step previewer.
+            **_live_preview_kwarg(backend.generate, False),
+        ),
     )
-
-    holder = getattr(backend, "generation_holder", None)
-    if (
-        holder is None
-        or active_engine_name() != ENGINE_DIFFUSERS
-        or status.get("family") in FLUX3_FAMILY_NAMES
-    ):
-        return None
-
-    ticket = GenerationTicket()
-    stopped = TicketStopEvent(ticket)
-
-    # Wait only for the generation found on arrival, so a later one taking the slot cannot starve the batch.
-    arrived_behind: list = []
-
-    def busy() -> bool:
-        if stopped.is_set():
-            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-        try:
-            current = holder()
-        except Exception:  # noqa: BLE001 -- no busy signal; render individually
-            return False
-        if current is None:
-            return False
-        if not arrived_behind:
-            arrived_behind.append(current)
-        return current is arrived_behind[0]
-
-    async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
-        with generation_ticket(ticket):
-            try:
-                return await _image_generate_in_thread(
-                    backend.generate,
-                    prompt = prompts[0],
-                    negative_prompt = body.negative_prompt,
-                    width = width,
-                    height = height,
-                    steps = steps,
-                    guidance = guidance,
-                    prompts = prompts,
-                    seeds = seeds,
-                    batch_size = len(seeds),
-                    expected_load = expected_load,
-                    **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
-                    **({"loras": loras} if loras else {}),
-                )
-            except Exception as exc:
-                # An engine Stop sets the bound event, not ``stopped``: no member may retry alone.
-                if ticket.cancelled() and not cancelled(exc):
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
-                raise
-
-    key = (
-        current_account_id(),
-        expected_load,
-        expected_load_loras,
-        width,
-        height,
-        steps,
-        guidance,
-        body.negative_prompt or None,
-        tuple(loras or ()),
-    )
-
-    def cancelled(exc: BaseException) -> bool:
-        return isinstance(exc, RuntimeError) and str(exc) == DIFFUSION_CANCELLED_MSG
-
-    waiter = getattr(backend, "generation_waiter", None)
-    with waiter(stopped) if waiter is not None else nullcontext():
-        result = await image_request_batching.generate(
-            key,
-            body.prompt,
-            body.n,
-            body.seed,
-            busy = busy,
-            run_batch = run_batch,
-            shared_outcome = cancelled,
-        )
-        # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
-        if result is None and stopped.is_set():
-            raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-        return result
 
 
 # Split out so the monitor row can wrap the whole handler without reindenting it.
@@ -56066,6 +56871,7 @@ async def _generate_openai_images(
                         **_expected_load_loras_kwarg(backend.generate, expected_load_loras),
                         # Only when set, so engines without the parameter keep their call shape.
                         **({"loras": loras} if loras else {}),
+                        **_live_preview_kwarg(backend.generate, False),
                     )
             break
         except DiffusionModelReplacedError:
@@ -56158,7 +56964,13 @@ async def _generate_openai_images(
             saves.append(
                 (
                     image,
-                    {**recipe, "batch_index": index, "seed": seed, "batch_seed": result["seed"]},
+                    {
+                        **recipe,
+                        "batch_index": index,
+                        "seed": seed,
+                        "batch_seed": result["seed"],
+                        **_coalesced_recipe(result, index),
+                    },
                 )
             )
         for record in image_gallery.save_many(saves):

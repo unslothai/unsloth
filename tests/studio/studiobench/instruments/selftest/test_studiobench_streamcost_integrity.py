@@ -99,8 +99,7 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
 
 
 def test_an_unparseable_frame_is_visible_at_the_window_boundary(page):
-    """The counter has to be readable at O(1) cost at both ends of a window, or a window cannot
-    tell a failure that happened inside it from one that happened before it."""
+    """O(1) counter reads at both window ends keep in-window failures apart from earlier ones."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, _frame("good"))
     before = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
@@ -110,8 +109,7 @@ def test_an_unparseable_frame_is_visible_at_the_window_boundary(page):
 
 
 def test_an_unterminated_frame_is_reported_as_still_buffered(page):
-    """The other way to be short. The frame never completed, so its characters were never counted,
-    and at the close of the window the count is missing them with nothing to say so."""
+    """An unterminated frame is never counted and nothing at window close says so."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, 'data: {"choices":[{"delta":{"content":"half a fra')
     got = page.evaluate("() => window.__sb.streamcost.wireIntegrity()")
@@ -206,8 +204,7 @@ def test_a_held_marker_fragment_is_reported_as_buffered_rather_than_lost(page):
 
 
 def test_a_marker_split_three_ways_is_still_one_frame(page):
-    """The socket is under no obligation to cut in a convenient place, and a fix that only handles
-    a two-way split is a fix for the example rather than for the defect."""
+    """The socket may cut anywhere; a two-way-split fix addresses the example, not the defect."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     text = _frame("three ways")
     for part in (text[:1], text[1:2], text[2:4], text[4:]):
@@ -259,8 +256,7 @@ def test_a_window_whose_only_frame_was_split_in_the_marker_still_counts_it(page)
 
 
 def test_a_failure_before_the_window_does_not_taint_it(page):
-    """Attribution matters: a window is scoreable or not on its OWN evidence. Counting total
-    failures rather than the delta would condemn every window after the first bad frame."""
+    """Scoreable on the window's own evidence; totals, not deltas, would condemn later windows."""
     page.evaluate("() => window.__sb.streamcost.reset()")
     _feed(page, "data: {this is not json}\n\n")
     inst = _instrument(page)

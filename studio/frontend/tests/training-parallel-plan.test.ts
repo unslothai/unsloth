@@ -11,6 +11,7 @@ import {
   normalizeParallelCapabilities,
   normalizeParallelPlan,
   normalizeRunParallel,
+  layoutExample,
   overrideIssue,
   parallelRequestFields,
   planSummary,
@@ -59,7 +60,10 @@ const planBody = {
     per_gpu_gb: { single: 6.1, ddp: 6.1, fsdp2: 3.9 },
   },
   is_moe: false,
-  warnings: [],
+  warnings: [
+    "The model needs about 6.1 GB per GPU, which may not fit; FSDP2 shards it.",
+  ],
+  notes: ["These GPUs differ; data parallel runs at the pace of the slowest."],
   modes: [
     {
       mode: "tp",
@@ -102,6 +106,12 @@ test("plan parses the resolved mode, the per-GPU estimate of that mode, and the 
   assert.deepEqual(plan.gpuIds, [0, 1]);
   assert.equal(plan.perGpuGb, 6.1);
   assert.equal(plan.error, null);
+  assert.deepEqual(plan.notes, [
+    "These GPUs differ; data parallel runs at the pace of the slowest.",
+  ]);
+  assert.equal(plan.warnings.length, 1);
+  const { notes: _omit, ...older } = planBody;
+  assert.deepEqual(normalizeParallelPlan(older)?.notes, []);
   const refused = normalizeParallelPlan({
     ...planBody,
     mode: "tp",
@@ -122,7 +132,7 @@ test("plan parses the resolved mode, the per-GPU estimate of that mode, and the 
   assert.equal(normalizeParallelPlan({ ...planBody, mode: "zero3" }), null);
 });
 
-test("the summary leads with whether the model fits one GPU", () => {
+test("the summary names the mode, not a fit the planner may not have checked", () => {
   const plan = normalizeParallelPlan(planBody);
   assert.ok(plan);
   assert.deepEqual(planSummary(plan), {
@@ -135,8 +145,10 @@ test("the summary leads with whether the model fits one GPU", () => {
   );
   assert.match(
     en,
-    /ddp: "Model fits one GPU: data parallel on \{count\} GPUs"/,
+    /ddp: "Each GPU trains a full copy: data parallel on \{count\} GPUs"/,
   );
+  // FSDP2 picked by hand for a small model must not claim the model is too big for one GPU.
+  assert.doesNotMatch(en, /too big for one GPU/);
 });
 
 test("single and layer_split are one process, so the GPU count comes from gpu_ids", () => {
@@ -199,6 +211,13 @@ test("browser-side override checks mirror parallel_gpu_ids", () => {
       { enabled: true, mode: "single", gpuIds: null, spec: "" },
       all,
     ),
+    null, // every GPU ticked: the backend trains on the freest one
+  );
+  assert.equal(
+    overrideIssue(
+      { enabled: true, mode: "single", gpuIds: [1, 2], spec: "" },
+      all,
+    ),
     "studio.gpus.error.singleNeedsOne",
   );
   assert.equal(
@@ -223,6 +242,33 @@ test("browser-side override checks mirror parallel_gpu_ids", () => {
     ),
     "studio.gpus.error.customSpec",
   );
+});
+
+test("the layout example is one every run accepts (data parallel over every GPU)", () => {
+  assert.equal(layoutExample(2), "dp=2");
+  assert.equal(layoutExample(3), "dp=3");
+  assert.equal(layoutExample(4), "dp=4");
+  assert.equal(layoutExample(8), "dp=8");
+});
+
+test("the plan request carries packing, which decides pipeline parallel", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/training/hooks/use-parallel-plan.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const fields = hook.slice(
+    hook.indexOf("const PLAN_FIELDS"),
+    hook.indexOf("] as const"),
+  );
+  assert.match(fields, /"packing"/);
+  const key = hook.slice(
+    hook.indexOf("const planKey"),
+    hook.indexOf("const override"),
+  );
+  assert.match(key, /s\.packing/);
 });
 
 test("ticking every GPU again returns to 'all GPUs' (null)", () => {

@@ -10,7 +10,6 @@ FOREIGN=/tmp   # owned by root, not by the test user
 out="$(PATH="$STUB:$PATH" bash "$HERE/docker/test_locally-rocm.sh" --skip-build --skip-notebook --log-dir "$FOREIGN" 2>&1)"
 if grep -q REACHED_DOCKER <<<"$out"; then echo "FAIL: ran with a foreign-owned LOG_DIR"; exit 1; fi
 grep -q "not owned by" <<<"$out" || { echo "FAIL: unexpected output: $out"; exit 1; }
-# Our own fresh dir still proceeds and ends up go-w.
 OWN="$STUB/logs"
 out="$(PATH="$STUB:$PATH" bash "$HERE/docker/test_locally-rocm.sh" --skip-build --skip-notebook --log-dir "$OWN" 2>&1)"
 grep -q REACHED_DOCKER <<<"$out" || { echo "FAIL: own LOG_DIR refused: $out"; exit 1; }

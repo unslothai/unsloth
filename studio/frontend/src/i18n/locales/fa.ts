@@ -976,7 +976,7 @@ export const fa = {
   chatMenu: {
     more: "گزینه‌های گفتگو",
     copy: "کپی",
-    addScheduledTask: "افزودن کار زمان‌بندی‌شده…",
+    addScheduledTask: "افزودن کار زمان‌بندی‌شده",
     compact: "فشرده‌سازی گفتگو",
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:
@@ -2614,6 +2614,10 @@ export const fa = {
         confirmDescriptionChatOnly:
           "سرور را متوقف می‌کند و نصب‌کننده را دوباره اجرا می‌کند. این یک نصبِ «فقط گفتگو» است، بنابراین نصب‌کننده آن را به نصب کامل با PyTorch نیز ارتقا می‌دهد که در مجموع چندین گیگابایت است. گفتگوها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
         confirmAction: "تعمیر اکنون",
+        recommendedTorch:
+          "تعمیر توصیه می‌شود: این نصب PyTorch {torch} دارد که قدیمی‌تر از نسخه مدیریت‌شده {managedTorch} است که GPUهای سری RTX 50 روی آن پشتیبانی می‌شوند.",
+        recommendedDriver:
+          "PyTorch {torch} قدیمی‌تر از نسخه مدیریت‌شده {managedTorch} است که GPUهای سری RTX 50 روی آن پشتیبانی می‌شوند، اما درایور این GPU از CUDA 13 پشتیبانی نمی‌کند. ابتدا درایور GPU را به‌روزرسانی کنید، سپس نصب را تعمیر کنید.",
       },
       resetPreferences: {
         sectionTitle: "منطقهٔ خطر",
@@ -4412,8 +4416,8 @@ export const fa = {
       summary: {
         single: "آموزش روی یک GPU",
         layerSplit: "مدل لایه به لایه بین {count} GPU تقسیم می‌شود",
-        ddp: "مدل در یک GPU جا می‌شود: موازی‌سازی داده روی {count} GPU",
-        fsdp2: "مدل برای یک GPU بیش از حد بزرگ است: تکه‌تکه روی {count} GPU",
+        ddp: "هر GPU یک نسخهٔ کامل را آموزش می‌دهد: موازی‌سازی داده روی {count} GPU",
+        fsdp2: "وزن‌ها و وضعیت بهینه‌ساز تکه‌تکه روی {count} GPU",
         tp: "هر لایه بین {count} GPU تقسیم می‌شود",
         pp: "لایه‌ها به‌صورت {count} مرحله خط لوله اجرا می‌شوند، هر GPU یک مرحله",
         cp: "هر دنباله بین {count} GPU تقسیم می‌شود",
@@ -4424,7 +4428,7 @@ export const fa = {
         noGpu: "دست‌کم یک GPU انتخاب کنید.",
         singleNeedsOne: "حالت یک GPU دقیقاً از یک GPU استفاده می‌کند. تیک بقیه را بردارید.",
         needsTwo: "این حالت دست‌کم به دو GPU نیاز دارد.",
-        customSpec: "یک چیدمان وارد کنید، مثلاً dp=2,tp=2.",
+        customSpec: "یک چیدمان وارد کنید، مثلاً {example}.",
       },
     },
     preview: {
@@ -4746,6 +4750,8 @@ export const fa = {
       unsupportedFileType: "نوع فایل پشتیبانی نمی‌شود",
       uploadOneFileType: "یک فایل {types} آپلود کنید.",
       datasetUploaded: "مجموعه‌داده آپلود شد",
+      importPandasJson: "وارد کردن .json به‌صورت ستون‌های pandas",
+      importSemicolonCsv: "استفاده از نقطه‌ویرگول به‌عنوان جداکننده برای .csv",
       evalDatasetUploaded: "مجموعه‌دادهٔ ارزیابی آپلود شد",
       uploadOneFileAtATime: "هر بار فقط یک فایل آپلود کنید",
       uploadSingleFileDescription:
@@ -4820,6 +4826,12 @@ export const fa = {
       epochs: "دوره‌ها",
       useMaxSteps: "استفاده از حداکثر گام‌ها",
       useEpochs: "استفاده از دوره‌ها",
+      stepGuidancePass: "حدود {steps} گام یعنی یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch}.",
+      stepGuidanceFloor: "یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch} فقط {passSteps} گام است، پس حدود {steps} گام (چند دور) حداقل معقولی است.",
+      stepGuidanceCap: "یک دور روی {rows} ردیف شما با دستهٔ مؤثر {batch} برابر {passSteps} گام است؛ {steps} گام روی بخشی از آن آموزش می‌دهد که اغلب برای اجرای اول کافی است.",
+      stepGuidanceEpoch: "یک دوره حدود {passSteps} گام روی {rows} ردیف شما با دستهٔ مؤثر {batch} است.",
+      stepGuidancePacking: "بسته‌بندی ردیف‌های کوتاه را ترکیب می‌کند، پس یک دور ممکن است گام‌های کمتری بگیرد.",
+      useSuggestedSteps: "استفاده از {steps}",
       maxStepsTooltip: "تعداد کل گام‌های بهینه‌ساز را جایگزین می‌کند.",
       epochsTooltip: "تعداد گذرهای کامل روی مجموعه‌داده.",
       contextLength: "زمینه",
@@ -5383,6 +5395,7 @@ export const fa = {
       showPromptDescription: "دستورالعمل‌های دقیق ارسال‌شده به مدل را ببینید.",
     },
     history: {
+      notSaved: "در تاریخچه ذخیره نشد: فضای ذخیره‌سازی مرورگر پر است.",
       title: "سابقه",
       search: "جستجوی سابقه",
       empty: "ترجمه‌های شما اینجا نمایش داده می‌شوند.",
@@ -6413,6 +6426,12 @@ export const fa = {
     maximize: "بزرگ کردن پنجره",
     restore: "بازگرداندن اندازهٔ پنجره",
     close: "بستن پنجره",
+    mediaCodecs: {
+      title: "ممکن است ویدیوهای تولیدشده پخش نشوند",
+      // {command}: an apt command line, never translated.
+      description: "رمزگشاهای ویدیوی GStreamer روی این سیستم نصب نیستند. آن‌ها را با این دستور نصب کنید: {command}",
+      copy: "کپی دستور",
+    },
   },
   runtimeUpdate: {
     installAudio: "نصب محیط اجرای صدا",

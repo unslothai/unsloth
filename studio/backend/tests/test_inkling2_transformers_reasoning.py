@@ -5,7 +5,10 @@
 
 import json
 import sys
+from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -15,7 +18,9 @@ from core.inference.chat_template_helpers import (  # noqa: E402
     InklingMessageNormalizer,
     detect_reasoning_channel_markers_from_template,
     make_reasoning_normalizer,
+    normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
+    replays_reasoning_content,
 )
 from core.inference.native_tool_tokens import reasoning_control_tokens  # noqa: E402
 
@@ -57,6 +62,15 @@ def test_template_selects_the_inkling_markers():
     assert set(MARKERS) <= reasoning_control_tokens(MARKERS)
     assert {"<|message_model|>", "<|content_text|>"} <= reasoning_control_tokens(MARKERS)
     assert isinstance(make_reasoning_normalizer(MARKERS), InklingMessageNormalizer)
+    # The orchestrator has no tokenizer: the forwarded template decides, and only Inkling's does.
+    assert replays_reasoning_content(None, {"chat_template_info": {"template": INKLING_TEMPLATE}})
+    assert not replays_reasoning_content(None, {"chat_template_info": {"template": "<think>"}})
+    # An override renders, so the cached native Inkling template must not turn the split on.
+    native = {"native_chat_template": INKLING_TEMPLATE}
+    override = SimpleNamespace(chat_template = "{{ messages[0].content }}<think>")
+    assert not replays_reasoning_content(override, native)
+    assert not replays_reasoning_content(None, native, template = "{{ messages }}")
+    assert replays_reasoning_content(SimpleNamespace(chat_template = INKLING_TEMPLATE), native)
 
 
 def test_thought_then_answer():
@@ -180,3 +194,51 @@ def test_quoted_control_text_in_tool_arguments_is_kept():
     for size in range(1, 12):
         chunks = [raw[i : i + size] for i in range(0, len(raw), size)]
         assert _stream(make_reasoning_normalizer(MARKERS), chunks) == expected, size
+
+
+@pytest.mark.parametrize(
+    "raw, thought",
+    [
+        (
+            "<|content_thinking|>t</think>u<|end_message|><|message_model|><|content_text|>A <think>x</think>.<|end_message|>",
+            "t</think>u",
+        ),
+        (
+            "<|content_text|>Hi.<|end_message|><|message_model|><|content_thinking|>t<|end_message|>",
+            "t",
+        ),
+        ("<|content_text|><think>x</think> is a tag.<|end_message|>", None),
+    ],
+    ids = ["thought_then_literal", "text_then_thought", "literal_only"],
+)
+def test_thought_spans_locate_only_the_channel_thought(raw, thought):
+    for size in range(1, 12):
+        normalizer = make_reasoning_normalizer(MARKERS)
+        out = ""
+        for i in range(0, len(raw), size):
+            out += normalizer.feed(raw[i : i + size])
+            # Each snapshot's spans must already cover all of the thought written so far.
+            for at, length in normalizer.thought_spans:
+                assert out[at : at + 7] == "<think>"
+                assert len(out) - at - 7 >= length
+        out += normalizer.finish()
+        spans = [(at, length) for at, length in normalizer.thought_spans]
+        if thought is None:
+            assert spans == [], size
+        else:
+            assert len(spans) == 1, size
+            at, length = spans[0]
+            assert out[at : at + 7 + length] == "<think>" + thought, size
+
+
+def test_a_prefilled_stream_carries_no_thought_spans():
+    # Ends inside the thought, so the final flush yields the closer too.
+    raw = ["<|content_thinking|>t", "<|content_thinking|>tu"]
+
+    def spans(prefix):
+        snapshots = normalize_reasoning_snapshots(iter(raw), markers = MARKERS, prefix = prefix)
+        return [getattr(snapshot, "thought_spans", None) for snapshot in snapshots]
+
+    assert spans("") == [((0, 1),), ((0, 2),), ((0, 2),)]
+    # The prefill reaches the route as text the spans do not cover.
+    assert spans("<think>") == [None, None, None]

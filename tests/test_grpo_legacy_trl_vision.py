@@ -8,8 +8,7 @@ import textwrap
 import pytest
 
 
-# trl 0.22.2 grpo_trainer.py lines 1057-1084, 1321-1371 and 1471-1485, with generation replaced by
-# a fixed completion. 0.23.0 and 0.23.1 are identical over this range.
+# Copied from trl 0.22.2 grpo_trainer.py (generation fixed); 0.23.0 and 0.23.1 identical there.
 _LEGACY_SOURCE = """
     def _generate_and_score_completions(self, inputs):
         mode = "train"
@@ -147,8 +146,7 @@ def _run_legacy(processor_output, inputs, completion_ids):
         "_unsloth_grpo_image_cell": _unsloth_grpo_image_cell,
         "_unsloth_grpo_clean_video_prompts": _unsloth_grpo_clean_video_prompts,
         "_unsloth_grpo_video_inputs": _unsloth_grpo_video_inputs,
-        # Injected on this TRL too now: its vLLM server path cannot carry a multi image row,
-        # so the guard is handed the trainer and decides at runtime.
+        # Injected here too: vLLM's server cannot carry multi-image rows; the guard decides.
         "_unsloth_reject_grpo_image_list": _unsloth_reject_grpo_image_list,
         "prepare_multimodal_messages": lambda prompt, num_images = 1: prompt.append(num_images),
         "calculate_pad_tokens_in_prompt": lambda ids, keep, pad: torch.zeros(
@@ -179,8 +177,7 @@ def _grid_batch():
 
 
 def test_the_legacy_no_grad_calls_are_told_how_many_images_each_sample_has():
-    """Without the counts the shared chunker slices an image indexed grid by sample index, so
-    the old and reference logprobs of a two image row come from another sample's pixels."""
+    """Without num_images, image grids are sliced by sample index, so pixels cross samples."""
     trainer, _ = _run_legacy(*_grid_batch())
     assert len(trainer.calls) == 2, "the old-policy and the reference call"
     for call in trainer.calls:
@@ -281,8 +278,7 @@ def test_the_legacy_token_type_ids_are_widened_over_the_completion():
 
 
 def test_a_legacy_token_type_ids_of_the_wrong_width_is_dropped_not_forwarded():
-    """max_prompt_length truncates prompt_ids after the processor ran, so the processor's own
-    copy can be wider than the prompt. Sending it would be a shape error in the forward."""
+    """Truncated prompts leave processor token_type_ids too wide, a shape error if forwarded."""
     import torch
 
     processor_output, inputs, completion_ids = _grid_batch()
@@ -316,8 +312,7 @@ def test_a_modern_trl_is_untouched_by_the_legacy_rewrite():
 
 
 def _legacy_split_pixel_values_by_grid(batch):
-    """Verbatim from trl 0.22.2 / 0.23.1 trainer/utils.py: one list element per GRID ROW, which
-    is one per image, while everything else in the batch stays indexed by sample."""
+    """Verbatim from trl 0.22.2/0.23.1: pixel_values is per grid row (image), not per sample."""
     import torch
 
     if "image_grid_thw" not in batch or "pixel_values" not in batch:
@@ -400,8 +395,7 @@ def test_one_image_per_sample_on_a_legacy_trl_is_left_exactly_as_trl_left_it():
 
 
 def test_a_grid_batch_trl_1_1_0_already_split_by_sample_is_left_alone():
-    """From 1.1.0 split_pixel_values_by_grid splits both by sample and returns the grid as a
-    list, so a second regroup would nest the lists."""
+    """From TRL 1.1.0 it already splits by sample, so a second regroup would nest the lists."""
     import torch
 
     from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
@@ -415,8 +409,7 @@ def test_a_grid_batch_trl_1_1_0_already_split_by_sample_is_left_alone():
 
 
 def test_a_legacy_grid_row_with_no_image_still_gets_its_neighbours_images_apart():
-    """num_images [0, 2] over two samples matches the lengths but not the axes, so a bare length
-    check would skip regrouping and hand both images to the first sample."""
+    """num_images [0, 2] matches in length, not axis: a length check gives both to sample 0."""
     import torch
 
     from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
@@ -434,8 +427,7 @@ def test_a_legacy_grid_row_with_no_image_still_gets_its_neighbours_images_apart(
 
 
 def test_a_legacy_grid_batch_whose_counts_do_not_span_the_samples_is_left_alone():
-    """A count list that is not one entry per row cannot index the batch, and regrouping on it
-    would silently shorten the list."""
+    """Counts not one per row cannot index the batch; regrouping silently shortens the list."""
     import torch
 
     from unsloth.models.rl_replacements import _unsloth_grpo_split_vision_by_sample
@@ -497,8 +489,7 @@ def test_an_untruncated_token_type_ids_as_wide_as_prompt_plus_completion_is_drop
 
 
 def test_a_modern_trl_gets_no_legacy_prologue_at_all():
-    """0.24.0 and up leave prompt_inputs unbound at the anchor, so the block would fall through
-    anyway; not emitting it keeps their generated source exactly what it was."""
+    """TRL 0.24.0+ leave prompt_inputs unbound at the anchor; no legacy prologue is emitted."""
     from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
 
     modern = (

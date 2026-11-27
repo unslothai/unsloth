@@ -182,6 +182,7 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "./api/chat-api";
+import { subscribeChatImageToolSettled } from "./api/chat-image-tool-events";
 import { codeToolCanRun } from "./api/code-tool-placement";
 import {
   clearAutoOpenedArtifacts,
@@ -313,7 +314,7 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import type { ChatView, MessageRecord } from "./types";
+import type { ChatView, MessageRecord, ThreadRecord } from "./types";
 import type { ChatSearch } from "./chat-search";
 import {
   type ComparePairReadState,
@@ -1286,6 +1287,7 @@ const CompareContent = memo(function CompareContent({
   ) : (
     <GeneralCompareContent
       pairId={pairId}
+      initialThreads={compareRead.threads}
       projectId={projectId}
       models={models}
       loraModels={loraModels}
@@ -1718,6 +1720,7 @@ function generalCompareLabels(
 
 const GeneralCompareContent = memo(function GeneralCompareContent({
   pairId,
+  initialThreads,
   projectId,
   models,
   loraModels,
@@ -1731,6 +1734,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   cancelPaneModelLoad,
 }: {
   pairId: string;
+  initialThreads: ThreadRecord[];
   projectId?: string | null;
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -1744,10 +1748,13 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
-  const [model1ThreadId, setModel1ThreadId] = useState<string>();
-  const [model2ThreadId, setModel2ThreadId] = useState<string>();
-  const [threadsSettled, setThreadsSettled] = useState(false);
-  const [pairSaved, setPairSaved] = useState<boolean>();
+  const initialPair = resolveComparePaneThreadIds(initialThreads);
+  const [model1ThreadId, setModel1ThreadId] = useState(initialPair.first);
+  const [model2ThreadId, setModel2ThreadId] = useState(initialPair.second);
+  const [threadsSettled, setThreadsSettled] = useState(true);
+  const [pairSaved, setPairSaved] = useState(
+    Boolean(initialPair.first || initialPair.second),
+  );
   const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
@@ -1761,25 +1768,49 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
   // A compare send is idle between the two sequential runs; a re-list there swaps the pane threads mid-send.
   const [comparing, setComparing] = useState(false);
-  const listedPairRef = useRef<string | null>(null);
-  const [model1, setModel1] = useState<CompareModelSelection>({
-    id: globalCheckpoint || "",
-    isLora: loraModels.some(
-      (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
-    ),
-    ggufVariant: globalGgufVariant ?? undefined,
-    isDiffusion: globalIsDiffusion,
-  });
-  const [model2, setModel2] = useState<CompareModelSelection>({
-    id: "",
-    isLora: false,
-  });
+  const busy = anyRunning || comparing;
+  const wasBusyRef = useRef(busy);
+  const restore = (threadId: string): CompareModelSelection => {
+    const thread = initialThreads.find((candidate) => candidate.id === threadId);
+    return {
+      id: thread?.modelId ?? "",
+      isLora: false,
+      ggufVariant: thread?.modelGgufVariant ?? undefined,
+    };
+  };
+  const [model1Selection, setModel1] = useState<CompareModelSelection>(() =>
+    initialPair.first
+      ? restore(initialPair.first)
+      : {
+          id: globalCheckpoint || "",
+          isLora: loraModels.some(
+            (lora) => lora.id === globalCheckpoint && lora.exportType === "lora",
+          ),
+          ggufVariant: globalGgufVariant ?? undefined,
+          isDiffusion: globalIsDiffusion,
+        },
+  );
+  const [model2Selection, setModel2] = useState<CompareModelSelection>(() =>
+    initialPair.second ? restore(initialPair.second) : { id: "", isLora: false },
+  );
+
+  const [model1, model2] = useMemo(() => {
+    const resolveLora = (selection: CompareModelSelection): CompareModelSelection =>
+      !selection.isLora && loraModels.some(
+        (lora) => lora.exportType === "lora" && modelIdsMatch(lora.id, selection.id),
+      )
+        ? { ...selection, isLora: true }
+        : selection;
+    return [resolveLora(model1Selection), resolveLora(model2Selection)] as const;
+  }, [loraModels, model1Selection, model2Selection]);
 
   useEffect(
     () =>
       registerComparePaneRunPreparer(pairId, async (pane, signal) => {
         const sel = pane === "model1" ? model1 : model2;
-        if (!sel.id) return;
+        if (!sel.id) {
+          throw new Error("Choose a model for this comparison pane before running it.");
+        }
         const store = () => useChatRuntimeStore.getState();
         // A shared Send has already loaded this pane's model, so it is active here.
         await loadComparePaneModel(
@@ -1833,9 +1864,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (listedPairRef.current !== pairId) setPairSaved(undefined);
-    if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
-    listedPairRef.current = pairId;
+    const wasBusy = wasBusyRef.current;
+    wasBusyRef.current = busy;
+    if (busy || !wasBusy) return;
     let isActive = true;
     setThreadsSettled(false);
     listStoredChatThreads({ pairId })
@@ -1857,7 +1888,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, anyRunning, comparing]);
+  }, [pairId, busy]);
 
   useEffect(() => {
     if (!threadsSettled) return;
@@ -3456,8 +3487,7 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
-  // The Images pill can use the image or video model loaded in Unsloth. Re-read on mount,
-  // when any load settles (a chat load can evict them), when either is ejected, and on focus.
+  // Re-read media readiness on activation, load settle, eject, and after an image tool restores chat.
   useEffect(() => {
     let disposed = false;
     let controller: AbortController | null = null;
@@ -3480,13 +3510,14 @@ export function ChatPage({
           );
       });
     };
-    refresh();
+    if (active) refresh();
     const unsubscribers = [
       subscribeModelLifecycle(({ loading }) => {
         if (!loading) refresh();
       }),
       subscribeModelEjected("image", refresh),
       subscribeModelEjected("video", refresh),
+      subscribeChatImageToolSettled(refresh),
     ];
     // An idle unload, another tab or an MCP client changes them with no event in this tab.
     window.addEventListener("focus", refresh);
@@ -3496,7 +3527,7 @@ export function ChatPage({
       controller?.abort();
       for (const unsubscribe of unsubscribers) unsubscribe();
     };
-  }, []);
+  }, [active]);
   // Another tab can change the active model's pin (the pin store listens for the storage event),
   // and the normalization above reads the pin through a getState helper without subscribing, so
   // the composer kept the old level until a switch. Only the effort here: the pills and the rest
@@ -5160,7 +5191,10 @@ export function ChatPage({
                 onDiscard={toggleIncognito}
               />
             ) : null}
-            {view.mode === "single" ? <ChatFilesMenu /> : null}
+            {view.mode === "single" ||
+            (view.mode === "project" && projectChatShownId != null) ? (
+              <ChatFilesMenu />
+            ) : null}
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
@@ -5282,6 +5316,7 @@ export function ChatPage({
                     <NativeAttachmentOwnerScopeContext.Provider
                       value={baseAttachmentOwnerScope}
                     >
+                      <ChatFilesBridge />
                       {baseView.mode === "project" ? (
                         <ProjectLanding
                           key={baseView.projectId}
@@ -5296,7 +5331,6 @@ export function ChatPage({
                       ) : (
                         <>
                           <TemporaryChatSaveBridge />
-                          <ChatFilesBridge />
                           <SingleContent threadId={baseView.threadId} />
                         </>
                       )}

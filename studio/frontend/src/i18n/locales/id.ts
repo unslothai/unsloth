@@ -978,7 +978,7 @@ export const id = {
   chatMenu: {
     more: "Opsi chat",
     copy: "Salin",
-    addScheduledTask: "Tambahkan tugas terjadwal…",
+    addScheduledTask: "Tambahkan tugas terjadwal",
     compact: "Padatkan percakapan",
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
@@ -2624,6 +2624,10 @@ export const id = {
         confirmDescriptionChatOnly:
           "Menghentikan server dan menjalankan ulang penginstal. Ini adalah instalasi Hanya chat, jadi penginstal juga meningkatkannya ke instalasi lengkap dengan PyTorch, total beberapa gigabyte. Chat dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Perbaiki sekarang",
+        recommendedTorch:
+          "Perbaikan disarankan: instalasi ini memakai PyTorch {torch}, lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50, tetapi driver GPU ini tidak mendukung CUDA 13. Perbarui driver GPU terlebih dahulu, lalu perbaiki instalasi.",
       },
       resetPreferences: {
         sectionTitle: "Zona berbahaya",
@@ -4424,8 +4428,8 @@ export const id = {
       summary: {
         single: "Melatih di satu GPU",
         layerSplit: "Model dibagi per lapisan ke {count} GPU",
-        ddp: "Model muat di satu GPU: paralel data di {count} GPU",
-        fsdp2: "Model terlalu besar untuk satu GPU: di-shard ke {count} GPU",
+        ddp: "Setiap GPU melatih salinan penuh: paralel data di {count} GPU",
+        fsdp2: "Bobot dan status optimizer di-shard ke {count} GPU",
         tp: "Setiap lapisan dibagi ke {count} GPU",
         pp: "Lapisan berjalan sebagai {count} tahap pipeline, satu per GPU",
         cp: "Setiap urutan dibagi ke {count} GPU",
@@ -4436,7 +4440,7 @@ export const id = {
         noGpu: "Pilih setidaknya satu GPU.",
         singleNeedsOne: "Satu GPU memakai tepat satu GPU. Hapus centang yang lain.",
         needsTwo: "Mode ini memerlukan setidaknya dua GPU.",
-        customSpec: "Masukkan tata letak, misalnya dp=2,tp=2.",
+        customSpec: "Masukkan tata letak, misalnya {example}.",
       },
     },
     preview: {
@@ -4759,6 +4763,8 @@ export const id = {
       unsupportedFileType: "Jenis file tidak didukung",
       uploadOneFileType: "Unggah satu file {types}.",
       datasetUploaded: "Dataset diunggah",
+      importPandasJson: "Impor .json sebagai kolom pandas",
+      importSemicolonCsv: "Gunakan titik koma sebagai pemisah untuk .csv",
       evalDatasetUploaded: "Dataset evaluasi diunggah",
       uploadOneFileAtATime: "Unggah satu file sekaligus",
       uploadSingleFileDescription:
@@ -4835,6 +4841,12 @@ export const id = {
       epochs: "Epoch",
       useMaxSteps: "Gunakan Langkah Maks",
       useEpochs: "Gunakan Epoch",
+      stepGuidancePass: "Sekitar {steps} langkah adalah satu putaran atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidanceFloor: "Satu putaran atas {rows} baris Anda hanya {passSteps} langkah dengan batch efektif {batch}, jadi sekitar {steps} langkah (beberapa putaran) adalah batas bawah yang wajar.",
+      stepGuidanceCap: "Satu putaran atas {rows} baris Anda adalah {passSteps} langkah dengan batch efektif {batch}; {steps} langkah melatih sebagian darinya, yang sering cukup untuk percobaan pertama.",
+      stepGuidanceEpoch: "Satu epoch sekitar {passSteps} langkah atas {rows} baris Anda dengan batch efektif {batch}.",
+      stepGuidancePacking: "Packing menggabungkan baris pendek, jadi satu putaran bisa butuh lebih sedikit langkah.",
+      useSuggestedSteps: "Gunakan {steps}",
       maxStepsTooltip: "Ganti total langkah optimizer.",
       epochsTooltip: "Jumlah lintasan penuh atas dataset.",
       contextLength: "Konteks",
@@ -5411,6 +5423,7 @@ export const id = {
       showPromptDescription: "Lihat instruksi persis yang dikirim ke model.",
     },
     history: {
+      notSaved: "Tidak disimpan ke Riwayat: penyimpanan browser penuh.",
       title: "Riwayat",
       search: "Cari riwayat",
       empty: "Terjemahan Anda muncul di sini.",
@@ -6440,6 +6453,12 @@ export const id = {
     maximize: "Maksimalkan jendela",
     restore: "Pulihkan jendela",
     close: "Tutup jendela",
+    mediaCodecs: {
+      title: "Video yang dibuat mungkin tidak dapat diputar",
+      // {command}: an apt command line, never translated.
+      description: "Sistem ini tidak memiliki dekoder video GStreamer. Instal dengan: {command}",
+      copy: "Salin perintah",
+    },
   },
   runtimeUpdate: {
     installAudio: "Instal runtime audio",

@@ -980,7 +980,7 @@ export const cs = {
   chatMenu: {
     more: "Možnosti chatu",
     copy: "Kopírovat",
-    addScheduledTask: "Přidat naplánovanou úlohu…",
+    addScheduledTask: "Přidat naplánovanou úlohu",
     compact: "Zkomprimovat konverzaci",
     compactEmpty: "Zatím není co komprimovat",
     compactUnsupported:
@@ -2642,6 +2642,10 @@ export const cs = {
         confirmDescriptionChatOnly:
           "Zastaví server a znovu spustí instalační program. Toto je instalace Pouze chat, takže ji instalační program zároveň upgraduje na úplnou instalaci s PyTorch, celkem několik gigabajtů. Chaty a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Opravit nyní",
+        recommendedTorch:
+          "Doporučena oprava: tato instalace má PyTorch {torch}, starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} je starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50, ale tento ovladač GPU nepodporuje CUDA 13. Nejprve aktualizujte ovladač GPU a pak instalaci opravte.",
       },
       resetPreferences: {
         sectionTitle: "Nebezpečná zóna",
@@ -4443,8 +4447,8 @@ export const cs = {
       summary: {
         single: "Trénování na jedné GPU",
         layerSplit: "Model je rozdělen po vrstvách na GPU: {count}",
-        ddp: "Model se vejde na jednu GPU: datový paralelismus na GPU: {count}",
-        fsdp2: "Model je na jednu GPU příliš velký: shardován na GPU: {count}",
+        ddp: "Každá GPU trénuje úplnou kopii: datový paralelismus na GPU: {count}",
+        fsdp2: "Váhy a stav optimalizátoru shardovány na GPU: {count}",
         tp: "Každá vrstva je rozdělena na GPU: {count}",
         pp: "Vrstvy běží jako fáze pipeline ({count}), jedna na GPU",
         cp: "Každá sekvence je rozdělena na GPU: {count}",
@@ -4455,7 +4459,7 @@ export const cs = {
         noGpu: "Vyberte alespoň jednu GPU.",
         singleNeedsOne: "Jedna GPU používá právě jednu GPU. Zrušte zaškrtnutí ostatních.",
         needsTwo: "Tento režim potřebuje alespoň dvě GPU.",
-        customSpec: "Zadejte rozvržení, například dp=2,tp=2.",
+        customSpec: "Zadejte rozvržení, například {example}.",
       },
     },
     preview: {
@@ -4780,6 +4784,8 @@ export const cs = {
       unsupportedFileType: "Nepodporovaný typ souboru",
       uploadOneFileType: "Nahrajte jeden soubor typu {types}.",
       datasetUploaded: "Datová sada byla nahrána",
+      importPandasJson: "Importovat .json jako sloupce pandas",
+      importSemicolonCsv: "Pro .csv použít jako oddělovač středník",
       evalDatasetUploaded: "Vyhodnocovací datová sada byla nahrána",
       uploadOneFileAtATime: "Nahrávejte vždy jen jeden soubor",
       uploadSingleFileDescription:
@@ -4855,6 +4861,12 @@ export const cs = {
       epochs: "Epochy",
       useMaxSteps: "Použít Maximum kroků",
       useEpochs: "Použít epochy",
+      stepGuidancePass: "Přibližně {steps} kroků je jeden průchod vašimi {rows} řádky při efektivní dávce {batch}.",
+      stepGuidanceFloor: "Jeden průchod vašimi {rows} řádky je jen {passSteps} kroků při efektivní dávce {batch}, takže přibližně {steps} kroků (několik průchodů) je rozumné minimum.",
+      stepGuidanceCap: "Jeden průchod vašimi {rows} řádky je {passSteps} kroků při efektivní dávce {batch}; {steps} kroků trénuje na jejich části, což pro první běh často stačí.",
+      stepGuidanceEpoch: "Jedna epocha je přibližně {passSteps} kroků přes vašich {rows} řádků při efektivní dávce {batch}.",
+      stepGuidancePacking: "Packing spojuje krátké řádky, takže průchod může zabrat méně kroků.",
+      useSuggestedSteps: "Použít {steps}",
       maxStepsTooltip: "Přepíše celkový počet kroků optimalizátoru.",
       epochsTooltip: "Počet úplných průchodů datovou sadou.",
       contextLength: "Kontext",
@@ -5428,6 +5440,7 @@ export const cs = {
       showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
     },
     history: {
+      notSaved: "Neuloženo do historie: úložiště prohlížeče je plné.",
       title: "Historie",
       search: "Hledat v historii",
       empty: "Vaše překlady se zobrazí zde.",
@@ -6461,6 +6474,12 @@ export const cs = {
     maximize: "Maximalizovat okno",
     restore: "Obnovit okno",
     close: "Zavřít okno",
+    mediaCodecs: {
+      title: "Vygenerovaná videa se nemusí přehrát",
+      // {command}: an apt command line, never translated.
+      description: "V systému chybí videodekodéry GStreamer. Nainstalujte je příkazem: {command}",
+      copy: "Kopírovat příkaz",
+    },
   },
   runtimeUpdate: {
     installAudio: "Nainstalovat zvukové běhové prostředí",

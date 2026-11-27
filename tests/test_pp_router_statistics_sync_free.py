@@ -3,6 +3,7 @@
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 from unsloth.models import pp_native
 
@@ -31,7 +32,8 @@ def test_unmasked_counts_equal_bincount(case):
     assert counts.sum().item() == sum(x.shape[0] for x in logits) * k
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU")
+# Not torch.cuda.is_available(): the CUDA spoof other suites install answers True on a CPU runner.
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU")
 def test_unmasked_statistics_do_not_sync():
     print("pp_native from", pp_native.__file__)
     g = torch.Generator(device = "cuda").manual_seed(0)

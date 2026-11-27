@@ -151,8 +151,7 @@ def test_a_model_loaded_before_this_existed_is_read_as_gpu():
 
 
 def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeypatch):
-    """Auto on a CPU-only runtime lands in CPU RAM: the orchestrator must record that, and a repeat
-    Auto load must neither reload it nor take the GPU from a running Images/Video pipeline."""
+    """Auto on CPU-only lands in CPU RAM; a repeat Auto load must not reload or take the GPU."""
     import inspect
 
     from core.inference import audio_cpp_server, orchestrator
@@ -167,8 +166,7 @@ def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeyp
 
 
 def test_an_auto_load_on_a_cpu_only_runtime_reaches_the_worker_as_cpu(monkeypatch):
-    """The worker hides the accelerators and no card is sized only for an explicit CPU load, so the
-    orchestrator must turn Auto into CPU when the runtime can only run there."""
+    """The worker hides accelerators, so Auto must turn into CPU on a CPU-only runtime."""
     import threading
 
     from core.inference import audio_cpp_server
@@ -449,8 +447,7 @@ def test_decoding_happens_where_the_codec_actually_is():
 
 
 def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
-    """Nothing is recorded until a codec is actually loaded, and every pre-existing
-    caller passes the device it wants. An unknown codec must keep deferring to it."""
+    """Unrecorded codecs defer to the caller's device, and every existing caller passes one."""
     from core.inference.audio_codecs import AudioCodecManager
 
     mgr = AudioCodecManager()
@@ -458,8 +455,7 @@ def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
 
 
 def test_a_cpu_load_leaves_a_running_export_alone():
-    """The export teardown frees VRAM for the incoming model; a load that masks the accelerators
-    needs none of it, so killing the export only costs the user the job."""
+    """Export teardown exists to free VRAM; a CPU load that masks the accelerators needs none."""
     import inspect
 
     src = inspect.getsource(ri._load_model_impl)

@@ -215,8 +215,7 @@ def test_upcast_float32_on_a_v100_still_gets_fp16_autocast():
 
 
 def test_loaders_record_the_explicit_request():
-    """Every public entry point, since only the outermost one sees the
-    argument as the caller wrote it."""
+    """Each public entry point must record it; only the outermost sees the argument as written."""
     for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
         src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
         assert "_requested_float32(dtype)" in src, rel
@@ -277,8 +276,7 @@ def test_the_direct_diffusion_loader_records_it_too():
 
 
 def test_the_request_is_read_from_the_model_not_the_environment():
-    """The request is stored on each model, since a process-global would describe whichever model
-    loaded last and train the first with the second's precision."""
+    """Stored per model: a process-global would train the first with the second's precision."""
     assert "_unsloth_user_float32" in MP_SRC
     assert "UNSLOTH_USER_FLOAT32" not in MP_SRC
 

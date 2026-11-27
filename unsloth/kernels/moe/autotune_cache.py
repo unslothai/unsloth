@@ -145,8 +145,7 @@ def save_cached_config(
         logger.warning(f"Failed to save cache file {cache_file}: {e}")
 
 
-# Always eager: unsloth_zoo calls this from the MoE forward inside compiled decoder blocks, and a
-# Dynamo trace reads `.best_config` before any kernel ran, so every tuning silently fell back.
+# Eager only: a traced .best_config read runs before any kernel, so tuning silently falls back.
 @torch.compiler.disable
 def get_or_autotune_moe_kernels(
     num_experts: int,
@@ -195,7 +194,6 @@ def get_or_autotune_moe_kernels(
     )
     cache_key = _get_cache_key(*key_args, device_model = device_model)
 
-    # Env override to disable autotuning
     if os.environ.get("UNSLOTH_MOE_DISABLE_AUTOTUNE", "0") == "1":
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
@@ -365,10 +363,8 @@ def _run_moe_autotuning_on(
         dtype = dtype if weight_dtype is None else weight_dtype,
     )
 
-    # Dummy routing data
     m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
-    # Adjust to exact total
     diff = total_tokens - m_sizes.sum().item()
     if diff != 0:
         m_sizes[0] += diff
@@ -677,8 +673,7 @@ def _wide_dw_device_ok(device = None) -> bool:
         return False
 
 
-# Compute capability majors where float32 dW was measured slower on the 128-wide tile: B200 (sm100) 13-15%.
-# L4 (sm89) is 6-18% faster on it, so other architectures keep the wide tile for float32 too.
+# Where fp32 dW is slower on the 128-wide tile: B200 (sm100) 13-15%; L4 (sm89) 6-18% faster.
 _FP32_NARROW_DW_MAJORS = (10,)
 
 

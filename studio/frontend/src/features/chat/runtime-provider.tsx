@@ -62,6 +62,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
+import { forgetThreadReads } from "./api/thread-read-cache";
 import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
@@ -140,6 +141,8 @@ import {
 import { readRtfAttachmentContent } from "./rtf";
 import {
   awaitThreadScopedSettingsWrite,
+  getThreadSettingsEditVersion,
+  THREAD_SETTINGS_REVISION_KEY,
   beginThreadScopedPairing,
   codeToolsOn,
   commitHeldThreadScopedEditsToTheirThread,
@@ -186,6 +189,7 @@ import {
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
+  appendRecoveredDelta,
 } from "./utils/chat-generation-recovery";
 import {
   beginSavedHistoryReconciliation,
@@ -208,8 +212,6 @@ import {
   notifyReplyFinished,
 } from "./utils/reply-finished-notification";
 import {
-  extractDeltaText,
-  markLiteralThinkTags,
   markPendingThinkTag,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
@@ -272,6 +274,7 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
   attachmentContentText,
   attachmentsSample,
+  pastedTextOf,
 } from "./utils/pasted-text";
 import { annotationsOfFile } from "./utils/document-annotations";
 import { completeTextAttachment } from "./utils/queued-text-attachments";
@@ -730,7 +733,7 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       throw new Error(reason);
     }
     try {
-      await readTextAttachmentOnce(file);
+      await readTextAttachmentOnce(file, pastedTextOf(file));
     } catch (error) {
       if (error instanceof UndecodableTextError) {
         toast.error(error.message);
@@ -749,7 +752,9 @@ class TextAttachmentAdapter implements AttachmentAdapter {
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
     const annotations = annotationsOfFile(attachment.file);
-    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
+    const text = annotations
+      ? ""
+      : await readTextAttachmentOnce(attachment.file, pastedTextOf(attachment.file));
     return completeTextAttachment(attachment, text);
   }
 
@@ -1794,12 +1799,7 @@ function scheduleGenerationRecovery(
                   cache_read_input_tokens?: unknown;
                 };
                 timings?: Record<string, unknown>;
-                choices?: Array<{
-                  delta?: {
-                    content?: unknown;
-                    reasoning_content?: unknown;
-                  };
-                }>;
+                choices?: Array<{ delta?: unknown }>;
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
@@ -1899,35 +1899,18 @@ function scheduleGenerationRecovery(
               if (typeof chunk.usage?.completion_tokens === "number") {
                 completionTokens = chunk.usage.completion_tokens;
               }
-              const deltaRecord = chunk.choices?.[0]?.delta;
-              const reasoning =
-                typeof deltaRecord?.reasoning_content === "string"
-                  ? deltaRecord.reasoning_content
-                  : "";
-              const { text: delta, hasStructuredReasoning } = extractDeltaText(
-                deltaRecord?.content,
-              );
-              if (!parseThink && (reasoning || hasStructuredReasoning)) {
-                parseThink = true;
+              const wasParsing = parseThink;
+              const wasSplit = splitReasoningSeen;
+              ({ raw, reasoningOpen, parseThink, splitReasoningSeen } =
+                appendRecoveredDelta(
+                  { raw, reasoningOpen, parseThink, splitReasoningSeen },
+                  chunk.choices?.[0]?.delta,
+                ));
+              if (parseThink && !wasParsing) {
                 currentMetadata = { ...currentMetadata, parseThinkTags: true };
               }
-              // Marked as the live stream marks them, so a recovered reply parses the same way.
-              if (reasoning) {
-                if (!reasoningOpen) raw += "<think>";
-                raw += markLiteralThinkTags(reasoning);
-                reasoningOpen = true;
-                if (!splitReasoningSeen) {
-                  splitReasoningSeen = true;
-                  currentMetadata = { ...currentMetadata, splitReasoningSeen: true };
-                }
-              }
-              if (delta) {
-                if (reasoningOpen) raw += "</think>";
-                raw +=
-                  splitReasoningSeen && typeof deltaRecord?.content === "string"
-                    ? markLiteralThinkTags(delta)
-                    : delta;
-                reasoningOpen = false;
+              if (splitReasoningSeen && !wasSplit) {
+                currentMetadata = { ...currentMetadata, splitReasoningSeen: true };
               }
             }
           }
@@ -3711,6 +3694,7 @@ function ThreadScopedSettingsSync({
     let paired = false;
     let unpaired = false;
     let defaulted = false;
+    let pairingVersion = 0;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let retriesLeft = THREAD_READ_RETRIES;
     // Abort reads per attempt so losers do not stay open server-side.
@@ -3729,6 +3713,8 @@ function ThreadScopedSettingsSync({
       }
       beginThreadScopedPairing(activeThreadId);
       const read = new AbortController();
+      const version = pairingVersion;
+      let readTimer: ReturnType<typeof setTimeout> | undefined;
       reads.add(read);
       // The deadline covers the waits too, which are unbounded on their own.
       void Promise.race([
@@ -3743,18 +3729,19 @@ function ThreadScopedSettingsSync({
             signal: read.signal,
           }),
         ),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => {
+        new Promise<never>((_, reject) => {
+          readTimer = setTimeout(() => {
             read.abort();
             reject(new Error("thread settings read timed out"));
-          }, THREAD_READ_TIMEOUT_MS),
-        ),
+          }, THREAD_READ_TIMEOUT_MS);
+        }),
       ])
         .finally(() => {
+          clearTimeout(readTimer);
           reads.delete(read);
         })
         .then(({ thread, cacheable }) => {
-          if (cancelled || paired) return;
+          if (cancelled || paired || version !== pairingVersion) return;
           // A legacy fallback row means the backend GET failed; keep holding and retry.
           if (thread && !cacheable) {
             retryThreadRead();
@@ -3776,7 +3763,9 @@ function ThreadScopedSettingsSync({
               : null,
           );
         })
-        .catch(() => retryThreadRead());
+        .catch(() => {
+          if (!paired && version === pairingVersion) retryThreadRead();
+        });
     };
 
     // The read did not answer for this chat: send what is held to the chat it was made in, then
@@ -3803,12 +3792,52 @@ function ThreadScopedSettingsSync({
       }, THREAD_READ_RETRY_MS);
     };
 
+    let remoteRead: AbortController | null = null;
+    const syncRemote = (event: StorageEvent) => {
+      if (event.key !== THREAD_SETTINGS_REVISION_KEY) return;
+      if (!paired) {
+        pairingVersion += 1;
+        abortReads();
+        forgetThreadReads([activeThreadId]);
+        sync();
+        return;
+      }
+      remoteRead?.abort();
+      const read = new AbortController();
+      remoteRead = read;
+      void (async () => {
+        while (!cancelled && !read.signal.aborted) {
+          const version = getThreadSettingsEditVersion();
+          const written = await awaitThreadScopedSettingsWrite(activeThreadId);
+          if (!written || cancelled || read.signal.aborted) return;
+          if (version !== getThreadSettingsEditVersion()) continue;
+          forgetThreadReads([activeThreadId]);
+          const { thread, cacheable } = await getStoredChatThreadReadResult(activeThreadId, {
+            timeoutMs: THREAD_READ_TIMEOUT_MS,
+            signal: read.signal,
+          });
+          if (cancelled || read.signal.aborted) return;
+          if (version !== getThreadSettingsEditVersion()) continue;
+          if (!thread || !cacheable) return;
+          applyThreadScopedSettings(
+            activeThreadId,
+            thread.settings ? sanitizeThreadScopedSettings(thread.settings) : null,
+            { fromRemote: true },
+          );
+          return;
+        }
+      })().catch(() => undefined);
+    };
+
     sync();
     window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
+    window.addEventListener("storage", syncRemote);
     return () => {
       cancelled = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
       abortReads();
+      remoteRead?.abort();
+      window.removeEventListener("storage", syncRemote);
       commitHeldThreadScopedEditsToTheirThread();
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, sync);
     };

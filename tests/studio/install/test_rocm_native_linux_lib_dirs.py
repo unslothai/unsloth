@@ -34,8 +34,7 @@ def _load_prebuilt_module():
 
 
 def _extract_functions(path: Path, names) -> dict:
-    """exec just the named top-level functions out of a module that is too
-    heavy to import."""
+    """Extracts only the named top-level functions from a module too heavy to import."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     found = {n.name for n in wanted}
@@ -107,8 +106,7 @@ def _call(
 
 
 class TestBundledHipPresent:
-    """The prepend only makes sense when the prebuilt actually bundles HIP; a
-    CPU or CUDA build must be left alone."""
+    """Prepend only when the prebuilt bundles HIP; CPU or CUDA builds must be left alone."""
 
     @pytest.mark.parametrize(
         "where", ["studio/install_llama_prebuilt.py", "studio/backend/core/inference/llama_cpp.py"]
@@ -167,8 +165,7 @@ class TestNativeLinuxGates:
             assert self._run(impl, bundle_dir, self._HOST | {"/dev/dxg"}) == [], where
 
     def test_no_op_without_amdkfd(self, bundle_dir):
-        """No /dev/kfd: NVIDIA host, CPU host, or a container without the AMD
-        device node. Prepending system ROCm there would be pure breakage."""
+        """Without /dev/kfd (NVIDIA, CPU, container), prepending system ROCm is pure breakage."""
         present = {"/opt/rocm/lib/libhsa-runtime64.so"}
         for where, impl in _impls().items():
             assert self._run(impl, bundle_dir, present) == [], where
@@ -205,8 +202,7 @@ class TestNativeLinuxRootResolution:
     _run = staticmethod(_call)
 
     def test_env_roots_take_precedence_over_opt_rocm(self, bundle_dir, monkeypatch):
-        """A user with a side-by-side ROCm (HIP_PATH) must get theirs first: the
-        one matching their driver, not whatever /opt/rocm happens to be."""
+        """HIP_PATH beats /opt/rocm, so a side-by-side ROCm matching the driver is used first."""
         monkeypatch.setenv("HIP_PATH", "/usr/local/rocm7")
         present = {
             "/dev/kfd",
@@ -239,8 +235,7 @@ class TestNativeLinuxRootResolution:
             assert self._run(impl, bundle_dir, present) == ["/opt/rocm/lib64"], where
 
     def test_nested_llvm_runtime_follows_system_rocm_lib(self, bundle_dir):
-        """#7446: libamd_comgr depends on ROCm's versioned LLVM runtime, which is
-        installed below lib/llvm/lib rather than directly in lib."""
+        """7446: libamd_comgr needs ROCm's LLVM under lib/llvm/lib, not directly in lib."""
         present = {
             "/dev/kfd",
             "/opt/rocm/lib/libhsa-runtime64.so",
@@ -253,8 +248,7 @@ class TestNativeLinuxRootResolution:
             ], where
 
     def test_lib64_host_still_finds_llvm_under_lib(self, bundle_dir):
-        """ROCm puts LLVM under <root>/lib/llvm even where HSA lives in lib64; deriving it from the
-        HSA dir alone would miss it and bind libamd_comgr to the bundle's libLLVM."""
+        """LLVM sits in <root>/lib/llvm even with HSA in lib64; deriving it from HSA misses it."""
         present = {
             "/dev/kfd",
             "/opt/rocm/lib64/libhsa-runtime64.so",

@@ -533,10 +533,11 @@ class NativeClefAgent:
         state: Any,
         questions: dict[str, dict[str, Any]],
         images: list[str] | None = None,
+        state_images: bool = False,
     ) -> dict[str, Any]:
         if gap := request_gap(questions):
             raise NativeInputError(gap)
-        if images and not self.accepts_images:
+        if (images or state_images) and not self.accepts_images:
             raise NativeInputError(
                 f"{self.alias} has no vision projector, so it cannot read images."
             )

@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Source-level, since the page builds this flow inline. The task choice must keep the staged
- * plan (disk preflight for ~66 GB), local copies must reach the dialog, and hiding the page
- * must take the cancellation path.
+ * Source-level since the page builds this flow inline: the task choice keeps the staged plan (disk
+ * preflight for ~66 GB), local copies reach the dialog, and hiding the page cancels.
  */
 
 import assert from "node:assert/strict";

@@ -234,7 +234,6 @@ def test_disabled_or_merged_adapter_without_grad_stays_fused(
     assert [name for name, _ in spy.calls] == FUSED_NAMES[path]
     args = spy.calls[0][1]
     if path == "o":
-        # The default config's six-argument call.
         assert len(args) == 6
     else:
         # No LoRA weights, no dropout masks, no lora_B biases: the base matmul only.
@@ -306,8 +305,7 @@ def test_disabled_adapter_without_grad_on_4bit_base_stays_fused(monkeypatch, pat
     with torch.no_grad():
         fused = PATHS[path][0](block)(X)
         ref = PATHS[path][1](block)(X)
-        # The fused kernels dequantize and run one matmul in X's dtype. bitsandbytes >= 0.50 answers
-        # few-row inference calls with its fused 4-bit GEMM instead, which rounds differently.
+        # bitsandbytes >= 0.50 fuses few-row calls into a 4-bit GEMM, which rounds differently.
         with monkeypatch.context() as m:
             m.setattr(bnb.nn.Linear4bit, "forward", _dequantize_then_linear)
             base_only = PATHS[path][1](block)(X)
@@ -334,8 +332,7 @@ def test_patch_summary_names_a_lora_variant():
 
 
 def test_routing_compiles_without_graph_breaks(monkeypatch):
-    # The added routing checks are Python attribute reads and grad / autocast mode queries: fullgraph traces
-    # the fused, variant, trainable base, autocast and disabled (with and without grad) routes.
+    # Routing uses only Python attribute and grad/autocast reads; fullgraph traces every route.
     if not fast_lora.TRACE_LORA_FUNCTIONS:
         pytest.skip("fused Functions run Dynamo-disabled before torch 2.11")
     import torch._dynamo
@@ -412,8 +409,7 @@ def test_unloaded_plain_linear_projections_run_the_fused_paths(
 def test_partially_merged_block_with_frozen_input_matches_peft(
     monkeypatch, device, dtype, path, dropout
 ):
-    # X needs no grad, but the block's other active adapters train, so the fused backward would run with
-    # no LoRA weights for the merged projection ('NoneType' object has no attribute 'to').
+    # Frozen X with training adapters: fused backward fails on merged projections lacking LoRA.
     model, block = _peft_block(device, dtype, dropout)
     block.k_proj.merge()
     block.gate_proj.merge()

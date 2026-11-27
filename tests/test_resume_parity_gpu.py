@@ -30,8 +30,7 @@ pytestmark = [
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _RUNNER = os.path.join(_ROOT, "tests", "_shared", "tiny_sft_runner.py")
 N = 6
-# The gate is max(floor, 4 x A/A noise). On an H100 / B200 the A/A pair and the resume are both
-# bit-exact, so the floors only absorb nondeterminism the A/A pair happened not to show.
+# max(floor, 4 x A/A noise); H100/B200 runs are bit-exact, so floors only absorb unseen noise.
 FLOOR = {"loss": 1e-4, "grad_norm": 1e-5, "learning_rate": 1e-12, "adapter": 1e-5}
 
 
@@ -106,8 +105,7 @@ def test_resume_matches_straight_run(runs):
 
 
 def test_comparison_catches_a_resume_without_optimizer_state(runs):
-    # Same resume with the optimizer state removed from the checkpoint: Adam restarts from zero
-    # moments, which a working comparison must flag.
+    # Dropping optimizer state restarts Adam from zero moments; the comparison must flag it.
     broken = runs["base"] / f"checkpoint-{N}-no-optimizer"
     shutil.copytree(runs["ckpt"], broken)
     removed = [p for p in os.listdir(broken) if p.startswith("optimizer")]
