@@ -1080,7 +1080,6 @@ export function DiffusionTrainPanel({
       cancelled = true;
       if (delayed !== undefined) clearTimeout(delayed);
     };
-    // job_id: a run that finished while a hidden tab skipped polls is never seen "running".
   }, [active, status?.status, status?.job_id]);
 
   const openPrevRun = useCallback(async (jobId: string) => {

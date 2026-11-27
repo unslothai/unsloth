@@ -20,7 +20,6 @@ export function isDiffusionTrainingSettled(
   );
 }
 
-/** Polls the diffusion training status while `active` (the Train tab is shown). */
 export function useDiffusionTrainingStatus(active: boolean): {
   status: DiffusionTrainingStatus | null;
   poll: () => Promise<void>;
