@@ -262,3 +262,49 @@ def test_an_overflow_inside_the_only_turn_resends_with_its_results_shortened(mon
     )
     assert not [c for c in chunks if "error" in c]
     assert len(json.dumps(recorded[-1]["messages"])) <= _OVERFLOW_CHARS
+
+
+def test_an_overflow_after_a_replayed_summary_resends_with_its_results_shortened(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    def execute(name, arguments, **kwargs):
+        return "RESULT " + "harbor ledger canal " * 150
+
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", execute)
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    thread_id = "replayed-summary-thread"
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": "t", "modelType": "base", "modelId": "a-model", "createdAt": 1}
+    )
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+        {"role": "user", "content": "Run four python steps."},
+    ]
+    body = cloud_compaction.body_messages(messages)
+    cloud_compaction.save_summary(
+        thread_id, covered = body[:-1], summary = "## Goal\nEarlier.", model = "a-model", manual = False
+    )
+    recorded: list[dict] = []
+
+    class Recording(_RefusesPastALimit):
+        def do_POST(self) -> None:  # noqa: N802
+            self.server.recorded = recorded  # type: ignore[attr-defined]
+            super().do_POST()
+
+    chunks, _ = _proxy(
+        "openrouter",
+        messages,
+        handler = Recording,
+        thread_id = thread_id,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 200_000,
+        compaction_mode = "summary",
+    )
+    assert not [c for c in chunks if "error" in c]
+    assert len(json.dumps(recorded[-1]["messages"])) <= _OVERFLOW_CHARS

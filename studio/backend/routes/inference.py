@@ -32198,11 +32198,9 @@ async def _proxy_to_external_provider(
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
-        # Nothing dropped, yet smaller than what the provider refused: worth sending again.
+        # Measured, not read off truncation: a replayed summary reports drops on every fit.
         _overflow_shrunk = (
-            force == "overflow"
-            and not (truncation and truncation.get("dropped_messages"))
-            and _external_token_counter(payload, tools)(fitted) < refused_tokens
+            force == "overflow" and _external_token_counter(payload, tools)(fitted) < refused_tokens
         )
         _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
