@@ -2454,6 +2454,10 @@ export const en = {
         confirmDescriptionChatOnly:
           "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
+        recommendedTorch:
+          "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch} that RTX 50-series GPUs are supported on.",
+        recommendedDriver:
+          "PyTorch {torch} is older than the managed {managedTorch} that RTX 50-series GPUs are supported on, but this GPU driver does not support CUDA 13. Update the GPU driver first, then repair the installation.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
