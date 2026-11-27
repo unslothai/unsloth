@@ -757,3 +757,39 @@ def test_reuse_counting_does_not_break_a_compiled_block(af, monkeypatch):
     wrapper.step()
     assert wrapper.hook_steps == 6 and wrapper.deferred_steps == 0
     torch._dynamo.reset()
+
+
+def test_deferred_weights_are_stepped_in_bounded_batches(af, monkeypatch):
+    """The weights left for optimizer.step() (a looped block's) are stepped in batches of at most batch_bytes, so a
+    multi-tensor step's temporaries never span every deferred weight at once."""
+    x = torch.randn(4, 8)
+    standard, head = _Looped(), _Looped()
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    weight = head.block.proj.weight
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(head.parameters(), lr = 1e-2),
+        model = head,
+        batch_bytes = weight.numel() * weight.element_size(),
+    )
+    sizes = []
+    step_params = wrapper._step_params
+    monkeypatch.setattr(
+        wrapper,
+        "_step_params",
+        lambda params: (
+            sizes.append(
+                sum(p.grad.numel() * p.grad.element_size() for p in params if p.grad is not None)
+            ),
+            step_params(params),
+        ),
+    )
+    for _ in range(2):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+    assert wrapper.deferred_steps == 2 * 2
+    assert max(sizes) <= wrapper.batch_bytes

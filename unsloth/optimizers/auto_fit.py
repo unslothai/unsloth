@@ -570,7 +570,17 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                         self.late_steps += 1
                 # A weight the hook already stepped raises in _step_params: it received a second gradient.
                 left.append(p)
-        self._step_params(left)
+        # In batches of at most batch_bytes, each freed before the next: a multi-tensor step's temporaries span
+        # its whole batch, and the planner budgets them for one batch.
+        batch, size = [], 0
+        for p in left:
+            nbytes = p.grad.numel() * p.grad.element_size()
+            if batch and size + nbytes > self.batch_bytes:
+                self._step_params(batch)
+                batch, size = [], 0
+            batch.append(p)
+            size += nbytes
+        self._step_params(batch)
 
     def total_norm(self):
         """L2 norm over every gradient this step saw (before clipping)."""
