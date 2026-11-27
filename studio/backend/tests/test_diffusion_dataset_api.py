@@ -695,7 +695,8 @@ def test_editing_a_caption_replaces_every_case_variant(client, ds_root):
     r = client.put("/api/train/diffusion/dataset/styleset/caption/cat.png", json = {"caption": "new"})
     assert r.status_code == 200, r.text
     assert r.json()["caption"] == "new"
-    assert sorted(p.name for p in folder.iterdir()) == ["cat.png", "cat.txt"]
+    # casefold: a case-insensitive filesystem keeps the old cat.TXT entry name on rewrite.
+    assert sorted(p.name.casefold() for p in folder.iterdir()) == ["cat.png", "cat.txt"]
     r = client.put("/api/train/diffusion/dataset/styleset/caption/cat.png", json = {"caption": ""})
     assert r.status_code == 200, r.text
     assert r.json()["caption"] is None

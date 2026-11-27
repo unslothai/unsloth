@@ -40,28 +40,37 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
+def _iter_caption_sidecars(media: Path, index: Optional[dict[tuple[str, str], list[str]]]):
+    if index is None:
+        index = caption_sidecar_index(media.parent)
+    for ext in CAPTION_EXTS:
+        exact = media.with_suffix(ext)
+        names = sorted(index.get((media.stem, ext), ()))
+        if exact.name in names:
+            names.remove(exact.name)
+            yield exact
+            yield from (media.parent / n for n in names)
+            continue
+        # Not listed under its own name: a case-insensitive filesystem may still resolve it to a listed entry.
+        exact_found = exact.is_file()
+        if exact_found:
+            yield exact
+        for n in names:
+            path = media.parent / n
+            if not (exact_found and _same_file(path, exact)):
+                yield path
+
+
 def caption_sidecars(
     media: Path, index: Optional[dict[tuple[str, str], list[str]]] = None
 ) -> list[Path]:
-    if index is None:
-        index = caption_sidecar_index(media.parent)
-    found: list[Path] = []
-    for ext in CAPTION_EXTS:
-        exact = media.with_suffix(ext)
-        spellings = [exact] if exact.is_file() else []
-        for name in sorted(index.get((media.stem, ext), ())):
-            path = media.parent / name
-            if not any(_same_file(path, p) for p in spellings):
-                spellings.append(path)
-        found.extend(spellings)
-    return found
+    return list(_iter_caption_sidecars(media, index))
 
 
 def find_caption_sidecar(
     media: Path, index: Optional[dict[tuple[str, str], list[str]]] = None
 ) -> Optional[Path]:
-    found = caption_sidecars(media, index)
-    return found[0] if found else None
+    return next(_iter_caption_sidecars(media, index), None)
 
 
 def metadata_caption_files(folder: Path) -> list[Path]:
