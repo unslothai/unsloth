@@ -24,8 +24,10 @@ import {
 } from "@/features/training";
 import {
   llmStepGuidance,
+  runDataParallelSize,
   trainedRowCount,
 } from "@/features/training/lib/step-guidance";
+import { useTrainingParallelStore } from "@/features/training/stores/training-parallel-store";
 import { useT } from "@/i18n";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -137,6 +139,15 @@ export function ParamsSection({
     setSaveSteps: store.setSaveSteps,
   });
 
+  // batchSize is per device: data-parallel replicas multiply the rows per step, and an unknown
+  // multi-GPU layout gives no hint rather than one that overestimates the steps.
+  const dataParallelSize = useTrainingParallelStore((s) =>
+    runDataParallelSize({
+      capabilitiesStatus: s.capabilitiesStatus,
+      gpuCount: s.capabilities ? s.capabilities.gpus.length : null,
+      plan: s.plan,
+    }),
+  );
   const stepGuidance = store.isDecision
     ? null
     : llmStepGuidance(
@@ -147,6 +158,7 @@ export function ParamsSection({
         ),
         store.batchSize,
         store.gradientAccumulation,
+        dataParallelSize,
       );
   const stepGuidanceText = (() => {
     if (!stepGuidance) return null;

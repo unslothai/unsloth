@@ -8,6 +8,8 @@ import {
   MAX_SUGGESTED_STEPS,
   MIN_SUGGESTED_STEPS,
   llmStepGuidance,
+  planDataParallelSize,
+  runDataParallelSize,
   trainedRowCount,
 } from "../src/features/training/lib/step-guidance.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -90,4 +92,120 @@ test("the Max Steps field shows the hint and applies it only on click", () => {
     /onClick=\{\(\) =>\s*store\.setMaxSteps\(stepGuidance\.suggestedSteps\)/,
   );
   assert.equal(params.match(/setMaxSteps\(stepGuidance/g)?.length, 1);
+});
+
+test("data-parallel replicas multiply the per-device batch", () => {
+  // 10k rows, 4 x 8 per device on 4 DDP replicas = 128 rows per step.
+  const ddp = llmStepGuidance(10_000, 4, 8, 4);
+  assert.equal(ddp?.effectiveBatch, 128);
+  assert.equal(ddp?.passSteps, 79);
+  assert.equal(llmStepGuidance(10_000, 4, 8, 1)?.passSteps, 313);
+  assert.equal(llmStepGuidance(10_000, 4, 8)?.passSteps, 313);
+  // An unknown replica count withholds the hint instead of overestimating it.
+  assert.equal(llmStepGuidance(10_000, 4, 8, null), null);
+  assert.equal(llmStepGuidance(10_000, 4, 8, 0), null);
+  assert.equal(llmStepGuidance(10_000, 4, 8, Number.NaN), null);
+});
+
+test("plan replicas mirror parallel_launch.data_parallel_size", () => {
+  const plan = (mode: string, worldSize: number, spec: string | null) =>
+    // biome-ignore lint/suspicious/noExplicitAny: test fixtures name every mode.
+    planDataParallelSize({ mode: mode as any, worldSize, spec });
+  assert.equal(plan("single", 1, null), 1);
+  assert.equal(plan("layer_split", 1, null), 1);
+  assert.equal(plan("ddp", 4, "dp=4"), 4);
+  assert.equal(plan("fsdp2", 2, "dp=2,fsdp=1"), 2);
+  assert.equal(plan("tp", 4, "tp=4"), 1);
+  assert.equal(plan("pp", 2, "pp=2"), 1);
+  assert.equal(plan("cp", 2, "cp=2"), 1);
+  assert.equal(plan("ep", 4, "ep=4"), 4);
+  assert.equal(plan("custom", 8, "dp=2;tp=2,pp=2"), 2);
+  assert.equal(plan("custom", 4, "DP=2, TP_SIZE=2"), 2);
+  // A multi-process plan without a readable layout is unknown, not 1.
+  assert.equal(plan("ddp", 4, null), null);
+  assert.equal(plan("custom", 4, " "), null);
+  assert.equal(plan("custom", 4, "tp=two"), null);
+  assert.equal(plan("ddp", 1, "dp=1"), 1);
+});
+
+test("the run's replicas: 1 off multi-GPU hosts, the plan's on one, else unknown", () => {
+  const ddp = { mode: "ddp" as const, worldSize: 2, spec: "dp=2" };
+  // Single-GPU host: capabilities are never fetched and /start sends no parallel fields.
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "idle",
+      gpuCount: null,
+      plan: null,
+    }),
+    1,
+  );
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 1,
+      plan: null,
+    }),
+    1,
+  );
+  // No multi-GPU routes on the backend: one process.
+  for (const status of ["unsupported", "error"]) {
+    assert.equal(
+      runDataParallelSize({
+        capabilitiesStatus: status,
+        gpuCount: null,
+        plan: null,
+      }),
+      1,
+    );
+  }
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "loading",
+      gpuCount: null,
+      plan: null,
+    }),
+    null,
+  );
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 2,
+      plan: ddp,
+    }),
+    2,
+  );
+  // Multi-GPU host with no plan yet, or a refused one: withheld.
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 2,
+      plan: null,
+    }),
+    null,
+  );
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 2,
+      plan: { ...ddp, error: { code: "x", message: "no", alternative: null } },
+    }),
+    null,
+  );
+  assert.equal(
+    runDataParallelSize({
+      capabilitiesStatus: "ready",
+      gpuCount: 4,
+      plan: { mode: "single", worldSize: 1, spec: null },
+    }),
+    1,
+  );
+});
+
+test("the Max Steps hint takes the run's data-parallel size", () => {
+  const params = readSrc("features/studio/sections/params-section.tsx");
+  assert.match(
+    params,
+    /useTrainingParallelStore\(\(s\) =>\s*runDataParallelSize\(/,
+  );
+  assert.match(params, /store\.gradientAccumulation,\s*dataParallelSize,\s*\)/);
 });
