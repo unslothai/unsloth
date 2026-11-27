@@ -10,7 +10,18 @@ import os
 import platform
 import sys
 
+
 __all__ = ["patch_windows_safetensors_pread", "pread_backend_kwargs"]
+
+
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. AMD SDK / Radeon wheels leave torch.version.hip
+    # unset and carry the ROCm tag only in torch.__version__.
+    return (
+        bool(getattr(torch.version, "hip", None))
+        or "rocm" in str(getattr(torch, "__version__", "")).lower()
+    )
+
 
 PREAD_ENV = "UNSLOTH_SAFETENSORS_PREAD"
 # private keyword: keep this shard on mmap (Studio's small-host route keeps an encoder paged from disk)
@@ -54,7 +65,7 @@ def _unified_memory_now() -> bool:
     if torch is None:
         return False
     try:
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_initialized():
+        if _is_rocm_torch(torch) or not torch.cuda.is_initialized():
             return False
         count = torch.cuda.device_count()
         _UMA = count > 0 and all(

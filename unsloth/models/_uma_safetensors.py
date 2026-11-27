@@ -10,10 +10,20 @@ import functools
 
 import torch
 
+
 __all__ = [
     "is_integrated_unified_memory_gpu",
     "patch_unified_memory_safetensors_load",
 ]
+
+
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. AMD SDK / Radeon wheels leave torch.version.hip
+    # unset and carry the ROCm tag only in torch.__version__.
+    return (
+        bool(getattr(torch.version, "hip", None))
+        or "rocm" in str(getattr(torch, "__version__", "")).lower()
+    )
 
 
 @functools.lru_cache(maxsize = None)
@@ -109,7 +119,7 @@ def patch_unified_memory_safetensors_load():
         if (
             pread_off
             or pread_ok[0] is False
-            or getattr(torch.version, "hip", None)
+            or _is_rocm_torch(torch)
             or kwargs.get("_unsloth_keep_mmap")
             or kwargs.get("backend") not in (None, "mmap")
         ):
