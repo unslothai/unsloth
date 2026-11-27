@@ -1967,11 +1967,29 @@ def _quantize_fp8_per_row(x, scale_ub = None):
     return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
 
 
+def _clear_failed_probe(device):
+    # A failed probe GEMM must not poison the context: surface any error it left (synchronize), then a kernel
+    # launch check reads, and so resets, the last CUDA error.
+    if torch.device(device).type != "cuda":
+        return
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+    try:
+        torch.ones(1, device = device).add_(1).item()
+    except Exception:
+        pass
+
+
 def _rowwise_gemm_works(gemm, device):
+    # Any failure means the kernel is missing here ("Rowwise scaling is not currently supported" on the Windows
+    # wheels, cuBLASLt CUBLAS_STATUS_NOT_SUPPORTED on older ones, "cutlass cannot initialize" for FBGEMM on sm120).
     x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
     try:
         return bool((gemm(x) == 128).all())
     except Exception:
+        _clear_failed_probe(device)
         return False
 
 
