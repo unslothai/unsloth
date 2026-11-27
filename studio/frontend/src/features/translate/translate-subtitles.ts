@@ -30,8 +30,6 @@ const TIME = String.raw`(?:\d+:)?\d{1,2}:\d{2}[,.]\d{1,3}`;
 const TIMING = new RegExp(`^[ \\t]*${TIME}[ \\t]*-->[ \\t]*${TIME}`);
 const VTT_HEADER = /^WEBVTT(?:[ \t\r\n]|$)/;
 const LINE_BREAK = /\r\n|[\r\n]/;
-// A single CRLF cannot supply both line breaks of a blank line.
-const BLOCK_BREAK = /((?:\r?\n|\r(?!\n))(?:[ \t]*(?:\r?\n|\r(?!\n)))+)/;
 
 /** Null for anything that is not a whole SRT or WebVTT file; a clipped last SRT block is kept as is. */
 export function parseSubtitles(source: string): SubtitleDocument | null {
@@ -41,18 +39,20 @@ export function parseSubtitles(source: string): SubtitleDocument | null {
   const content = body.slice(0, body.length - trail.length);
   if (!content) return null;
   const format: SubtitleFormat = VTT_HEADER.test(content) ? "vtt" : "srt";
-  const parts = content.split(BLOCK_BREAK);
+  // Bare CR ends lines only without LF: "\r\r\n" in a CRLF file is a stray CR (FFmpeg ticket #5032).
+  const crOnly = !source.includes("\n") && source.includes("\r");
+  const parts = content.split(
+    crOnly ? /(\r(?:[ \t]*\r)+)/ : /(\r?\n(?:[ \t]*\r?\n)+)/,
+  );
   const doc: SubtitleDocument = {
     format,
     cues: [],
     pieces: [lead],
-    eol: source.includes("\r\n")
-      ? "\r\n"
-      : (source.match(LINE_BREAK)?.[0] ?? "\n"),
+    eol: crOnly ? "\r" : source.includes("\r\n") ? "\r\n" : "\n",
   };
   for (let i = 0; i < parts.length; i += 2) {
     const block = parts[i];
-    const lines = block.split(/(\r\n|[\r\n])/);
+    const lines = block.split(crOnly ? /(\r)/ : /(\r?\n)/);
     const timing = TIMING.test(lines[0])
       ? 0
       : lines.length > 2 &&

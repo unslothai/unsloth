@@ -133,6 +133,16 @@ test("WebVTT translation preserves CR, LF and CRLF cue boundaries", async () => 
   }
 });
 
+test("a stray CR before CRLF stays inside its SRT cue", () => {
+  const source =
+    "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\r\nworld\r\n\r\n" +
+    "2\r\n00:00:03,000 --> 00:00:04,000\r\nBye\r\n";
+  const doc = parseSubtitles(source);
+  assert.ok(doc);
+  assert.equal(doc.cues.length, 2);
+  assert.equal(rebuildSubtitles(doc, []), source);
+});
+
 test("plain text, prose with a timestamp and broken subtitles stay plain text", () => {
   for (const text of [
     "",
