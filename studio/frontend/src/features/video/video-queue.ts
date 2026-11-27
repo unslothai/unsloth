@@ -41,7 +41,29 @@ export function queuedVideoNext(jobs: VideoQueueJob[], videoId: string): QueuedV
   };
 }
 
-/** After a reload, the account's oldest waiting job is the one the page resumes. */
+export async function recoverVideoJob(
+  id: string,
+  getProgress: (id: string) => Promise<VideoGenerateProgress>,
+  getQueue: () => Promise<VideoQueueJob[]>,
+): Promise<
+  | Exclude<QueuedVideoNext, { kind: "started" }>
+  | { kind: "progress"; progress: VideoGenerateProgress }
+  | { kind: "missing" }
+> {
+  const readOwnProgress = async () => {
+    const progress = await getProgress(id);
+    return (progress.video_id ?? progress.video?.id) === id ? progress : null;
+  };
+  const progress = await readOwnProgress();
+  if (progress) return { kind: "progress", progress };
+  const next = queuedVideoNext(await getQueue(), id);
+  if (next.kind !== "started") return next;
+  // The job can start after the first progress read and disappear from the queue.
+  const admitted = await readOwnProgress();
+  return admitted ? { kind: "progress", progress: admitted } : { kind: "missing" };
+}
+
+/** An account-wide fallback for pages without a submitted job ID. */
 export function oldestQueuedVideo(jobs: VideoQueueJob[]): QueuedVideo | null {
   let oldest: VideoQueueJob | null = null;
   for (const job of jobs) {

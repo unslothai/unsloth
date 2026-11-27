@@ -333,9 +333,12 @@ export async function getVideoLoadProgress(
 
 /** With `videoId`, a clip that already ended answers with its own outcome even after a
  *  successor took the progress record. */
-export async function getVideoGenerateProgress(videoId?: string): Promise<VideoGenerateProgress> {
+export async function getVideoGenerateProgress(
+  videoId?: string,
+  signal?: AbortSignal,
+): Promise<VideoGenerateProgress> {
   const query = videoId ? `?video_id=${encodeURIComponent(videoId)}` : "";
-  return parseJson(await authFetch(`/api/inference/video/generate-progress${query}`));
+  return parseJson(await authFetch(`/api/inference/video/generate-progress${query}`, { signal }));
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
