@@ -434,3 +434,46 @@ def test_bitsandbytes_in_backward_matches_the_standard_step(af, name):
     # The embedding kept its 32-bit override, the others 8-bit state.
     assert h_opt.state[head[0].weight]["state1"].dtype == torch.float32
     assert h_opt.state[head[1].weight]["state1"].dtype == torch.uint8
+
+
+class _Blocks(torch.nn.Module):
+    """Two blocks under reentrant checkpointing (as Unsloth's offloaded checkpointing runs one backward per
+    block); `shared` reuses one weight in both blocks."""
+
+    def __init__(self, shared):
+        super().__init__()
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(8, 8)
+        self.b = self.a if shared else torch.nn.Linear(8, 8)
+        self.head = torch.nn.Linear(8, 1)
+
+    def forward(self, x):
+        from torch.utils.checkpoint import checkpoint
+
+        x = x.requires_grad_()
+        h = checkpoint(lambda t: torch.tanh(self.a(t)), x, use_reentrant = True)
+        h = checkpoint(lambda t: torch.tanh(self.b(t)), h, use_reentrant = True)
+        return self.head(h).square().mean()
+
+
+def test_reentrant_checkpointing_matches_the_standard_step(af):
+    x = torch.randn(4, 8)
+    standard, head = _Blocks(False), _Blocks(False)
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(head.parameters(), lr = 1e-2))
+    for _ in range(3):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+
+
+def test_a_weight_reused_across_checkpointed_blocks_raises(af):
+    """Each block's backward would step the shared weight before the earlier block recomputes with it."""
+    model = _Blocks(True)
+    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(model.parameters(), lr = 1e-2))
+    with wrapper.armed(), pytest.raises(RuntimeError, match = "second gradient"):
+        model(torch.randn(4, 8)).backward()
