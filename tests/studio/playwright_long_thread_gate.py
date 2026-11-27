@@ -60,17 +60,13 @@ FRONTEND = REPO / "studio" / "frontend"
 DIST = Path(os.environ.get("LONG_THREAD_DIST", REPO / ".playwright-cli" / "long-thread-production"))
 SMALL = int(os.environ.get("LONG_THREAD_SMALL", "40"))
 LARGE = int(os.environ.get("LONG_THREAD_LARGE", "200"))
-# Measured (40 -> 200 turns, per keystroke): with the #16603 rule, selector matching 79-80 ->
-# 423-472 ms (5.3-6.0x) and :has() 74-84 ms; healthy, 0.7-0.9 -> 0.7-1.0 ms (1.00x) and 0.2 ms.
+# Healthy: selector matching 1.00x, :has() 0.2 ms; with the #16603 rule, 5.3-6.0x and 74-84 ms.
 MAX_MATCH_RATIO = float(os.environ.get("LONG_THREAD_MAX_MATCH_RATIO", "2.0"))
 MAX_HAS_MS = float(os.environ.get("LONG_THREAD_MAX_HAS_MS", "5.0"))
-# Style recalc for one open or close of a modal layer (Radix writes pointer-events: none on <body>,
-# an inherited property). Healthy: 1-5 ms at 200 turns; when the thread inherits it, every message
-# restyles and this is hundreds of ms in Chromium and seconds in WebKit.
+# Radix sets body pointer-events: none on modal toggle; inheriting threads restyle per message.
 MAX_LOCK_MS = float(os.environ.get("LONG_THREAD_MAX_LOCK_MS", "30.0"))
 LOCK_TOGGLES = 4
-# A ratio inside this band gets a second interleaved repeat before the verdict; outside it, one
-# measurement is decisive (healthy runs read 1.00x, the regression 5.3-6.0x).
+# Ratios in RECHECK_BAND get a second repeat; healthy reads 1.00x, the regression 5.3-6.0x.
 RECHECK_BAND = (1.5, 3.0)
 # Keeps sub-millisecond noise from becoming a large ratio.
 MATCH_FLOOR_MS = 2.0
@@ -86,9 +82,8 @@ WEBKIT = os.environ.get("LONG_THREAD_WEBKIT", "0") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
-# Untraced style recalc per key above this on the large chat means a regressed build (healthy:
-# 1-15 ms; #16603: 140-1000 ms); its traced window is then 2 keys, not 10. Above EXTREME the
-# page is hundreds of times a healthy one and fails on the untraced number alone.
+# Per-key untraced style above SLOW_STYLE_MS marks a regressed build (healthy 1-15 ms, #16603
+# 140-1000 ms): 2 traced keys, not 10; above EXTREME_STYLE_MS fails on the untraced number alone.
 SLOW_STYLE_MS = 60.0
 EXTREME_STYLE_MS = 300.0
 # Rule bisection on a failure: a smaller chat, 3 keys per probe, a time budget.
@@ -134,8 +129,7 @@ def metrics(cdp) -> dict:
     return {m["name"]: m["value"] for m in cdp.send("Performance.getMetrics")["metrics"]}
 
 
-# The stylesheet is edited as text before the page loads: rules switched off in a page that has
-# already rendered leave Chromium's :has() flags on its elements, so the cost stays (measured).
+# Edit the stylesheet text before load: rules disabled after render leave :has() flags set.
 SHEET_RULES_JS = """(text) => {
   const sheet = new CSSStyleSheet();
   sheet.replaceSync(text);
@@ -199,8 +193,7 @@ def open_thread(
     cdp.send("Performance.enable")
     box = page.locator(".aui-composer-input").first
     box.click()
-    # Focusing the composer restyles focus-dependent rules once, across the thread; that one-off
-    # is not a per-keystroke cost, so let it and a warm-up key land before the window opens.
+    # Focus restyles once, not per keystroke; a warm-up key lands before the window opens.
     page.wait_for_timeout(800)
     page.keyboard.press("x")
     page.keyboard.press("Backspace")
@@ -246,12 +239,10 @@ def measure(browser, base: str, turns: int) -> dict:
       tables: document.querySelectorAll('table').length,
       workspace: !!document.querySelector('[data-wallpaper-workspace] .thread-bottom-fade'),
     })""")
-    # Untraced pre-check: selector statistics slow a regressed build ~50x, so a slow page gets a
-    # short traced window; the verdict still comes from the traced numbers.
+    # Untraced pre-check: a slow page gets a short traced window; verdict uses traced numbers.
     pre = style_per_key(cdp, page, PRECHECK_KEYS)
     if pre >= EXTREME_STYLE_MS:
-        # Hundreds of times a healthy keystroke: one traced key would take minutes and could not
-        # change the verdict, so skip tracing and let the pin-down find the rule.
+        # A traced key takes minutes and cannot change the verdict; pin-down finds the rule.
         typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == PRECHECK_KEYS
         ctx.close()
         return {
@@ -324,9 +315,8 @@ def pin_down(
     base: str,
     budget_s: float = PIN_BUDGET_S,
 ) -> list[str]:
-    """Finds :has() rules whose removal makes a keystroke cheap, one fresh page per probe; costs
-    often not additive, so it bisects removal sets toward rules-off, narrows to single rules,
-    reports each (page without it; rule alone); at most three, time-boxed."""
+    """Finds :has() rules whose removal makes a keystroke cheap; costs often not additive, so it
+    bisects removal sets, reports each (page without it; rule alone), max three, time-boxed."""
     started = time.time()
     sheet = main_stylesheet(DIST)
     if sheet is None:
@@ -387,8 +377,7 @@ def pin_down(
                     cands = first
             return cands[0] if cands else None
 
-        # Rules that search all descendants of an element holding the thread go first: when
-        # removing them fixes the page, the bisection only has to look among them.
+        # Thread-descendant rules go first; if removing them fixes the page, bisect only them.
         likely = [
             i
             for i, r in enumerate(rules)
@@ -595,8 +584,7 @@ def main() -> int:
                 details += pin_down(browser, base)
                 details.append("  " + HINT)
             if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
-                # One reading on a shared runner can catch the page mid-settle (a Windows leg read 125 ms
-                # where the same build reads 14 ms on every other leg); a real regression reads high twice.
+                # Shared runners can read mid-settle; a real regression reads high twice.
                 again = measure(browser, base, LARGE)
                 print(
                     f"  dialog/menu lock {large['lock_ms']:.0f} ms is over budget; measured again on a fresh "

@@ -332,8 +332,7 @@ class TestPrewarmContextManager:
 
 class TestNoLeakIntoSaveKwargs:
     def test_preflight_locals_never_reach_unsloth_generic_save(self):
-        """arguments = dict(locals()) forwards every local; a new one without a del breaks the GGUF
-        export."""
+        """dict(locals()) forwards every local; new ones need a del or the GGUF export breaks."""
         import inspect
 
         source = inspect.getsource(S.unsloth_save_pretrained_gguf)
@@ -744,8 +743,7 @@ class TestTheRecipesIgnoredModulesStay16Bit:
 
 
 class TestTorchaoStagingSharesTheRedirectDestination:
-    """Torchao staging and the redirect target share /tmp, so a destination too small for both is
-    refused."""
+    """Torchao staging and the redirect target share /tmp; one too small for both is refused."""
 
     @pytest.fixture
     def redirected(self, monkeypatch, tmp_path):
@@ -961,8 +959,7 @@ class TestASeparateStagingFilesystemIsStillMeasured:
         assert capsys.readouterr().out == ""
 
     def test_the_warning_carries_the_merge_guards_own_reserve(self, separate, capsys):
-        """Between staging_bytes and staging_bytes / 0.95 the merge dies, so the TMPDIR warning uses
-        that."""
+        """Merge dies between staging_bytes and staging_bytes / 0.95; the warning uses that."""
         separate["staging"] = self._STAGING
         S._preflight_merge_disk(_FakeModel(), "model", "torchao_fp8")
         assert "TMPDIR" in capsys.readouterr().out
@@ -1300,8 +1297,7 @@ class TestFullModelSavedAsLora:
         assert "model.save_pretrained(save_directory, **_save_kwargs)" in source
 
     def test_a_caller_state_dict_is_what_gets_measured(self, sized):
-        """Only 16bit saves cast the dict, so a lora save can write fp32 weights that double the
-        estimate."""
+        """Only 16bit saves cast the dict; lora saves may write fp32, doubling the estimate."""
         import torch
 
         model = torch.nn.Linear(8, 8, dtype = torch.float16)
@@ -1320,8 +1316,7 @@ class TestFullModelSavedAsLora:
         assert sized == [_merge_preflight_ask(n_parameters * 4, 0)]
 
     def test_an_explicitly_empty_state_dict_is_not_no_state_dict(self, sized):
-        """An empty state_dict means write nothing, so it must not fall back to sizing the resident
-        model."""
+        """Empty state_dict writes nothing; never fall back to sizing the resident model."""
         model = self._float32_model()
         assert S._full_model_checkpoint_bytes(model, {}) == 0
         assert S._preflight_merge_disk(model, "model", "lora", state_dict = {}) == "model"
@@ -1338,8 +1333,7 @@ class TestFullModelSavedAsLora:
         )
 
     def test_both_call_sites_forward_the_dict(self, monkeypatch):
-        """Both call sites must forward state_dict; driven, not grepped, since the text appears
-        elsewhere too."""
+        """Both call sites must forward state_dict; driven, not grepped, since the text recurs."""
         import torch
 
         seen = []
@@ -1526,8 +1520,7 @@ class TestTheGgufSiblingIsMeasuredToo:
         monkeypatch.setattr(S, "free_bytes", fake_free)
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
-        # Only the save-dir / sibling pair is split; the conversion travels with the sibling, so the
-        # save directory's filesystem holds the checkpoint alone.
+        # Only save-dir and sibling split; conversion goes with sibling, checkpoint is alone.
         monkeypatch.setattr(
             S,
             "_on_separate_filesystems",
@@ -1686,8 +1679,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
     def test_the_split_carries_the_merge_guards_own_reserve(self, split):
-        """The split keeps the merge's 0.95 reserve on the checkpoint, or it passes what the merge
-        rejects."""
+        """The split keeps the 0.95 reserve on the checkpoint, else it passes what merge rejects."""
         split.update(free = 16 * GB, sibling_free = 1000 * GB)
         with pytest.raises(RuntimeError):
             S._preflight_gguf_disk(_FakeAdapterModel(), "model", "q4_k_m")
@@ -1762,8 +1754,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
             assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == expected
 
     def test_one_filesystem_that_moved_between_the_probes_is_still_one(self, split):
-        """Two disk_usage reads on one filesystem can differ, so the device id, not free space,
-        decides it."""
+        """disk_usage reads on one filesystem can differ; device id, not free space, decides."""
         split.update(free = 20 * GB, sibling_free = 20 * GB - 4096, separate = False)
         with pytest.raises(RuntimeError) as error:
             S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
@@ -1820,8 +1811,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
                     assert before == "raises", (free_gb, sibling_gb)
 
     def test_the_probe_matches_free_bytes_on_one_filesystem(self, tmp_path):
-        """A directory and its unmade sibling share one filesystem, so the split is inert on
-        ordinary setups."""
+        """Inert on ordinary setups: the unmade sibling shares the directory's filesystem."""
         directory = tmp_path / "model"
         directory.mkdir()
         assert S._on_separate_filesystems(str(directory), f"{directory}_gguf") is False
@@ -1953,8 +1943,7 @@ class TestIgnoredModulesAreSizedFromLogicalShapes:
 
     @pytest.fixture
     def logical(self, monkeypatch):
-        """Stubs logical_numel; the test checks save.py asks for each parameter and passes its name
-        along."""
+        """Stubs logical_numel; checks save.py asks per parameter and passes its name along."""
         seen = []
 
         def fake_logical_numel(parameter, name = ""):
@@ -2465,8 +2454,7 @@ class TestTheStagingPrediction:
 
 
 class TestAColocatedConversionIsChargedWithTheCheckpoint:
-    """Colocated split: the conversion sits beside the checkpoint until moved, so charge both on one
-    disk."""
+    """Colocated: the conversion sits beside checkpoint until moved; both count on one disk."""
 
     CHECKPOINT = 60 * GB
     SIBLING = 60 * GB

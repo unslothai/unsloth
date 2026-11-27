@@ -171,7 +171,6 @@ def test_marked_processor_stays_picklable(tmp_path):
     processor = mark_world_save(_PicklableProcessor())
     assert processor.__dict__["save_pretrained"].__name__ == "unsloth_tp_world_save_pretrained"
     clone = pickle.loads(pickle.dumps(processor))
-    # Unpickled in a worker, it is the plain class method again.
     assert clone.save_pretrained.__name__ == "save_pretrained"
     assert clone.save_pretrained(str(tmp_path)) == (str(tmp_path),)
     # Outside torch.distributed the wrapped save still writes through the object's own save.

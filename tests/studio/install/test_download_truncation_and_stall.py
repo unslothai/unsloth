@@ -203,8 +203,7 @@ class _TrickleServer:
 
 
 def test_a_real_trickling_connection_is_abandoned_within_the_window(monkeypatch):
-    """read(n) on an HTTPResponse waits for all n bytes, so the watchdog only works if the copy
-    returns per receive. With the old read the call blocks until the server gives up (~10 s)."""
+    """The watchdog needs per-receive reads: read(n) waits for all n bytes and blocks ~10 s."""
     import urllib.request
 
     monkeypatch.setattr(CORE, "DOWNLOAD_STALL_WINDOW_SECONDS", 0.3)
@@ -232,8 +231,7 @@ def test_download_file_reconnects_after_a_real_trickle(monkeypatch, tmp_path, wh
 
 
 def test_progress_on_a_real_response_lands_on_whole_chunks():
-    """read1 returns receive-sized pieces; progress is still reported at each 1 MiB boundary, so
-    the installers' percent lines match the whole-chunk reads they printed before."""
+    """read1 gives receive-sized pieces; progress still fires at each 1 MiB, as before."""
     import urllib.request
 
     class Recorder:

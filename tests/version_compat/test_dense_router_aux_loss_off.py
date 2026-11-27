@@ -16,8 +16,7 @@ transformers = pytest.importorskip("transformers")
 
 
 def _trainer_after_trl_init(config):
-    # One namespace: on Python < 3.12 an exec'd comprehension with split globals/locals
-    # cannot see `_text_config`.
+    # Split globals/locals hide _text_config from exec'd comprehensions on Python < 3.12.
     config.get_text_config().output_router_logits = True
     self = types.SimpleNamespace(aux_loss_enabled = True, model = types.SimpleNamespace(config = config))
     exec(_rl_py_constant("_DENSE_ROUTER_AUX_LOSS_OFF"), {"self": self})
@@ -25,8 +24,7 @@ def _trainer_after_trl_init(config):
 
 
 def test_single_expert_jamba_turns_the_aux_loss_off():
-    # AI21-Jamba-Reasoning-3B: num_experts = 1 builds JambaMLP in every layer, so router_logits is () and
-    # load_balancing_loss_func raised IndexError at the first SFT step.
+    # Jamba with num_experts = 1 has empty router_logits, so the aux loss raised IndexError.
     config = transformers.JambaConfig(num_experts = 1, num_experts_per_tok = 1)
     trainer = _trainer_after_trl_init(config)
     assert trainer.aux_loss_enabled is False and config.output_router_logits is False

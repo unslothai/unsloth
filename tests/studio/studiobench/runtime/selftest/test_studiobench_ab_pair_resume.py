@@ -106,8 +106,7 @@ def test_a_comparison_with_work_left_re_runs_every_pair():
 
 
 def test_a_comparison_with_nothing_left_still_skips_everything():
-    """The control that keeps `--resume` on a finished A/B free: nothing runs, and `_render_ab`
-    keeps the table that run already wrote rather than replacing it with NO READING."""
+    """A finished A/B under --resume runs nothing; _render_ab keeps its table, not NO READING."""
 
     work = _work(reps = 2)
     done = {
@@ -133,8 +132,7 @@ def test_a_run_without_ab_skips_exactly_what_it_recorded():
 
 
 def _resumed_table(tmp_path, *, pair_granular: bool) -> str:
-    """Drive a resumed A/B end to end: what the payload holds, what the resume decides to run,
-    what it records in the new session, and what `_render_ab` then writes to `ab.md`."""
+    """Runs an interrupted A/B then its resume end to end; returns the ab.md table it writes."""
 
     paths = Paths.under(tmp_path / "out")
     interrupted = Recorder(paths.payload_jsonl, "sess-1")
@@ -167,8 +165,7 @@ def test_the_resumed_session_measures_both_arms_and_gets_a_table(tmp_path):
 
 
 def test_without_pair_granularity_the_same_resume_reports_nothing(tmp_path):
-    """What the fix is for, driven through the same path: skipping the recorded base arm leaves
-    the treatment arm with nothing to pair against and the table says NO READING."""
+    """Without pair granularity, skipping the base arm leaves nothing to pair: NO READING."""
 
     table = _resumed_table(tmp_path, pair_granular = False)
 
@@ -213,8 +210,7 @@ def _two_rung_resumed_table(tmp_path, *, whole_table: bool) -> str:
 
 
 def test_a_resumed_comparison_publishes_a_verdict_over_every_rung(tmp_path):
-    """THE CONSEQUENCE. Both pairs are re-measured in the new session, so both are in the table
-    and the verdict is computed over the ladder rather than over its remainder."""
+    """Both pairs are re-measured in the new session, so the verdict covers the whole ladder."""
 
     table = _two_rung_resumed_table(tmp_path, whole_table = True)
 
@@ -224,8 +220,7 @@ def test_a_resumed_comparison_publishes_a_verdict_over_every_rung(tmp_path):
 
 
 def test_skipping_the_recorded_pair_publishes_a_verdict_over_the_remainder(tmp_path):
-    """What the fix is for, driven through the same path. The 30% regression the run had already
-    measured is dropped by the session filter and nothing in the file mentions the missing rung."""
+    """The session filter drops the recorded 30% regression; the verdict covers the remainder."""
 
     table = _two_rung_resumed_table(tmp_path, whole_table = False)
 

@@ -107,8 +107,7 @@ def test_a_still_thread_reports_nothing() -> None:
 
 
 def test_a_block_that_goes_short_and_stays_short_is_not_a_flicker() -> None:
-    """A drop with no recovery is a different bug, and reporting it here would hide this one. It
-    is still recorded, with a null recovery frame, so it cannot be silently dropped."""
+    """A drop with no recovery is a separate bug, still recorded with a null recovery frame."""
     frames = [frame([1700.0])] * 3 + [frame([226.0])] * (RECOVERY_FRAMES + 5)
     result = analyse_stream(frames)
     assert result["collapses"] == 0
@@ -245,8 +244,7 @@ def test_the_fixture_offers_the_state_the_override_was_added_for() -> None:
 
 
 def test_the_variant_stylesheets_are_checked_to_have_won_the_cascade() -> None:
-    """A variant that loses to the tree measures the tree under another name; a past run had every
-    variant compute identically and read as nothing to fix."""
+    """A variant that loses the cascade measures the tree; identical results once looked fine."""
     source = harness_source()
     settled = module_assignment(source, "EXPECTED_COMPUTED")
     running = module_assignment(source, "EXPECTED_COMPUTED_RUNNING")

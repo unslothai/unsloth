@@ -273,7 +273,6 @@ def test_a_sub_action_is_pinned_with_its_repository():
     assert _owner_repo("actions/cache") == "actions/cache"
     assert _owner_repo("actions/checkout") == "actions/checkout"
     assert _owner_repo("owner/repo/a/b/c") == "owner/repo"
-    # The rule must be parametrized over this grouping.
     groups = {_owner_repo(r) for _, _, _, r, _ in _references()}
     assert "actions/cache/save" not in groups
 
