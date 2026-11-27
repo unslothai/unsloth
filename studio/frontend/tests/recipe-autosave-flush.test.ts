@@ -698,6 +698,7 @@ test("reopening a recipe while its exit save is in flight starts from the saved 
   await settle();
   const reopened = s.open();
   await s.server.release();
+  await new Promise((r) => setTimeout(r, 5));
   reopened.rerender();
   await settle();
   await s.edit({ columns: ["again"] });
@@ -810,4 +811,25 @@ test("chat settings hold their keepalive reservation until the response body is 
   const after = keepaliveBudget.reserveKeepaliveBody("x".repeat(30 * 1024));
   assert.ok(after);
   after();
+});
+
+test("reopening waits for an exit save deferred behind a save in flight", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["left"] });
+  s.editor.unmount();
+  await settle();
+  const reopened = s.open();
+  await s.server.releaseOldest();
+  await new Promise((r) => setTimeout(r, 5));
+  await s.server.release();
+  await new Promise((r) => setTimeout(r, 5));
+  reopened.rerender();
+  await settle();
+  await s.edit({ columns: ["again"] });
+  await s.fireDebounce();
+  await s.server.release();
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 200, 200]);
+  assert.deepEqual(s.server.stored.payload, { columns: ["again"] });
 });

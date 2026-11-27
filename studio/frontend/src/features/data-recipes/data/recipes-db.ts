@@ -77,11 +77,16 @@ export function primeRecipeCache(record: RecipeRecord): void {
 
 const pendingSaves = new Map<string, Set<Promise<unknown>>>();
 
-/** Resolves once every save already sent for `id` has settled; null when none is pending. */
+/** Resolves once no save for `id` is pending; null when none is. */
 export function settleRecipeSaves(id: string): Promise<void> | null {
-  const pending = pendingSaves.get(id);
-  if (!pending?.size) return null;
-  return Promise.allSettled([...pending]).then(() => undefined);
+  if (!pendingSaves.get(id)?.size) return null;
+  return (async () => {
+    // A save deferred behind another is sent from that one's callbacks: yield a task and recheck.
+    for (let pending = pendingSaves.get(id); pending?.size; pending = pendingSaves.get(id)) {
+      await Promise.allSettled([...pending]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  })();
 }
 
 export function saveRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
