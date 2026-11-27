@@ -37,6 +37,7 @@ class _Captured(Exception):
 
 def _lora_config_for(model, monkeypatch, **kwargs):
     kwargs.setdefault("use_gradient_checkpointing", False)
+    kwargs.setdefault("target_modules", ["q_proj", "v_proj"])
 
     def capture(model, lora_config, *args, **kwargs):
         raise _Captured(lora_config)
@@ -46,7 +47,6 @@ def _lora_config_for(model, monkeypatch, **kwargs):
         FastLlamaModel.get_peft_model(
             model,
             r = 4,
-            target_modules = ["q_proj", "v_proj"],
             **kwargs,
         )
     return info.value.args[0]
@@ -112,12 +112,12 @@ def _base_lora_config_for(model, monkeypatch, **kwargs):
     def capture(model, lora_config, *args, **kwargs):
         raise _Captured(lora_config)
 
+    kwargs.setdefault("target_modules", ["q_proj", "v_proj"])
     monkeypatch.setattr(vision_module, "_get_peft_model", capture)
     with pytest.raises(_Captured) as info:
         FastBaseModel.get_peft_model(
             model,
             r = 4,
-            target_modules = ["q_proj", "v_proj"],
             use_gradient_checkpointing = False,
             **kwargs,
         )
@@ -199,3 +199,21 @@ def test_new_tokens_list_indices_keep_fully_trained_head(monkeypatch, entry):
     input_rows, output_rows = _rows_changed_by_one_step(model)
     assert input_rows == NEW_TOKEN_IDS
     assert len(output_rows) == 64
+
+
+@pytest.mark.parametrize("entry", [_lora_config_for, _base_lora_config_for])
+def test_new_tokens_list_indices_skip_lora_head(monkeypatch, entry):
+    # PEFT refuses a TrainableTokensWrapper on a module that is already a LoRA layer.
+    import torch
+
+    monkeypatch.setenv("UNSLOTH_USE_NEW_MODEL", "0")
+    monkeypatch.setenv("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    monkeypatch.setattr(torch.cpu, "empty_cache", lambda: None, raising = False)
+    config = entry(
+        _tiny_llama(tie = False),
+        monkeypatch,
+        target_modules = r".*(q_proj|lm_head)",
+        trainable_token_indices = NEW_TOKEN_IDS,
+    )
+    assert config.trainable_token_indices == NEW_TOKEN_IDS
+    get_peft_model(_tiny_llama(tie = False), config)

@@ -13570,10 +13570,17 @@ def _effective_weight_tying(model, modules_to_save, requested):
     return "embed_tokens" in _embedding_leaves(modules_to_save)
 
 
+def _peft_targets(target_modules, name):
+    if isinstance(target_modules, str):
+        return target_modules != "all-linear" and re.fullmatch(target_modules, name) is not None
+    return any(name == t or name.endswith("." + t) for t in target_modules or ())
+
+
 def _cover_untied_new_token_rows(
     model,
     trainable_token_indices,
     modules_to_save = None,
+    target_modules = None,
 ):
     if isinstance(trainable_token_indices, dict):
         return trainable_token_indices
@@ -13589,7 +13596,12 @@ def _cover_untied_new_token_rows(
     if input_name is None or output_name is None:
         return trainable_token_indices
     full = [modules_to_save] if isinstance(modules_to_save, str) else list(modules_to_save or ())
-    if output_name in full or _embedding_leaf(output_name) in _embedding_leaves(full):
+    # A LoRA head cannot also take a TrainableTokensWrapper in PEFT.
+    if (
+        output_name in full
+        or _embedding_leaf(output_name) in _embedding_leaves(full)
+        or _peft_targets(target_modules, output_name)
+    ):
         return trainable_token_indices
     print(
         f"Unsloth: You added new tokens, so `{output_name}` also trains the rows in `trainable_token_indices`."
