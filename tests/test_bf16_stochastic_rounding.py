@@ -298,7 +298,6 @@ def _inactive_first_resume(sr, opt_fn, device, cut):
 
 @pytest.mark.parametrize("cut", [1, 2])
 def test_resume_after_an_inactive_weight_draws_what_an_uninterrupted_run_draws(sr, cut):
-    # Noise is keyed by the weight's place in the optimizer, not by the order weights first got a gradient.
     whole, opt, resumed, resumed_opt = _inactive_first_resume(
         sr, lambda params: torch.optim.AdamW(params, lr = 1e-3, weight_decay = 0.0), "cpu", cut
     )
