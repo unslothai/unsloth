@@ -45,7 +45,7 @@ def _fresh_trace():
 def _quality_passes(monkeypatch):
     # These tests are about the speed race; the G2c quality gate has its own (test_image_batch_quality).
     from core.inference import diffusion_batch_quality as quality
-    monkeypatch.setattr(quality, "quality_ok", lambda state, arm: True)
+    monkeypatch.setattr(quality, "quality_ok", lambda state, path: True)
     monkeypatch.setattr(quality, "any_quality_ok", lambda state: True)
 
 

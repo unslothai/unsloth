@@ -7,8 +7,8 @@ That is an offline G2c verdict: held-out prompts x seeds rendered batched and al
 LPIPS against an eager reference, paired upper bound of (batched - solo) at most ``EPS`` over at least ``MIN_PAIRS``.
 
 Verdicts are keyed by (family, device class, execution path): the device class is the card's name (one verdict covers
-every card of that model), the path is ``eager`` or ``graph`` (the race's ``batched_eager`` / ``batched`` arms), or
-``any``. A measured win is served only where a PASS verdict exists for its family, card and path; a missing or failing
+every card of that model), the path is ``eager`` or ``graph`` (what the race's winning arm really ran, persisted as
+``path``), or ``any``. A measured win is served only where a PASS verdict exists for its family, card and path; a missing or failing
 verdict keeps today's serial rules. ``SHIPPED`` holds the verdicts measured for releases; a local file
 (``<cache>/batch_quality.json``, written by ``record``) adds this machine's own."""
 
@@ -56,9 +56,14 @@ def _read() -> dict:
         return {}
 
 
-def path_of(arm: Any) -> str:
-    """The execution path a race arm served on."""
-    return "eager" if arm == "batched_eager" else "graph"
+def path_of(verdict: Any) -> str:
+    """The execution path a race verdict served on: its recorded ``path``, else (a verdict from before it was recorded)
+    the arm name, which is a guess for a load without graph handles."""
+    if isinstance(verdict, dict):
+        if verdict.get("path") in ("eager", "graph"):
+            return verdict["path"]
+        return "eager" if verdict.get("arm") == "batched_eager" else "graph"
+    return "eager" if verdict == "batched_eager" else "graph"
 
 
 def device_class(state: Any) -> Optional[str]:
@@ -109,8 +114,8 @@ def _family(state: Any) -> Optional[str]:
     return getattr(getattr(state, "family", None), "name", None)
 
 
-def quality_ok(state: Any, arm: Any) -> bool:
-    return passes(lookup(_family(state), device_class(state), path_of(arm)))
+def quality_ok(state: Any, path: str) -> bool:
+    return passes(lookup(_family(state), device_class(state), path))
 
 
 def any_quality_ok(state: Any) -> bool:
@@ -123,9 +128,10 @@ def gate(verdict: Any, state: Any) -> Any:
     """``verdict`` as it may serve: a promoted one without a PASS for its family, card and path is not promoted."""
     if not isinstance(verdict, dict) or not verdict.get("promoted"):
         return verdict
-    if quality_ok(state, verdict.get("arm")):
+    path = path_of(verdict)
+    if quality_ok(state, path):
         return verdict
-    family, device, path = _family(state), device_class(state), path_of(verdict.get("arm"))
+    family, device = _family(state), device_class(state)
     found = lookup(family, device, path)
     reason = (
         f"no G2c verdict for {family} on {device} ({path})"

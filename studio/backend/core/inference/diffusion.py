@@ -18477,7 +18477,11 @@ class DiffusionBackend:
             return frozenset()
         measured = _measured_sizes(state, width, height, guidance, steps, layout)
         winners = frozenset(k for k, v in measured.items() if v.get("promoted"))
-        losers = frozenset(k for k, v in measured.items() if not v.get("promoted"))
+        # A win the quality gate holds back (no G2c PASS) is not a loss: it keeps today's rule for its size, and only
+        # a measured speed loss takes a size away from the default policy.
+        losers = frozenset(
+            k for k, v in measured.items() if not v.get("promoted") and not v.get("quality_gate")
+        )
         if policy["mode"] == "measured":
             return winners
         if policy["mode"] == "any":

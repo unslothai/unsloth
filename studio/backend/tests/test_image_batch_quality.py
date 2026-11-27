@@ -185,3 +185,102 @@ def test_seeded_joins_need_the_batch_exact_check():
     assert race.seeded_join_ok(dict(won, b_exact = False)) is False
     assert race.seeded_join_ok(dict(won, replay_exact = False, b_exact = True)) is True
     assert race.seeded_join_ok(dict(won, neighbour_exact = False, b_exact = True)) is False
+
+
+# ------------------------------------------------------------------------------------------- review fixes
+
+
+def test_a_held_back_win_never_removes_a_size_the_default_policy_admits(monkeypatch):
+    """A streamed load (policy any) or a static compile (compiled_sizes) admits sizes before any race; a win the gate
+    holds back is not a loss, so it must not take its size away (the gate is never stricter than no race at all)."""
+    _verdicts(monkeypatch, {2: {"promoted": True, "arm": "batched"}})
+    streamed = _engine(device_name = CARD, offload_policy = "sequential")
+    assert streamed.request_batching()["mode"] == "any"
+    assert streamed.coalesce_batch_sizes(1024, 1024) is None
+    # a real speed loss still drops its size
+    _verdicts(monkeypatch, {2: {"promoted": True, "arm": "batched"}, 4: {"promoted": False}})
+    sizes = streamed.coalesce_batch_sizes(1024, 1024)
+    assert 4 not in sizes and 2 in sizes
+
+
+def test_a_held_back_win_keeps_a_compiled_size(monkeypatch):
+    from core.inference import diffusion as diffusion_module
+
+    monkeypatch.setattr(diffusion_module, "compiled_shapes_are_static", lambda pipe, mode: True)
+    _verdicts(monkeypatch, {2: {"promoted": True, "arm": "batched"}, 4: {"promoted": False}})
+    engine = _engine(
+        device_name = CARD,
+        offload_policy = "sequential",
+        speed_optims = ("compiled",),
+        compile_cache_ctx = types.SimpleNamespace(shapes = [(1024, 1024, 2), (1024, 1024, 4)]),
+    )
+    assert engine.request_batching()["mode"] == "compiled_sizes"
+    assert engine.coalesce_batch_sizes(1024, 1024) == frozenset({2})
+
+
+def test_the_race_persists_the_path_it_ran_and_the_gate_reads_it(monkeypatch):
+    """Without graph handles the race has only the ``batched`` arm, and that arm runs eager: the verdict says so, and
+    only an eager (or any) G2c verdict may let it serve."""
+    stored = {}
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 + 0.5 * (rows - 1))
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = ()),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 4,
+        clock = lambda: clock["t"],
+    )
+    verdict = report["sizes"]["2"]
+    assert (
+        verdict["arm"] == "batched" and verdict["path"] == "eager" and stored[2]["path"] == "eager"
+    )
+    state = types.SimpleNamespace(
+        family = types.SimpleNamespace(name = "flux.3-klein"), device_name = CARD
+    )
+    quality.record("flux.3-klein", CARD, "graph", PASS)
+    assert (
+        quality.gate(verdict, state)["promoted"] is False
+    ), "a graph-only PASS does not vouch for eager"
+    quality.record("flux.3-klein", CARD, "eager", PASS)
+    assert quality.gate(verdict, state)["promoted"] is True
+
+
+def test_a_graphed_race_with_handles_records_the_graph_path_and_a_fallback_records_eager(
+    monkeypatch,
+):
+    stored = {}
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
+    handle = types.SimpleNamespace(set_bypass = lambda on: None, drop_batched = lambda size: 0)
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 + 0.5 * (rows - 1))
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 4,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    verdict = report["sizes"]["2"]
+    assert verdict["path"] == ("eager" if verdict["arm"] == "batched_eager" else "graph")
+    # A graphed win whose batch-size graph is gone falls back to the eager arm: its path follows.
+    monkeypatch.setattr(race, "batched_graph_sizes", lambda state: set())
+    graphed = {
+        "promoted": True,
+        "arm": "batched",
+        "path": "graph",
+        "arms": {"batched_eager": {"promoted": True}},
+    }
+    fallback = race.effective_verdict(graphed, 2, types.SimpleNamespace(cuda_graphs = (handle,)))
+    assert fallback["graph_missing"] is True and fallback["path"] == "eager"
+    assert quality.path_of(fallback) == "eager"

@@ -543,6 +543,8 @@ def run_race(
             verdict = dict(
                 verdicts[best],
                 arm = best,
+                # The execution path the winning arm really ran: without graph handles the batched arm is eager.
+                path = "graph" if best == "batched" and handles else "eager",
                 arms = verdicts,
                 size = size,
                 layout = layout_token(layout),
@@ -774,6 +776,7 @@ def effective_verdict(
             verdict,
             promoted = bool(eager.get("promoted")),
             arm = "batched_eager",
+            path = "eager",
             graph_missing = True,
             neighbour_exact = False,
             replay_exact = False,
