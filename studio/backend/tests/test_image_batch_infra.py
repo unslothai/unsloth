@@ -993,6 +993,36 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
     assert race.effective_verdict(graphed_win, 2, no_graphs)["promoted"] is True
 
 
+def test_an_eager_win_is_withheld_once_a_later_race_records_a_graph_of_that_size():
+    """An eager-arm win at one canvas stands only while no batch-size graph of its size exists: a later race at another
+    canvas or step count can record one with the same tensor shapes, which GraphedForward would replay for it."""
+    eager_win = {"promoted": True, "arm": "batched_eager", "neighbour_exact": True, "b_exact": True}
+    graphed_elsewhere = {
+        "promoted": True,
+        "arm": "batched",
+        "layout": race.layout_token(()),
+        "graph_canvas": "other",
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": True}},
+    }
+    dropped = types.SimpleNamespace(cache = {"k1": 1}, _batched = {}, drop_batched = lambda size: 0)
+    assert race.effective_verdict(eager_win, 2, types.SimpleNamespace(cuda_graphs = (dropped,)))[
+        "promoted"
+    ]
+    recorded = types.SimpleNamespace(
+        cache = {"k2": object()},
+        _batched = {"k2": 2},
+        _batched_canvas = {"k2": {"other"}},
+        drop_batched = lambda size: 0,
+    )
+    later = types.SimpleNamespace(cuda_graphs = (recorded,))
+    for verdict in (eager_win, graphed_elsewhere):
+        got = race.effective_verdict(verdict, 2, later, layout = ("bucket", 2))
+        assert got["promoted"] is False and not race.seeded_join_ok(got)
+    # Another size's graph replays nothing for size 2; a graphed win at its own canvas still holds.
+    assert race.effective_verdict(eager_win, 4, later)["promoted"] is True
+    assert race.effective_verdict(graphed_elsewhere, 2, later, layout = ())["promoted"] is True
+
+
 def test_a_seeded_request_joins_only_when_every_size_it_could_render_at_is_exact(monkeypatch):
     """A streamed load (policy any) still admits the unmeasured sizes: one exact size 2 says nothing about 3-8."""
     from core.inference.image_request_batching import batch_max

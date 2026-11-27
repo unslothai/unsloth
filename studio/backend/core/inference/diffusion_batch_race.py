@@ -827,11 +827,21 @@ def effective_verdict(
     state: Any,
     layout: Any = None,
 ) -> dict:
-    """``_effective_verdict``, withholding an eager win the load's graph handles could not enforce."""
-    return _withhold_unenforceable_eager(
+    """``_effective_verdict``, withholding an eager win the load's graph handles could not enforce, or one a batch-size
+    graph recorded since (by a later race at another canvas or step count) could replay for these tensor shapes."""
+    found = _withhold_unenforceable_eager(
         _effective_verdict(verdict, size, state, layout = layout),
         tuple(getattr(state, "cuda_graphs", ()) or ()),
     )
+    if isinstance(found, dict) and found.get("promoted") and found.get("arm") == "batched_eager":
+        held = batched_graph_sizes(state)
+        if held is not None and int(size) in held:
+            return dict(
+                found,
+                promoted = False,
+                reason = "the eager arm won, but a batch-size graph recorded since could replay this size",
+            )
+    return found
 
 
 def _effective_verdict(
