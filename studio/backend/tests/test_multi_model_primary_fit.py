@@ -60,6 +60,7 @@ def env(monkeypatch):
         frees = [IMG],
         errors = [],
         retry_flags = [],
+        load_options = [],
     )
     monkeypatch.setattr(gpu_residency, "current_policy", lambda: state.policy)
     monkeypatch.setattr(model_slots, "drop", lambda slot: state.drops.append(slot))
@@ -91,6 +92,7 @@ def env(monkeypatch):
     async def load(request, *args, **kwargs):
         state.requests.append(request)
         state.retry_flags.append(inf._primary_can_retry_fit.get())
+        state.load_options.append(dict(kwargs.get("impl_kwargs") or {}))
         if state.errors and not request.force_alongside:
             raise state.errors.pop(0)
         return LoadResponse(
@@ -259,6 +261,23 @@ def test_non_gguf_oom_under_fit_keeps_the_original_error(env, monkeypatch):
     _nothing_unloaded(env)
 
 
+def test_swap_restore_oom_retries_as_a_normal_fit_load(env, monkeypatch):
+    _image_resident(monkeypatch)
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: False)
+    env.errors = [_oom()]
+    response = asyncio.run(
+        inf.load_model_gated(
+            LoadRequest(model_path = "org/text", gpu_ids = [0, 1]),
+            None,
+            "s",
+            impl_kwargs = {"restoring_chat_swap": True},
+            swap_gates_held = True,
+        )
+    )
+    assert response.status == "loaded"
+    assert env.load_options == [{"restoring_chat_swap": True}, {"restoring_chat_swap": False}]
+
+
 def test_non_gguf_oom_under_always_without_media_keeps_the_original_error(env, monkeypatch):
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     env.policy, env.errors = "always", [_oom()]
@@ -365,6 +384,19 @@ def test_chat_fit_kwargs(monkeypatch):
     priced = inf._chat_fit_kwargs(native, _placement(None), mlx_need_mib = 700, mlx_credit_mib = 50)
     assert priced.get("need_mib") == {0: 700} and "evict_first" not in priced
     assert priced["need_mib"].credit_mib == 50
+
+
+def test_swap_restore_tries_the_existing_fit_before_evicting(monkeypatch):
+    monkeypatch.setattr(inf, "_unified_metal_host", lambda: False)
+    monkeypatch.setattr(inf, "_visible_ordinals", list)
+    transformers = SimpleNamespace(is_gguf = False)
+    placement = inf._LoadPlacement([0, 1], None, False, None)
+
+    normal = inf._chat_fit_kwargs(transformers, placement, "fit")
+    restore = inf._chat_fit_kwargs(transformers, placement, "fit", restoring_chat_swap = True)
+
+    assert normal == {"policy": "fit", "gpu_ids": [0, 1], "evict_first": True}
+    assert restore == {"policy": "fit", "gpu_ids": [0, 1]}
 
 
 @pytest.mark.parametrize(

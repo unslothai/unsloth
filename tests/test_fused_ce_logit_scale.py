@@ -111,8 +111,7 @@ def _reference_loss(scale, softcapping = 0.0):
 
 
 def _config(cls, **kwargs):
-    """Deferred: transformers validates strictly and per release, so eager construction
-    turns one unconstructable class into a collection error for the whole file."""
+    """Deferred: transformers validates strictly per release; eager build breaks collection."""
 
     def build():
         if cls is None:
@@ -161,8 +160,7 @@ def test_fused_ce_applies_falcon_h1_multiplier_once(monkeypatch):
 
 
 def test_mistral_fused_ce_reads_the_transforms_the_same_way(monkeypatch):
-    """No shipped Mistral config carries a scale, so one is injected: the point is that
-    the call site forwards what the config holds, not that Mistral needs it."""
+    """No shipped Mistral config has a scale, so one is injected: call site must forward it."""
     plain = _config(MistralConfig)()
     assert _fused_loss(plain, monkeypatch, MistralForCausalLM_fast_forward) == pytest.approx(
         _reference_loss(1.0),
@@ -344,8 +342,7 @@ def test_materialized_branch_is_handed_the_same_transforms(
 def test_labeled_call_returns_the_transformed_logits(
     config, scale, softcapping, module, forward, grad, monkeypatch
 ):
-    """The kernel transforms the raw logits itself, so the returned ones are transformed
-    separately, and only after the kernel has read them: without grad that is in place."""
+    """Returned logits are transformed separately, after the kernel has read the raw ones."""
     raw = F.linear(_hidden_states(), _lm_head_weight())
     expected = raw * scale
     if softcapping:
@@ -373,8 +370,7 @@ def test_labeled_call_returns_the_transformed_logits(
 
 
 def test_transforms_are_applied_scale_first_then_soft_cap():
-    """tanh does not commute with scaling, and no shipped family does both, so nothing
-    above separates the two orders."""
+    """Order matters (tanh does not commute with scaling), but no shipped family uses both."""
     logits = F.linear(_hidden_states(), _lm_head_weight())
     scale, softcapping = 0.0625, 4.0
     scale_first = softcapping * torch.tanh((logits * scale) / softcapping)

@@ -233,8 +233,7 @@ def test_refusing_the_substitute_does_not_refuse_the_click():
 
 
 def test_the_default_still_navigates_for_every_other_caller():
-    """The new keyword must leave the default unchanged for other callers; thread_reopen depends on
-    it, since from an empty new chat navigation is what puts the thread back."""
+    """Other callers still navigate by default; thread_reopen needs it from a new chat."""
     page = _ThreadPage(unclickable = {NEW_CHAT})
     got = A._click_or_navigate(_ctx(page), NEW_CHAT, NEW_CHAT_URL)
 
@@ -265,9 +264,7 @@ def test_the_scripted_rebuild_declares_its_total_before_it_has_built_anything():
 
 
 def test_reopen_waits_for_the_thread_to_be_rebuilt_not_for_it_to_be_declared():
-    """The reading the old condition produced came off frame 0: three of eighteen rows, no end of
-    conversation, no highlighting. Every observation below is taken after the wait, so they are the
-    assertion that the wait outlasted the declaration."""
+    """Observations come after the wait, so they assert the rebuild outlasted the declaration."""
     page = _ThreadPage()
     result = A.thread_reopen(_ctx(page))
 
@@ -295,8 +292,7 @@ def test_the_row_carries_the_gate_the_timing_was_taken_against():
 
 
 def test_a_thread_that_declares_its_total_and_never_rebuilds_gets_no_timing(monkeypatch):
-    """The old worst case: the store declares eighteen, three rows mount, nothing else arrives; that
-    was scored as fast, now it gets no timing and names the outstanding condition."""
+    """Declared but never rebuilt gets no timing and names the condition, not scored fast."""
     monkeypatch.setattr(A, "_REOPEN_READY_CEILING_S", 0.4)
     page = _ThreadPage(frames = STALLED)
     result = A.thread_reopen(_ctx(page))
@@ -312,8 +308,7 @@ def test_a_thread_that_declares_its_total_and_never_rebuilds_gets_no_timing(monk
 
 
 def test_a_windowed_arm_is_held_to_the_windowed_gate_and_not_to_a_full_mount():
-    """A windowed arm never mounts every message, so a full-mount wait would time out; the mode is
-    read from the mount the action left, as the cell's opening gate reads it."""
+    """A windowed arm never mounts every message, so the mode is read off the mount it left."""
     page = _ThreadPage(frames = WINDOWED, mounted = 6, total = TOTAL)
     result = A.thread_reopen(_ctx(page))
 
@@ -424,8 +419,7 @@ def test_the_failed_click_retry_is_not_charged_to_the_close_or_the_rebuild():
 
 
 def test_a_control_that_clicks_first_time_reports_no_retry_at_all():
-    """The control. Nothing about the ordinary path moves, and the new fields read zero rather than
-    a small plausible number that a reader would have to interpret."""
+    """Control: ordinary path is unchanged and new fields read zero, not a plausible number."""
     page = _HoverRevealedPage()
     result = A.thread_reopen(_ctx(page))
 

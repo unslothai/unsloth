@@ -254,6 +254,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_FP8_TRITON_GEMM": "on",
     "UNSLOTH_DIFFUSION_TF32": "on",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Keyed against the card's unset default (auto on sm_100-class, else off); a bare "0" protects step 0, not off.

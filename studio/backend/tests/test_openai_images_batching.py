@@ -492,3 +492,23 @@ def test_the_diffusers_engine_names_each_slot_holder_apart():
     with engine._generation_slot(second):
         assert engine.generation_holder() is second
     assert engine.generation_holder() is None
+
+
+def test_a_coalesced_headless_batch_never_builds_the_live_previewer(studio, monkeypatch):
+    from core.inference.diffusion_preview import preview_wanted
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PREVIEW", raising = False)
+    app, backend, _ = studio
+    previews: list = []
+    real_generate = backend.generate
+
+    def generate(*, live_preview = None, **kwargs):
+        previews.append((sorted(kwargs.get("prompts") or ()), preview_wanted(live_preview)))
+        return real_generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    responses = _post_while_rendering(
+        app, backend, [_b64({"prompt": "a fox"}), _b64({"prompt": "a cat"})], waiting = 2
+    )
+    assert [r.status_code for r in responses] == [200, 200]
+    assert previews == [(["a cat", "a fox"], False)]

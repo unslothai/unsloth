@@ -1305,11 +1305,12 @@ _MOE_EVIDENCE = {
     )
     * 2
     + ("eager: no compiled region",),
-    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process.
+    # 2 gloo ranks, DDP + ep_sync_expert_grads vs one process. llama4 / qwen3_vl_moe train expert LoRA factors
+    # swapped against vanilla PEFT's (zoo patches), cut by expert and saved as vanilla's like the others.
     **{
         (family, "lora+experts", False, "ep"): (_EP_FAMILY + f"[{family}]",) * 2
         + ("eager: no compiled region",)
-        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss")
+        for family in ("qwen3_moe", "olmoe", "glm4_moe", "gpt_oss", "llama4", "qwen3_vl_moe")
     },
     ("gpt_oss", "qlora", False, "ep"): (
         "tests/test_ep_expert_lists_gloo.py::test_ep_gpt_oss_linear_lists_match_one_process"
@@ -1409,8 +1410,8 @@ def _moe_note(family, precision, aux, mode):
         # Not opened: micro-batches resolve at the first step (pp_env.resolve_microbatches), not in the layout.
         return (
             "with UNSLOTH_PP_MICROBATCHES=1 and gpipe it matched one process on 2 T4 (tiny and 128-wide Qwen3-MoE, "
-            "4-bit experts); more micro-batches are refused at the first step (the router loss would be summed "
-            "per micro-batch), and the registry cannot see the micro-batch count before then"
+            "4-bit experts); more micro-batches form the router loss over the whole batch under GPipe (the "
+            "default schedule runs it) and have only run on gloo with 16-bit experts"
         )
     if precision == "qlora":
         # Measured on one G4 (2 NCCL ranks sharing the card): qwen3_moe QLoRA under DDP equals one process over the

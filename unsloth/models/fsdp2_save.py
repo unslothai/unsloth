@@ -1739,7 +1739,11 @@ def _tp_shard_outside(param, mesh, dist):
 
 def _fsdp_grad_sync_deferred(model, cache):
     """True when every FSDP2 param group has set_requires_gradient_sync(False), i.e. a non-final
+    micro-batch, or inside fsdp2_native._no_grad_sync: auto GA re-enables the reduce-scatter of
+    mostly trainable units there, and the whole replicated gradients can still wait for the last
     micro-batch. False when no group is found (sync every backward)."""
+    if model.__dict__.get("_unsloth_ga_no_sync"):
+        return True
     states = cache.get("fsdp_states")
     if states is None:
         states = []

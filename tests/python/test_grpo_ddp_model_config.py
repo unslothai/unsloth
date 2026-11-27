@@ -67,8 +67,7 @@ def test_grpo_logit_scaling_uses_model_config_helper():
 
 
 def test_detect_logit_transforms_reads_the_unwrapped_config():
-    """Pass model_config, not the model: DDP wrappers do not forward .config, so transforms read as
-    zeros."""
+    """Pass model_config: DDP wrappers do not forward .config, so transforms read as zeros."""
     src = _read_source()
     assert "detect_logit_transforms(model)" not in src
     assert src.count("detect_logit_transforms(model_config)") >= 2
@@ -104,8 +103,7 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
 
 def _unsloth_get_model_config_reference(model):
-    """Mirror of rl_replacements._unsloth_get_model_config, kept local to avoid
-    importing the heavyweight module."""
+    """Copy of rl_replacements._unsloth_get_model_config, kept local to avoid a heavy import."""
     config = getattr(model, "config", None)
     if config is None and hasattr(model, "module"):
         config = getattr(model.module, "config", None)

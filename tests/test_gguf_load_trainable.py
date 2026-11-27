@@ -82,7 +82,7 @@ def test_old_transformers_is_a_no_op(monkeypatch):
     ],
 )
 def test_both_loaders_apply_it_before_from_pretrained(filename, dtype_call):
-    source = (MODELS / filename).read_text()
+    source = (MODELS / filename).read_text(encoding = "utf-8")
     tree = ast.parse(source)
     lines = {}
     for node in ast.walk(tree):
@@ -109,7 +109,7 @@ def test_gguf_drops_bitsandbytes_with_a_notice(capsys):
 
 @pytest.mark.parametrize("class_name", ["FastLanguageModel", "FastModel"])
 def test_both_entry_points_drop_bitsandbytes_for_gguf(class_name):
-    tree = ast.parse((MODELS / "loader.py").read_text())
+    tree = ast.parse((MODELS / "loader.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name)
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     calls = [

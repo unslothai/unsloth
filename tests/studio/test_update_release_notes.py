@@ -43,8 +43,7 @@ CARD_CAP = {
 }
 
 
-# An apostrophe in JSX text is prose, not a string delimiter; the frontend uses double quotes.
-# A set, not a string: `"" in '"`'` is true for a substring.
+# Apostrophes are JSX prose, not delimiters; a set, since "" is a substring of any string.
 _QUOTES = frozenset('"`')
 
 _CALL = re.compile(r"[A-Za-z_$][\w$]*\(")
@@ -410,8 +409,7 @@ def test_response_reports_no_notes_without_markdown(isolated_releases):
 
 
 def test_the_offered_version_is_echoed_not_looked_up(notes_module, serve_releases):
-    """No tag could match the PyPI version the pip popup offers, so it comes
-    back untouched for the UI to match a stale answer against."""
+    """No tag matches the offered version, so it is echoed back untouched for the UI to check."""
     serve_releases(
         releases_payload(
             {
@@ -440,8 +438,7 @@ def test_unsupported_version_query_is_rejected(isolated_releases):
 
 
 def test_the_newest_published_release_wins(notes_module, serve_releases):
-    """Ordered by publication, never by tag: v0.1.60-beta was published after
-    v0.1.527-beta, so any numeric or SemVer sort picks the wrong one."""
+    """Publication order, not tag: v0.1.60-beta came after v0.1.527-beta; SemVer sort fails."""
     serve_releases(
         releases_payload(
             {
@@ -495,8 +492,7 @@ def test_a_payload_without_releases_is_an_error_not_a_crash(notes_module, serve_
 
 
 def test_a_release_with_no_announcement_shows_none(notes_module, serve_releases):
-    """v0.1.527-beta's body is only the generated list, so nothing survives
-    stripping: the popup links out rather than showing an older release."""
+    """v0.1.527-beta is only a generated list, so stripping empties it; the popup links out."""
     serve_releases(
         releases_payload(
             {
@@ -547,8 +543,7 @@ def test_non_unix_line_endings(notes_module, newline):
 
 
 def test_closing_fence_must_carry_nothing_after_it(notes_module):
-    """CommonMark: a closer is the delimiter plus whitespace only. A ```` line
-    with trailing text inside a ```` block is content, not the end."""
+    """Closer is the delimiter plus whitespace only; trailing text on a ```` line is content."""
     text = "## 1.0\n\n````md\n```` not a closer\n## 9.9.9\n````\n\n- real\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     info = "## 1.0\n\n```python\n## 9.9.9\n```\n\n- real\n"
@@ -569,8 +564,7 @@ def test_commented_out_sections_are_not_releases(notes_module, text):
 
 
 def test_no_changelog_file_is_packaged_or_read():
-    """The releases are the only source now. A file left in the packaging would
-    be a second one, editable in a checkout and stale in a wheel."""
+    """Releases are the only source; a changelog in packaging would be a second, stale copy."""
     assert not (REPO / "CHANGELOG.md").exists()
     assert not (REPO / "_changelog_build.py").exists()
     for name in ("pyproject.toml", "build.sh", ".gitignore"):
@@ -643,8 +637,7 @@ def test_refresh_retries_a_cached_remote_failure(notes_module, serve_releases):
 
 
 def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_releases):
-    """A shared IP that has spent its 60 requests an hour gains nothing by
-    retrying: the request is refused and only pushes the reset further away."""
+    """A spent shared-IP quota gains nothing by retrying; each refusal only delays the reset."""
     reset = str(int(time.time()) + 900)
     hits = serve_releases(
         '{"message": "API rate limit exceeded"}',
@@ -712,8 +705,7 @@ def test_every_refusal_records_a_deadline_retry_has_to_wait_out(notes_module):
 
 
 def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases):
-    """A release entry carries its whole body, so per_page and the byte cap are one decision: the
-    endpoint's maximum of 100 is near 4 MiB against a 2 MiB cap."""
+    """Entries carry whole bodies, so per_page max 100 nears 4 MiB against the 2 MiB byte cap."""
     import urllib.parse
 
     query = urllib.parse.urlparse(notes_module.RELEASES_API_URL).query
@@ -791,8 +783,7 @@ def test_a_slow_page_still_loads(notes_module, monkeypatch):
     ["### macOS, Linux, WSL:", "### macOS / Linux / WSL", "### macOS/Linux/WSL"],
 )
 def test_platform_headings_split_on_a_slash_as_well_as_a_comma(notes_module, heading):
-    """The install block splits its commands across per-platform headings, whose
-    separator is written either way."""
+    """Commands split across per-platform headings whose separator is a comma or a slash."""
     body = (
         "The announcement.\n\n"
         "### To update Unsloth or install a new Unsloth Studio, you must use:\n\n"
@@ -805,8 +796,7 @@ def test_platform_headings_split_on_a_slash_as_well_as_a_comma(notes_module, hea
 
 
 def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_releases):
-    """GitHub answers a conditional request with 304 and no body, which is the
-    release already held rather than a failure."""
+    """A 304 with no body means the cached release still stands, not a failure."""
     serve_releases(
         releases_payload(
             {
@@ -863,8 +853,7 @@ def test_desktop_notes_link_to_the_release_page_on_every_platform():
 
 
 def test_preview_matches_how_markdown_renders_prose_and_links():
-    """Three rendering mismatches the preview must not reintroduce: wrapped
-    paragraphs split into fragments, autolinks eaten as tags, a lead cut short."""
+    """Guards against wrapped paragraphs split, autolinks eaten as tags, and leads cut short."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "collector.paragraph = collector.paragraph" in src
     assert "AUTOLINK" in src
@@ -872,8 +861,7 @@ def test_preview_matches_how_markdown_renders_prose_and_links():
 
 
 def test_preview_treats_code_as_literal():
-    """Inside a code span, and inside an indented code block, Markdown renders
-    the text literally, so the preview must not transform or promote it."""
+    """Code spans and indented code render literally, so the preview must not transform them."""
     src = PREVIEW.read_text(encoding = "utf-8")
     park = src.index("parkCodeSpans(markdown")
     assert park < src.index("stripHtmlTags(\n    parked")
@@ -881,8 +869,7 @@ def test_preview_treats_code_as_literal():
 
 
 def test_desktop_updater_metadata_maps_published_field_names():
-    """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
-    must read those, not `body`/`date`, or its release notes are always empty."""
+    """Manual Linux path must read latest.json notes/pub_date, as body/date leave notes empty."""
     rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding = "utf-8")
     assert 'alias = "body"' in rust and "notes: Option<String>" in rust
     assert 'alias = "date"' in rust and "pub_date: Option<String>" in rust
@@ -1359,8 +1346,7 @@ def test_only_the_notes_region_scrolls(banner):
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
-    """A note that mentions `<!--` used to put the parser into comment state for
-    the rest of the file, hiding every release below it."""
+    """A <!-- in prose must not open a comment that hides every release below it."""
     text = (
         "## 2026.8.0\n\n- Unsloth strips <!-- markers from pasted prompts.\n\n"
         "## 2026.7.5\n\n- SECRET: an older release\n"
@@ -1373,8 +1359,7 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
 
 
 def test_unmatched_backtick_runs_stay_linear(notes_module):
-    """Rescanning the suffix per opener was quadratic: 800 never-closing runs
-    took 7.7s at 321 KB, and notes are reparsed on every popup request."""
+    """Per-opener suffix rescans were quadratic; notes are reparsed on every popup request."""
     line = "".join("`" * (i + 1) + "x" for i in range(800))
     assert len(line) > 300_000
     started = time.monotonic()
@@ -1527,8 +1512,7 @@ def test_code_span_closers_ignore_backslashes():
     assert '!== "`" || escaped(' in calls[0]
 
 
-# The desktop card's incompressible height: a fixed part plus a part scaled by the font
-# setting, since at 20px the action row wraps at every card width.
+# Desktop card's height is a fixed part plus a font-scaled part; the action row wraps at 20px.
 _SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
 _NARROW_FLOOR_TAURI = "min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 _NARROW = "max-[383px]"
@@ -1594,8 +1578,7 @@ def _assert_floored(source: str, scaled: str, narrow: str, card: str) -> None:
     """The card keeps room for its header and buttons, in both of its states."""
     # Read off the rail-facing root, so a floor on an inner box does not count.
     root = _card_slot(source)
-    # `_only_under`: a gated floor stops applying over part of its range, an ungated twin
-    # reserves the empty height the gate was added to stop.
+    # Gated floor stops applying over part of its range; an ungated twin reserves empty height.
     assert _only_under(
         root, scaled, _NOTES_GATE
     ), f"the {card} card's floor is fixed, ungated, or gated more than its notes"
@@ -1724,8 +1707,7 @@ def test_the_class_matchers_tell_a_gated_rule_from_an_ungated_one():
 
 
 def test_the_class_anchors_do_not_depend_on_any_order():
-    """An anchor that needs an attribute or a branch to keep its place is the
-    same brittleness one level up, so both are read structurally."""
+    """Anchors must not depend on any attribute order or branch; both are read structurally."""
     # An arrow function's `>` does not end the opening tag, and comparisons are not elements.
     for tag in (
         '<ul className="a b" data-testid="x" onClick={() => go()}>',
@@ -1778,9 +1760,8 @@ def test_both_rails_are_still_pinned_to_the_bottom_right_corner():
     rails = _corner_rails(provider)
     assert len(rails) == 2, f"expected the browser and desktop rails, found {len(rails)}"
     for rail in rails:
-        # _only_under, not _applies: a gated `md:fixed` would leave the rail out of the corner.
-        # The rail's transparent gutters must not swallow clicks; cards opt back in with
-        # pointer-events-auto.
+        # _only_under, not _applies: a gated md:fixed would leave the rail out of the corner;
+        # transparent gutters must not swallow clicks; cards opt back in with pointer-events-auto.
         assert _only_under(
             rail, "pointer-events-none"
         ), f"the rail stopped passing clicks through: {rail!r}"
@@ -1822,8 +1803,7 @@ def test_the_rail_gutters_come_out_of_the_cap_and_not_the_cards():
         assert (
             _rail_padding(tag) == expected
         ), f"a rail's padding is not bound to its own constant: {_rail_padding(tag)}"
-    # No padding utility in any spelling: the inline px style owns padding, and Tailwind padding is
-    # either rem-scaled (#8082) or, with !important, overrides it.
+    # Padding is inline px: Tailwind padding is rem-scaled (#8082) or !important overrides it.
     for tag in _rail_openings(provider):
         for token in _rail_class_tokens(tag):
             utility = _split_variants(token)[1]
@@ -1854,8 +1834,7 @@ def test_the_rail_offset_is_not_computed():
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
-    """The banner asks with the Unsloth version it offers. `pypi_version` stays
-    in latest.json as the backend pin preflight checks, not a notes key."""
+    """Keyed by the offered Unsloth version; pypi_version in latest.json is the backend pin."""
     banner = TAURI_BANNER.read_text(encoding = "utf-8")
     assert "info?.version?.replace(LEADING_V" in banner
     assert "pypiVersion" not in banner, "notes are no longer keyed by the backend release"
@@ -1875,8 +1854,7 @@ def test_one_slow_read_cannot_outlast_the_fetch_budget(notes_module):
 
 
 def test_a_heading_indented_into_a_list_item_is_not_a_release(notes_module):
-    """CommonMark keeps a heading at the item's content column inside the item.
-    Checked against markdown-it (commonmark preset)."""
+    """A heading at the item's content column stays inside the item (CommonMark, markdown-it)."""
     text = "## 1.0\n\n- Example:\n  ## 9.9.9\n\n- after\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     body = find_section(notes_module, text, "1.0").body
@@ -1909,8 +1887,7 @@ def test_a_version_line_is_not_an_ordered_list_marker(notes_module):
 
 
 def test_a_wrapped_setext_heading_is_still_a_release(notes_module):
-    """CommonMark promotes the whole paragraph, so a wrapped heading keeps its
-    version in the first token. Reading only the last line lost the release."""
+    """A wrapped setext heading keeps its version in the first token, not the last line."""
     text = "2026.7.5 - Release\nJuly 25\n---\n\n- note\n"
     entries = parse_sections(notes_module, text)
     assert [e.version for e in entries] == ["2026.7.5"]
@@ -1948,8 +1925,7 @@ def test_an_escaped_mark_makes_an_image_a_link():
 
 
 def test_only_markdown_line_endings_split_the_changelog(notes_module):
-    """str.splitlines also breaks on U+2028, U+2029, NEL, vertical tab and form feed, which do not
-    end a CommonMark line; one in prose indexed a release the renderer never shows."""
+    """str.splitlines also breaks on U+2028, U+2029, NEL, VT and FF, which CommonMark does not."""
     text = "## 2.0\n\nnote with a separator  ## 9.9.9\n\n## 1.0\n\n- old\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     entry = find_section(notes_module, text, "2.0")
@@ -1963,12 +1939,10 @@ def test_only_markdown_line_endings_split_the_changelog(notes_module):
 
 
 def test_link_resolver_reads_comments_before_fences():
-    """A fence delimiter inside an HTML comment is not a fence, and a comment opener inside a real
-    fence is not a comment; the read order matters both ways."""
+    """Fence and comment openers only count outside each other; read order matters both ways."""
     links = LINKS.read_text(encoding = "utf-8")
     # Fence state is read before comments are masked, the order the collapsed preview uses.
     assert "const fenceSource = inComment\n      ? null\n      : FENCE.exec(" in links
-    # Masking happens only after the in-fence early return.
     fence_return = links.index("// Fenced content is literal")
     assert links.index("const [line, stillInComment, stillRunOn] = maskComments(") > fence_return
     assert "const spans = [...codeSpans(masked), ...comments].sort(" in links
@@ -2013,8 +1987,7 @@ def test_an_html_block_to_the_left_of_a_list_item_closes_it(notes_module):
 
 
 def test_the_download_panel_can_shrink_inside_the_capped_stack():
-    """The stack is capped to the viewport and a flex item defaults to min-height:auto, so the
-    wrapper must set min-h-0 to shrink; only the shared-stack branch needs it."""
+    """Capped shared stacks need min-h-0 on the wrapper; flex items default to min-height:auto."""
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
@@ -2026,9 +1999,7 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
 
 @pytest.fixture(scope = "module")
 def run_scanner(tmp_path_factory):
-    """Runs the frontend markdown scanners under node, since only a real run shows how a CommonMark
-    renderer classifies a line; @/lib resolves through Vite, not node, so the copies are
-    rewritten."""
+    """Only real node runs show how CommonMark classifies lines; @/lib is rewritten for node."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is needed to run the TypeScript scanners")
@@ -2057,8 +2028,7 @@ def preview_leads(preview) -> list[str]:
 
 
 def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
-    """CommonMark measures indentation from the container (spec 0.31.2 section 5.2); measuring from
-    the margin read such a link as code (section 4.4), leaving it relative to Unsloth's origin."""
+    """Indentation counts from the container (CommonMark 5.2), so a nested link is not code."""
     resolved = run_scanner("links", "- Details:\n\n    [guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
     code = run_scanner("links", "- Added.\n\n      [guide](docs/a.md)\n")
@@ -2068,9 +2038,7 @@ def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
 
 
 def test_an_indented_fence_does_not_swallow_the_bullets_below_it(run_scanner):
-    """A four-space line at document level is indented code, and a top-level
-    bullet does not continue it. Promoting it to a list-contained fence left a
-    block open with no closer, so every bullet after it was skipped."""
+    """A top-level bullet ends indented code; a list fence would swallow the bullets below it."""
     swallowed = "Example:\n\n    ```\n\n- Added the exporter\n- Fixed the crash\n"
     assert preview_leads(run_scanner("preview", swallowed)) == [
         "Added the exporter",
@@ -2109,8 +2077,7 @@ def test_a_fence_inside_a_list_item_ends_with_the_item(notes_module):
 
 
 def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
-    """The comment scanner restarted its code-span search per opener, so N spans cost N squared;
-    notes are reparsed on every request, so the scan must stay linear."""
+    """Per-opener code-span restarts are quadratic; notes reparse per request, so stay linear."""
     # A quarter of the budget form's size: the big leg is the 16_000 it was checked at.
     spans = 4_000
     assert len("`a` <!--x--> " * (spans * 4)) < notes_module.RELEASES_MAX_BYTES
@@ -2125,8 +2092,7 @@ def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
 
 
 def test_the_three_scanners_share_one_list_column_rule():
-    """The backend parser and both frontend scanners must classify a line the same way; the frontend
-    pair shares one module ported from the backend's _open_lists tracker."""
+    """Scanners share one list-column rule; openLists is ported from _open_lists."""
     shared = LIST_COLUMNS.read_text(encoding = "utf-8")
     assert "export function openLists(" in shared
     assert "_open_lists" in shared, "the backend function this mirrors"
@@ -2142,8 +2108,7 @@ def test_the_three_scanners_share_one_list_column_rule():
 
 
 def test_a_failed_fetch_keeps_retry_reachable():
-    """A release with no notes is ready and a failed fetch is error; only the
-    error is retryable, and rendering there would replace the Retry button."""
+    """Only the error state is retryable; rendering there would replace the Retry button."""
     src = " ".join(PANEL.read_text(encoding = "utf-8").split())
     assert "const source = notes?.matched ? notes.markdown : null;" in src
     # Only NotesStatus renders retry, in the else of the markdown branch: an error has no markdown.
@@ -2159,8 +2124,7 @@ def test_a_failed_fetch_keeps_retry_reachable():
 
 
 def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
-    """CommonMark opens an HTML block (spec 0.31.2 section 4.6, type 2) only when a line begins with
-    an HTML comment opener; mid-sentence it is inline and must not hide later links."""
+    """Mid-sentence an unclosed comment opener is inline, so it must not hide later links."""
     repo = "https://github.com/unslothai/unsloth/blob/main/docs/a.md"
     item = run_scanner("links", "- Type <!-- to begin a comment\n- See [docs](docs/a.md)\n")
     assert repo in item
@@ -2175,8 +2139,7 @@ def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
 
 
 def test_a_bare_level_two_marker_ends_the_release(notes_module, run_scanner):
-    """A bare ## line is an empty ATX heading (spec 0.31.2 section 4.2) that ends the release;
-    requiring whitespace after the marker kept the content below inside it."""
+    """A bare ## is an empty ATX heading (CommonMark 4.2) ending the release; no space needed."""
     text = "## 2.0\n\n- new thing\n\n##\n\n- SECRET: not part of 2.0\n"
     entry = find_section(notes_module, text, "2.0")
     assert "new thing" in entry.body
@@ -2189,8 +2152,7 @@ def test_a_bare_level_two_marker_ends_the_release(notes_module, run_scanner):
 
 
 def test_a_comment_between_bullets_closes_the_list(notes_module, run_scanner):
-    """A comment at the margin is an HTML block (spec 0.31.2 section 4.6, type 2) that closes the
-    list; blanking it as a blank line left the item open and the heading looking nested."""
+    """Margin comments are HTML blocks (CommonMark 4.6) that close the list, not blank lines."""
     text = "## 1.0\n\n- old item\n<!-- separator -->\n  ## 2.0\n\n- new item\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     assert "new item" not in find_section(notes_module, text, "1.0").body
@@ -2232,8 +2194,7 @@ def test_a_parenthesised_link_destination_still_resolves(run_scanner):
 
 
 def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
-    """A fence is measured from its container (spec 0.31.2 section 4.5), so a fence in a quote or
-    under a nested bullet opens; reading only the margin rewrote its links."""
+    """Fences measure from their container (CommonMark 4.5), so quoted or nested fences open."""
     quoted = run_scanner("links", "> ~~~\n> [guide](docs/a.md)\n> ~~~\n")
     assert "[guide](docs/a.md)" in quoted and "github.com" not in quoted
     nested = run_scanner("links", "- a\n  - b\n    ~~~\n    [x](docs/x.md)\n    ~~~\n")
@@ -2251,8 +2212,7 @@ def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
 
 
 def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
-    """Type 1 and type 6 HTML blocks are measured from their container too, so details and pre
-    inside a bullet or quote are verbatim; missing them rewrote the literal examples."""
+    """Type 1 and 6 HTML blocks (details, pre) inside containers are verbatim, not rewritten."""
     nested = run_scanner("links", "- a\n  - b\n    <details>\n    [x](docs/x.md)\n    </details>\n")
     assert "[x](docs/x.md)" in nested and "github.com" not in nested
     quoted = run_scanner("links", "> <pre>\n> [x](docs/x.md)\n> </pre>\n")
@@ -2279,10 +2239,9 @@ def test_an_underline_left_of_an_item_is_lazy_text_of_it(notes_module, run_scann
 
 
 def test_a_quote_keeps_its_paragraph_to_itself(notes_module, run_scanner):
-    """A marker written outside a blockquote is not text of the quote's
-    paragraph, so `2. item` under `> quote` opens a list even though an ordered
-    marker past 1 may not interrupt one (spec 0.31.2 section 5.2). Lending the
-    paragraph to the document left the list closed and the heading exposed."""
+    """A marker outside a blockquote is not in the quote's paragraph, so `2. item` opens a list
+    though an ordered marker past 1 cannot interrupt one (CommonMark 5.2); lending the paragraph
+    to the document left the list closed and the heading exposed."""
     quoted = "## 1.0\n> quote\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, quoted)] == ["1.0"]
     heading = "## 1.0\n> # inner\n2. item\n   ## 2.0\n"
@@ -2295,9 +2254,7 @@ def test_a_quote_keeps_its_paragraph_to_itself(notes_module, run_scanner):
 
 
 def test_indented_code_before_an_ordered_marker_still_opens_a_list(notes_module):
-    """An indented code block ends at the first line not indented enough, and no
-    paragraph is open, so `2. item` opens a list whatever its start number.
-    Reading it as code text left the list closed and the nested heading exposed."""
+    """With no paragraph open, `2. item` opens a list at any number; the heading stays inside."""
     joined = "## 1.0\n\n    code\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, joined)] == ["1.0"]
     apart = "## 1.0\n\n    code\n\n2. item\n   ## 2.0\n- new\n"
@@ -2307,8 +2264,7 @@ def test_indented_code_before_an_ordered_marker_still_opens_a_list(notes_module)
 
 
 def test_a_fence_written_as_an_item_first_content_opens_in_that_item(run_scanner):
-    """A block straight after a list marker is the item's first content, measured from where it
-    starts (spec 0.31.2 section 5.2), so a fence there opens; reading the whole line missed it."""
+    """A fence after a list marker opens in that item, measured from where the block starts."""
     sample = run_scanner("links", "- ```md\n  [example](docs/a.md)\n  ```\n")
     assert "[example](docs/a.md)" in sample and "github.com" not in sample
     ordered = run_scanner("links", "1. ~~~\n   [example](docs/a.md)\n   ~~~\n")
@@ -2322,8 +2278,7 @@ def test_a_fence_written_as_an_item_first_content_opens_in_that_item(run_scanner
 
 
 def test_an_html_block_ends_with_the_item_it_was_written_in(notes_module, run_scanner):
-    """An HTML block takes no lazy continuation line, so one opened in an item ends with that item,
-    as a fence does; ending it only on a blank line swallowed the next release."""
+    """An HTML block ends with its item (no lazy continuation) or it swallows the next release."""
     text = "## 1.0\n\n- item\n\n  <div>\n## 2.0\n\n- new thing\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     assert "new thing" in find_section(notes_module, text, "2.0").body
@@ -2338,8 +2293,7 @@ def test_an_html_block_ends_with_the_item_it_was_written_in(notes_module, run_sc
 
 
 def test_a_comment_may_close_on_a_later_line_of_its_paragraph(run_scanner):
-    """A mid-sentence comment belongs to its paragraph, so its closing delimiter may come on a later
-    line; ending it at its own line let a backtick pair up and hide a link."""
+    """A mid-sentence comment may close on a later line, or backticks pair up and hide a link."""
     carried = run_scanner("links", "Note <!-- ` open\nstill --> see [d](docs/a.md) and `x`\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in carried
     inside = run_scanner("links", "Note <!-- see [c](docs/c.md)\nmore --> end\n")
@@ -2370,8 +2324,7 @@ def test_only_punctuation_is_escapable_in_a_link_destination(run_scanner):
 
 
 def test_one_definition_does_not_hide_the_next(run_scanner):
-    """Consecutive link definitions (spec 0.31.2 section 4.7) are not paragraph text, so counting
-    one as prose left the next unresolved; the backend already reads them this way."""
+    """Consecutive link definitions are not prose (CommonMark 4.7), as the backend reads them."""
     text = (
         "- AMD support is here, see [the AMD guide][amd] and the\n"
         "  [Intel notes][xpu].\n\n"
@@ -2389,8 +2342,7 @@ def test_one_definition_does_not_hide_the_next(run_scanner):
 
 
 def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
-    """A multiline comment is often closed on a line of its own, and a wrapped line may open with
-    emphasis; reading that punctuation as a new block left the note visible."""
+    """A comment closed alone on its line still closes; a wrapped line may open with emphasis."""
     closer = run_scanner(
         "preview",
         "- DoRA training is available in Unsloth. <!-- TODO confirm the exact\n"
@@ -2414,8 +2366,7 @@ def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
 
 
 def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run_scanner):
-    """A comment as an item's first content is an HTML block inside that item (spec 0.31.2 section
-    4.6, type 2); finding its opener only at the margin let a marker before it hide the block."""
+    """An item's first-content comment is an HTML block (CommonMark 4.6) found past its marker."""
     item = run_scanner("links", "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n")
     assert item == "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n"
     for text in (
@@ -2541,8 +2492,7 @@ def test_a_heading_that_only_reads_like_boilerplate_is_kept(notes_module):
 
 
 def test_an_install_block_introduced_by_a_paragraph_is_dropped(notes_module):
-    """`v0.1.471-beta` writes the install sentence with no hashes. A paragraph
-    has no level, so its block runs to the next non-platform heading."""
+    """A paragraph has no level, so its install block runs to the next non-platform heading."""
     body = (
         "The announcement.\n\n"
         "To update Unsloth or install a new Unsloth Studio, you must use the below.\n"
@@ -2571,8 +2521,7 @@ def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
 
 
 def test_a_platform_heading_opens_an_install_block_on_its_own(notes_module):
-    """v0.1.0-beta and v0.1.41-beta head commands with a bare platform heading, so no Updating line
-    may be required; all seven platform headings in the bodies open a block."""
+    """A bare platform heading opens an install block, with no Updating line needed."""
     body = (
         "Intro.\n\n"
         "#### macOS, Linux, WSL:\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"

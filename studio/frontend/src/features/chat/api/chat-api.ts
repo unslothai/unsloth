@@ -1243,6 +1243,7 @@ export interface UpdateChatThreadOptions {
  *  names, for a writer that knows what changed but not what else the row holds. */
 export type ChatThreadWritePatch = Partial<ThreadRecord> & {
   settingsPatch?: ThreadRecord["settings"];
+  settingsDefaults?: ThreadRecord["settings"];
   /** Orders a writer's snapshot writes against its own earlier ones, never across tabs. */
   settingsSeq?: number;
   settingsWriter?: string;

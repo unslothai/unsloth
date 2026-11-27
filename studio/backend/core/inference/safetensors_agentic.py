@@ -683,8 +683,6 @@ def run_safetensors_tool_loop(
         permission_upgrade = live_permissions,
         context_length = context_length,
         continue_final_message = continue_final_message,
-        # The downstream tokenizer owns fitting; only system context is guaranteed.
-        dedup_tool_context = False,
     )
 
     # Forced first-pass RAG (GGUF parity) so doc questions do not lose to web_search; skipped only when retrieval would prompt (ask mode).

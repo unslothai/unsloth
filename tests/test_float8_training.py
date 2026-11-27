@@ -240,6 +240,42 @@ def test_refuses_when_scaled_mm_probe_fails(monkeypatch):
         f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
 
 
+def test_rowwise_probe_failure_points_at_tensorwise(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "NVIDIA RTX PRO 6000 Blackwell")
+    monkeypatch.setattr(torch.version, "hip", None)
+
+    def boom(*a, **k):
+        raise RuntimeError("no row-wise scaled_mm kernel")
+
+    monkeypatch.setattr(f8t, "_probe_float8_gemm", boom)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    with pytest.raises(RuntimeError, match = "use float8_training = True") as e:
+        f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+    assert "tensorwise recipe" in str(e.value)
+    # Outside the measured-faster gate True would be refused by name, so the hint names the config.
+    for cap, hip in (((9, 0), None), ((9, 4), "6.4")):
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, cap = cap: cap)
+        monkeypatch.setattr(torch.version, "hip", hip)
+        with pytest.raises(RuntimeError) as e:
+            f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+        assert "use float8_training = True" not in str(e.value)
+        assert "Float8LinearConfig.from_recipe_name('tensorwise') as float8_training" in str(
+            e.value
+        )
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    # A tensorwise failure has nothing to fall back to, so no hint.
+    with pytest.raises(RuntimeError) as e:
+        f8t._check_hardware(torch.device("cuda", 0), "tensorwise")
+    assert "use float8_training = True" not in str(e.value)
+    # Tensorwise is refused below 9.0 (NaN gradients), so the hint is not offered there.
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 9))
+    with pytest.raises(RuntimeError) as e:
+        f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+    assert "use float8_training = True" not in str(e.value)
+
+
 def test_loader_float8_training_for_lora_needs_a_16bit_base():
     from unsloth import FastLanguageModel, FastModel
     for loader in (FastLanguageModel, FastModel):
