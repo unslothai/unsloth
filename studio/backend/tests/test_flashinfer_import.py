@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""import_flashinfer must undo flashinfer's TRITON_PTXAS_BLACKWELL_PATH override when the system ptxas is not newer
-than Triton's bundled one, keep it when it is, and never touch a value set before the import. CPU only: fake ptxas
-scripts, a fake Triton compiler module and a fake flashinfer package carrying flashinfer 0.7.3's patch verbatim."""
+"""import_flashinfer vs flashinfer 0.7.3's ptxas override, CPU only with fake ptxas / Triton / flashinfer."""
 
 import os
 import stat
@@ -61,7 +59,6 @@ def _fake_ptxas(directory, release: str):
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """Build the world: ``env(system=..., bundled=..., fail_after_patch=...)`` returns the system ptxas path."""
     monkeypatch.delenv(ENV, raising = False)
     for name in [m for m in sys.modules if m == "flashinfer" or m.startswith("flashinfer.")]:
         monkeypatch.delitem(sys.modules, name)
@@ -117,7 +114,7 @@ def test_older_system_ptxas_is_undone(env):
     env(system = "13.0", bundled = "13.1")
     module = fi.import_flashinfer()
     assert module.__version__ == "0.7.3"
-    assert "flashinfer.triton" in sys.modules  # the patch really ran
+    assert "flashinfer.triton" in sys.modules
     assert ENV not in os.environ
 
 
@@ -152,7 +149,6 @@ def test_user_set_value_is_never_touched(env, tmp_path, monkeypatch):
     monkeypatch.setenv(ENV, user)
     fi.import_flashinfer()
     assert os.environ[ENV] == user
-    # Even if something replaced it during the import, a value present before is the user's call.
     os.environ[ENV] = _fake_ptxas(tmp_path / "other_bin", "13.0")
     assert fi.restore_triton_ptxas(user) is False
     assert os.environ[ENV] == str(tmp_path / "other_bin" / "ptxas")
