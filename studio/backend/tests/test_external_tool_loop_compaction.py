@@ -232,13 +232,24 @@ class _RefusesPastALimit(_Handler):
         self.wfile.write(payload)
 
 
-@pytest.mark.parametrize("mode", ["summary", "rolling", "checkpoint"])
-def test_an_overflow_inside_the_only_turn_resends_with_its_results_shortened(monkeypatch, mode):
+@pytest.mark.parametrize(
+    "mode, repeats",
+    [
+        ("summary", 150),
+        ("rolling", 150),
+        ("checkpoint", 150),
+        ("rolling", 600),
+        ("checkpoint", 600),
+    ],
+)
+def test_an_overflow_inside_the_only_turn_resends_with_its_results_shortened(
+    monkeypatch, mode, repeats
+):
     async def connected(self) -> bool:
         return False
 
     def execute(name, arguments, **kwargs):
-        return "RESULT " + "harbor ledger canal " * 150
+        return "RESULT " + "harbor ledger canal " * repeats
 
     monkeypatch.setattr(studio_tool_loop, "execute_tool", execute)
     monkeypatch.setattr(Request, "is_disconnected", connected)

@@ -30648,6 +30648,8 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
 
 _CLIPPED_RESULT_MIN_CHARS = 400
 _CLIP_NOTICE_CHARS = 128
+# Token estimates round per message: a cut sized to the exact overshoot can land a token over.
+_CLIP_SLACK_TOKENS = 16
 
 
 def _clip_text(text: str, keep: int) -> str:
@@ -30681,7 +30683,8 @@ def _clip_turn_tool_results(
             continue
         per_token = len(text) / max(1, estimate_message_tokens_without_unpriced_media(message))
         keep = max(
-            _CLIPPED_RESULT_MIN_CHARS, len(text) - int(over * per_token) - _CLIP_NOTICE_CHARS
+            _CLIPPED_RESULT_MIN_CHARS,
+            len(text) - int((over + _CLIP_SLACK_TOKENS) * per_token) - _CLIP_NOTICE_CHARS,
         )
         if len(text) - keep > _CLIP_NOTICE_CHARS:
             message["content"] = _clip_text(text, keep)
@@ -32152,6 +32155,8 @@ async def _proxy_to_external_provider(
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
             # the loop's later passes. The window stays: the fit clamps the reply cap against it.
             unbounded, first_unbounded = _evicting_payload, _first_payload
+            # The tightest probe that fit by shortening alone, used when no probe can drop a turn.
+            clipped = None
             for threshold in _overflow_retry_thresholds(
                 refused_tokens, _effective_max_tokens(unbounded)
             ):
@@ -32165,6 +32170,12 @@ async def _proxy_to_external_provider(
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break
+                if clipped is None and truncation is None:
+                    clipped = (fitted, fallback_max_tokens, _evicting_payload, _first_payload)
+            else:
+                if clipped is not None:
+                    fitted, fallback_max_tokens, _evicting_payload, _first_payload = clipped
+                    truncation = None
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
