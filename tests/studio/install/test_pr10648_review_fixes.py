@@ -44,8 +44,7 @@ def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused
     tmp_path, monkeypatch, writer_name
 ):
     """Rewriters ask for owner and group, then group alone: an unprivileged owner change fails the
-    whole chown(2) call and drops the group, while group-only under root leaves a 0600 marker
-    unreadable to its owner."""
+    whole chown(2) and drops the group; group-only as root leaves a 0600 marker unreadable."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     original = marker.stat()
@@ -72,8 +71,7 @@ def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused
 
 @requires_chown
 def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monkeypatch):
-    """A refused owner must not cost the group: os.chown is emulated with the kernel rule that an
-    unprivileged caller cannot change the owner, and chown is all-or-nothing."""
+    """Fake os.chown refuses the owner; the group must survive, as chown is all-or-nothing."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
     shared_gid = marker.stat().st_gid
@@ -91,8 +89,7 @@ def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monk
 
 @requires_chown
 def test_a_marker_rewrite_keeps_the_keys_the_about_tab_renders(tmp_path, monkeypatch):
-    """release_tag and tag reach the user via /api/system/hardware and the About tab, so a marker
-    rewrite must keep both keys."""
+    """release_tag and tag feed the About tab via /api/system/hardware; keep both on rewrite."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840", "tag": "b10840"}\n', encoding = "utf-8")
     monkeypatch.setattr(LLAMA.os, "chown", lambda path, uid, gid: None)
@@ -137,8 +134,7 @@ def test_the_node_bypass_spells_it_the_way_llama_does(monkeypatch, value):
 
 @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
 def test_the_node_bypass_stays_off_for_anything_else(monkeypatch, value):
-    """An unset or negative value must leave the fast path in place, or every update pays
-    the spawns forever."""
+    """Any other value keeps the fast path, or every update pays the spawns forever."""
     monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", value)
     assert NODE.prebuilt_full_check_requested() is False
     assert LLAMA.prebuilt_full_check_requested() is False
@@ -149,8 +145,7 @@ _LOGIC = _load("studio_install_llama_prebuilt_pr10648_logic", "install_llama_pre
 
 
 def _legacy_marker_install(tmp_path, helpers, windows: bool):
-    """A healthy tree under a marker with no runtime_files, i.e. every install made before
-    this record existed."""
+    """Healthy tree under a marker lacking runtime_files, as every pre-record install has."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     if windows:
@@ -201,8 +196,7 @@ def _load_logic_helpers():
 
 
 def test_a_legacy_marker_is_not_blessed_without_asking_the_loader(tmp_path, monkeypatch, helpers):
-    """Windows legacy marker must be verified by the loader before blessing, or damage is recorded
-    as good."""
+    """Windows legacy marker must be loader-verified before blessing, or damage is recorded."""
     install_dir, host, plan = _legacy_marker_install(tmp_path, helpers, windows = True)
 
     probed = []
@@ -274,8 +268,7 @@ def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, m
 
 
 def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
-    """Rename-over needs DELETE access on the destination, so a scanner holding the marker
-    open fails the swap where the in-place write this replaced would have succeeded."""
+    """Rename-over needs DELETE on the marker, so a scanner holding it open blocks the swap."""
     source = tmp_path / "tmp-marker"
     source.write_text("{}", encoding = "utf-8")
     destination = tmp_path / "MARKER.json"
@@ -363,8 +356,7 @@ def test_a_pinned_release_is_not_satisfied_by_a_walked_back_install():
 
 
 def test_an_automatic_request_still_accepts_the_walk_back():
-    """The optimisation this PR exists for must survive the fix above: without a pin, a Mac
-    holding the older release because the newest needs a newer OS is still current."""
+    """Without a pin, a Mac that walked back to an older release still counts as current."""
     host = _mac()
     marker = _walked_back_marker(host)
     assert LLAMA._release_expectation_met(marker, "b9999", host, pinned = False) is True
@@ -378,8 +370,7 @@ def test_a_pinned_release_that_is_actually_installed_is_still_current():
 
 
 def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
-    """The guard is only worth anything if the caller actually passes the pin, so drive the
-    real entry point and record what it asked."""
+    """The guard only matters if the caller passes the pin, so drive the real entry point."""
     seen = []
     monkeypatch.setattr(
         LLAMA,
@@ -441,8 +432,7 @@ def test_a_first_node_marker_survives_a_refused_mode_restore(tmp_path, monkeypat
 
 
 def test_a_node_marker_refresh_abandons_on_a_refused_mode_restore(tmp_path, monkeypatch):
-    """The refresh is where the harm is: the existing marker must be left exactly as it was,
-    rather than replaced by one only its writer can read."""
+    """On a refused mode restore, keep the marker; never swap in one only its writer can read."""
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     NODE.write_metadata(install_dir, version = "24.17.0", asset = "a.tar.gz", sha256 = "b" * 64)
@@ -457,8 +447,7 @@ def test_a_node_marker_refresh_abandons_on_a_refused_mode_restore(tmp_path, monk
 
 
 def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
-    """record_runtime_verification is best effort by contract: an unrefreshable marker costs
-    the two spawns again, and must never take the caller down with it."""
+    """record_runtime_verification is best effort; an unrefreshable marker must never raise."""
     host = _node_host()
     _node_tree(tmp_path, host)
     NODE.write_metadata(tmp_path, version = "24.17.0", asset = "a", sha256 = "b" * 64)

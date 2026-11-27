@@ -152,8 +152,7 @@ def test_one_missing_id_does_not_discard_the_others() -> None:
 
 
 def test_bare_attribute_access_would_still_have_failed() -> None:
-    """Negative control: the three tests above pass trivially if the emitted lines stopped
-    reading the ids at all, so prove the pre-fix spelling really does raise here."""
+    """Pre-fix bare attribute spelling must still raise, else the tests above pass trivially."""
     pre_fix = (
         "protected = [self.image_token_id, self.vision_start_token_id, self.vision_end_token_id]\n"
         "protected = [token for token in protected if token is not None]\n"

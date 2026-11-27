@@ -4,6 +4,8 @@
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
+from weakref import ref
 
 import pytest
 
@@ -138,11 +140,13 @@ def test_existing_actual_instructions_deduplicate_but_changed_resources_reload(m
     _, _, path = mention_client
     original = path.read_text()
     history = [{"role": "tool", "content": original}, {"role": "user", "content": "@skill-creator"}]
-    messages, events = _load(messages = history)
+    messages, events = _load(messages = history, protected_message_ids = set())
     assert events[-1]["already_in_context"] is True
     assert len(messages) == 2
+    # A caller that cannot keep the result through fitting gets the manifest in the system prompt.
+    assert _load(messages = list(history))[1][-1]["already_in_context"] is False
     path.write_text(original + "Changed resource.\n")
-    messages, events = _load(messages = history)
+    messages, events = _load(messages = history, protected_message_ids = set())
     assert events[-1]["already_in_context"] is False
     assert path.read_text() in messages[0]["content"]
 
@@ -160,6 +164,145 @@ def test_retry_without_instructions_reloads_and_old_mentions_never_activate(ment
     ]:
         assert _load(messages = history)[1] == []
     assert _load(continue_final_message = True)[1] == []
+
+
+def test_every_turn_rebuilds_the_same_system_prompt_for_prompt_cache(mention_client, monkeypatch):
+    _, _, path = mention_client
+    path.write_text(path.read_text() + "a" * 6000 + "\n")
+    for name in ("another", "third"):
+        (path.parent.parent / name).mkdir()
+        (path.parent.parent / name / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: X.\n---\n{'b' * 6000}\n"
+        )
+
+    def thread(
+        *turns,
+        tail = (),
+        **kwargs,
+    ):
+        messages = [{"role": "system", "content": "Base."}]
+        for text in turns:
+            messages += [{"role": "user", "content": text}, {"role": "assistant", "content": "ok"}]
+        return _load(messages = messages[:-1] + list(tail), context_length = 8192, **kwargs)
+
+    first, _ = thread("@skill-creator sum")
+    later, events = thread("@skill-creator sum", "thanks")
+    assert events == [] and later[0] == first[0] and path.read_text() in first[0]["content"]
+    assert later[1]["content"] == "@skill-creator sum"
+    # A new mention only extends the prompt; a repeat reports the earlier load; over budget, refused.
+    grown, events = thread("@skill-creator sum", "@another @skill-creator @third")
+    assert (
+        grown[0]["content"].startswith(first[0]["content"])
+        and "@third not loaded" in grown[0]["content"]
+    )
+    assert [e.get("already_in_context") for e in events if e["status"] != "loading"] == [
+        False,
+        True,
+        None,
+    ]
+    again, events = thread("@skill-creator sum", "@another @skill-creator @third", "@third")
+    assert again[0] == grown[0] and [e["status"] for e in events] == ["loading", "unavailable"]
+    # A read_skill result is charged too, so moving it into the system prompt later evicts nothing.
+    tool = {"role": "tool", "content": path.read_text()}
+    reused = [
+        {"role": "system", "content": "Base."},
+        tool,
+        {"role": "user", "content": "@skill-creator @another @third"},
+    ]
+    pins = set()
+    _, events = _load(messages = list(reused), context_length = 8192, protected_message_ids = pins)
+    assert pins == {id(tool)}
+    rebuilt, _ = _load(
+        messages = reused
+        + [{"role": "assistant", "content": "ok"}, {"role": "user", "content": "x"}],
+        context_length = 8192,
+    )
+    assert [e["status"] for e in events if e["status"] != "loading"] == [
+        "loaded",
+        "loaded",
+        "unavailable",
+    ]
+    assert "@another ·" in rebuilt[0]["content"] and "@third not loaded" in rebuilt[0]["content"]
+    # A later read_skill result, Continue and an older-only Ask history leave it as it was.
+    assert thread("@skill-creator sum", "thanks", tail = [tool])[0][0] == first[0]
+    resumed = thread(
+        "@skill-creator sum",
+        tail = [{"role": "assistant", "content": "x"}],
+        continue_final_message = True,
+    )
+    assert resumed[0][0] == first[0] and resumed[1] == []
+    # Ask skips an older mention even when the skill is not loadable now (so no approval is asked).
+    listed = [{"name": "skill-creator", "valid": True, "shadowed": False, "enabled": False}]
+    monkeypatch.setattr(mentions, "list_skills", lambda: listed)
+    full = SimpleNamespace(apply = lambda mode, bypass: ("full", True))
+    asked, _ = thread(
+        "@skill-creator sum",
+        "x",
+        permission_mode = "ask",
+        confirm_tool_calls = True,
+        permission_upgrade = full,
+    )
+    assert asked[0] == {"role": "system", "content": "Base."}
+
+
+def test_refused_manifests_are_never_pinned_and_repeats_reuse_one_read(mention_client, monkeypatch):
+    _, _, path = mention_client
+    tool = {"role": "tool", "content": path.read_text()}
+    pins = set()
+    _, events = _load(
+        messages = [tool, {"role": "user", "content": "@skill-creator"}],
+        context_length = 10,
+        protected_message_ids = pins,
+    )
+    assert events[-1]["status"] == "unavailable" and pins == set()
+    # A repeat reuses its earlier mention's read, so an edit in between cannot add a second copy.
+    reads = iter([path.read_text(), path.read_text() + "edited"])
+    monkeypatch.setattr(mentions, "read_skill_instructions", lambda name: next(reads))
+    history = [
+        {"role": "user", "content": "@skill-creator"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "@skill-creator"},
+    ]
+    messages, events = _load(messages = history)
+    assert events[-1]["already_in_context"] is True and "edited" not in messages[0]["content"]
+
+
+def test_budget_refusal_releases_manifest_but_is_reused_on_repeat(monkeypatch):
+    class Manifest(str):
+        pass
+
+    names = ["first", "second"]
+    monkeypatch.setattr(
+        mentions,
+        "list_skills",
+        lambda: [
+            {"name": name, "valid": True, "shadowed": False, "enabled": True} for name in names
+        ],
+    )
+    reads = {}
+
+    def read(name):
+        assert name not in reads
+        assert all(manifest() is None for manifest in reads.values())
+        manifest = Manifest(f"Complete instructions for {name}")
+        reads[name] = ref(manifest)
+        return manifest
+
+    monkeypatch.setattr(mentions, "read_skill_instructions", read)
+    messages, events = _load(
+        messages = [
+            {"role": "user", "content": "@first"},
+            {"role": "assistant", "content": "Okay."},
+            {"role": "user", "content": "@second @first"},
+        ],
+        context_length = 8,
+    )
+    assert list(reads) == names and all(manifest() is None for manifest in reads.values())
+    assert [event["name"] for event in events if event["status"] == "unavailable"] == [
+        "second",
+        "first",
+    ]
+    assert messages[0]["content"].count("Skill @first not loaded") == 1
 
 
 def test_deduplicated_native_result_is_protected_through_context_fitting(mention_client):
@@ -181,6 +324,16 @@ def test_deduplicated_native_result_is_protected_through_context_fitting(mention
     assert id(history[2]) in pins
     fitted, _ = truncate_oldest_messages(messages, keep_ratio = 0.1, protected_message_ids = pins)
     assert any(manifest in message.get("content", "") for message in fitted)
+    # Later turns rebuild it into the system prompt instead of relying on the tool result.
+    for tail in ("thanks", "@skill-creator again"):
+        later = history + [
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": tail},
+        ]
+        rebuilt, events = _load(messages = later, protected_message_ids = set())
+        assert rebuilt[0]["role"] == "system" and rebuilt[0]["content"].count(manifest) == 1
+        loaded = [e["already_in_context"] for e in events if e["status"] == "loaded"]
+        assert loaded == ([] if tail == "thanks" else [True])
 
 
 def test_mentions_that_are_not_skills_are_silent(mention_client, monkeypatch):

@@ -3470,9 +3470,11 @@ def get_hardware_info(
         export_capability,
         video_capability,
     )
+    from utils.hardware.hardware import _backend_label
 
     body = {
         "gpu": get_gpu_summary(),
+        "device_backend": _backend_label(get_device()),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),

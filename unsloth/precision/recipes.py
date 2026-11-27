@@ -594,6 +594,46 @@ _add(
     )
 )
 
+_add(
+    Recipe(
+        name = "int8_lora_rotated",
+        kind = "frozen_base",
+        modes = ("lora",),
+        fwd = GemmPolicy(_op("int8", "row", rht = True), _op("int8", "row", rht = True)),
+        dgrad = GemmPolicy(_op("int8", "row"), _op("int8", "row", rht = True)),
+        hp_layers = _HP_FP8,
+        input_dtypes = ("bf16", "fp16"),
+        compile = "opaque",
+        backend = "unsloth.kernels.int8_lora (UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
+        gates = {
+            "sm75": Gate("refused", "the Triton int8 GEMM needs compute capability 8.0+"),
+            "sm80": Gate(
+                "refused",
+                "A100: the Triton int8 GEMM runs at 0.22x bf16 (Triton >= 3.8 sm8x int8 tiles spill)",
+            ),
+            "sm89": Gate(
+                "refused",
+                "L4: the Triton int8 GEMM runs at 0.52-0.55x bf16 (Triton >= 3.8 sm8x int8 tiles spill)",
+            ),
+            "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate("unprobed", "B200: correctness only, never timed"),
+            "sm120": Gate(
+                "explicit",
+                evidence = "RTX 5090 (GeForce: FP32-accumulate bf16 / fp8 tensor paths run at half rate): "
+                "the int8 GEMM is 3.03x a bf16 GEMM and 1.54x fp8 tensorwise over a Qwen3-8B layer at 8192 "
+                "tokens (A/A 0.25%). RTX PRO 6000: int8 = fp8 rowwise = ~1.9x bf16 per GEMM. Eval loss after "
+                "100 LoRA steps vs bf16 (A/A 0.02-0.05%): +0.02% on the exact base, +0.16% with the int8 "
+                "forward at Qwen3-1.7B (fp8 rowwise: +0.10% / +0.42%)",
+            ),
+            "rocm": Gate("refused", "the int8 kernels are CUDA Triton only"),
+        },
+        notes = "block-Hadamard (128) rotated per-token int8 activations and per-row int8 weight, int32 "
+        "accumulation, dequant and LoRA term in the GEMM epilogue; the input gradient reuses the same int8 "
+        "weight (row scale folded into dY, rotation undone in the epilogue); q / k / v and gate / up share "
+        "one activation quantization",
+    )
+)
+
 
 def get_recipe(name: str) -> Recipe:
     try:

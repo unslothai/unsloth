@@ -63,7 +63,6 @@ class _NoFloat64(TorchFunctionMode):
 @pytest.mark.parametrize("cancel", [False, True])
 def test_float32_rank_path_has_no_float64_and_stays_accurate(monkeypatch, w_dtype, cancel):
     mod = _load()
-    # Run the CPU tensors through the path a device without float64 takes.
     monkeypatch.setattr(mod, "_rank_dtype", lambda device, rank = 0: torch.float32)
     torch.manual_seed(0)
     d_out, d_in, r, s = 256, 512, 16, 2.0

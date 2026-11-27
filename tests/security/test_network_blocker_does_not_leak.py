@@ -64,8 +64,7 @@ def test_loopback_is_still_allowed():
 
 
 def test_the_original_socket_is_what_gets_restored():
-    """Teardown must hand back the real class, not another blocker: nesting two
-    installs and restoring in the wrong order would leave the patch behind."""
+    """Restore the real class, not a blocker; wrong-order restores of nested installs leak."""
     import tests.security.conftest as C
     assert (
         not issubclass(socket.socket, C._BlockedSocket) or socket.socket is C._BlockedSocket
@@ -81,8 +80,7 @@ def test_the_finalizer_really_restores_the_original():
     real = C._BlockedSocket.__bases__[0]
     assert real is not C._BlockedSocket
 
-    # Stand the guard down first: the fixture captures whatever is installed when it starts, so driving it from
-    # under itself would "restore" the blocker.
+    # Drop the guard first, or the fixture captures the blocker as the original to restore.
     outer, socket.socket = socket.socket, real
     try:
         generator = C.network_blocker.__wrapped__()

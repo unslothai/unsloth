@@ -4,6 +4,7 @@
 """The dense cache answers exactly what vec0 answers, and never from a snapshot it was not built at."""
 
 import math
+import sqlite3
 
 import pytest
 
@@ -295,6 +296,18 @@ def test_the_builder_opens_and_closes_through_the_connection_gate(monkeypatch, t
     opened = []
     real = sqlite_gate.connect
     monkeypatch.setattr(sqlite_gate, "connect", lambda *a, **kw: opened.append(a) or real(*a, **kw))
+    if not hasattr(sqlite3.Connection, "enable_load_extension"):
+        # This Python's sqlite3 cannot load extensions (the macos-15 runner's): the open still goes
+        # through the gate, and the refusal closes the connection it opened.
+        closed = []
+        real_close = sqlite_gate.GatedConnection.close
+        monkeypatch.setattr(
+            sqlite_gate.GatedConnection, "close", lambda self: closed.append(1) or real_close(self)
+        )
+        with pytest.raises(AttributeError, match = "enable_load_extension"):
+            vec_cache._connect(str(tmp_path / "x.db"))
+        assert len(opened) == 1 and closed == [1]
+        return
     conn = vec_cache._connect(str(tmp_path / "x.db"))
     assert isinstance(conn, sqlite_gate.GatedConnection) and len(opened) == 1
     conn.close()
@@ -341,3 +354,44 @@ def test_block_scan_scratch_stays_bounded_by_block_plus_fetch(monkeypatch):
     tracemalloc.stop()
     # Result list aside, a scan that kept every block's candidates would hold ~n * 12 bytes (2.4 MB).
     assert peak < 1.5 * 2**20, peak
+
+
+def _vec_chunk_ids(conn, doc):
+    sql = "SELECT chunk_id FROM chunks_vec WHERE chunk_id LIKE ?"
+    return sorted(r[0] for r in conn.execute(sql, (f"{doc}:%",)))
+
+
+@pytest.mark.parametrize("hint", ["mapped", "another_documents", "none"])
+def test_a_swap_replaces_exactly_its_vectors_whatever_rowids_it_is_handed(
+    rag_conn, monkeypatch, hint
+):
+    _add(rag_conn, "kb_a", "d1", _vectors(3))
+    _add(rag_conn, "kb_a", "d2", _vectors(3, seed = 1))
+    known = store.vec_rowids_by_document(rag_conn, "kb_a")
+    assert {d: len(r) for d, r in known.items()} == {"d1": 3, "d2": 3}
+    if hint == "another_documents":
+        known["d1"] = known["d2"]
+    monkeypatch.setattr(config, "effective_embedding_model", lambda fresh = False: "m")
+    ids = ["d1:0", "d1:1", "d1:2"]
+    hints = None if hint == "none" else known
+    assert store.replace_document_vectors(
+        rag_conn, "d1", None, ids, _vectors(3, seed = 2), "m", "m", hints
+    )
+    assert _vec_chunk_ids(rag_conn, "d1") == ids
+    assert _vec_chunk_ids(rag_conn, "d2") == ["d2:0", "d2:1", "d2:2"]
+    if hints is not None:
+        assert sorted(known["d1"]) == sorted(store.vec_rowids_by_document(rag_conn, "kb_a")["d1"])
+
+
+def test_a_swap_after_a_width_change_writes_the_dropped_documents_vectors(rag_conn, monkeypatch):
+    _add(rag_conn, "kb_a", "d1", _vectors(3))
+    _add(rag_conn, "kb_a", "w", _vectors(2, dim = DIM * 2), dim = DIM * 2)
+    stale = store.get_document(rag_conn, "d1")["embedding_model"]
+    assert stale.startswith(rag_db.VECTORS_DROPPED) and _vec_chunk_ids(rag_conn, "d1") == []
+    monkeypatch.setattr(config, "effective_embedding_model", lambda fresh = False: "m")
+    ids = ["d1:0", "d1:1", "d1:2"]
+    assert store.replace_document_vectors(
+        rag_conn, "d1", stale, ids, _vectors(3, seed = 2, dim = DIM * 2), "m", "m", {}
+    )
+    assert _vec_chunk_ids(rag_conn, "d1") == ids and _vec_chunk_ids(rag_conn, "w") == ["w:0", "w:1"]
+    assert store.get_document(rag_conn, "d1")["embedding_model"] == "m"

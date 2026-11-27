@@ -132,6 +132,32 @@ def test_a_model_ep_shards_is_not_refused_and_no_ep_asks_nothing():
     assert caps.query_from(ParallelLayout(1, 2, 2, False), None, jetmoe).ep_blocker == ""
 
 
+def test_swapped_expert_lora_factors_shard_under_ep_and_stay_replicated_under_tp(monkeypatch):
+    # zoo flags Llama4TextExperts (is_transposed) and Qwen3VLMoeTextExperts (transformers 5.x) as training expert
+    # LoRA factors swapped against vanilla PEFT's: expert parallel cuts and saves them (gloo parity in
+    # test_ep_moe_families_gloo.py), tensor parallel keeps such experts whole.
+    from unsloth.models import tp_native
+
+    for family in ("llama4", "qwen3_vl_moe"):
+        assert caps._ep_blocker(family, 2) == "", family
+        status, cell = caps.cell_status(_ep_query(family = family, expert_lora = True))
+        assert status == "supported", (family, status, cell)
+        assert (
+            cell.parity
+            == f"tests/test_ep_moe_families_gloo.py::test_ep_family_matches_one_process[{family}]"
+        )
+    model = _meta("qwen3_moe")
+    block = tp_native.moe_blocks_with_experts(model)[0]
+    experts = tp_native._experts_chain(block)[-1]
+    if isinstance(experts, torch.nn.ModuleList):
+        pytest.skip("transformers 4.x per-expert modules: no fused experts class to flag")
+    monkeypatch.setattr(type(experts), "_unsloth_expert_lora_factors_swapped", True, raising = False)
+    assert tp_native.expert_shard_problem(block, 2) is None
+    assert tp_native.expert_shard_problem(block, 2, packed = False) == "swapped expert LoRA factors"
+    assert caps.query_from(_ep_layout(), None, model).ep_blocker == ""
+    caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+
+
 def test_family_table_answers_when_only_the_model_type_is_known():
     assert "layer_input" in caps._ep_blocker("jetmoe", 2)
     assert caps._ep_blocker("qwen3_moe", 2) == "" and caps._ep_blocker("jetmoe", 1) == ""

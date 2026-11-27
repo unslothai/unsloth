@@ -105,7 +105,13 @@ def test_bytes_match_pillow_without_text_and_across_idat_buffers():
         image = Image.fromarray(
             np.random.default_rng(3).integers(0, 256, (*size, 3), dtype = np.uint8), "RGB"
         )
-        assert png_encode.encode(image, compress_level = 1) == _pillow(image, compress_level = 1)
+        expected = _pillow(image, compress_level = 1)
+        assert png_encode.encode(image, compress_level = 1, threads = 1) == expected
+        # 40 x 20000 RGB is past _STRIP_MIN_BYTES: strip bytes, same image and chunks.
+        data = png_encode.encode(image, compress_level = 1, threads = 4)
+        assert _other_chunks(data) == _other_chunks(expected)
+        with Image.open(io.BytesIO(data)) as decoded:
+            assert decoded.tobytes() == image.tobytes()
 
 
 @needs_fast
@@ -266,3 +272,104 @@ def test_encode_returns_pillows_bytes_or_steps_aside_on_every_platform():
         assert data == _pillow(image, pnginfo = _info(), compress_level = 1)
     else:
         assert data is None
+
+
+def _idat_stream(data):
+    return b"".join(
+        data[pos + 8 : pos + 8 + length]
+        for kind, pos, length in png_encode._chunks(data)
+        if kind == b"IDAT"
+    )
+
+
+def _other_chunks(data):
+    return [
+        (kind, data[pos + 8 : pos + 8 + length])
+        for kind, pos, length in png_encode._chunks(data)
+        if kind != b"IDAT"
+    ]
+
+
+def test_adler32_combine_matches_zlib():
+    import zlib
+    rng = np.random.default_rng(3)
+    for first_len, second_len in ((0, 0), (1, 0), (0, 5), (7, 65521), (100000, 70000), (3, 300000)):
+        first = rng.integers(0, 256, first_len, dtype = np.uint8).tobytes()
+        second = rng.integers(0, 256, second_len, dtype = np.uint8).tobytes()
+        combined = png_encode._adler32_combine(
+            zlib.adler32(first), zlib.adler32(second), second_len
+        )
+        assert combined == zlib.adler32(first + second)
+
+
+@pytest.mark.parametrize("mode", ["RGB", "RGBA", "L", "LA"])
+@pytest.mark.parametrize("strip_bytes", [1, 5000, 64 * 1024, 10**9])
+@needs_fast
+def test_strips_decode_to_the_same_pixels_and_chunks(monkeypatch, mode, strip_bytes):
+    """Strip bytes differ from Pillow's; the image, the text chunks and the inflated filter stream do not."""
+    import zlib
+
+    monkeypatch.setattr(png_encode, "_STRIP_MIN_BYTES", 1)
+    monkeypatch.setattr(png_encode, "_STRIP_BYTES", strip_bytes)
+    image = _image(mode, 301, 517, seed = len(mode))
+    reference = _pillow(image, pnginfo = _info(), compress_level = 1)
+    data = png_encode.encode(image, pnginfo = _info(), compress_level = 1, threads = 4)
+    assert data is not None
+    with Image.open(io.BytesIO(data)) as decoded:
+        decoded.load()
+        assert decoded.mode == mode
+        assert decoded.size == image.size
+        assert decoded.tobytes() == image.tobytes()
+        assert decoded.info == Image.open(io.BytesIO(reference)).info
+    assert _other_chunks(data) == _other_chunks(reference)
+    # zlib.decompress checks the header and the combined Adler-32.
+    assert zlib.decompress(_idat_stream(data)) == zlib.decompress(_idat_stream(reference))
+    assert len(data) <= len(reference) * 1.08
+    # Strip bounds follow the image, never the thread count.
+    assert png_encode.encode(image, pnginfo = _info(), compress_level = 1, threads = 2) == data
+
+
+@needs_fast
+def test_large_images_take_strips_small_ones_stay_pillow_exact(monkeypatch):
+    calls = []
+    real = png_encode._strip_deflated
+
+    def counted(*args):
+        calls.append(args[3])
+        return real(*args)
+
+    monkeypatch.setattr(png_encode, "_strip_deflated", counted)
+    small = _image("RGB", 300, 257)
+    assert png_encode.encode(small, compress_level = 1, threads = 8) == _pillow(small, compress_level = 1)
+    assert calls == []
+    side = int((png_encode._STRIP_MIN_BYTES // 3) ** 0.5) + 1
+    large = _image("RGB", side, side)
+    data = png_encode.encode(large, compress_level = 1, threads = 3)
+    assert calls == [3]
+    with Image.open(io.BytesIO(data)) as decoded:
+        assert decoded.tobytes() == large.tobytes()
+    # One thread, or the kill switch: Pillow's bytes again.
+    assert png_encode.encode(large, compress_level = 1, threads = 1) == _pillow(large, compress_level = 1)
+    monkeypatch.setenv(png_encode.STRIPS_ENV, "0")
+    assert png_encode.encode(large, compress_level = 1) == _pillow(large, compress_level = 1)
+    assert calls == [3]
+
+
+def test_save_many_splits_the_cpus_across_its_encodes(monkeypatch):
+    seen = []
+    real = gallery._png_bytes
+
+    def spy(
+        image,
+        meta,
+        threads = None,
+    ):
+        seen.append(threads)
+        return real(image, meta, threads)
+
+    monkeypatch.setattr(gallery, "_png_bytes", spy)
+    monkeypatch.setattr(gallery.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(gallery.os, "process_cpu_count", lambda: 16, raising = False)
+    images = [_image("RGB", 32, 32, seed = i) for i in range(4)]
+    list(gallery.save_many((image, _meta(i)) for i, image in enumerate(images)))
+    assert seen == [4, 4, 4, 4]

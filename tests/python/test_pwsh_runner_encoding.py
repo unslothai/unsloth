@@ -69,8 +69,7 @@ def test_the_prologue_adds_no_bom(shell: str):
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_without_the_fix_the_same_string_does_not_survive(shell: str):
-    """Control runs the old invocation; a UTF-8 console may pass, so the two must agree then, and
-    the fixed one must be right when they do not"""
+    """Old call may pass on UTF-8 consoles, but must then match the fix; the fix must be right."""
     script = "Write-Output ('<' + [char]::ConvertFromUtf32(0x00e4) + '>')"
     argv = [shell, "-NoProfile", "-NonInteractive", "-Command", script]
     # pwsh_env, not run_pwsh: the control must call pwsh as call sites did before the prologue.

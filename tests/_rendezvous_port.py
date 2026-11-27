@@ -15,8 +15,7 @@ import os
 import random
 import socket
 
-# Linux allocates ephemeral ports from 32768 and macOS / Windows from 49152, so nothing below 32768 is
-# handed out by the kernel on its own.
+# Ephemeral ports start at 32768 (Linux) or 49152 (macOS/Windows); 20000-32000 is below both.
 LOW, HIGH = 20000, 32000
 SLICE = 1000
 

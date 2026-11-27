@@ -252,6 +252,7 @@ def test_both_adapter_reload_paths_wrap_evicted_experts(tmp_path):
             PeftModel = PeftModel,
             contextlib = contextlib,
             fast_pissa = False,
+            snapshot_residual_lora_load = lambda config: contextlib.nullcontext(),
             old_model_name = str(tmp_path),
             token = None,
             revision = None,

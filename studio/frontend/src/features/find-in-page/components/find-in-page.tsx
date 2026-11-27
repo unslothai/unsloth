@@ -309,7 +309,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             dismissLabel={t("common.close")}
             onDismiss={close}
             testId="find-in-page-load-failure"
-            className="fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
+            className="glass-card fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
           />
         }
       >

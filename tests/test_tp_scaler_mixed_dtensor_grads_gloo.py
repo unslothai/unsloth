@@ -75,8 +75,7 @@ def _run(optim, inf_rank = None):
 
 
 def _sparse_fp16():
-    """A float16 sparse plain grad (nn.Embedding(sparse = True)) beside a DTensor grad: upstream coalesces
-    it and assigns the result back to param.grad, so that assignment has to reach the real parameter."""
+    """Coalescing a sparse fp16 grad reassigns param.grad; that must reach the real parameter."""
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor import Shard, distribute_tensor
 

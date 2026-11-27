@@ -106,8 +106,7 @@ def _peak_per_element(build, total, window, cu_seqlens):
 def test_mask_peak_memory_has_no_int64_square(window, packed):
     total = 4096
     cu_seqlens = torch.tensor([0, 1000, 2500, total - 3]) if packed else None
-    # The fp16 output (2 bytes) plus one [T, T] bool (1 byte); the old windowed build held a [T, T]
-    # int64 difference beside two bools (10 bytes per element), the old unwindowed one 4.
+    # 3 B per element: fp16 output (2 B) plus one bool; old windowed 10 B, unwindowed 4 B.
     bound = 3.1
     assert _peak_per_element(uh._whole_sequence_mask, total, window, cu_seqlens) < bound
     reference = _peak_per_element(_reference_mask, total, window, cu_seqlens)

@@ -3218,7 +3218,10 @@ def _ga_mode(model = None):
       accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
       backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
-      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip", except
+      that units whose own parameters are mostly trainable (the root holding trainable embed_tokens /
+      lm_head, ~4 GiB of whole fp32 gradients for a Llama-8B vocab) still reduce-scatter every
+      micro-batch. An explicit "skip" skips every unit."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
@@ -3240,6 +3243,31 @@ def _mostly_trainable(model):
     return trainable > frozen
 
 
+def _mostly_trainable_units(model):
+    """FSDP units of `model` whose own parameters (not those of nested units) are mostly trainable."""
+    FSDPModule = _fsdp_module_class()
+    if FSDPModule is None:
+        return []
+    found = []
+    for unit in (m for m in model.modules() if isinstance(m, FSDPModule)):
+        nested = set()  # parameters owned by this unit's descendant units
+        for child in unit.modules():
+            if child is not unit and isinstance(child, FSDPModule):
+                nested.update(id(p) for p in child.parameters())
+        trainable = frozen = 0
+        for p in unit.parameters():
+            if id(p) in nested:
+                continue
+            if p.requires_grad and _floating(p):
+                trainable += p.numel()
+            else:
+                frozen += p.numel()
+        # modules_to_save keeps a frozen original next to each trainable copy: half and half.
+        if trainable and trainable * 2 >= frozen:
+            found.append(unit)
+    return found
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
     mode = _ga_mode(model)
@@ -3248,13 +3276,26 @@ def _no_grad_sync(model):
         return
     defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if mode == "skip" and os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() in (
+        "",
+        "auto",
+    ):
+        # Skipping a mostly trainable unit holds its whole fp32 gradient on every rank between
+        # micro-batches; reduce-scattering it each time keeps only the 1 / world shard (same sum).
+        for unit in _mostly_trainable_units(model):
+            try:
+                unit.set_requires_gradient_sync(True, recurse = False)
+            except TypeError:  # no per-unit switch on this torch: skip it like the rest
+                break
     if defer:
         model.set_reshard_after_backward(False)
         if hasattr(model, "set_is_last_backward"):
             model.set_is_last_backward(False)
+    model.__dict__["_unsloth_ga_no_sync"] = True  # fsdp2_save._fsdp_grad_sync_deferred
     try:
         yield
     finally:
+        model.__dict__.pop("_unsloth_ga_no_sync", None)
         model.set_requires_gradient_sync(True)
         if defer:
             model.set_reshard_after_backward(True)
@@ -3542,6 +3583,34 @@ def _inner_optimizer(optimizer):
     return optimizer
 
 
+@contextlib.contextmanager
+def _host_state_gatherable(optimizer):
+    """UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps a DTensor state's local shard in host memory under its original
+    (device) wrapper. torch's full state gather moves a DTensor to its mesh's device only when the wrapper
+    reports another device, so it would hand NCCL a host tensor. For the gather each such state is wrapped
+    with its host device instead: torch then moves it to the device one tensor at a time, and the offloaded
+    state (the objects the offloader tracks) is put back afterwards."""
+    from .fsdp2_save import _dtensor_class
+
+    DTensor = _dtensor_class()
+    swapped = []
+    if DTensor is not None:
+        for state in list(getattr(optimizer, "state", {}).values()):
+            if not isinstance(state, dict):
+                continue
+            for key, value in list(state.items()):
+                if isinstance(value, DTensor) and value._local_tensor.device != value.device:
+                    state[key] = DTensor(
+                        value._local_tensor, value._spec, requires_grad = value.requires_grad
+                    )
+                    swapped.append((state, key, value))
+    try:
+        yield
+    finally:
+        for state, key, value in swapped:
+            state[key] = value
+
+
 def native_save_optimizer(
     model,
     optimizer,
@@ -3563,7 +3632,7 @@ def native_save_optimizer(
     if writer_rank == 0:
         from .fsdp2_bnb_optim import full_cpu_state_export
         export = full_cpu_state_export(optimizer)
-    with export:
+    with export, _host_state_gatherable(optimizer):
         state = get_optimizer_state_dict(
             model,
             optimizer,
@@ -3571,8 +3640,8 @@ def native_save_optimizer(
                 full_state_dict = writer_rank == 0, cpu_offload = writer_rank == 0
             ),
         )
-    if writer_rank != 0:
-        state = _gather_to_writer(state, writer_rank)
+        if writer_rank != 0:
+            state = _gather_to_writer(state, writer_rank)
     dist = _dist()
     if should_save is None or writer_rank != 0:
         # Only the sub-mesh writer holds the state; a global-rank-0 should_save would write nothing.

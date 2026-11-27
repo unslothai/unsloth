@@ -34,6 +34,9 @@ function mount(options: { passive?: boolean }) {
     {
       react,
       "@/features/auth": { authFetch, getAuthToken: () => "token" },
+      "@/features/model-picker/api/llama-flags": {
+        invalidateLlamaFlagCatalog() {},
+      },
       "@/hooks/use-hardware-info": { refreshHardwareInfo: async () => {} },
       "@/lib/model-lifecycle-events": { notifyModelLifecycle() {} },
       "@/lib/llama-job-events": {
@@ -63,7 +66,8 @@ function withWindow(run: () => Promise<void>) {
       removeEventListener() {},
       dispatchEvent() {},
     };
-    mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+    // Date too: an automatic check reuses a forced read made within the last few minutes.
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
     try {
       await run();
     } finally {

@@ -3253,6 +3253,19 @@ def _fit_reasoning_effort_to_template(
     return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
 
 
+def _thinking_off_effort(chat_template: Optional[str]) -> str:
+    """Inkling ignores enable_thinking and starts its effort ladder at an off level; others keep the smallest budget."""
+    from core.inference.chat_template_helpers import replays_reasoning_content
+
+    if (
+        chat_template
+        and "enable_thinking" not in chat_template
+        and replays_reasoning_content(None, template = chat_template)
+    ):
+        return "none"
+    return "low"
+
+
 def _rendered_chat_template(backend) -> Optional[str]:
     # getattr: test doubles skip __init__ and borrow backend methods unbound.
     return getattr(backend, "_chat_template_override", None) or getattr(
@@ -10034,7 +10047,12 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             effort = _fit_reasoning_effort_to_template(
                 _rendered_chat_template(self),
-                effort or ("high" if enable_thinking else "low"),
+                effort
+                or (
+                    "high"
+                    if enable_thinking
+                    else _thinking_off_effort(_rendered_chat_template(self))
+                ),
                 thinking_off = not effort and not enable_thinking,
             )
             return _coerce_reasoning_effort(
@@ -10197,7 +10215,7 @@ class LlamaCppBackend:
                 elif enable_thinking is not None:
                     kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
                         _template,
-                        "high" if enable_thinking else "low",
+                        "high" if enable_thinking else _thinking_off_effort(_template),
                         thinking_off = not enable_thinking,
                     )
             else:
@@ -45280,14 +45298,27 @@ class LlamaCppBackend:
                         pass
                     return None, False
 
-                # Qwen3.5+ templates raise on an empty render; retry behind an empty user turn.
-                renders_empty = not template_messages or (
-                    len(template_messages) == 1
-                    and isinstance(template_messages[0], dict)
-                    and template_messages[0].get("role") == "assistant"
+                # Qwen3.5+ refuse an empty chat (stock: any without a user turn); retry behind one.
+                lead = 0
+                while (
+                    lead < len(template_messages)
+                    and isinstance(template_messages[lead], dict)
+                    and template_messages[lead].get("role") in ("system", "developer")
+                ):
+                    lead += 1
+                rest = template_messages[lead:]
+                renders_empty = not rest or (
+                    len(rest) == 1
+                    and isinstance(rest[0], dict)
+                    and rest[0].get("role") == "assistant"
                 )
-                with_user_turn = [{"role": "user", "content": ""}] + template_messages
-                if renders_empty and self._empty_chat_render_refused:
+                with_user_turn = [
+                    *template_messages[:lead],
+                    {"role": "user", "content": ""},
+                    *rest,
+                ]
+                # The memo is an empty chat's refusal; instructions alone are tried as sent first.
+                if renders_empty and not lead and self._empty_chat_render_refused:
                     count, _refused = _render_count(with_user_turn)
                 else:
                     count, _refused = _render_count(template_messages)
@@ -45295,7 +45326,7 @@ class LlamaCppBackend:
                         if should_abort is not None and should_abort():
                             raise CountAborted()
                         count, _ = _render_count(with_user_turn)
-                        if count is not None:
+                        if count is not None and not lead:
                             self._empty_chat_render_refused = True
                 if count is not None:
                     _count_memo_put(self, memo_key, count)

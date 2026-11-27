@@ -211,8 +211,7 @@ def test_an_unset_variable_answers_rather_than_aborts_under_a_callers_strict_mod
 @pytest.mark.parametrize("variable", ["UV_OFFLINE", "UV_NO_CONFIG", "UV_NO_INDEX"])
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
 def test_every_uv_variable_gets_the_same_table(variable, value, expected):
-    """One shared function so the variable cannot change the answer; the bug was three inline copies
-    of one idiom that could drift."""
+    """Shared helper: the variable cannot change the answer; three inline copies could drift."""
     assert _ps_flag(SETUP_PS1, "Test-UvEnvFlag", variable, value) is expected
 
 
@@ -248,8 +247,7 @@ def test_pips_rule_is_checked_against_pip_itself():
 
 
 def test_the_pip_reader_is_a_separate_function_from_the_uv_one():
-    """Not style: PIP_NO_INDEX is pip's variable and uv never reads it, so one shared function would
-    let a uv parsing fix silently change the pip fallback."""
+    """PIP_NO_INDEX is pip's, uv never reads it; a shared reader would let uv fixes change pip."""
     for source, uv_name, pip_name in (
         (INSTALL_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
         (SETUP_SRC, "Test-UvEnvFlag", "Test-PipEnvFlag"),
@@ -365,8 +363,7 @@ def test_uv_no_index_is_not_a_uv_environment_variable():
 @pytest.mark.parametrize("script", [INSTALL_PS1, SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 @pytest.mark.parametrize(("value", "expected"), BOOLISH_TABLE, ids = TABLE_IDS)
 def test_our_no_index_convention_uses_uvs_spelling_by_choice(script, value, expected):
-    """uv would ignore this variable whatever we did with it, so the table is a decision:
-    a caller sets it beside UV_OFFLINE and UV_NO_CONFIG and means it the same way."""
+    """uv ignores UV_NO_INDEX, so the table is a decision, as with UV_OFFLINE and UV_NO_CONFIG."""
     src = INSTALL_SRC if script == INSTALL_PS1 else SETUP_SRC
     snippet = _script(
         clear_env(_others("UV_NO_INDEX")),

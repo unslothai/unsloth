@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0: every package on win_amd64, causal-conv1d and mamba-ssm on Linux)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0, 2.11.0 and 2.12.0: every package on win_amd64, causal-conv1d and mamba-ssm on Linux; 2.15.0: causal-conv1d and mamba-ssm on win_arm64)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:
@@ -264,18 +264,24 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
-      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
-      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
-      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+      # The toolkit the cell's torch is built with (13.4.1 for 2.14.0+cu134, 13.5.0 for
+      # 2.15.0+cu135; CUDA 13.4 is the first with a Windows ARM64 nvcc), per torch from
+      # prebuilt_wheels.py's WIN_ARM64_CUDA_REDIST. From the redist archives: the manifest is pinned
+      # by sha256 and lists one for every archive, so nothing unhashed is unpacked. Installed
+      # straight into C:\cuda.
+      - name: Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)
         if: matrix.platform == 'win_arm64'
         timeout-minutes: 25
         shell: pwsh
+        env:
+          CUDA_REDIST_URL: ${{ matrix.cuda_redist_url }}
+          CUDA_REDIST_SHA256: ${{ matrix.cuda_redist_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:CUDA_REDIST_URL -or -not $env:CUDA_REDIST_SHA256) { throw 'the matrix names no CUDA redist manifest for this cell' }
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
-            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
+            $env:CUDA_REDIST_URL `
+            $env:CUDA_REDIST_SHA256 `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
@@ -329,7 +335,8 @@ jobs:
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
-          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          # windows-11-arm), and 13.5 ships the same CCCL line, so both keep the conforming one;
+          # CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
           if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 
@@ -665,18 +672,24 @@ jobs:
           'CUDA_HOME=C:\cuda', 'CUDA_PATH=C:\cuda' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & 'C:\cuda\bin\nvcc.exe' --version
 
-      # CUDA 13.4 is the first toolkit with a Windows ARM64 nvcc and what NVIDIA's torch 2.14+cu134
-      # is built with. From the redist archives: the manifest is pinned by sha256 and lists one for
-      # every archive, so nothing unhashed is unpacked. Installed straight into C:\cuda.
-      - name: Install the CUDA 13.4 toolkit (Windows ARM64)
+      # The toolkit the cell's torch is built with (13.4.1 for 2.14.0+cu134, 13.5.0 for
+      # 2.15.0+cu135; CUDA 13.4 is the first with a Windows ARM64 nvcc), per torch from
+      # prebuilt_wheels.py's WIN_ARM64_CUDA_REDIST. From the redist archives: the manifest is pinned
+      # by sha256 and lists one for every archive, so nothing unhashed is unpacked. Installed
+      # straight into C:\cuda.
+      - name: Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)
         if: matrix.platform == 'win_arm64'
         timeout-minutes: 25
         shell: pwsh
+        env:
+          CUDA_REDIST_URL: ${{ matrix.cuda_redist_url }}
+          CUDA_REDIST_SHA256: ${{ matrix.cuda_redist_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if (-not $env:CUDA_REDIST_URL -or -not $env:CUDA_REDIST_SHA256) { throw 'the matrix names no CUDA redist manifest for this cell' }
           python unsloth/.github/scripts/prebuilt_wheels_cuda_redist.py `
-            'https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.4.1.json' `
-            'e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5' `
+            $env:CUDA_REDIST_URL `
+            $env:CUDA_REDIST_SHA256 `
             'windows-arm64' 'C:\cuda' `
             cuda_nvcc libnvvm cuda_crt cuda_cudart cccl cuda_nvtx cuda_profiler_api `
             libcublas libcusparse libcusolver libcurand libcufft cuda_nvrtc libnvjitlink `
@@ -730,7 +743,8 @@ jobs:
           # undefined` in both). nvcc appends this to every invocation, host preprocessing included.
           'NVCC_APPEND_FLAGS=-D_USE_MATH_DEFINES' + $env:NVCC_APPEND_ARM64 | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # CUDA 13.4's CCCL stops with C1189 under MSVC's traditional preprocessor (measured on
-          # windows-11-arm); CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
+          # windows-11-arm), and 13.5 ships the same CCCL line, so both keep the conforming one;
+          # CL reaches the cl.exe torch's cpp_extension runs on the .cpp sources.
           if ($env:NVCC_APPEND_ARM64) { 'CL=/Zc:preprocessor' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
           Write-Host "Visual Studio at $vs"
 

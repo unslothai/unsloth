@@ -61,7 +61,6 @@ def _layer_class():
             packed_seq_lengths = None,
             **kwargs,
         ):
-            # cu_seqlens as a varlen kernel would build them from the per-document lengths.
             cu = torch.nn.functional.pad(packed_seq_lengths.cumsum(0), (1, 0))
             out = self.proj(hidden_states)
             return out * (cu[-1].to(out.dtype) / hidden_states.shape[1])
