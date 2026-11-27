@@ -432,6 +432,48 @@ def test_bf16_packed_load_has_no_float32_advice(tmp_path):
     assert packed.model.layers[0].self_attn.q_proj.weight.dtype == torch.bfloat16
 
 
+def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
+    # After merge_and_unload the model is no PeftModel and its non-target linears are still packed: the
+    # export writes dequantized weights, never the uint8 blocks.
+    _new_gguf_path()
+    peft = pytest.importorskip("peft")
+    from transformers import AutoModelForCausalLM
+
+    try:
+        from unsloth.save import unsloth_generic_save
+    except Exception as exc:  # the CPU harness may not import the full save module
+        pytest.skip(f"unsloth.save does not import here: {exc}")
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.float32,
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    lora = peft.get_peft_model(packed, peft.LoraConfig(r = 4, target_modules = ["q_proj"]))
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for name, param in lora.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 1e-2)
+    merged = lora.merge_and_unload()
+    assert gp.is_gguf_packed_model(merged)  # k / v / o / MLP stay packed
+    import copy
+
+    want = copy.deepcopy(merged)
+    gp.densify_gguf_packed_model(want)
+    want = want.state_dict()
+    with pytest.raises(RuntimeError, match = "merged_16bit"):
+        unsloth_generic_save(merged, None, str(tmp_path / "bad"), save_method = "merged_4bit_forced")
+    unsloth_generic_save(merged, None, str(tmp_path / "out"), save_method = "merged_16bit")
+    reloaded = AutoModelForCausalLM.from_pretrained(tmp_path / "out", dtype = torch.float32)
+    got = reloaded.state_dict()
+    assert set(got) == set(want)
+    for key, value in got.items():
+        assert torch.equal(value, want[key]), key
+
+
 def test_unknown_architecture_is_named(tmp_path):
     _new_gguf_path()
     from transformers import AutoModelForCausalLM

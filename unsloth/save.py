@@ -7642,6 +7642,26 @@ def unsloth_generic_save(
     if not _is_peft:
         if _defer_to_main_process(is_main_process):
             return
+        from .models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+
+        if is_gguf_packed_model(model):
+            # GGUF blocks are not a checkpoint transformers reads: write the dequantized (and any merged) weights.
+            if "16bit" not in save_method:
+                raise RuntimeError(
+                    "Unsloth: this model's base weights stay packed in their GGUF blocks, so it saves as "
+                    '`save_method = "merged_16bit"` (dequantized) or, before merging, as a LoRA adapter.'
+                )
+            print(f"Unsloth: Saving the dequantized GGUF model to '{save_directory}' ...")
+            write_gguf_dense_base(
+                model, save_directory, dtype = torch.float32 if _requests_float32(dtype) else None
+            )
+            if getattr(model, "generation_config", None) is not None:
+                model.generation_config.save_pretrained(save_directory)
+            if tokenizer is not None:
+                with _left_padding_side(tokenizer):
+                    tokenizer.save_pretrained(save_directory)
+            print(f"Unsloth: Model saved successfully to '{save_directory}'")
+            return
 
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
