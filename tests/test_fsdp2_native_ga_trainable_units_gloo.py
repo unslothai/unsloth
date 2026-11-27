@@ -50,7 +50,7 @@ def _model():
         }
     )
     torch.manual_seed(0)
-    return transformers.AutoModelForCausalLM.from_config(config, torch_dtype=torch.float32).eval()
+    return transformers.AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32).eval()
 
 
 def _peft(variant):
@@ -58,7 +58,7 @@ def _peft(variant):
 
     extra = {"modules_to_save": ["embed_tokens", "lm_head"]} if variant == "modules_to_save" else {}
     model = get_peft_model(
-        _model(), LoraConfig(r=4, lora_alpha=8, target_modules="all-linear", **extra)
+        _model(), LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", **extra)
     )
     if variant == "trainable":  # trainable embeddings, as with embedding_learning_rate
         for module in (model.get_input_embeddings(), model.get_output_embeddings()):
@@ -67,7 +67,7 @@ def _peft(variant):
     with torch.no_grad():
         for n, p in model.named_parameters():
             if "lora_B" in n:
-                p.normal_(0, 0.02, generator=g)
+                p.normal_(0, 0.02, generator = g)
     return model
 
 
@@ -81,15 +81,15 @@ def _run(native, variant, mode):
     os.environ["UNSLOTH_FSDP2_GA_SYNC"] = mode  # read on every no_sync entry
     rank = int(os.environ["RANK"])
     model = _peft(variant)
-    native.shard_model(model, native.FSDP2Config(param_dtype=torch.float32, fit_layout=False))
+    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, fit_layout = False))
     held = []
     for i in range(MICRO):
         ids = torch.randint(
-            3, 1024, (2, 16), generator=torch.Generator().manual_seed(100 * rank + i)
+            3, 1024, (2, 16), generator = torch.Generator().manual_seed(100 * rank + i)
         )
         ctx = native._no_grad_sync(model) if i < MICRO - 1 else torch.enable_grad()
         with ctx:
-            model(input_ids=ids, labels=ids, use_cache=False).loss.backward()
+            model(input_ids = ids, labels = ids, use_cache = False).loss.backward()
         held.append(_unsharded_grad_bytes(model))
     grads = {
         n: (p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad).clone()
@@ -147,7 +147,6 @@ def _worker(rank, world, port, out, path):
             out.put("ok")
     except Exception as exc:
         import traceback
-
         out.put({"error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"})
     finally:
         dist.destroy_process_group()
@@ -187,5 +186,5 @@ def test_auto_reduces_mostly_trainable_units_every_micro_batch(tmp_path):
         assert g_skip and g_auto.keys() == g_skip.keys() == g_each.keys()
         assert any("embed_tokens" in n for n in g_auto) and any("lm_head" in n for n in g_auto)
         for n in g_skip:
-            torch.testing.assert_close(g_auto[n], g_skip[n], rtol=1e-5, atol=1e-7, msg=n)
-            torch.testing.assert_close(g_each[n], g_skip[n], rtol=1e-5, atol=1e-7, msg=n)
+            torch.testing.assert_close(g_auto[n], g_skip[n], rtol = 1e-5, atol = 1e-7, msg = n)
+            torch.testing.assert_close(g_each[n], g_skip[n], rtol = 1e-5, atol = 1e-7, msg = n)
