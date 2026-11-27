@@ -881,9 +881,8 @@ def _peft_expert_in_axis(is_transposed: bool) -> int:
 
 def _expert_stack_shape(param) -> tuple[int, int, int]:
     shape = getattr(param, "_original_shape", None)
-    preload = getattr(
-        param, "_unsloth_fsdp2_preload", None
-    )  # FSDP2 sharded load: a local expert chunk
+    # FSDP2 sharded load: a local expert chunk, its whole shape recorded.
+    preload = getattr(param, "_unsloth_fsdp2_preload", None)
     if shape is None and isinstance(preload, dict) and not preload.get("packed"):
         shape = preload["shape"]
     shape = shape or tuple(param.shape)
