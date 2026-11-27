@@ -721,7 +721,6 @@ def _activate(name: str, reason: Optional[str]) -> Any:
         engine_to_unload = None
         old_name = None
         with _lock:
-            _settle_engine_pick_locked()
             if name != _active_engine_name:
                 engine_to_unload = get_active_diffusion_engine()
                 old_name = _active_engine_name
@@ -770,7 +769,6 @@ def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
             raise RuntimeError(
                 "The diffusion engine changed while this load was starting. Retry the load."
             )
-        settle_diffusion_load()
         return start()
 
 
@@ -786,8 +784,8 @@ def _selected_card(gpu_ordinal) -> Optional[str]:
 
 
 # A started load's pick, committed to ``_engine_pick`` only once that load's state is published: (pick, engine, the
-# engine's state when the load started, and an optional callback to run upon publication).
-_pending_engine_pick: Optional[tuple[Optional[str], Any, Any, Optional[Callable[[], None]]]] = None
+# engine's state when the load started).
+_pending_engine_pick: Optional[tuple[Optional[str], Any, Any]] = None
 
 
 def _settle_engine_pick_locked() -> None:
@@ -796,7 +794,7 @@ def _settle_engine_pick_locked() -> None:
     global _engine_pick, _pending_engine_pick
     if _pending_engine_pick is None:
         return
-    pick, engine, before, on_commit = _pending_engine_pick
+    pick, engine, before = _pending_engine_pick
     current = getattr(engine, "_state", None)
     # A dead snapshot means the old state was torn down: any published state is the new load's.
     if isinstance(before, weakref.ReferenceType):
@@ -804,13 +802,6 @@ def _settle_engine_pick_locked() -> None:
     if current is not None and current is not before:
         _engine_pick = pick
         _pending_engine_pick = None
-        if on_commit is not None:
-            on_commit()
-
-
-def settle_diffusion_load() -> None:
-    with _lock:
-        _settle_engine_pick_locked()
 
 
 _NO_SNAPSHOT = object()
@@ -834,8 +825,6 @@ def note_engine_pick(
     engine: Optional[str],
     loaded_by: Any = None,
     before: Any = _NO_SNAPSHOT,
-    *,
-    on_commit: Optional[Callable[[], None]] = None,
 ) -> None:
     """Record the load's engine pick for the status provenance. The load route calls it once ``loaded_by`` (the
     engine) has accepted the load, inside ``begin_load_on``'s transition lock, so a pick refused by admission,
@@ -852,7 +841,7 @@ def note_engine_pick(
             _pending_engine_pick = None
         else:
             prior = loaded_state_of(loaded_by) if before is _NO_SNAPSHOT else before
-            _pending_engine_pick = (pick, loaded_by, prior, on_commit)
+            _pending_engine_pick = (pick, loaded_by, prior)
             _settle_engine_pick_locked()
 
 

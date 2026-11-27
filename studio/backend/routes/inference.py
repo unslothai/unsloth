@@ -53141,6 +53141,15 @@ async def load_diffusion_model_gated(
         ):
             needs_gpu = False
 
+        owner = current_account_id()
+        generator_pick = request.display_repo_id or request.model_path
+
+        def _remember_loaded_generator(family):
+            from core.inference.chat_media_swap import remember_image_model
+            from core.inference.diffusion import _family_workflows
+            if "txt2img" in _family_workflows(family):
+                remember_image_model(generator_pick, account_id = owner)
+
         def _start_engine_load():
             # Recorded here: past the busy guard, arbiter and retirement check, before the worker gets the token.
             for _ref in _media_repos_to_record:
@@ -53188,6 +53197,7 @@ async def load_diffusion_model_gated(
                     _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
                 ),
                 **_nvfp4_route_kwarg(engine.begin_load, nvfp4_route),
+                **({"on_load_ready": _remember_loaded_generator} if user_initiated else {}),
             )
             media_load_ids.admitted("diffusion", engine, request.load_token, prior_load)
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
@@ -53195,19 +53205,6 @@ async def load_diffusion_model_gated(
             _cancel_upsampler_warm_start()
             # Only once the engine accepted the load, committed when it lands, so a refused or failed pick never
             # relabels the resident model.
-            if user_initiated and fam is not None:
-                from core.inference.chat_media_swap import remember_image_model
-                from core.inference.diffusion import _family_workflows
-                if "txt2img" in _family_workflows(fam):
-                    owner = current_account_id()
-                    model_id = request.display_repo_id or request.model_path
-                    note_engine_pick(
-                        request.engine,
-                        engine,
-                        prior_state,
-                        on_commit = lambda: remember_image_model(model_id, account_id = owner),
-                    )
-                    return started
             note_engine_pick(request.engine, engine, prior_state)
             return started
 
@@ -55287,11 +55284,7 @@ async def unload_diffusion_model(
     expected_load_id = request.expected_load_id if request is not None else None
     if not expected_load_id:
         account_access.require_resident_control("diffusion")
-    from core.inference.diffusion_engine_router import (
-        annotate_status,
-        get_active_diffusion_engine,
-        settle_diffusion_load,
-    )
+    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
     if not expected_load_id and account_access.managed_account():
@@ -55320,7 +55313,6 @@ async def unload_diffusion_model(
             current_account_id(),
             load_token = expected_load_id,
         )
-    settle_diffusion_load()
     active = get_active_diffusion_engine()
     unload = active.unload
     if account_access.account_scope() is not None:
@@ -55515,18 +55507,13 @@ async def diffusion_load_progress(
         return preparing
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
-    from core.inference.diffusion_engine_router import (
-        get_active_diffusion_engine,
-        settle_diffusion_load,
-    )
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if account_access.managed_account() and account_access.resident_hidden(
         "diffusion", get_active_diffusion_engine().status().get("repo_id")
     ):
         return account_access.hidden_resident_response()
     progress = get_active_diffusion_engine().load_progress()
-    if progress.get("phase") == "ready":
-        settle_diffusion_load()
     log_media_load_progress("image", progress.get("phase"), progress.get("fraction"))
     from hub.utils.host_paths import redact_load_progress
 

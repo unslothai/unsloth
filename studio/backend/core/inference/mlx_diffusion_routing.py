@@ -535,6 +535,7 @@ class RoutedMlxEngine:
                 # Only once MLX accepted it: a refused load leaves the in-flight load's epoch alone.
                 self._logical_load += 1
                 self._load_kwargs = {"repo_id": repo_id, **kwargs}
+                self._load_kwargs.pop("on_load_ready", None)
                 self._fallback_gate = fallback_gate
         finally:
             with self._lock:

@@ -3962,6 +3962,7 @@ class SdCppDiffusionBackend:
         allow_oversized_load: bool = False,
         # Accepted for parity and ignored: sd.cpp has no Studio INT8 attention kernel.
         int8_attention: Optional[str] = None,
+        on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch on a daemon thread, returns at once; an empty token must become None, since a literal empty string breaks the anonymous fallback."""
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
@@ -4072,6 +4073,7 @@ class SdCppDiffusionBackend:
                 off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                on_load_ready = on_load_ready,
                 **({"_gpu_ordinals": gpu_ordinals} if gpu_ordinals else {}),
             ),
             daemon = True,
@@ -4101,6 +4103,7 @@ class SdCppDiffusionBackend:
         off_torch: Any = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
+        on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None,
     ) -> None:
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = _cancel_event if _cancel_event is not None else self._cancel_event
@@ -4626,6 +4629,8 @@ class SdCppDiffusionBackend:
                         # With _state, past the supersession check.
                         self._committed_loading_card = self._loading_card
                         self._loading = None
+                        if on_load_ready is not None:
+                            on_load_ready(fam)
                     # A started server stays published in _state or the pending stop, so _tree_in_use still sees it.
                     if self._pending_server is started:
                         self._pending_server = None

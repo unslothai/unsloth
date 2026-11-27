@@ -2060,6 +2060,7 @@ class _LoadingState:
     # (repo, filename, declared size, repo bytes when claimed) for one named file; the scan counts only the bytes this load adds.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
+    on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None
     # Only one file read from repo_id counts, so an artifact mirror ignores sibling quants.
     gguf_filename: Optional[str] = None
     # ``(repo, filename, size)`` for every file this load downloads, from ``_planned_progress_files``: the ONE answer
@@ -6619,6 +6620,7 @@ class DiffusionBackend:
         nvfp4_route: Any = None,
         int8_attention: Optional[str] = None,
         lora_fuse: Optional[str] = None,
+        on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once.
 
@@ -6744,6 +6746,7 @@ class DiffusionBackend:
                 base_repo = fam.base_repo,
                 account_id = current_account_id(),
                 gguf_filename = gguf_filename,
+                on_load_ready = on_load_ready,
             )
 
         account_thread(
@@ -7383,6 +7386,10 @@ class DiffusionBackend:
         self._state = state
         if self._loading is not None:
             self._loading.committed = True
+            callback = self._loading.on_load_ready
+            self._loading.on_load_ready = None
+            if callback is not None:
+                callback(state.family)
 
     def load_tail_pending(self) -> bool:
         """The in-flight load already published its pipeline and only finishes its tail (encoder pins, heap trim):
