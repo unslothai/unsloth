@@ -103,3 +103,22 @@ def test_new_tokens_offload_head_only_when_trained_apart(monkeypatch, tie, offlo
     _lora_config_for(_tiny_llama(tie = tie), monkeypatch, use_gradient_checkpointing = "unsloth")
     assert ("output" in offloaded) is offloads_head
     assert "input" in offloaded
+
+
+@pytest.mark.parametrize("tie, ensure_weight_tying", [(True, None), (True, False), (False, None)])
+def test_same_call_again_after_new_tokens_is_skipped(monkeypatch, tie, ensure_weight_tying):
+    # A re-run notebook cell: the first call added embed_tokens / lm_head itself, so the same request matches.
+    config = _lora_config_for(
+        _tiny_llama(tie = tie), monkeypatch, ensure_weight_tying = ensure_weight_tying
+    )
+    model = get_peft_model(_tiny_llama(tie = tie), config)
+    # Moves the embeddings to the GPU.
+    monkeypatch.setattr(llama_module, "_offload_frozen_module_for_training", lambda *a, **k: None)
+    again = FastLlamaModel.get_peft_model(
+        model,
+        r = 4,
+        target_modules = ["q_proj", "v_proj"],
+        use_gradient_checkpointing = False,
+        ensure_weight_tying = ensure_weight_tying,
+    )
+    assert again is model

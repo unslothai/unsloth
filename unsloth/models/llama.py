@@ -5359,6 +5359,11 @@ class FastLlamaModel:
                 requested_modules_to_save,
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
+            if hasattr(model, "_need_to_train_embeddings"):
+                # After add_new_tokens the first call added whichever of the pair the caller left out (below).
+                _named = {_embedding_leaf(x) for x in _as_list(requested_targets)}
+                _named |= {_embedding_leaf(x) for x in requested_saved or []}
+                requested_saved = list(requested_saved or []) + sorted(EMBEDDING_MODULES - _named)
             stored_targets = peft_config["target_modules"]
             if _same_layered:
                 requested_targets = stored_targets
