@@ -4858,16 +4858,19 @@ def patch_functions(
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
             if "grpo" in trainer_file and trl_version >= Version("0.18.0"):
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
-                if trl_version >= Version("0.23.0"):
-                    # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have disabled it); fall back to the standby env var when the engine cannot be introspected.
-                    vllm_setter += (
-                        " " * 12
-                        + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
-                        + " " * 12
-                        + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
-                        + " " * 16
-                        + "args.vllm_enable_sleep_mode=True\n"
-                    )
+            # RLOO and OnlineDPO read the same flag: without it a standby engine never sleeps and training gets ~10% of VRAM.
+            if trl_version >= Version("0.23.0") and (
+                "grpo" in trainer_file or trainer_file in ("rloo_trainer", "online_dpo_trainer")
+            ):
+                # Align TRL sleep mode with the engine's actual enable_sleep_mode (the vision standby gate may have disabled it); fall back to the standby env var when the engine cannot be introspected.
+                vllm_setter += (
+                    " " * 12
+                    + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
+                    + " " * 12
+                    + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
+                    + " " * 16
+                    + "args.vllm_enable_sleep_mode=True\n"
+                )
 
             init = init.replace(replacer, replacer + vllm_setter)
 

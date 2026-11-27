@@ -9,9 +9,13 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
+import {
+  notifyChatImageToolSettled,
+  subscribeChatImageToolSettled,
+} from "../src/features/chat/api/chat-image-tool-events.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
-const { store: localStorageFake } = installLocalStorageFake();
+const { store: localStorageFake, fireWindowEvent } = installLocalStorageFake();
 localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./thread-sampling-resolver.mjs", import.meta.url);
 await import("./helpers/store-stubs/settings-http.ts");
@@ -143,20 +147,59 @@ test("readiness changes never clear the stored Images preference (D3)", () => {
   assert.ok(!/imageToolsEnabled:[^,]*localImageModelReady/.test(storeSource + chatPage));
 });
 
-test("chat-page refreshes readiness from both status routes and the lifecycle events", () => {
+test("chat-page refreshes readiness on route activation and media lifecycle events", () => {
   const chatPage = readSrc("features/chat/chat-page.tsx");
+  assert.ok(
+    /const refresh = \(\) => \{[\s\S]*?getDiffusionStatus\(current\.signal\)[\s\S]*?if \(active\) refresh\(\);[\s\S]*?\}, \[active\]\);/.test(chatPage),
+    "readiness refreshes when returning to a mounted Chat page",
+  );
   for (const needle of [
     "getDiffusionStatus(current.signal)",
     "getVideoStatus(current.signal)",
     "Promise.allSettled(",
     "localMediaReadyFromStatus(",
     "subscribeModelLifecycle(",
+    "subscribeChatImageToolSettled(refresh)",
     'subscribeModelEjected("image", refresh)',
     'subscribeModelEjected("video", refresh)',
     'window.addEventListener("focus", refresh)',
   ]) {
     assert.ok(chatPage.includes(needle), needle);
   }
+});
+
+test("direct streams and reconnected chat runs announce completion of the image tool", () => {
+  assert.ok(
+    readSrc("features/chat/api/chat-adapter.ts").includes("notifyChatImageToolSettled(toolEvent)"),
+  );
+  assert.ok(
+    readSrc("features/chat/api/chat-generation-api.ts").includes(
+      "notifyChatImageToolSettled(event.payload)",
+    ),
+  );
+});
+
+test("an Images tool completion refreshes a composer that returned during a swap", (t) => {
+  const dispatchEvent = (event: Event) => fireWindowEvent(event.type, event) > 0;
+  Object.defineProperty(window, "dispatchEvent", { configurable: true, value: dispatchEvent });
+  t.after(() => Reflect.deleteProperty(window, "dispatchEvent"));
+  runtime.setState({ ...LOCAL, localImageModelReady: false });
+  const unsubscribe = subscribeChatImageToolSettled(() => {
+    runtime.getState().setLocalMediaModelsReady({ image: true, video: false });
+  });
+  t.after(unsubscribe);
+
+  notifyChatImageToolSettled({ type: "tool_start", tool_name: "generate_image" });
+  notifyChatImageToolSettled({ type: "tool_end", tool_name: "image_generation" });
+  assert.deepEqual(localMediaToolsForTurn(runtime.getState()), []);
+
+  notifyChatImageToolSettled({ type: "tool_end", tool_name: "generate_image" });
+  assert.deepEqual(localMediaToolsForTurn(runtime.getState()), ["generate_image"]);
+
+  unsubscribe();
+  runtime.getState().setLocalMediaModelsReady({ image: false, video: false });
+  notifyChatImageToolSettled({ type: "tool_end", tool_name: "generate_image" });
+  assert.deepEqual(localMediaToolsForTurn(runtime.getState()), []);
 });
 
 test("every adapter tool gate opens for, and every tool list carries, the local media tools", () => {
@@ -191,6 +234,13 @@ test("a hidden or edit-only resident is not ready; one this account may use is",
     ),
     { image: true, video: true },
   );
+  assert.deepEqual(
+    localMediaReadyFromStatus({ loaded: false, chat_swap_available: true }, null),
+    { image: true, video: false },
+  );
+  assert.equal(localMediaReadyFromStatus(
+    { loaded: true, workflows: ["edit"], chat_swap_available: true }, null,
+  ).image, false);
   // MiniMax-H3 Ref2VA needs reference media the chat tool never sends.
   assert.deepEqual(
     localMediaReadyFromStatus(null, { loaded: true, h3_task: "ref2va" }),
