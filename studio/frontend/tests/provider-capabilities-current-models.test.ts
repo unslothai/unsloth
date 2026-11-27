@@ -28,6 +28,15 @@ const {
   resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
+test("Gemini image replies are enabled for the native Vertex endpoint", () => {
+  const model = "gemini-3.1-flash-image";
+  const vertex = "https://aiplatform.googleapis.com/v1/publishers/google/models";
+  assert.equal(providerSupportsBuiltinImageGeneration("vertex", model, vertex), true);
+  assert.equal(providerSupportsBuiltinImageGeneration("vertex", model, "https://aiplatform.googleapis.com/v1beta1/projects/demo/locations/global/endpoints/openapi"), false);
+  assert.equal(providerSupportsBuiltinImageGeneration("gemini", model, "https://generativelanguage.googleapis.com"), true);
+  assert.equal(providerSupportsBuiltinImageGeneration("gemini", model, "https://example.com"), false);
+});
+
 test("Gemini Lite image output stays within its published limit", () => {
   assert.equal(getExternalMaxOutputTokens("gemini", "gemini-3.1-flash-lite-image"), 4096);
 });

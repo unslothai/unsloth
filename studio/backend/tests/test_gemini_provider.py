@@ -945,6 +945,22 @@ def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypat
     assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_native_vertex_requests_image_output_only_when_enabled(monkeypatch, enabled):
+    captured = _capture_body(
+        monkeypatch,
+        model = "gemini-3.1-flash-image",
+        base_url = "https://aiplatform.googleapis.com/v1/publishers/google",
+        enabled_tools = ["image_generation"] if enabled else [],
+    )
+    assert captured["body"]["generationConfig"]["responseModalities"] == (
+        ["TEXT", "IMAGE"] if enabled else ["TEXT"]
+    )
+    assert (
+        "/publishers/google/models/gemini-3.1-flash-image:streamGenerateContent" in captured["url"]
+    )
+
+
 def test_image_response_emits_image_b64_tool_event(monkeypatch):
     """`inlineData` parts become a tool_end with image_b64 + image_mime."""
     fake_b64 = base64.b64encode(b"PNG-BYTES").decode()
