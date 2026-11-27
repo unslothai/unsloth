@@ -62,6 +62,7 @@ import {
   isMlxId,
   namedOrTaggedMlx,
 } from "../lib/format-filters";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -90,7 +91,7 @@ export function ViewRepositoryButton({
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
   const hubName = useHubName();
-  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
+  const url = useHubPageUrl(`${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`);
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (

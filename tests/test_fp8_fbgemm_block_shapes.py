@@ -18,6 +18,7 @@ def skip_without_fbgemm():
     # unsloth's own probe, not an sm_90 check, so future arches enable themselves.
     # Imported here so collection never imports unsloth.
     from unsloth.kernels import fp8
+    fp8.resolve_fp8_block_quant_linear()  # the probe is lazy
     if fp8.fp8_block_quant_linear is not fp8.fp8_fbgemm_block_linear:
         pytest.skip("needs fbgemm f8f8bf16_blockwise")
 

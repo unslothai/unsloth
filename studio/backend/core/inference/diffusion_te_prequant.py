@@ -1375,6 +1375,7 @@ def load_prequant_text_encoder(
     trim_lm_head: bool = False,
     failures: Optional[list] = None,
     config_source: Optional[str] = None,
+    drop_vision: bool = False,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -1392,7 +1393,8 @@ def load_prequant_text_encoder(
     (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised.
     ``config_source`` is where the encoder config is read when it is not ``base``: the staged directory the
     pipeline itself assembles from, which a cache-only load may have resolved under another cache root. ``base``
-    stays the canonical id the checkpoint is validated against."""
+    stays the canonical id the checkpoint is validated against. ``drop_vision`` builds the encoder without its vision
+    tower and never reads the tower's tensors (``diffusion_te_vision``), for a family that never runs it."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -1433,15 +1435,29 @@ def load_prequant_text_encoder(
             trim_text_encoder,
         )
 
+        from .diffusion_te_vision import (
+            VISION_TOWER_PREFIXES,
+            drop_vision_tower,
+            is_vision_tower_key,
+            vision_tower_skipped,
+        )
+
         te_class = None
         skip = ()
         if is_safetensors_checkpoint(path):
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
-            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
+            ckpt = load_plain_prequant_safetensors(
+                path,
+                skip_names = skip,
+                skip_prefixes = VISION_TOWER_PREFIXES if drop_vision else (),
+            )
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
+            if drop_vision and isinstance(ckpt, dict) and isinstance(ckpt.get("state_dict"), dict):
+                for key in [k for k in ckpt["state_dict"] if is_vision_tower_key(k)]:
+                    del ckpt["state_dict"][key]
         # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
         file_scheme = (
             "int8"
@@ -1493,7 +1509,7 @@ def load_prequant_text_encoder(
             setattr(config, key, value)
         if file_scheme == "int8":
             encoder = _build_int8_convrot_encoder(
-                encoder_cls, config, state_dict, dtype = dtype, trim = trim
+                encoder_cls, config, state_dict, dtype = dtype, trim = trim, drop_vision = drop_vision
             )
             setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "int8")
             _tag_weight_files(encoder, path)
@@ -1519,13 +1535,18 @@ def load_prequant_text_encoder(
             encoder = encoder_cls(config)
         if trim:
             trim_text_encoder(encoder)
+        if drop_vision:
+            drop_vision_tower(encoder)
         _fill_tied_aliases(encoder, state_dict)
         encoder.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(encoder):
             # Non-persistent buffers stay on meta: rebuild on CPU, then re-assign cast weights.
-            encoder = encoder_cls(config)
+            with vision_tower_skipped(drop_vision):
+                encoder = encoder_cls(config)
             if trim:
                 trim_text_encoder(encoder)
+            if drop_vision:
+                drop_vision_tower(encoder)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
         # assign=True unties tied weights (e.g. Qwen3 lm_head); re-tie them.
         tie = getattr(encoder, "tie_weights", None)
@@ -1662,6 +1683,7 @@ def _te_prequant_pipe_kwargs(
     cause = ""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+        from .diffusion_te_vision import family_drops_vision_tower
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
         with _cache_only_scope(local_files_only):
@@ -1679,6 +1701,9 @@ def _te_prequant_pipe_kwargs(
                 continue
             failures.clear()
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
+            drop_vision = component == "text_encoder" and family_drops_vision_tower(
+                getattr(fam, "name", None)
+            )
             encoder = load_prequant_text_encoder(
                 base,
                 component,
@@ -1691,6 +1716,7 @@ def _te_prequant_pipe_kwargs(
                 trim_lm_head = trim,
                 failures = failures,
                 config_source = config_source,
+                drop_vision = drop_vision,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -1721,6 +1747,7 @@ def _te_prequant_pipe_kwargs(
                     trim_lm_head = trim,
                     failures = failures,
                     config_source = config_source,
+                    drop_vision = drop_vision,
                 )
             if (
                 encoder is None
@@ -1957,10 +1984,17 @@ def _dense_component_cached(source: str, component: str) -> bool:
 
 
 def _build_int8_convrot_encoder(
-    encoder_cls: Any, config: Any, state_dict: dict, *, dtype: Any, trim: bool
+    encoder_cls: Any,
+    config: Any,
+    state_dict: dict,
+    *,
+    dtype: Any,
+    trim: bool,
+    drop_vision: bool = False,
 ) -> Any:
     """Every Linear with a ``<name>.weight_scale`` becomes MiniMax-H3's ``Int8ConvRotLinear``, the rest loads dense in
-    ``dtype``. Plain tensors, so ``Module.to()`` and group offloading work. Raises on any mismatch."""
+    ``dtype``. Plain tensors, so ``Module.to()`` and group offloading work. Raises on any mismatch. ``drop_vision``
+    builds no vision tower; ``state_dict`` must then carry none of its tensors."""
     import torch
     from accelerate import init_empty_weights
 
@@ -1985,8 +2019,12 @@ def _build_int8_convrot_encoder(
     if not quantized:
         raise ValueError("no int8 ConvRot projections in this checkpoint")
     # include_buffers=False: rotary inv_freq buffers are built for real; parameters arrive via assign=True.
-    with init_empty_weights(include_buffers = False):
+    from .diffusion_te_vision import drop_vision_tower, vision_tower_skipped
+
+    with init_empty_weights(include_buffers = False), vision_tower_skipped(drop_vision):
         encoder = encoder_cls(config)
+    if drop_vision:
+        drop_vision_tower(encoder)
     # An encoder-only class (UMT5EncoderModel) has no head at all; one that has a head needs the trim, as the file
     # carries no lm_head and a kept one would load random.
     if getattr(encoder, "lm_head", None) is not None and not trim:

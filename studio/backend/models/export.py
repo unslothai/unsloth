@@ -107,6 +107,10 @@ class ExportStatusResponse(BaseModel):
         0,
         description = "Monotonic counter of finished ops; client baseline to detect 'my op finished'",
     )
+    last_op_id: Optional[str] = Field(
+        None,
+        description = "Client-supplied id of the most recently finished op, if any",
+    )
     last_op_kind: Optional[str] = Field(
         None,
         description = "Kind of the most recently finished op",

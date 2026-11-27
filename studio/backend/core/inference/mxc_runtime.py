@@ -443,8 +443,23 @@ def _legacy_still_installed() -> bool:
     return all(sizes[kind] == LEGACY_PIN.artifacts[(architecture, kind)][1] for kind in sizes)
 
 
+try:
+    from utils.scan_memo import memoized as _per_launch
+except ImportError:  # installer / probe children lack the backend's utils
+
+    def _per_launch(_key, compute):
+        return compute()
+
+
 def selected_pin() -> MxcPin:
-    """target_pin(), but an installed 1.0.1 (which also uses the built-in container) runs until replaced."""
+    """target_pin(), but an installed 1.0.1 (which also uses the built-in container) runs until replaced.
+
+    Memoized per tool launch; acquire_runtime runs outside that scope, so it always checks a fresh pick."""
+    key = ("mxc_runtime.selected_pin", os.environ.get(PIN_ENV), str(_studio_root()))
+    return _per_launch(key, _selected_pin_uncached)
+
+
+def _selected_pin_uncached() -> MxcPin:
     target = target_pin()
     if target is PRIMARY_PIN and forced_pin() is None and sys.platform == "win32":
         if _legacy_still_installed():

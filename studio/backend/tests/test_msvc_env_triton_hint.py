@@ -68,11 +68,65 @@ def test_unreadable_torch_keeps_the_old_range(monkeypatch):
     assert _msvc_env._triton_windows_spec() == "triton-windows<3.7"
 
 
-@pytest.mark.parametrize("torch_version", ["2.11.0", "2.15.0"])
-def test_windows_on_arm_gets_the_first_win_arm64_release(monkeypatch, torch_version):
+@pytest.mark.parametrize(
+    "torch_version, spec",
+    [
+        # Torch below 2.14 pairs with no win_arm64 triton-windows: the open floor.
+        ("2.11.0", "triton-windows>=3.8.0.post28"),
+        ("2.13.0+cu130", "triton-windows>=3.8.0.post28"),
+        # The x64 per-minor upper bound, never below the first win_arm64 wheel.
+        ("2.14.0+cu134", "triton-windows>=3.8.0.post28,<3.9"),
+        ("2.15.0", "triton-windows>=3.9,<3.10"),
+        ("2.16.0", "triton-windows>=3.8.0.post28"),
+        # The nightly index's torch: a minor the table does not name keeps the open floor.
+        ("2.16.0.dev20261126+cu135", "triton-windows>=3.8.0.post28"),
+    ],
+)
+def test_windows_on_arm_pairs_by_torch_minor(monkeypatch, torch_version, spec):
     monkeypatch.setattr(platform, "machine", lambda: "ARM64")
     monkeypatch.setattr(importlib.metadata, "version", lambda name: torch_version)
-    assert _msvc_env._triton_windows_spec() == "triton-windows>=3.8.0.post28"
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
+    assert _msvc_env._triton_windows_spec() == spec
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh unavailable")
+@pytest.mark.parametrize(
+    "torch_version",
+    [
+        "",
+        "2.11.0+cu130",
+        "2.13.0+cu130",
+        "2.14.0+cu134",
+        "2.15.0+cu134",
+        "2.16.0",
+        "2.16.0.dev20261126+cu135",
+    ],
+)
+def test_windows_on_arm_hint_matches_setup_ps1(monkeypatch, torch_version):
+    out = run_pwsh(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-Command",
+            _ps1_function("Get-TritonWindowsSpec")
+            + f"\n\"RESULT:$(Get-TritonWindowsSpec -TorchVersion '{torch_version}' -WinArm64 $true)\"",
+        ],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    ps1 = out.stdout.strip().splitlines()[-1].removeprefix("RESULT:")
+    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: False)
+    if torch_version:
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: torch_version)
+    else:
+
+        def missing(name):
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+    assert _msvc_env._triton_windows_spec() == ps1
 
 
 _SETUP_PS1 = Path(__file__).resolve().parents[2] / "setup.ps1"
@@ -205,9 +259,15 @@ def test_fast_path_forces_pass_for_an_unpaired_cuda_triton(
 
 
 @_SKIP_NO_PWSH
-def test_fast_path_pairing_uses_the_windows_on_arm_floor():
-    assert _fast_path_needs_pass("2.15.0+cu130", ["3.8.0.post29"], arm64 = True) is False
+def test_fast_path_pairing_uses_the_windows_on_arm_floor_and_bound():
+    assert _fast_path_needs_pass("2.14.0+cu134", ["3.8.0.post28"], arm64 = True) is False
+    assert _fast_path_needs_pass("2.14.0+cu134", ["3.8.0.post27"], arm64 = True) is True
+    assert _fast_path_needs_pass("2.14.0+cu134", ["3.9.0.post30"], arm64 = True) is True
+    assert _fast_path_needs_pass("2.15.0+cu134", ["3.9.0.post30"], arm64 = True) is False
+    assert _fast_path_needs_pass("2.15.0+cu134", ["3.8.0.post29"], arm64 = True) is True
     assert _fast_path_needs_pass("2.15.0+cu130", ["3.7.0.post21"], arm64 = True) is True
+    # The nightly index's torch 2.16 dev with the 3.9 wheel the open floor resolves to: kept.
+    assert _fast_path_needs_pass("2.16.0.dev20261126+cu135", ["3.9.0.post30"], arm64 = True) is False
 
 
 @_SKIP_NO_PWSH

@@ -103,7 +103,7 @@ def _shared_qkv(attn: Any, hidden_states: Any) -> Optional[list]:
     """``[to_q(x), to_k(x), to_v(x)]`` on one shared rotation + act quant, else None."""
     from . import diffusion_int8_gemm as gemm
 
-    if not _swapped_rotated(attn.to_q):
+    if not _swapped_rotated(_lora_base(attn.to_q)):
         return None
     return gemm.shared_rotq_linears(hidden_states, (attn.to_q, attn.to_k, attn.to_v))
 
@@ -116,6 +116,7 @@ def _make_call(stock: Any) -> Any:
     from .diffusion_int8_fused import ensure_intmm_module, int8_linear
 
     ensure_intmm_module()  # resolved here, eagerly: an import under the trace is a graph break per Linear
+    diffusion_int8_gemm.resolve_peft_forward()
 
     def __call__(
         self,
@@ -195,9 +196,11 @@ def _make_ff_forward(stock: Any) -> Any:
 
     from . import diffusion_int8_gemm as gemm
 
+    gemm.resolve_peft_forward()
+
     def forward(self, x):
         pair = None
-        if _swapped_rotated(self.w1):
+        if _swapped_rotated(_lora_base(self.w1)):
             pair = gemm.shared_rotq_linears(x, (self.w1, self.w3))
         if pair is None:
             return stock(self, x)

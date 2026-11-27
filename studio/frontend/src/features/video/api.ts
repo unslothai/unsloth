@@ -66,6 +66,8 @@ export interface VideoGenerationDefaults {
   supports_audio_flow_shift?: boolean;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface VideoStatus {
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
@@ -125,6 +127,10 @@ export interface VideoStatus {
   baked_loras?: string[];
   baked_lora_specs?: LoraSpecInput[];
   lora_refusal?: string | null;
+  // "baked" when the load merged its LoRA set into the denoiser; absent on an older backend.
+  lora_fuse?: string | null;
+  // Multi-card placement and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
 }
 
 export interface VideoGenerateProgress {
