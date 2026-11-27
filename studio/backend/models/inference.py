@@ -6413,7 +6413,7 @@ class DiffusionResolvedControl(BaseModel):
     origin: Optional[str] = Field(
         None,
         description = "lora_fuse only: where the fold choice came from, per_load (this load's lora_fuse), env "
-        "(UNSLOTH_DIFFUSION_LORA_FUSE) or default (off). Null on every other control.",
+        "(UNSLOTH_DIFFUSION_LORA_FUSE) or default (off). Omitted on every other control.",
     )
     replaced: Optional[str] = Field(
         None,
@@ -6441,6 +6441,14 @@ class DiffusionResolvedControl(BaseModel):
         description = "attention_backend only: how many attention modules route to each backend. Null on every "
         "other control.",
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_origin(self, handler):
+        # Only lora_fuse sets it; every other control serializes exactly as before.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("origin") is None:
+            data.pop("origin", None)
+        return data
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
