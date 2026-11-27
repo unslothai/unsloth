@@ -125,7 +125,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       recover?: boolean;
     }) => {
       // The server keeps the updatedAt sent, so a save builds on one in flight; a recovering
-      // one also tries every version an unanswered save may have left.
+      // one also names every version an unanswered save may have left.
       const confirmed = editedVersion.current;
       const inFlight = inFlightVersion.current;
       const candidates = input.recover ? unansweredVersions.current : [];
@@ -139,24 +139,17 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       );
       inFlightVersion.current = updatedAt;
       try {
-        const record = await Promise.any(
-          bases.map((baseUpdatedAt) =>
-            saveRecipe({
-              id: input.id ?? recipeId,
-              name: input.name,
-              payload: input.payload,
-              baseUpdatedAt,
-              updatedAt,
-              keepalive: input.keepalive,
-              known: loadedRef.current ?? undefined,
-            }),
-          ),
-        ).catch((error: AggregateError) => {
-          // A transport failure in any copy leaves the outcome unknown, so it outranks a 409.
-          throw (
-            error.errors.find((e) => !(e instanceof RecipeApiError)) ??
-            error.errors[0]
-          );
+        // One conditional write: the server admits it on any listed base in a single statement.
+        const [baseUpdatedAt, ...alsoBase] = bases;
+        const record = await saveRecipe({
+          id: input.id ?? recipeId,
+          name: input.name,
+          payload: input.payload,
+          baseUpdatedAt,
+          alsoBaseUpdatedAt: alsoBase.filter((v): v is number => v !== undefined),
+          updatedAt,
+          keepalive: input.keepalive,
+          known: loadedRef.current ?? undefined,
         });
         // Only this save or an older one is settled; a newer unanswered save stays a candidate.
         unansweredVersions.current = unansweredVersions.current.filter(
@@ -171,7 +164,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         if (!(error instanceof RecipeApiError)) {
           unansweredVersions.current = [updatedAt, ...kept].sort((a, b) => b - a);
         } else if (error.status === 409) {
-          // Every base tried conflicted, so none of them is the stored version.
+          // No listed base matched, so none of them is the stored version.
           unansweredVersions.current = kept.filter((v) => !bases.includes(v));
         }
         throw error;

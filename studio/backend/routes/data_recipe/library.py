@@ -38,6 +38,8 @@ class RecipeRecord(BaseModel):
 class SaveRecipeRequest(RecipeRecord):
     # The updatedAt the client last read; omitted for a brand-new recipe.
     baseUpdatedAt: int | None = _TIME_OPTIONAL
+    # More versions the edit may build on; any one of them matching admits the write.
+    alsoBaseUpdatedAt: list[Annotated[int, _TIME]] = Field(default_factory = list, max_length = 64)
 
 
 class ExecutionRecord(BaseModel):
@@ -102,8 +104,9 @@ def put_recipe(
         require_ui_session_for_local_commands(via_api_key)
     try:
         return db.upsert_recipe(
-            recipe.model_dump(exclude_none = True, exclude = {"baseUpdatedAt"}),
+            recipe.model_dump(exclude_none = True, exclude = {"baseUpdatedAt", "alsoBaseUpdatedAt"}),
             recipe.baseUpdatedAt,
+            recipe.alsoBaseUpdatedAt,
         )
     except db.RecipeDeleted:
         raise HTTPException(status_code = 410, detail = "Recipe was deleted")

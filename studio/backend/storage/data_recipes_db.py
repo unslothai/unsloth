@@ -75,12 +75,20 @@ class RecipeConflict(Exception):
     pass
 
 
-def upsert_recipe(recipe: dict, base_updated_at: int | None = None) -> dict:
-    """``base_updated_at`` is the version the caller edited; a newer stored row is a conflict."""
+def upsert_recipe(
+    recipe: dict,
+    base_updated_at: int | None = None,
+    also_base: list[int] | tuple[int, ...] = (),
+) -> dict:
+    """``base_updated_at`` is the version the caller edited; a newer stored row is a conflict.
+
+    ``also_base`` lists further versions the edit may build on (writes whose answer was lost);
+    checking them in this one statement lets no other write slip between the candidates."""
+    bases = "".join(f", ?{9 + i}" for i in range(len(also_base)))
     conn = get_connection()
     try:
         cur = conn.execute(
-            """
+            f"""
             INSERT INTO data_recipes
                 (id, name, payload_json, learning_recipe_id, learning_recipe_title,
                  created_at, updated_at)
@@ -92,9 +100,9 @@ def upsert_recipe(recipe: dict, base_updated_at: int | None = None) -> dict:
                 learning_recipe_id = excluded.learning_recipe_id,
                 learning_recipe_title = excluded.learning_recipe_title,
                 updated_at = excluded.updated_at
-            WHERE ?8 IS NULL OR data_recipes.updated_at = ?8
+            WHERE ?8 IS NULL OR data_recipes.updated_at IN (?8{bases})
             """,
-            (*_recipe_params(recipe), base_updated_at),
+            (*_recipe_params(recipe), base_updated_at, *also_base),
         )
         row = conn.execute("SELECT * FROM data_recipes WHERE id = ?", (recipe["id"],)).fetchone()
         conn.commit()

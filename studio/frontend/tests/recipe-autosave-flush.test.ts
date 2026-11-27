@@ -134,12 +134,12 @@ class RecipeApiError extends Error {
 
 type Stored = { id: string; name: string; payload: unknown; createdAt: number; updatedAt: number };
 type Put = {
-  body: Stored & { baseUpdatedAt?: number };
+  body: Stored & { baseUpdatedAt?: number; alsoBaseUpdatedAt?: number[] };
   keepalive: boolean | undefined;
   outcome?: number;
 };
 
-// Same rule as data_recipes_db.upsert_recipe: a write lands only on the version it was based on.
+// Same rule as data_recipes_db.upsert_recipe: a write lands only on a version it names.
 function fakeServer(initial: Stored) {
   let stored = { ...initial };
   const puts: Put[] = [];
@@ -171,8 +171,11 @@ function fakeServer(initial: Stored) {
         };
       });
       const apply = () => {
-        const { baseUpdatedAt, ...record } = put.body;
-        if (baseUpdatedAt !== undefined && baseUpdatedAt !== stored.updatedAt) {
+        const { baseUpdatedAt, alsoBaseUpdatedAt = [], ...record } = put.body;
+        if (
+          baseUpdatedAt !== undefined &&
+          ![baseUpdatedAt, ...alsoBaseUpdatedAt].includes(stored.updatedAt)
+        ) {
           put.outcome = 409;
           return false;
         }
@@ -184,7 +187,7 @@ function fakeServer(initial: Stored) {
         if (failStatus === 200) {
           failStatus = null;
           put.outcome = 200;
-          const { baseUpdatedAt: _b, ...landed } = put.body;
+          const { baseUpdatedAt: _b, alsoBaseUpdatedAt: _a, ...landed } = put.body;
           stored = landed;
           resolve(null);
           return;
@@ -195,8 +198,11 @@ function fakeServer(initial: Stored) {
           failStatus = null;
           return;
         }
-        const { baseUpdatedAt, ...record } = put.body;
-        if (baseUpdatedAt !== undefined && baseUpdatedAt !== stored.updatedAt) {
+        const { baseUpdatedAt, alsoBaseUpdatedAt = [], ...record } = put.body;
+        if (
+          baseUpdatedAt !== undefined &&
+          ![baseUpdatedAt, ...alsoBaseUpdatedAt].includes(stored.updatedAt)
+        ) {
           put.outcome = 409;
           reject(new RecipeApiError("This recipe was changed in another window.", 409));
           return;
@@ -535,12 +541,11 @@ test("closing the page during a save sends the newer edit on top of it at once",
   await s.fireDebounce();
   await s.edit({ columns: ["second"] });
   await s.fire("pagehide");
-  const [first, ...exit] = s.server.puts;
-  assert.deepEqual(
-    exit.map((p) => p.body.baseUpdatedAt),
-    [first.body.updatedAt, first.body.baseUpdatedAt],
-  );
-  assert.ok(exit.every((p) => p.keepalive === true && p.body.updatedAt > first.body.updatedAt));
+  const [first, exit] = s.server.puts;
+  assert.equal(s.server.puts.length, 2);
+  assert.equal(exit.body.baseUpdatedAt, first.body.updatedAt);
+  assert.deepEqual(exit.body.alsoBaseUpdatedAt, [first.body.baseUpdatedAt]);
+  assert.ok(exit.keepalive === true && exit.body.updatedAt > first.body.updatedAt);
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
   assert.deepEqual(s.errors, []);
@@ -553,10 +558,10 @@ test("a newer edit that reaches the server first cannot overwrite anything", asy
   await s.edit({ columns: ["second"] });
   await s.fire("pagehide");
   await s.server.release("lifo");
-  // Only the copy on the version this tab last confirmed can land, so no other write is lost.
+  // The exit write lands on the version this tab last confirmed; the older autosave then conflicts.
   assert.deepEqual(
     s.server.puts.map((p) => p.outcome),
-    [409, 409, 200],
+    [409, 200],
   );
   assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
 });
@@ -608,14 +613,11 @@ for (const landed of [true, false]) {
     await s.edit({ columns: ["second"] });
     await s.server.cancelOldest(landed);
     await s.fire("pagehide");
-    assert.equal(s.server.puts.length, 3);
-    assert.ok(s.server.puts.slice(1).every((p) => p.keepalive === true));
+    assert.equal(s.server.puts.length, 2);
+    assert.equal(s.server.puts[1].keepalive, true);
     await s.server.release();
     assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
-    assert.deepEqual(
-      s.server.puts.slice(1).map((p) => p.outcome).sort(),
-      [200, 409],
-    );
+    assert.equal(s.server.puts[1].outcome, 200);
   });
 }
 
@@ -656,7 +658,7 @@ test("a save finishing after its editor closed only cleans uploads queued before
   assert.deepEqual(s.uploads.removed, ["mine"]);
 });
 
-test("the losing copy's 409 keeps the saved record cached", async () => {
+test("a recovered exit save leaves the saved record cached", async () => {
   const s = setup();
   await s.edit({ columns: ["first"] });
   await s.fireDebounce();
@@ -664,21 +666,21 @@ test("the losing copy's 409 keeps the saved record cached", async () => {
   await s.server.cancelOldest(true);
   await s.fire("pagehide");
   await s.server.release();
-  assert.deepEqual(s.server.puts.slice(1).map((p) => p.outcome), [200, 409]);
+  assert.deepEqual(s.server.puts.slice(1).map((p) => p.outcome), [200]);
   assert.equal(
     (s.db.getCachedRecipe("r1") as { updatedAt: number } | null)?.updatedAt,
     s.server.stored.updatedAt,
   );
 });
 
-test("two recovery copies never exceed the keepalive budget together", async () => {
+test("a recovery save is one keepalive request however many bases it names", async () => {
   const s = setup();
   await s.edit({ text: "x".repeat(40 * 1024) });
   await s.fireDebounce();
   await s.edit({ text: "y".repeat(40 * 1024) });
   await s.server.cancelOldest(false);
   await s.fire("pagehide");
-  assert.deepEqual(s.server.puts.slice(1).map((p) => p.keepalive), [true, false]);
+  assert.deepEqual(s.server.puts.slice(1).map((p) => p.keepalive), [true]);
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
 });
@@ -717,7 +719,7 @@ test("a keepalive save still in flight from an earlier call counts against the b
   await s.hide();
   await s.edit({ text: "y".repeat(40 * 1024) });
   await s.fire("pagehide");
-  assert.deepEqual(s.server.puts.map((p) => p.keepalive), [true, false, false]);
+  assert.deepEqual(s.server.puts.map((p) => p.keepalive), [true, false]);
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { text: "y".repeat(40 * 1024) });
 });
@@ -959,7 +961,7 @@ test("an upload a pending save still writes is not cleaned when a later save fai
   await s.fire("pagehide");
   s.server.failNext(503);
   await s.server.release("lifo");
-  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 409, 503]);
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 503]);
   assert.ok(!s.uploads.removed.includes("u1"));
 });
 

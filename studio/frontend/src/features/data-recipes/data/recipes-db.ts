@@ -125,6 +125,7 @@ async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
     learningRecipeTitle:
       input.learningRecipeTitle ?? existing?.learningRecipeTitle,
     baseUpdatedAt: input.baseUpdatedAt ?? existing?.updatedAt,
+    alsoBaseUpdatedAt: input.alsoBaseUpdatedAt?.length ? input.alsoBaseUpdatedAt : undefined,
   });
   const release = input.keepalive ? reserveKeepaliveBody(body) : null;
   let record: RecipeRecord;
@@ -142,7 +143,7 @@ async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
     if (!(error instanceof RecipeApiError)) {
       uncertainRecipes.set(id, Math.max(uncertainRecipes.get(id) ?? 0, now));
     }
-    // A losing copy's 409 must not evict a save at or past this version that already landed.
+    // A late 409 must not evict a save at or past this version that already landed.
     if (
       error instanceof RecipeApiError &&
       error.status === 409 &&
