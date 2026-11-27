@@ -12,6 +12,7 @@ import {
   type PinnableGpuContext,
   type ReconciledGpuSelection,
   type SystemGpuDevice,
+  defaultGpuIds,
   pickLoadDevice,
   pinnableGpuContext,
   reconcileGpuSelection,
@@ -32,6 +33,7 @@ import {
 } from "./use-system";
 
 export {
+  defaultGpuIds,
   pinnableGpuContext,
   reconcileGpuSelection,
   type GpuIndexKind,
@@ -60,6 +62,7 @@ export interface GpuInfo {
     Record<string, readonly ReportedOffloadFitTier[]>
   >;
   name: string;
+  /** GPUs this view's engine can run (llama.cpp for inference_gpu, torch for gpu). */
   memoryTotalGb: number;
   memorySharedGb: number;
   /** Without shared-memory devices: VRAM beside system RAM, not a view of it. */
@@ -203,8 +206,15 @@ function toGpuInfo(
   if (!gpuData?.available || !devices.length) {
     return { ...DEFAULT_GPU, ...base, budgetKnown: data !== null };
   }
-  const memoryTotals = gpuMemoryTotalsGb(devices);
-  const loadDevice = pickLoadDevice(devices);
+  // Capacity counts only cards this view's engine can run: llama.cpp for GGUF, torch otherwise.
+  // RAM math below still sees every device, since a shared pool is host RAM either way.
+  const runnable = devices.filter((device) =>
+    source === "inference_gpu"
+      ? device.no_llama_kernels !== true
+      : device.no_torch_kernels !== true,
+  );
+  const memoryTotals = gpuMemoryTotalsGb(runnable);
+  const loadDevice = pickLoadDevice(runnable);
   return {
     ...base,
     // Raw: folding first collapsed multi-socket unified pools into one.
@@ -214,14 +224,14 @@ function toGpuInfo(
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
     // some(), unlike sharedMemory: one unified part already stops the total being a VRAM ceiling.
-    unifiedMemory: devices.some((device) => device.unified_memory === true),
+    unifiedMemory: runnable.some((device) => device.unified_memory === true),
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: memoryTotals.total,
     dedicatedMemoryTotalGb: memoryTotals.dedicated,
     memorySharedGb: memoryTotals.shared,
-    maxDeviceMemoryGb: devices.reduce(
+    maxDeviceMemoryGb: runnable.reduce(
       (max, d) => Math.max(max, d.memory_total_gb ?? 0),
       0,
     ),
@@ -232,7 +242,7 @@ function toGpuInfo(
       sharedMemory: loadDevice?.shared_memory === true,
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
-    deviceCount: devices.length,
+    deviceCount: runnable.length,
     unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(
       data,
       gpuData.backend,
@@ -299,14 +309,17 @@ function toGpuDevices(
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
       unifiedMemory: d.unified_memory === true,
-      // The XPU ban covers torch-xpu ordinals, not Vulkan ones.
+      // The XPU ban covers torch-xpu ordinals, not Vulkan ones. A card the engine has no kernels for is
+      // never offered (llama.cpp here, torch for diffusion): the load would skip it anyway.
       pinnable:
         pinnableBackend &&
+        d.no_llama_kernels !== true &&
         (d.index_kind === "vulkan" ||
           (data?.device_backend !== "xpu" &&
             (d.index_kind === "physical" || d.index_kind === "cuda_device"))),
       diffusionPinnable:
         diffusionBackend &&
+        d.no_torch_kernels !== true &&
         (d.index_kind === "physical" || d.index_kind === "cuda_device"),
     }));
 }
@@ -461,7 +474,10 @@ export function gpuDeviceCacheReady(): boolean {
 }
 
 export async function ensureGpuDeviceCache(): Promise<void> {
-  await fetchSystemInfo();
+  // A failed fetch, or Vulkan discovery still pending, leaves Automatic loading with no default pick.
+  if ((await fetchSystemInfo()) === null || !gpuDeviceCacheReady()) {
+    await fetchSystemInfo({ force: true });
+  }
 }
 
 /** null before fetch, [] when pinning is unavailable. */
@@ -498,6 +514,7 @@ export function reconcileCachedGpuSelection(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
   forDiffusion = false,
+  forGguf = false,
 ): ReconciledGpuSelection {
   const context = cachedPinnableGpuContext(forDiffusion);
   return reconcileGpuSelection(
@@ -505,5 +522,8 @@ export function reconcileCachedGpuSelection(
     savedIndexKind,
     context.indexKind,
     context.ids,
+    // The GGUF picker shows these ticked when untouched, so that is what its /load sends. Diffusion takes
+    // one card, and other engines keep their own default device.
+    forGguf && !forDiffusion ? defaultGpuIds(context.devices) : null,
   );
 }

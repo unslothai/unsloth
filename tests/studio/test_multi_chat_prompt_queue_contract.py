@@ -633,7 +633,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "useChatRuntimeStore.subscribe(" not in compare_handle
     gpu_discovery = _between(
         SHARED_COMPOSER,
-        "      try {\n        if (store.selectedGpuIds != null) {",
+        "the reconcile passes a stale GPU pick.\n      try {",
         "      const compareLoadKnobs = {",
     )
     assert "await ensureGpuDeviceCache();" in gpu_discovery
@@ -942,7 +942,7 @@ def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
 
     failed_gpu_discovery = _between(
         send_flow,
-        "      try {\n        if (store.selectedGpuIds != null) {",
+        "the reconcile passes a stale GPU pick.\n      try {",
         "      const compareLoadKnobs = {",
     )
     assert "resetPromptQueue();" in failed_gpu_discovery
