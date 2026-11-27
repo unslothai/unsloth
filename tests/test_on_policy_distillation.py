@@ -1153,7 +1153,7 @@ def test_grpo_terminal_set_validates(monkeypatch):
 
 
 def test_grpo_config_declares_the_terminal_set_off_by_default():
-    source = open(RL_SOURCE_PATH).read()
+    source = open(RL_SOURCE_PATH, encoding = "utf-8").read()
     assert (
         "unsloth_distillation_terminal_tokens : Optional[str] = field(\n        default = None,"
         in source
