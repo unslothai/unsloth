@@ -55,12 +55,11 @@ export function useLinkedFolders(
   const nativePathLeasesSupported = useNativePathLeasesSupported();
 
   useEffect(() => {
-    // The native picker wins where it exists, so the list would go unused.
     if (!scopeType || (isTauri && nativePathLeasesSupported)) return;
     let active = true;
     void listServerSourceFolders()
       .then((response) => {
-        // A backend without the route can still answer 200 (an SPA fallback or a stub).
+        // An older backend may answer 200 with an SPA fallback.
         if (active) setServerFolders(Array.isArray(response?.folders) ? response.folders : []);
       })
       .catch(() => {

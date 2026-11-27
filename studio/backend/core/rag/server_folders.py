@@ -13,7 +13,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 ENV_NAME = "UNSLOTH_RAG_SOURCE_FOLDERS"
-# The picker lists these on every Sources panel mount, so a bad setting is reported once.
 _warned: set[str] = set()
 
 
@@ -36,7 +35,7 @@ def configured_folders() -> dict[str, str]:
     except ValueError:
         _warn_once(f"{ENV_NAME} must be a JSON array of absolute folder paths; ignoring it")
         return {}
-    # Keep the configured path out of browser requests and responses.
+    # Opaque IDs keep server paths out of browser traffic.
     return {_id(path): path for path in paths}
 
 
@@ -64,23 +63,21 @@ def _tail(path: str, parts: tuple[str, ...], depth: int) -> str:
 
 
 def _labels(paths: list[str]) -> list[str]:
-    """Shortest trailing path that tells the folders apart: /a/docs and /b/docs read a/docs, b/docs.
-    Never the anchor, which would put a whole absolute path in the browser."""
+    """Shortest distinct trailing paths (/a/docs, /b/docs -> a/docs, b/docs), never the anchor."""
     parts = [Path(path).parts for path in paths]
     limit = [max(1, len(p) - 1) if Path(path).anchor else len(p) for p, path in zip(parts, paths)]
     depth = [1] * len(paths)
     while True:
         tails = [_tail(path, p, d) for path, p, d in zip(paths, parts, depth)]
-        # A non-UTF-8 name decodes to lone surrogates, which the JSON response cannot encode.
+        # Lone surrogates from non-UTF-8 names cannot be JSON-encoded.
         labels = [tail.encode("utf-8", "replace").decode("utf-8") for tail in tails]
-        # Deepen only names that are really equal; ones equal after the replacement go to the tag.
         clashing = [
             i
             for i, tail in enumerate(tails)
             if labels.count(labels[i]) > 1 and tails.count(tail) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
-            # Still equal only below different drives or shares: name a drive letter, else an opaque tag.
+            # Equal only across drives/shares: suffix a drive letter, else an opaque tag.
             return [
                 label
                 if labels.count(label) == 1
