@@ -2001,6 +2001,9 @@ class _LoadState:
     attention_request: Optional[str] = None
     # Resolved once at begin_load: the deferred speed profile must reuse it, not re-read the env.
     int8_policy: Any = None
+    # The load's own LoRA fold choice ("on" / "off"), None = auto (UNSLOTH_DIFFUSION_LORA_FUSE, else off). Kept on
+    # the state so every later fold (deferred compile, a LoRA change) honours it.
+    lora_fuse: Optional[str] = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
@@ -2151,6 +2154,27 @@ def lora_fuse_status(pipe: Any) -> Optional[str]:
     if not getattr(pipe, "_unsloth_loras", ()):
         return None
     return getattr(pipe, _LORA_FUSE_STATUS_ATTR, None)
+
+
+def lora_fuse_resolved_entry(request: Optional[str]) -> dict[str, Any]:
+    """The load's LoRA fold choice for ``status()["resolved"]["lora_fuse"]``: value on/off, source explicit/auto (the
+    ResolvedBadge contract), origin per_load / env / default."""
+    from . import diffusion_lora_fuse as lora_fuse
+
+    allowed, origin = lora_fuse.resolve(request)
+    reason = {
+        lora_fuse.SOURCE_PER_LOAD: "chosen for this load",
+        lora_fuse.SOURCE_ENV: f"{lora_fuse.LORA_FUSE_ENV} on this install",
+        lora_fuse.SOURCE_DEFAULT: "off by default: the unfolded adapters stay closer to full precision",
+    }[origin]
+    return {
+        "value": "on" if allowed else "off",
+        "requested": request if origin == lora_fuse.SOURCE_PER_LOAD else None,
+        "source": "explicit" if origin == lora_fuse.SOURCE_PER_LOAD else "auto",
+        "status": RESOLVED_APPLIED,
+        "reason": reason,
+        "origin": origin,
+    }
 
 
 def _speed_off_requested(state: Any) -> bool:
@@ -6606,12 +6630,18 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
         nvfp4_route: Any = None,
         int8_attention: Optional[str] = None,
+        lora_fuse: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once.
 
         ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
-        resolved once here into the load's ``Int8Policy``."""
+        resolved once here into the load's ``Int8Policy``.
+        ``lora_fuse``: ``auto`` / ``on`` / ``off`` for folding an unchanged LoRA set into the denoiser weights on this
+        load (None / auto: the UNSLOTH_DIFFUSION_LORA_FUSE env switch, else off)."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
 
         # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
@@ -6753,6 +6783,7 @@ class DiffusionBackend:
                 transformer_prequant_path = transformer_prequant_path,
                 attention_backend = attention_backend,
                 int8_attention = int8_policy,
+                **({"lora_fuse": lora_fuse} if lora_fuse is not None else {}),
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
@@ -9851,6 +9882,7 @@ class DiffusionBackend:
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
         int8_attention: Any = None,
+        lora_fuse: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
@@ -9908,6 +9940,9 @@ class DiffusionBackend:
         if not isinstance(int8_attention, Int8Policy):
             normalize_int8_attention(int8_attention)
         int8_policy = resolve_policy(int8_attention)
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
         normalize_transformer_cache(transformer_cache)
         # Text-encoder tri-state resolved once so every consumer agrees; must run before the load evicts the previous pipeline, since it validates the raw request.
         text_encoder_quant_requested = text_encoder_quant
@@ -13517,6 +13552,7 @@ class DiffusionBackend:
                         attention_backend = attention_engaged,
                         attention_request = attention_backend,
                         int8_policy = int8_policy,
+                        lora_fuse = lora_fuse,
                         transformer_cache = cache_engaged,
                         cache_auto = cache_may_toggle,
                         cache_quant_active = cache_quant_active,
@@ -16194,7 +16230,8 @@ class DiffusionBackend:
         if lora_fuse.fused(pipe):
             _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
             return
-        if not lora_fuse.enabled():
+        request = getattr(state, "lora_fuse", None)
+        if not lora_fuse.enabled(request):
             _set_lora_fuse_status(pipe, LORA_FUSE_DISABLED)
             return
         if _speed_off_requested(state):
@@ -16209,7 +16246,10 @@ class DiffusionBackend:
         ]
         denoisers = list({id(m): m for m in denoisers}.values())
         if not lora_fuse.denoisers_resident(
-            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+            getattr(state, "offload_policy", None),
+            getattr(state, "memory_mode", None),
+            denoisers,
+            request,
         ):
             _set_lora_fuse_status(pipe, LORA_FUSE_OFFLOAD)
             return  # offloaded or streamed denoiser weights move every render
@@ -18689,6 +18729,12 @@ class DiffusionBackend:
             )
             if live is not resolved["attention_backend"]:
                 resolved = {**resolved, "attention_backend": live}
+        if isinstance(resolved, dict):
+            # read live: an auto load follows the env switch at fold time, as the fold itself does
+            resolved = {
+                **resolved,
+                "lora_fuse": lora_fuse_resolved_entry(getattr(state, "lora_fuse", None)),
+            }
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,
