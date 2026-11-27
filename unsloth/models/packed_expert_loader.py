@@ -212,14 +212,27 @@ def _plan(model, checkpoint_files):
     return plan
 
 
-def _swap_in_placeholders(plan):
+def _ep_cut(model, module):
+    """(lo, hi, mark): expert parallel loading reads only this rank's experts [lo, hi) of `module`, else None."""
+    import sys
+
+    tpn = sys.modules.get(__name__.rpartition(".")[0] + ".tp_native")
+    cut = getattr(tpn, "ep_packed_load_cut", None)
+    return cut(model, module) if callable(cut) else None
+
+
+def _swap_in_placeholders(plan, model = None):
     for item in plan:
         module = item["module"]
+        # Under expert parallel loading the placeholders and the fill hold this rank's experts only.
+        item["cut"] = _ep_cut(model, module) if model is not None else None
         originals = {}
         for stack in ("gate_up_proj", "down_proj"):
             param = module._parameters.pop(stack)
             originals[stack] = param
             E, N, K = param.shape
+            if item["cut"] is not None:
+                E = item["cut"][1] - item["cut"][0]
             parts = 2 if stack == "gate_up_proj" else 1
             for kind, (shape, dtype) in _placeholder_shapes(item["fmt"], E, N, K, parts).items():
                 module.register_parameter(
@@ -330,6 +343,8 @@ def _fill(item, shards):
     pe = _zoo()
     module, entries, fmt = item["module"], item["entries"], item["fmt"]
     keep = packed_experts_enabled()
+    cut = item.get("cut")
+    lo = cut[0] if cut is not None else 0
     code_key = "weight_packed" if fmt == "nvfp4" else "weight"
     glob_key = "weight_global_scale" if fmt == "nvfp4" else "weight_scale_2"
     for stack in ("gate_up_proj", "down_proj"):
@@ -365,17 +380,18 @@ def _fill(item, shards):
                 )
             target.copy_(tensor)
 
-        for e in range(E):
+        # Expert parallel: only this rank's experts [lo, lo + E) are read; another rank's are never touched.
+        for i, e in enumerate(range(lo, lo + E)):
             for p, proj in enumerate(projs):
                 rs = slice(p * rows, (p + 1) * rows)
                 _exact(
                     shards.get(entries, e, proj, code_key).view(torch.uint8),
-                    codes[e, rs],
+                    codes[i, rs],
                     f"{e}.{proj} codes",
                 )
                 _exact(
                     shards.get(entries, e, proj, "weight_scale").view(torch.uint8),
-                    scales[e, rs],
+                    scales[i, rs],
                     f"{e}.{proj} scales",
                 )
                 if glob is not None:
@@ -384,7 +400,7 @@ def _fill(item, shards):
                         raise RuntimeError(
                             f"Unsloth: {item['name']} expert {e}.{proj} has {g.numel()} global scales, expected 1."
                         )
-                    glob[e, p] = g.to(torch.float32).reshape(())
+                    glob[i, p] = g.to(torch.float32).reshape(())
         dtype = item["dtype"]
         if fmt == "mxfp8":
             param = pe.Mxfp8ExpertParam(codes, packed_scales = scales, packed_dtype = dtype)
@@ -403,7 +419,25 @@ def _fill(item, shards):
             module._parameters[stack] = torch.nn.Parameter(
                 param.dequantize(dtype), requires_grad = False
             )
+        if cut is not None:
+            _mark_cut(module, stack, param, cut)
     module._unsloth_packed_expert_format = fmt if keep else None
+
+
+def _mark_cut(module, stack, packed, cut):
+    """A stack read for this rank's experts only: marked as expert parallel loading's cut, its logical shape the
+    whole stack (PEFT sizes the expert LoRA for every expert), so apply_expert_parallel finishes the shard."""
+    import sys
+
+    tpn = sys.modules[__name__.rpartition(".")[0] + ".tp_native"]
+    new = module._parameters[stack]
+    mark = cut[2]
+    if new is packed:
+        new._original_shape = torch.Size((mark[0],) + tuple(new._original_shape)[1:])
+    else:  # UNSLOTH_PACKED_EXPERTS=0: a plain 16-bit stack, sized for PEFT by the preload wrapper
+        tpn._patch_param_wrapper_preloaded_shape()
+    setattr(new, _EXPERT_PRELOAD, mark)
+    tpn.ep_packed_load_count(packed.nbytes_packed())
 
 
 def finalize_packed_experts(model) -> int:
@@ -456,7 +490,7 @@ def _before_loading(
     plan = _plan(model, checkpoint_files)
     if not plan:
         return
-    _swap_in_placeholders(plan)
+    _swap_in_placeholders(plan, model)
     _ignore_keys(model)
     model.__dict__[_PLAN_ATTR] = plan
     quantizer._unsloth_packed_expert_model = model
