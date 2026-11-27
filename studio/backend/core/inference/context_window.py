@@ -1023,9 +1023,8 @@ _MAX_CHARS_PER_TOKEN = 16
 def _sandbox_attachment_notes(text: str):
     """Same matches as ``_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text)``, without its cost on long lines.
 
-    A match is one whole line ending in ``]``, so there is at most one per line, only on a line holding the key,
-    and it starts at that line's first ``[`` (the name may hold anything). finditer instead retries from every
-    ``[``: ``[`` count times line length, seconds per turn on a minified JSON attachment.
+    A match runs from a line's first ``[`` to the end of that line (which must end in ``]``), so at most one
+    per line, only on a line holding the key. finditer retries from every ``[``: seconds per turn on minified JSON.
     """
     found = text.find(_SANDBOX_ATTACHMENT_NOTE_KEY)
     while found >= 0:
