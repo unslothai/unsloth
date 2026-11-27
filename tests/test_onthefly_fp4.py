@@ -266,6 +266,47 @@ def test_full_save_writes_the_dequantized_weights_and_reloads(cpu_hook, tiny_den
             )
             assert torch.equal(module.weight, want), name
     assert not any(k.endswith("weight_packed") for k in reloaded.state_dict())
+    # A caller-supplied state dict (unsloth/save.py's generic save passes one) is converted too.
+    other = tmp_path / "given"
+    model.save_pretrained(str(other), state_dict = model.state_dict())
+    again = AutoModelForCausalLM.from_pretrained(str(other), dtype = torch.bfloat16)
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(again.state_dict().values(), reloaded.state_dict().values())
+    )
+
+
+@pytest.fixture(scope = "module")
+def tiny_moe(tmp_path_factory):
+    import _onthefly_fp4_case as case
+    return case.build(str(tmp_path_factory.mktemp("moe")), moe = True)
+
+
+def test_moe_expert_stacks_quantize_at_load_and_save_dense(cpu_hook, tiny_moe, tmp_path):
+    pe = pytest.importorskip("unsloth_zoo.packed_experts")
+    if not hasattr(pe, "quantize_moe_expert_stacks"):
+        pytest.skip("unsloth_zoo without the expert quantizer")
+    from transformers import AutoModelForCausalLM
+
+    oq.onthefly_fp4_stats(reset = True)
+    with oq.onthefly_fp4_loading("nvfp4"):
+        model = AutoModelForCausalLM.from_pretrained(tiny_moe, dtype = torch.bfloat16)
+    stacks = {
+        f"{n}.{s}": p
+        for n, m in model.named_modules()
+        for s, p in m._parameters.items()
+        if oq._is_packed_stack(p)
+    }
+    if not stacks:  # transformers 4.57: per-expert Linears, quantized as Linears
+        assert oq.onthefly_fp4_stats()["linear"] == 32
+        return
+    assert oq.onthefly_fp4_stats()["experts"] == len(stacks) == 4
+    model.save_pretrained(str(tmp_path))
+    reloaded = dict(
+        AutoModelForCausalLM.from_pretrained(str(tmp_path), dtype = torch.bfloat16).named_parameters()
+    )
+    for key, p in stacks.items():
+        assert torch.equal(reloaded[key], p.dequantize().to(torch.bfloat16)), key
 
 
 def test_kill_switch_keeps_16_bit(cpu_hook, tiny_dense, monkeypatch):

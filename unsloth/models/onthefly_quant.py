@@ -330,6 +330,9 @@ def _quantize_expert_stacks(experts, fmt):
         p = experts._parameters.get(name)
         if p is not None:
             p._is_hf_initialized = True
+    if count and not experts.__dict__.get("_unsloth_onthefly_fp4_experts"):
+        experts.__dict__["_unsloth_onthefly_fp4_experts"] = True
+        experts._register_state_dict_hook(_dense_state_dict_hook)
     return count
 
 
@@ -410,8 +413,6 @@ def _finalize(model, fmt):
                 gu = module._parameters.get("gate_up_proj")
                 if experts_fmt is not None and gu is not None and gu.device.type in _QUANT_DEVICES:
                     _STATS["experts"] += _quantize_expert_stacks(module, experts_fmt)
-            if any(_is_packed_stack(module._parameters.get(n)) for n, _ in _EXPERT_STACKS):
-                module._register_state_dict_hook(_dense_state_dict_hook)
             continue
         if type(module) is not _PendingFP4Linear:
             continue
@@ -443,7 +444,9 @@ def _finalize(model, fmt):
     if count:
         _patch_peft()
     _STATS["linear"] += count
-    model._unsloth_onthefly_fp4 = getattr(model, "_unsloth_onthefly_fp4", 0) + count
+    experts = sum(1 for m in model.modules() if m.__dict__.get("_unsloth_onthefly_fp4_experts"))
+    # Linears + expert modules quantized here: save_pretrained keys on it.
+    model._unsloth_onthefly_fp4 = getattr(model, "_unsloth_onthefly_fp4", 0) + count + experts
     try:
         from unsloth.precision import engage
         engage.record(model, f"onthefly_{fmt}_w4a16", count, detail = {"experts": _STATS["experts"]})
@@ -498,6 +501,27 @@ def _dense_state_dict_hook(module, state_dict, prefix, local_metadata):
     return state_dict
 
 
+def _dense_state_dict(model, state_dict):
+    """A copy of `state_dict` whose packed on-the-fly entries are replaced by the dense tensors they decode to."""
+    out = dict(state_dict)
+    for name, module in model.named_modules():
+        prefix = name + "." if name else ""
+        if module.__dict__.get("_unsloth_onthefly_fp4") and "weight_packed" in module._parameters:
+            if prefix + "weight_packed" not in out:
+                continue
+            for key in _PACKED_KEYS:
+                out.pop(prefix + key, None)
+            with torch.no_grad():
+                out[prefix + "weight"] = _dense_weight(module).to("cpu")
+        elif module.__dict__.get("_unsloth_onthefly_fp4_experts"):
+            for stack, _ in _EXPERT_STACKS:
+                value = out.get(prefix + stack)
+                if _is_packed_stack(value):
+                    with torch.no_grad():
+                        out[prefix + stack] = value.dequantize().to("cpu")
+    return out
+
+
 def _install_save_hook(PreTrainedModel):
     original = PreTrainedModel.save_pretrained
     if getattr(original, "_unsloth_onthefly_fp4_save", False):
@@ -512,6 +536,9 @@ def _install_save_hook(PreTrainedModel):
             "weights. Save LoRA adapters with the PEFT model, or merge into the original 16-bit weights with "
             "save_pretrained_merged."
         )
+        if kwargs.get("state_dict") is not None:
+            # A caller-built state dict never runs the module hooks: convert it here.
+            kwargs["state_dict"] = _dense_state_dict(self, kwargs["state_dict"])
         token = _SAVING.set(True)
         try:
             return original(self, *args, **kwargs)
