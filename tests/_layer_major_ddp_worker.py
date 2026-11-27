@@ -168,6 +168,18 @@ def tokenizer():
     )
 
 
+class HookWrapper(transformers.TrainerCallback):
+    """A forward pre-hook on the DDP wrapper itself (a no-op): a window would bypass it, so none may run."""
+
+    def __init__(self, trainer):
+        self.trainer = trainer
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        wrapped = self.trainer.model_wrapped
+        assert isinstance(wrapped, torch.nn.parallel.DistributedDataParallel), type(wrapped)
+        wrapped.register_forward_pre_hook(lambda module, args: None)
+
+
 def train(
     mod,
     engine,
@@ -176,6 +188,7 @@ def train(
     inject = None,
     sft = False,
     record = None,
+    hook_wrapper = False,
 ):
     os.environ["UNSLOTH_OFFLOAD_LAYER_MAJOR"] = mode
     model = build_model()
@@ -209,6 +222,8 @@ def train(
     assert "get_train_dataloader" in trainer.__dict__
     grads = Grads(model)
     trainer.add_callback(grads)
+    if hook_wrapper:
+        trainer.add_callback(HookWrapper(trainer))
     undo = inject(mod, engine, model) if inject is not None else None
     engine.layer_major_stats(reset = True)
     reduces = getattr(mod, "_DDP_REDUCES", [0])[0]
@@ -365,6 +380,7 @@ def main(out_dir, zoo_dir):
         return lambda: mlp.__dict__.pop("forward", None)
 
     buf_r = run("buffer_written", "1", inject = buffer_written)
+    hook_r = run("ddp_wrapper_hook", "1", hook_wrapper = True)
     unfit_r = run("rank1_unfit", "1", inject = rank1(unfit))
     fwd_r = run("rank1_forward_abort", "1", inject = rank1(forward_abort))
     bwd_r = run("rank1_backward_oom", "1", inject = rank1(backward_oom))
@@ -374,6 +390,7 @@ def main(out_dir, zoo_dir):
         ("layer_major", lm),
         ("dropped_reduce", dropped),
         ("buffer_written", buf_r),
+        ("ddp_wrapper_hook", hook_r),
         ("rank1_unfit", unfit_r),
         ("rank1_forward_abort", fwd_r),
         ("rank1_backward_oom", bwd_r),
@@ -389,6 +406,7 @@ def main(out_dir, zoo_dir):
             and close([r["weights"]], [ref_weights]),
             "max_diff_vs_plain": max_diff(r["grads"], plain["grads"]),
             "other_rank_message": "another rank" in r["printed"],
+            "wrapper_hook_message": "hooks on the DDP wrapper" in r["printed"],
             "steps": len(r["grads"]),
         }
     report["one_process_vs_plain_max_diff"] = max_diff(plain["grads"], ref_grads)

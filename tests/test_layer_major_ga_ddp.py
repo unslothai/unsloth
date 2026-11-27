@@ -130,6 +130,14 @@ def test_a_forward_that_writes_a_broadcast_buffer_keeps_the_step_standard(report
         assert b["bitwise_vs_plain"] and b["close_to_one_process"], (rank, b)
 
 
+def test_hooks_on_the_ddp_wrapper_keep_the_step_standard(reports):
+    """The window runs the module inside DDP: a hook on the wrapper would be skipped, so no window runs."""
+    for rank, r in reports.items():
+        h = r["ddp_wrapper_hook"]
+        assert h["windows"] == 0 and h["reduces"] == 0 and h["wrapper_hook_message"], (rank, h)
+        assert h["bitwise_vs_plain"], (rank, h)
+
+
 def test_sft_trainer_metric_gathers_inside_windows(reports):
     for rank, r in reports.items():
         sft = r["sft"]

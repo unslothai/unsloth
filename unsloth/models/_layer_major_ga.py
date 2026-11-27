@@ -415,6 +415,16 @@ def _ddp_ineligible(trainer, ddp, layers):
     accelerator = getattr(trainer, "accelerator", None)
     if accelerator is not None and not _plain_ddp(accelerator):
         return f"accelerate distributed type {getattr(accelerator, 'distributed_type', None)}"
+    if type(ddp) is not torch.nn.parallel.DistributedDataParallel or "forward" in ddp.__dict__:
+        return "a DDP subclass or a replaced DDP forward"
+    if (
+        ddp._forward_hooks
+        or ddp._forward_pre_hooks
+        or ddp._backward_hooks
+        or ddp._backward_pre_hooks
+    ):
+        # The window runs the module inside DDP, so hooks on the wrapper itself would be skipped.
+        return "hooks on the DDP wrapper"
     dist = torch.distributed
     if dist.get_world_size(ddp.process_group) != dist.get_world_size():
         return "DDP over a subgroup (other parallel dimensions)"
