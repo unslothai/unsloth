@@ -16076,6 +16076,80 @@ def build_rag_autoinject(
         )
 
 
+_ATTACHMENT_OVERVIEW = re.compile(
+    r"^\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?"
+    r"(?:summari[sz]e|compare|contrast|review|analy[sz]e)\s+"
+    r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these| my)? |"
+    r"(?:these |the |my )?(?P<two>two) |"
+    # A bare "the documents" may mean knowledge-base or project files.
+    r"these |my |the (?=attached |attachments\b))(?:attached )?"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\b"
+    r"(?=\s*(?:[.!?]?\s*$|(?:on|about|regarding|in|with respect to|and)\b))"
+    r"|^\s*what\s+are\s+(?:these|my|the attached)\s+"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
+    re.IGNORECASE,
+)
+_ATTACHMENT_OVERVIEW_EXCLUSION = re.compile(
+    r"(?:[.!?;\n]\s*|\band\s+)(?:please\s+)?"
+    r"(?:ignore|exclude|omit|skip|leave out|do not (?:include|cover))\b"
+    r"|\b(?:except|excluding|other than)\b",
+    re.IGNORECASE,
+)
+
+
+def _cover_thread_attachments(
+    query,
+    thread_id,
+    thread_docs,
+    hits,
+    top_k,
+    document_opening,
+    ranked_thread_lead = None,
+):
+    """Keep one hit per attachment and preserve any project hits."""
+    if not thread_docs or not 1 < len(thread_docs) <= top_k:
+        return None
+    request = _ATTACHMENT_OVERVIEW.match(query)
+    if (
+        not request
+        or _ATTACHMENT_OVERVIEW_EXCLUSION.search(query)
+        or (
+            len(thread_docs) != 2
+            and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
+        )
+    ):
+        return None
+    if ranked_thread_lead is not None:
+        lead_id = ranked_thread_lead.get("chunkId")
+        if lead_id is not None:
+            for i, hit in enumerate(hits):
+                if hit.get("chunkId") == lead_id:
+                    # Opening chunks can have overlap stripped against preceding chunks.
+                    hits = [ranked_thread_lead, *hits[:i], *hits[i + 1 :]]
+                    break
+    covered = set()
+    required, extra = [], []
+    for hit in hits:
+        document = hit.get("documentId")
+        if document in covered:
+            extra.append(hit)
+        else:
+            required.append(hit)
+            if document in thread_docs:
+                covered.add(document)
+    missing = thread_docs - covered
+    if not missing or len(required) + len(missing) > max(top_k, len(hits)):
+        return None
+    for document in sorted(missing):
+        opening = document_opening(scope_thread_id = thread_id, document_id = document)
+        if not opening:
+            return None
+        required.append(opening[0])
+    remaining = max(top_k, len(hits)) - len(required)
+    # render_sources renumbers citations in place. The ranked fallback must remain intact.
+    return [dict(hit) for hit in required + extra[:remaining]], len(required)
+
+
 def _build_rag_autoinject(
     conversation: list[dict],
     rag_scope: dict | None,
@@ -16181,8 +16255,10 @@ def _build_rag_autoinject(
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
     opening_ids: set = set()
+    ranked_thread_lead = None
 
     def retrieve_thread_unfloored(*, max_tokens = None):
+        nonlocal ranked_thread_lead
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
         if thread_docs is not None and not thread_docs:
             return None
@@ -16215,6 +16291,7 @@ def _build_rag_autoinject(
             # render_sources renumbered these hits in place for the merged list.
             return render_sources(found[1]), found[1]
         opening_ids.update(seen)
+        ranked_thread_lead = dict(found[1][0])
         return kept
 
     def _strong_thread_match() -> bool:
@@ -16295,6 +16372,30 @@ def _build_rag_autoinject(
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
+        try:
+            covered = _cover_thread_attachments(
+                query,
+                thread_id,
+                thread_docs,
+                found[1] if found else [],
+                top_k,
+                document_opening,
+                ranked_thread_lead,
+            )
+        except Exception:
+            logger.warning("RAG attachment coverage failed", exc_info = True)
+            covered = None
+        if covered:
+            candidates, keep_first = covered
+            found = (
+                _trim(
+                    render_sources(candidates),
+                    candidates,
+                    budget if not enabled else None,
+                    keep_first = keep_first,
+                )
+                or found
+            )
         if not found:
             logger.info("RAG auto-inject: no matching passage; skipping")
             return None
