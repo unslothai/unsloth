@@ -5264,6 +5264,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                qat_scheme = qat_scheme,
                 target_parameters = target_parameters,
                 ensure_weight_tying = ensure_weight_tying,
                 offload_layers = offload_layers,

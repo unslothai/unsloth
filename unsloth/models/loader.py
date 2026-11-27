@@ -2746,6 +2746,9 @@ class FastModel(FastBaseModel):
             if float8_training is not None:
                 converted = convert_model_to_float8_training(model, float8_training)
                 print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
+            if qat_scheme is not None:
+                print("Unsloth: Applying QAT to mitigate quantization degradation")
+                model = FastModel._prepare_for_qat(model, qat_scheme)
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
