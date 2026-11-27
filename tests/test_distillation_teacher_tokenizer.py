@@ -143,7 +143,7 @@ def test_gkd_and_distillation_trainers_run_the_check(monkeypatch):
     import ast
     import sys
 
-    source = open(RL_REPLACEMENTS_PATH).read()
+    source = open(RL_REPLACEMENTS_PATH, encoding = "utf-8").read()
     for trainer in ("gkd_trainer", "distillation_trainer"):
         assert (
             f'RL_EXTRA_ARGS["{trainer}"].append(distillation_trainer_teacher_tokenizer)' in source
