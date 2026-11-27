@@ -771,21 +771,21 @@ export const InventoryRow = memo(function InventoryRow({
   const pinId = isDataset ? null : inventoryPinId(row);
   const rowPinned = pinId != null && pinCoversId(pinnedKeys, pinId);
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
+  const pinMenu = pinId
+    ? {
+        pinned: rowPinned,
+        pinLabel: "Pin",
+        unpinLabel: "Unpin",
+        onToggle: () => toggleRepoPinned(pinId),
+      }
+    : undefined;
+  const localMenuRow = Boolean(localActionPath) && row.kind === "local";
   const rowMenu =
-    deletableRepoId || pinId ? (
+    deletableRepoId || (pinId && !localMenuRow) ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        pin={
-          pinId
-            ? {
-                pinned: rowPinned,
-                pinLabel: "Pin",
-                unpinLabel: "Unpin",
-                onToggle: () => toggleRepoPinned(pinId),
-              }
-            : undefined
-        }
+        pin={pinMenu}
         cachePath={
           isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId }
         }
@@ -857,6 +857,7 @@ export const InventoryRow = memo(function InventoryRow({
       <ModelRowMenu
         ariaLabel={`More options for ${rowModelId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        pin={pinMenu}
         onReveal={() => revealLocalModel(localActionPath, row.loadId)}
         del={
           DELETABLE_LOCAL_SOURCES.has(row.source)
@@ -874,7 +875,10 @@ export const InventoryRow = memo(function InventoryRow({
                   </>
                 ),
                 successMessage: `Deleted ${title}`,
-                onConfirm: () => deleteLocalModel(localActionPath, row.loadId),
+                onConfirm: async () => {
+                  await deleteLocalModel(localActionPath, row.loadId);
+                  if (pinId) usePinnedModelsStore.getState().unpinRepo(pinId);
+                },
                 onDeleted: onChange,
               }
             : undefined

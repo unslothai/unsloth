@@ -431,7 +431,7 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
     MODELS_CATALOG_ROWS,
     /const pinId = isDataset \? null : inventoryPinId\(row\);/,
   );
-  assert.match(MODELS_CATALOG_ROWS, /pin=\{\s*pinId\s*\?/);
+  assert.match(MODELS_CATALOG_ROWS, /const pinMenu = pinId\s*\?/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {
