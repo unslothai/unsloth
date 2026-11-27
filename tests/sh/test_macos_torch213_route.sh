@@ -107,10 +107,14 @@ for gate in unreachable capped open; do
     assert_eq "PyPI $gate: existing 2.13 kept" "torch==2.13.0" "$TORCH_CONSTRAINT"
     _run_block true "2.14.1"
     assert_eq "PyPI $gate: existing 2.14 kept" "torch==2.14.1" "$TORCH_CONSTRAINT"
-    _run_block true "2.11.0"
-    assert_eq "PyPI $gate: existing 2.11 kept" "torch==2.11.0" "$TORCH_CONSTRAINT"
-    assert_eq "PyPI $gate: kept 2.11 keeps its torchvision window" "torchvision>=0.19,<0.27.0" "$TORCHVISION_CONSTRAINT"
-    assert_eq "PyPI $gate: kept pin falls back to the old default" "torch>=2.6,<2.12.0" "$_PREV_FALLBACK_CONSTRAINT"
+    if [ "$gate" != open ]; then
+        _run_block true "2.11.0"
+        assert_eq "PyPI $gate: existing 2.11 kept" "torch==2.11.0" "$TORCH_CONSTRAINT"
+        assert_eq "PyPI $gate: kept 2.11 keeps its torchvision window" "torchvision>=0.19,<0.27.0" "$TORCHVISION_CONSTRAINT"
+        assert_eq "PyPI $gate: kept pin falls back to the old default" "torch>=2.6,<2.12.0" "$_PREV_FALLBACK_CONSTRAINT"
+        _run_block true "2.10.0"
+        assert_eq "PyPI $gate: existing 2.10 kept (no 2.13 to move to)" "torch==2.10.0" "$TORCH_CONSTRAINT"
+    fi
     _run_block true ""
     assert_eq "PyPI $gate: existing home with unreadable torch stays on the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
     _run_block false ""
@@ -140,6 +144,71 @@ SKIP_TORCH=true; _run_block false ""; SKIP_TORCH=false
 assert_eq "--no-torch never takes the route" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 _stub_python 3.9; _run_block false "" 2.4; _stub_python 3.13
 assert_eq "Python 3.9 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
+
+echo "=== an existing home below the 2.13 floor moves to 2.13 when the route is open ==="
+_pypi_fixture "torch<2.15.0,>=2.4.0"
+_SUBSTEP_LOG=$(mktemp)
+substep() { printf '%s\n' "$1" >> "$_SUBSTEP_LOG"; }
+for prev in 2.10.0 2.11.0 2.12.1 2.6.0; do
+    : > "$_SUBSTEP_LOG"
+    _run_block true "$prev"
+    assert_eq "existing $prev moves to the new-install spec" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+    assert_eq "existing $prev moves torchvision with it" "torchvision>=0.28.0,<0.29.0" "$TORCHVISION_CONSTRAINT"
+    assert_eq "existing $prev is not a kept pin" "" "$_PREV_TORCH_PIN"
+    assert_contains "existing $prev: the move is announced with its opt-out" "$(cat "$_SUBSTEP_LOG")" "UNSLOTH_TORCH_UPGRADE=0"
+    assert_not_contains "existing $prev: no 'keeping it' line" "$(cat "$_SUBSTEP_LOG")" "keeping it"
+done
+_run_block true "2.10.0+cpu"
+assert_eq "a local-tagged 2.10.0+cpu moves too" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+for prev in 2.13.0 2.13.1 2.14.0 2.14.1; do
+    : > "$_SUBSTEP_LOG"
+    _run_block true "$prev"
+    assert_eq "existing $prev (at or above the floor) kept" "torch==$prev" "$TORCH_CONSTRAINT"
+    assert_contains "existing $prev: 'keeping it' line" "$(cat "$_SUBSTEP_LOG")" "keeping it"
+done
+for v in 0 false no; do
+    UNSLOTH_TORCH_UPGRADE=$v; _run_block true "2.10.0"; unset UNSLOTH_TORCH_UPGRADE
+    assert_eq "UNSLOTH_TORCH_UPGRADE=$v keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
+    assert_eq "UNSLOTH_TORCH_UPGRADE=$v keeps the 2.10 torchvision window" "torchvision>=0.19,<0.27.0" "$TORCHVISION_CONSTRAINT"
+done
+UNSLOTH_TORCH_UPGRADE=""; _run_block true "2.10.0"; unset UNSLOTH_TORCH_UPGRADE
+assert_eq "an empty UNSLOTH_TORCH_UPGRADE is the default (moves)" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.10.0"; unset UNSLOTH_TORCH_UPGRADE
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 still moves an existing 2.10" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+_torch_index_pinned=true; _run_block true "2.10.0"; _torch_index_pinned=false
+assert_eq "a pinned index keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
+MACOS_MAJOR=13; _run_block true "2.10.0"; MACOS_MAJOR=15
+assert_eq "macOS 13 keeps an existing 2.10 (no macosx_14_0 wheel)" "torch==2.10.0" "$TORCH_CONSTRAINT"
+_stub_python 3.13 gil-disabled; _run_block true "2.10.0"; _stub_python 3.13
+assert_eq "free-threaded Python keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
+PACKAGE_NAME="unsloth-fork"; _run_block true "2.10.0"; PACKAGE_NAME="unsloth"
+assert_eq "--package other than unsloth keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
+_run_block true "2.12.0.dev20261001"
+assert_eq "a nightly below the floor is unchanged (old default, never 2.13)" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
+_run_block true "2.3.1" 2.4
+assert_eq "a release under the window floor is unchanged (old default)" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
+_stub_python 3.9; _run_block true "2.10.0" 2.4; _stub_python 3.13
+assert_eq "Python 3.9 keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
+SKIP_TORCH=true; _run_block true "2.10.0"; SKIP_TORCH=false
+assert_eq "--no-torch never moves an existing home" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
+_ARCH=x86_64; _run_block true "2.2.2" 2.2; _ARCH=arm64
+assert_eq "Intel macOS keeps its torch (2.2.2)" "torch==2.2.2" "$TORCH_CONSTRAINT"
+_ARCH=x86_64; _run_block true "2.2.2" 2.2; _ARCH=arm64
+assert_eq "Intel macOS window untouched" "torch>=2.2,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
+for os in linux wsl windows; do
+    OS=$os
+    _run_block true "2.10.0"
+    assert_eq "$os cpu: existing 2.10 kept" "torch==2.10.0" "$TORCH_CONSTRAINT"
+    assert_eq "$os cpu: window untouched" "torch>=2.6,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+    _run_block true "2.10.0+cu128"
+    assert_eq "$os cu128: existing 2.10 kept" "torch==2.10.0" "$TORCH_CONSTRAINT"
+    TORCH_INDEX_URL="$CPU"
+done
+OS=macos
+rm -f "$_SUBSTEP_LOG"
+substep() { :; }
+
 OS=linux; TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"; _run_block false "" 2.4
 assert_eq "Linux cu128 is untouched" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
 assert_eq "Linux cu128 window untouched" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
