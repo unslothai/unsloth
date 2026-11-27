@@ -224,6 +224,63 @@ def test_unfrozen_tower_trains_under_a_compiled_patch_embedding():
         torch._dynamo.reset()
 
 
+def test_compiled_outer_call_keeps_the_grad_and_trains_after_unfreeze():
+    # The outer call traced as well: its pre-hook cannot read trainability safely, so the tower keeps its input grad
+    # (as before), and a tower unfrozen later trains.
+    torch._dynamo.reset()
+    model, trainable = _model()
+    _step(model, trainable)
+    compiled = torch.compile(model, backend = "eager")
+    try:
+        state = {"backward": 0}
+        visual = model.model.visual
+
+        def count(module, args, kwargs):
+            x = args[0] if args else kwargs["hidden_states"]
+            if x.requires_grad:
+                x.register_hook(lambda g: state.__setitem__("backward", state["backward"] + 1))
+
+        handle = visual.blocks[0].register_forward_pre_hook(count, with_kwargs = True)
+        compiled(**_inputs()).loss.backward()
+        tower_weight = visual.blocks[0].mlp.up_proj.weight
+        tower_weight.requires_grad_(True)
+        tower_weight.grad = None
+        compiled(**_inputs()).loss.backward()
+        handle.remove()
+        assert state["backward"] >= 1
+        assert tower_weight.grad is not None and tower_weight.grad.abs().sum() > 0
+    finally:
+        torch._dynamo.reset()
+
+
+def test_traced_outer_pre_hook_never_specialises_on_a_frozen_tower():
+    # The outer model's pre-hook and the tower run in one traced region: the pre-hook must not record a value read
+    # from requires_grad there (torch 2.10 does not guard it), so a tower unfrozen later still gets its input grad.
+    torch._dynamo.reset()
+    model, trainable = _model()
+    _step(model, trainable)  # eager: records the frozen tower
+    pre_hooks = [
+        h
+        for k, h in model._forward_pre_hooks.items()
+        if k not in model._forward_pre_hooks_with_kwargs
+    ]
+    assert pre_hooks
+    patch_embed = model.model.visual.patch_embed
+
+    def outer(x):
+        for hook in pre_hooks:
+            hook(model, ())
+        return patch_embed(x)
+
+    compiled = torch.compile(outer, backend = "eager", fullgraph = True)
+    x = _inputs()["pixel_values"]
+    with torch.enable_grad():
+        compiled(x)
+        model.model.visual.blocks[0].mlp.up_proj.weight.requires_grad_(True)
+        assert compiled(x).requires_grad
+    torch._dynamo.reset()
+
+
 def test_keep_frozen_towers_env_is_read_per_call(monkeypatch):
     monkeypatch.setenv("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "1")
     model, _ = _model()

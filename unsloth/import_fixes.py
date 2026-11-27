@@ -6148,8 +6148,14 @@ def patch_enable_input_require_grads():
         return make_inputs_require_grads
 
     def _refresh_tower_trains(owners):
-        # Eager, before the outer forward: record whether each hooked tower trains, writing only on a change.
+        # Before the outer forward: record whether each hooked tower trains, writing only on a change.
         def refresh(module, args):
+            if torch.compiler.is_compiling():
+                # The outer call is traced too, where a requires_grad read may be unguarded (torch 2.10): clear the
+                # flag, so the traced embedding hook keeps the grad, as before.
+                for owner in owners:
+                    owner._unsloth_tower_trains = None
+                return
             for owner in owners:
                 trains = any(p.requires_grad for p in owner.parameters())
                 if owner.__dict__.get("_unsloth_tower_trains") is not trains:
