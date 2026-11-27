@@ -8423,6 +8423,92 @@ def test_media_is_prepared_only_under_a_budget_and_only_once(monkeypatch):
     assert calls == [1]
 
 
+@pytest.mark.parametrize("spliced", [0, 255])
+def test_pre_generation_counts_take_the_columns_a_spliced_image_fills(monkeypatch, spliced):
+    """FastVLM fills an image's features in place of its one placeholder id; its ids undercount."""
+    from core.inference import context_refusal
+
+    utils = _stub_prepare_inputs(monkeypatch, per_medium = 1)
+    calls = []
+    real = utils.prepare_inputs
+    utils.prepare_inputs = lambda *a, **k: calls.append(1) or {**real(*a, **k), "pixel_values": 1}
+    prompt = "placeholder describe this picture"
+    columns = 5 + spliced
+    embedded = []
+    # Without pixels FastVLM embeds the text alone.
+    embed = lambda ids, pixels = None, **_k: embedded.append(1) or SimpleNamespace(  # noqa: E731
+        inputs_embeds = SimpleNamespace(shape = (1, ids.size + spliced * (pixels == 1), 8))
+    )
+    for budget in (None, 1024):
+        backend = _vision_backend(budget = budget, window = 1024)
+        backend._model.get_input_embeddings = embed
+        backend.count_chat_tokens = lambda _t, images: backend._count_prompt_tokens(prompt, images)
+        assert backend._measure_media_splice() is bool(spliced)
+        backend._media_splices = backend._measure_media_splice()
+        embedded.clear()
+        assert backend._count_prompt_tokens(prompt, [object()]) == columns
+        assert bool(embedded) is bool(spliced), "an expanding model is never embedded again"
+        calls.clear()
+        # Unspliced and unbudgeted, the media stays unprepared and the placeholder count sizes it.
+        expected = columns if budget or spliced else 4
+        assert backend._generation_limit(prompt, None, images = [object()]) == 1024 - expected
+        assert bool(calls) is bool(budget or spliced)
+        backend._served_context = columns
+        backend._kv_context_budget = budget and columns
+        if budget or spliced:
+            with pytest.raises(context_refusal.ContextBudgetExceeded):
+                backend._generation_limit(prompt, 4, images = [object()])
+        else:
+            assert backend._generation_limit(prompt, 4, images = [object()]) == 4
+
+
+def test_a_spliced_count_is_the_embedding_even_truncated_and_a_dead_queue_fails_the_load(
+    monkeypatch,
+):
+    utils = _stub_prepare_inputs(monkeypatch, per_medium = 1)
+    backend = _vision_backend()
+    backend._media_splices = True
+    backend._model.get_input_embeddings = lambda *_a, **_k: SimpleNamespace(
+        inputs_embeds = SimpleNamespace(shape = (1, 3, 8))
+    )
+    assert backend._count_prompt_tokens("placeholder describe this picture", [object()]) == 3
+
+    def _dead(*_a, **_k):
+        raise RuntimeError("[METAL] Command buffer execution failed: Caused GPU Timeout Error.")
+
+    backend._model.get_input_embeddings = _dead
+    backend.count_chat_tokens = lambda _t, images: backend._count_prompt_tokens("p", images)
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._measure_media_splice()
+    # A processor that evaluates on the GPU (Kimi-VL) loses the queue before any embedding.
+    utils.prepare_inputs = _dead
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._measure_media_splice()
+    backend._media_splices = True
+    for budget in (None, 1024):
+        backend._kv_context_budget = budget
+        with pytest.raises(RuntimeError, match = "GPU Timeout"):
+            backend._generation_limit("p", 4, images = [object()])
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._check_context_budget("p", 4, images = [object()])
+    with pytest.raises(RuntimeError, match = "GPU Timeout"):
+        backend._prompt_within_window("p", None, [object()])
+
+
+@pytest.mark.parametrize("splices", [False, True])
+def test_a_vision_load_records_whether_the_model_splices_images(monkeypatch, splices):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    monkeypatch.setattr(MLXInferenceBackend, "_measure_media_splice", lambda _self: splices)
+    backend = MLXInferenceBackend()
+    backend._media_splices = not splices
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config)
+    assert backend._media_splices is splices
+
+
 def test_a_max_tokens_at_the_whole_window_is_the_chat_saying_no_cap(monkeypatch):
     """Max Tokens at the window means "as much as fits", not a request for that many."""
     from core.inference import context_refusal
