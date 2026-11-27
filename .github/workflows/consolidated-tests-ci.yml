@@ -2073,11 +2073,11 @@ jobs:
     name: "Core zoo (${{ matrix.combo.label }})"
     runs-on: ubuntu-24.04
     # PYTEST_TIMEOUT names a hung test; this job cap only bounds the cell.
-    # ubuntu-24.04 lands on Intel Xeon 6975P-C or AMD EPYC 7763 / 9V74 runners. On 2026-11-26 the
-    # same suite took 30-37 min of pytest (36-42 min per job) on Intel and 44-48 min of pytest on
-    # AMD, where every cell that hit the old 50 minute cap was cancelled at 79-99% with nothing
-    # failing. 65 keeps about 8 minutes over the slowest AMD cell seen; the zoo suite grows, so
-    # splitting it into shards is the next step if the AMD cells approach this cap.
+    # ubuntu-24.04 hands out several runner generations (Xeon 6975P-C, Xeon 8370C, EPYC 7763 / 9V74).
+    # On 2026-11-26/27 the same pytest selection took 30-42 min on a fast runner and 44-48 min on a
+    # slow one, so a slow cell needed 52-57 min and was cancelled at 79-99% of the old 50 minute cap
+    # with nothing failing. 65 keeps about 8 minutes over the slowest cell seen; the zoo suite grows,
+    # so splitting it into shards is the next step if slow cells approach this cap.
     timeout-minutes: 65
     # Same contract as `consolidated`: no job-level or per-step
     # `continue-on-error`, so a failing test fails the cell.
