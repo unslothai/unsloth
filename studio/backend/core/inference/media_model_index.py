@@ -281,6 +281,7 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     from routes.models import _local_model_task, collect_local_models
 
     index: dict[str, MediaModelPick] = {}
+    folded_copies = {}
     try:
         folded = []
         candidates = collect_local_models(Path("./models").resolve(), folded = folded)
@@ -296,6 +297,8 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 path = custom_paths.get((local_path_physical_identity(row.path), row.model_format))
                 if path is not None:
                     candidates.append(row.model_copy(update = {"path": path}))
+                else:
+                    folded_copies[id(row)] = row
     except Exception as exc:  # noqa: BLE001 -- a failed scan must not 500 the generation
         logger.debug("media auto-switch: local model scan failed: %s", exc)
         return index
@@ -304,7 +307,9 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
         return info.source == "hf_cache" and getattr(info, "active_cache", None) is True
 
     active_picks: dict[str, MediaModelPick] = {}
-    for info in sorted(candidates, key = lambda row: not is_active_cache(row)):
+    folded_picks: dict[str, MediaModelPick] = {}
+    listed = sorted(candidates, key = lambda row: not is_active_cache(row))
+    for info in (*listed, *folded_copies.values()):
         try:
             active = is_active_cache(info)
             if (
@@ -314,7 +319,10 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 and info.model_id.strip().lower() in active_picks
             ):
                 continue
-            picks = active_picks if active else index
+            if id(info) in folded_copies:
+                picks = folded_picks
+            else:
+                picks = active_picks if active else index
             # a cancelled or incomplete pull still lists, and loading it fails predictably
             if _pull_is_incomplete(info):
                 continue
@@ -345,6 +353,8 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             logger.debug("media auto-switch: skipped %s: %s", getattr(info, "id", "?"), exc)
     for name, pick in active_picks.items():
         _register(index, (name,), pick)
+    for name, pick in folded_picks.items():
+        index.setdefault(name, pick)
     return index
 
 

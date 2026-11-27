@@ -11,6 +11,7 @@ import gc
 import logging
 import time
 import types
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -2796,3 +2797,29 @@ def test_media_repo_prefers_active_cache_across_formats(catalog, tmp_path):
     mas.invalidate_index()
     pick = mas.resolve_local_media_model(repo, task = mas.IMAGE_TASK)
     assert pick is not None and pick.model_path == str(inactive_snapshot)
+
+
+def test_media_quants_survive_native_root_deduplication(tmp_path, monkeypatch):
+    from hub.services.models import local_inventory
+
+    roots = (tmp_path / "first", tmp_path / "second")
+    for root, quant in zip(roots, ("Q4_K_M", "Q8_0")):
+        checkpoint = root / "publisher" / "Z-Image-Turbo"
+        checkpoint.mkdir(parents = True)
+        (checkpoint / f"z-image-turbo-{quant}.gguf").write_bytes(b"weights")
+    empty = tmp_path / "empty"
+    sources = local_inventory._LocalInventorySources(
+        empty, empty, empty, (), (), (), (), omlx_dirs = roots
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", list)
+    monkeypatch.chdir(tmp_path)
+    folded = []
+    rows = models_route.collect_local_models(tmp_path / "models", folded = folded)
+    assert len(rows) == len(folded) == 1
+    name = "publisher/Z-Image-Turbo"
+    for root, quant in zip(roots, ("Q4_K_M", "Q8_0")):
+        pick = mas.resolve_local_media_model(f"{name}:{quant}", task = mas.IMAGE_TASK)
+        assert pick is not None and Path(pick.model_path).is_relative_to(root)
+    bare = mas.resolve_local_media_model(name, task = mas.IMAGE_TASK)
+    assert bare is not None and bare.model_path == rows[0].path
