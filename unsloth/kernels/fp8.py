@@ -2131,8 +2131,14 @@ def _fp8_unit_scale(device):
 
 @triton.jit
 def _fp8_unit_scale_epilogue_kernel(
-    acc_ptr, sx_ptr, sw_ptr, y_ptr, N, numel, BLOCK: tl.constexpr
-):  # block size
+    acc_ptr,
+    sx_ptr,
+    sw_ptr,
+    y_ptr,
+    N,
+    numel,
+    BLOCK: tl.constexpr,  # elements per program
+):
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(acc_ptr + offs, mask = mask, other = 0.0)
@@ -2168,6 +2174,7 @@ def _fp8_unit_scale_epilogue(
                 numel,
                 BLOCK = 1024,
                 num_warps = 4,
+                enable_fp_fusion = True,
             )
     return out
 
