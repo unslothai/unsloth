@@ -6091,8 +6091,8 @@ function Get-WoaWheelTorchRequirementParity {
             if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
         }
         if ($null -eq $metadata) {
-            $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
-            $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
+            $u16 = { param($b, $o) [int]$b[$o] + 256 * [int]$b[$o + 1] }
+            $u32 = { param($b, $o) [long]$b[$o] + 256 * [long]$b[$o + 1] + 65536 * [long]$b[$o + 2] + 16777216 * [long]$b[$o + 3] }
             $tail = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Suffix 65558
             if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
             $t = $tail.Bytes
