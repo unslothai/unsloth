@@ -162,6 +162,30 @@ def test_an_index_in_the_uv_config_file_closes_the_route(monkeypatch, tmp_path):
     assert wr._managed_route_host({"APPDATA": str(tmp_path)}) is True
 
 
+def test_uv_config_precedence_follows_install_ps1(monkeypatch, tmp_path):
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    (tmp_path / "uv").mkdir()
+    (tmp_path / "uv" / "uv.toml").write_text(
+        "index-url = 'https://mirror.example/simple'\n", encoding = "utf-8"
+    )
+    clean = tmp_path / "clean.toml"
+    clean.write_text("cache-dir = 'D:/uv'\n", encoding = "utf-8")
+    user = {"APPDATA": str(tmp_path)}
+    assert wr._managed_route_host(user) is False  # the user file names a mirror
+    # UV_NO_CONFIG skips discovery, and UV_CONFIG_FILE is exclusive: the mirror-free file wins.
+    assert wr._managed_route_host({**user, "UV_NO_CONFIG": "1"}) is True
+    assert wr._managed_route_host({**user, "UV_CONFIG_FILE": str(clean)}) is True
+    assert (
+        wr._managed_route_host({**user, "UV_CONFIG_FILE": str(clean), "UV_NO_CONFIG": "1"}) is True
+    )
+    # A system file is read unless UV_NO_SYSTEM_CONFIG.
+    system = tmp_path / "sys"
+    (system / "uv").mkdir(parents = True)
+    (system / "uv" / "uv.toml").write_text("[[index]]\nurl = 'x'\n", encoding = "utf-8")
+    assert wr._managed_route_host({"ProgramData": str(system)}) is False
+    assert wr._managed_route_host({"ProgramData": str(system), "UV_NO_SYSTEM_CONFIG": "1"}) is True
+
+
 def test_the_mirror_gate_matches_install_ps1():
     install = (Path(__file__).resolve().parents[3] / "install.ps1").read_text(encoding = "utf-8")
     body = re.search(r"function Test-PypiUnslothAdmitsTorch \{.*?\n    \}", install, re.S).group(0)

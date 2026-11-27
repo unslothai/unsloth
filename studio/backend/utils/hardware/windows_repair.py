@@ -100,9 +100,14 @@ _UV_INDEX_LINE = re.compile(
 
 
 def _uv_config_files(environ) -> list[str]:
-    files = []
+    """The uv config files install.ps1's Test-MirrorConfigured reads, in its precedence: UV_CONFIG_FILE alone
+    (even with UV_NO_CONFIG), else none under UV_NO_CONFIG, else the user file plus the system one unless
+    UV_NO_SYSTEM_CONFIG. Its project discovery walks the installer's working directory, unknown here."""
     if environ.get("UV_CONFIG_FILE"):
-        files.append(environ["UV_CONFIG_FILE"])
+        return [environ["UV_CONFIG_FILE"]]
+    if str(environ.get("UV_NO_CONFIG", "")).strip().lower() in _UV_TRUE:
+        return []
+    files = []
     if environ.get("APPDATA"):
         files.append(os.path.join(environ["APPDATA"], "uv", "uv.toml"))
     if (
