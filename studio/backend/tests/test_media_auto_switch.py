@@ -127,7 +127,7 @@ def _clean_index():
 def catalog(monkeypatch):
     """An empty local-model catalog the tests fill, with the task read off each row."""
     rows: list = []
-    monkeypatch.setattr(models_route, "collect_local_models", lambda root: list(rows))
+    monkeypatch.setattr(models_route, "collect_local_models", lambda root, **kwargs: list(rows))
     monkeypatch.setattr(models_route, "_local_model_task", lambda info: info.task)
     return rows
 
@@ -2751,3 +2751,26 @@ def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
     with pytest.raises(HTTPException) as excinfo:
         _switch("unsloth/not-a-model")
     assert excinfo.value.status_code == 404
+
+
+
+def test_scan_folder_retains_the_native_media_alias(tmp_path, monkeypatch):
+    from hub.services.models import local_inventory
+
+    native = tmp_path / "omlx"
+    checkpoint = native / "publisher" / "FLUX.1-dev"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "config.json").write_text("{}")
+    (checkpoint / "flux1-dev.safetensors").write_bytes(b"weights")
+    empty = tmp_path / "empty"
+    roots = local_inventory._LocalInventorySources(
+        empty, empty, empty, (), (), (), (), omlx_dirs = (native,)
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: roots)
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders", lambda: [{"path": str(checkpoint)}]
+    )
+    monkeypatch.chdir(tmp_path)
+    pick = mas.resolve_local_media_model("publisher/FLUX.1-dev", task = mas.IMAGE_TASK)
+    assert pick is not None
+    assert pick.model_path == str(checkpoint)

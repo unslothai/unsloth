@@ -277,11 +277,25 @@ def _pull_is_incomplete(info) -> bool:
 @in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
+    from hub.utils.gguf import local_path_physical_identity
     from routes.models import _local_model_task, collect_local_models
 
     index: dict[str, MediaModelPick] = {}
     try:
-        candidates = collect_local_models(Path("./models").resolve())
+        folded = []
+        candidates = collect_local_models(Path("./models").resolve(), folded = folded)
+        if folded:
+            custom_paths = {
+                (local_path_physical_identity(row.path), row.model_format): row.path
+                for row in candidates
+                if row.source == "custom"
+            }
+            for row in folded:
+                if row.source not in ("lmstudio", "omlx") or not row.model_id:
+                    continue
+                path = custom_paths.get((local_path_physical_identity(row.path), row.model_format))
+                if path is not None:
+                    candidates.append(row.model_copy(update = {"path": path}))
     except Exception as exc:  # noqa: BLE001 -- a failed scan must not 500 the generation
         logger.debug("media auto-switch: local model scan failed: %s", exc)
         return index

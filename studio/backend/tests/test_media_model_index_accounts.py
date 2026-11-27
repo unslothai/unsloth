@@ -93,7 +93,7 @@ def test_the_owner_still_gets_one_cached_scan(home, monkeypatch):
     monkeypatch.setattr(
         models_route,
         "collect_local_models",
-        lambda root: (scans.append(root), real(root))[1],
+        lambda root, **kwargs: (scans.append(root), real(root, **kwargs))[1],
     )
 
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["owner-flux"]
