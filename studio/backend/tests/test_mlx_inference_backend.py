@@ -8895,6 +8895,141 @@ def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeyp
     assert "changed while counting" in str(excinfo.value.detail)
 
 
+class _NeedsUserTurnBackend(_RenderRecordingBackend):
+    """Qwen3.5's template: raises 'No user query found' for a chat with no user turn."""
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        if not any(m.get("role") == "user" for m in messages):
+            raise RuntimeError("No user query found in messages.")
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        return 10 + len(messages), "mlx/model"
+
+
+@pytest.mark.parametrize("backend_type", [_NeedsUserTurnBackend, _RenderRecordingBackend])
+def test_an_mlx_count_prices_a_chat_of_instructions_alone_as_its_next_send(
+    monkeypatch, backend_type
+):
+    """Whether or not the template renders it without a user turn, so no template flips the rule."""
+    backend = backend_type()
+    served = _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "system", "content": "Be brief."}],
+        enable_tools = False,
+    )
+    assert served.status_code == 200
+    assert backend.messages == [{"role": "user", "content": ""}]
+    assert backend.system == "Be brief."
+
+
+def test_an_mlx_count_prices_an_assistant_only_chat_as_sent(monkeypatch):
+    """The completion serves it, so the count must price the prompt generation reports."""
+    from fastapi import HTTPException
+
+    chat = [{"role": "system", "content": "Be brief."}, {"role": "assistant", "content": "Hi."}]
+    backend = _RenderRecordingBackend()
+    _count_route(monkeypatch, backend, messages = chat, enable_tools = False)
+    assert backend.messages == [{"role": "assistant", "content": "Hi."}]
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(monkeypatch, _NeedsUserTurnBackend(), messages = chat, enable_tools = False)
+    assert excinfo.value.status_code == 503, "generation fails on it too"
+
+
+class _PricedPartsBackend(_RenderRecordingBackend):
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        super().count_chat_tokens(messages, system_prompt, **kwargs)
+        self.seen = [*getattr(self, "seen", []), (messages, bool(kwargs.get("tools")))]
+        return len(system_prompt) + 100 * len(kwargs.get("tools") or ()) + 3 * len(messages), "m"
+
+
+def test_an_mlx_breakdown_of_instructions_alone_prices_the_same_conversation_in_every_part(
+    monkeypatch,
+):
+    backend = _PricedPartsBackend()
+    tool = {"type": "function", "function": {"name": "mine", "parameters": {}}}
+    served = _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "system", "content": "Be brief."}],
+        tools = [tool],
+        enable_tools = False,
+        breakdown = True,
+    )
+    body = json.loads(served.body)
+    assert body["breakdown"]["tools"] == 100
+    assert body["breakdown"]["messages"] == 0, "no history of its own to price"
+    assert body["breakdown"]["system"] == body["input_tokens"] - 100
+    assert [tools for _, tools in backend.seen] == [True, False]
+    assert all(messages[-1] == {"role": "user", "content": ""} for messages, _ in backend.seen)
+
+
+def test_an_mlx_count_that_fails_is_not_retried_on_another_conversation(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _NeedsUserTurnBackend()
+    calls = []
+
+    def _broken(
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        calls.append(messages)
+        raise RuntimeError("worker timed out")
+
+    backend.count_chat_tokens = _broken
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(
+            monkeypatch,
+            backend,
+            messages = [{"role": "system", "content": "Be brief."}],
+            enable_tools = False,
+        )
+    assert excinfo.value.status_code == 503
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "entry, detail",
+    [
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "csm"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": True, "is_audio": True, "audio_type": "whisper"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        (
+            {"is_mlx": False, "is_audio": True, "audio_type": "snac"},
+            "Token counting is not available for speech or transcription models.",
+        ),
+        ({"is_mlx": False}, "Token counting is not available on the transformers backend."),
+    ],
+    ids = ["mlx_tts", "mlx_whisper", "transformers_tts", "transformers_chat"],
+)
+def test_a_resident_model_that_cannot_count_is_named_not_reported_unloaded(
+    monkeypatch, entry, detail
+):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        _count_hi(monkeypatch, _RenderRecordingBackend(), models = {"mlx/model": entry})
+    assert excinfo.value.status_code == 503
+    assert excinfo.value.detail == detail
+    assert not excinfo.value.headers, "no not_loaded problem code for a loaded model"
+
+
 def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monkeypatch):
     """Everything between admission and the tokenizer awaits, so a chat starting in the gap
     would wait behind this count for the orchestrator lock. GGUF re-checks; this must too."""

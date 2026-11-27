@@ -46055,14 +46055,27 @@ class LlamaCppBackend:
                         pass
                     return None, False
 
-                # Qwen3.5+ templates raise on an empty render; retry behind an empty user turn.
-                renders_empty = not template_messages or (
-                    len(template_messages) == 1
-                    and isinstance(template_messages[0], dict)
-                    and template_messages[0].get("role") == "assistant"
+                # Qwen3.5+ refuse an empty chat (stock: any without a user turn); retry behind one.
+                lead = 0
+                while (
+                    lead < len(template_messages)
+                    and isinstance(template_messages[lead], dict)
+                    and template_messages[lead].get("role") in ("system", "developer")
+                ):
+                    lead += 1
+                rest = template_messages[lead:]
+                renders_empty = not rest or (
+                    len(rest) == 1
+                    and isinstance(rest[0], dict)
+                    and rest[0].get("role") == "assistant"
                 )
-                with_user_turn = [{"role": "user", "content": ""}] + template_messages
-                if renders_empty and self._empty_chat_render_refused:
+                with_user_turn = [
+                    *template_messages[:lead],
+                    {"role": "user", "content": ""},
+                    *rest,
+                ]
+                # The memo is an empty chat's refusal; instructions alone are tried as sent first.
+                if renders_empty and not lead and self._empty_chat_render_refused:
                     count, _refused = _render_count(with_user_turn)
                 else:
                     count, _refused = _render_count(template_messages)
@@ -46070,7 +46083,7 @@ class LlamaCppBackend:
                         if should_abort is not None and should_abort():
                             raise CountAborted()
                         count, _ = _render_count(with_user_turn)
-                        if count is not None:
+                        if count is not None and not lead:
                             self._empty_chat_render_refused = True
                 if count is not None:
                     _count_memo_put(self, memo_key, count)
