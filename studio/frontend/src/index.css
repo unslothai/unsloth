@@ -5350,7 +5350,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-run-settings > * {
 	flex: 1 0 auto;
 }
-.composer-run-settings :has(+ [data-pinned-footer]) {
+/* The row above the footer is marked in TSX, not found with `:has(+ [data-pinned-footer])`: a bare
+   :has() is matched against every element, which marks every parent as having children styled by
+   their siblings, so inserting any child restyles the parent's whole subtree (the whole page for
+   <body>, on every modal open and close, once KaTeX's MathML is on the page). */
+.composer-run-settings [data-pinned-footer-above] {
 	margin-bottom: calc(20px * var(--ui-space-scale, 1));
 }
 .composer-run-settings [data-pinned-footer] {
@@ -5715,7 +5719,8 @@ html.dark .translate-page .hub-tab-toggle-pill {
 		flex-basis: 100%;
 	}
 
-	.browser-web-toolbar > form ~ div {
+	/* A class, not `form ~ div`: a sibling combinator ending in a bare tag is matched against every div. */
+	.browser-web-toolbar > .browser-web-toolbar-trailing {
 		margin-inline-start: auto;
 	}
 }
