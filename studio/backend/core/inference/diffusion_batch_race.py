@@ -436,6 +436,7 @@ def run_race(
     repeats: int = 5,
     accuracy: bool = True,
     allowed_sizes: Optional[Callable[[int], bool]] = None,
+    layout: Any = None,
     seed: int = 0,
     persist: bool = True,
     clock: Callable[[], float] = time.perf_counter,
@@ -481,6 +482,8 @@ def run_race(
         with (
             cuda_graph.batch_rows(len(prompts), capture = capture),
             _graphs_bypassed(handles) if eager else _nullctx(),
+            # generate() re-arms the graphs before every chunk; this scope keeps them bypassed through it.
+            cuda_graph.forced_eager() if eager else _nullctx(),
         ):
             out = generate(
                 prompt = prompts[0],
@@ -526,7 +529,14 @@ def run_race(
                     samples[arm].append((serial_times, times[arm]))
             verdicts = {arm: judge(samples[arm], seed = seed) for arm in arms}
             best = max(arms, key = lambda arm: verdicts[arm]["speedup_lb"])
-            verdict = dict(verdicts[best], arm = best, arms = verdicts, size = size, t = time.time())
+            verdict = dict(
+                verdicts[best],
+                arm = best,
+                arms = verdicts,
+                size = size,
+                layout = layout_token(layout),
+                t = time.time(),
+            )
             if accuracy:
                 verdict.update(
                     _neighbour_check(solo, batch, prompts, seeds, eager = best == "batched_eager")
@@ -535,6 +545,20 @@ def run_race(
             report["sizes"][str(size)] = {"aborted": "a request started waiting for the slot"}
             report["aborted"] = True
             break
+        except Exception as exc:  # noqa: BLE001 - only a capacity failure is a verdict; anything else raises
+            if not _capacity_failure(exc):
+                raise
+            # A loss with its reason; the traceback would pin the failed call's tensors through the smaller sizes.
+            reason = f"out of memory at batch {size}: {str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__}"
+            exc.__traceback__ = None
+            del exc
+            verdict = {
+                "promoted": False,
+                "failed": reason,
+                "size": size,
+                "layout": layout_token(layout),
+                "t": time.time(),
+            }
         report["sizes"][str(size)] = verdict
         if not verdict.get("promoted") or verdict.get("arm") == "batched_eager":
             # A losing size never runs batched here, and an eager-won size must not replay the graphs the race
@@ -549,9 +573,41 @@ def run_race(
                     except Exception:  # noqa: BLE001
                         pass
             verdict["batched_graphs_dropped"] = dropped
+        if verdict.get("failed"):
+            _release_cached()  # after the drop, so the batched pool's blocks go back too
         if persist:
             verdict["persisted"] = record(state, width, height, guidance, size, verdict, steps)
     return report
+
+
+def _capacity_failure(exc: BaseException) -> bool:
+    """CUDA / MPS out of memory or a unified-memory refusal: the size does not fit this card, a verdict, not a bug."""
+    try:
+        from .diffusion_batched import is_oom_error
+        if is_oom_error(exc):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from .diffusion_memory import unified_memory_refusal_code
+        if unified_memory_refusal_code(exc) is not None:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
+
+
+def _release_cached() -> None:
+    try:
+        import gc
+
+        gc.collect()
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @contextmanager
@@ -601,13 +657,36 @@ def batched_graph_sizes(state: Any) -> Optional[set]:
     return held or set()
 
 
-def effective_verdict(verdict: dict, size: int, state: Any) -> dict:
+def layout_token(layout: Any) -> Optional[str]:
+    """A persistable token for a prompt layout key (coalesce_prompt_key: token bucket, chunk count), None if unknown."""
+    if layout is None:
+        return None
+    try:
+        import json
+        return json.dumps(layout, sort_keys = True, default = str)
+    except Exception:  # noqa: BLE001
+        return repr(layout)
+
+
+def effective_verdict(
+    verdict: dict,
+    size: int,
+    state: Any,
+    layout: Any = None,
+) -> dict:
     """The verdict as it applies now: one won on the graphed arm holds only while that batch-size graph exists (user
-    calls never record one); otherwise the size is admitted only if the eager arm passed on its own."""
+    calls never record one) and for the prompt layout it was raced at (graphs key on tensor shapes, so another T5
+    bucket has no graph at the same canvas); otherwise the size is admitted only if the eager arm passed on its own.
+    An unknown ``layout`` cannot establish a matching graph."""
     if not isinstance(verdict, dict) or verdict.get("arm") != "batched":
         return verdict
     held = batched_graph_sizes(state)
-    if held is None or int(size) in held:
+    if held is None:
+        return verdict  # no graphs on this load: the graphed arm ran eager too
+    same_layout = verdict.get("layout") is not None and layout_token(layout) == verdict.get(
+        "layout"
+    )
+    if int(size) in held and same_layout:
         return verdict
     eager = (verdict.get("arms") or {}).get("batched_eager")
     if isinstance(eager, dict):

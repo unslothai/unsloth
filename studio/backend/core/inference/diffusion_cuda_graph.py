@@ -80,6 +80,26 @@ def current_batch_rows() -> Optional[tuple]:
     return _BATCH_ROWS.get()
 
 
+_FORCED_EAGER: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "unsloth_graph_forced_eager", default = False
+)
+
+
+@contextlib.contextmanager
+def forced_eager():
+    """Every graph handle runs eager in this context, whatever a caller's ``set_bypass(False)`` says (the batch race's
+    eager arm: generate() re-arms the graphs before each chunk)."""
+    token = _FORCED_EAGER.set(True)
+    try:
+        yield
+    finally:
+        _FORCED_EAGER.reset(token)
+
+
+def eager_forced() -> bool:
+    return bool(_FORCED_EAGER.get())
+
+
 def _batch_pool_budget_bytes() -> Optional[int]:
     raw = (os.environ.get(BATCH_GRAPH_POOL_ENV) or "").strip()
     if not raw:
@@ -2000,6 +2020,7 @@ class GraphedForward:
             not self.enabled
             or _bg_eager_forced()
             or self.bypassed
+            or _FORCED_EAGER.get()
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
             or getattr(self.module, "_unsloth_step_cache", None)
@@ -3462,7 +3483,8 @@ def seal_lengths(handles: Any) -> None:
 
 
 def set_bypass(handles: Any, on: bool) -> None:
-    """Run eager without dropping graphs, for every handle."""
+    """Run eager without dropping graphs, for every handle; inside ``forced_eager`` they stay bypassed."""
+    on = bool(on) or eager_forced()
     for handle in handles or ():
         try:
             handle.set_bypass(on)

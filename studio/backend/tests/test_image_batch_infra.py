@@ -933,11 +933,13 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
     graphed_win = {
         "promoted": True,
         "arm": "batched",
+        "layout": race.layout_token(()),
         "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
     }
     both_win = {
         "promoted": True,
         "arm": "batched",
+        "layout": race.layout_token(()),
         "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": True}},
     }
     handle = types.SimpleNamespace(cache = {"k2": object()}, _batched = {"k2": 2})
@@ -945,7 +947,7 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
     without = types.SimpleNamespace(
         cuda_graphs = (types.SimpleNamespace(cache = {"k1": 1}, _batched = {}),)
     )
-    assert race.effective_verdict(graphed_win, 2, with_graph)["promoted"] is True
+    assert race.effective_verdict(graphed_win, 2, with_graph, layout = ())["promoted"] is True
     assert race.effective_verdict(graphed_win, 2, without)["promoted"] is False
     assert race.effective_verdict(both_win, 2, without)["promoted"] is True
     assert not race.seeded_join_ok(
@@ -1019,3 +1021,124 @@ def test_a_static_compile_limits_the_race_on_a_resident_or_graphed_load(monkeypa
         engine.batch_race(width = 512, height = 512)
         allowed = seen["allowed_sizes"]
         assert allowed is not None and allowed(2) and not allowed(4)
+
+
+def test_the_eager_arm_holds_a_forced_eager_scope_through_generate(monkeypatch):
+    """The per-chunk set_bypass(False) in generate() cannot undo it: the arm runs under cuda_graph.forced_eager()."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    seen = []
+    handle = types.SimpleNamespace(set_bypass = lambda on: None, drop_batched = lambda size: 0)
+    generate, clock, _ = _fake_generate(lambda rows: 1.0)
+
+    def recording(**kw):
+        seen.append((len(kw.get("prompts") or [None]), cg.eager_forced()))
+        return generate(**kw)
+
+    race.run_race(
+        recording,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    assert (2, True) in seen and (2, False) in seen and (1, True) not in seen
+    assert cg.eager_forced() is False
+
+
+def test_a_graphed_verdict_holds_only_for_the_prompt_layout_it_was_raced_at(monkeypatch):
+    """A FLUX.1 prompt in another T5 bucket runs the same canvas through other shapes: no graph of the race's layout
+    serves it, so only the eager arm's verdict applies there (and when the layout is unknown)."""
+    graphed_win = {
+        "promoted": True,
+        "arm": "batched",
+        "layout": race.layout_token(("t5", 256)),
+        "arms": {"batched": {"promoted": True}, "batched_eager": {"promoted": False}},
+    }
+    handle = types.SimpleNamespace(cache = {"k2": object()}, _batched = {"k2": 2})
+    state = types.SimpleNamespace(cuda_graphs = (handle,))
+    assert race.effective_verdict(graphed_win, 2, state, layout = ("t5", 256))["promoted"] is True
+    assert race.effective_verdict(graphed_win, 2, state, layout = ("t5", 512))["promoted"] is False
+    assert race.effective_verdict(graphed_win, 2, state)["promoted"] is False
+    # The engine threads the request's layout through to the verdict.
+    _verdicts(monkeypatch, {2: graphed_win})
+    engine = _engine(cuda_graphs = (handle,))
+    assert engine.coalesce_batch_sizes(1024, 1024, 4.0, layout = ("t5", 256)) == frozenset({2})
+    assert engine.coalesce_batch_sizes(1024, 1024, 4.0, layout = ("t5", 512)) == frozenset()
+
+
+def test_the_race_records_the_layout_of_its_prompts(monkeypatch):
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 if rows == 1 else 0.4 * rows)
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = ()),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        accuracy = False,
+        layout = ("t5", 256),
+        clock = lambda: clock["t"],
+    )
+    assert report["sizes"]["2"]["layout"] == race.layout_token(("t5", 256))
+
+
+def test_an_out_of_memory_size_is_a_persisted_loss_and_the_race_goes_on(monkeypatch):
+    stored = {}
+    monkeypatch.setattr(
+        race,
+        "record",
+        lambda state, w, h, g, size, verdict, steps = None: stored.update({size: verdict}) or True,
+    )
+    dropped = []
+    handle = types.SimpleNamespace(
+        set_bypass = lambda on: None, drop_batched = lambda size: dropped.append(size) or 1
+    )
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 if rows == 1 else 0.4 * rows)
+
+    def oom_at_four(**kw):
+        if len(kw.get("prompts") or [None]) == 4:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return generate(**kw)
+
+    report = race.run_race(
+        oom_at_four,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2, 4),
+        repeats = 3,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    four = report["sizes"]["4"]
+    assert four["promoted"] is False and "out of memory" in four["failed"]
+    assert stored[4]["promoted"] is False and 4 in dropped
+    assert "2" in report["sizes"] and stored[2]["promoted"] is True
+
+
+def test_a_failure_that_is_not_capacity_still_raises(monkeypatch):
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+
+    def broken(**kw):
+        raise KeyError("bug")
+
+    with pytest.raises(KeyError):
+        race.run_race(
+            broken,
+            types.SimpleNamespace(cuda_graphs = ()),
+            idle = lambda: True,
+            width = 512,
+            height = 512,
+            sizes = (2,),
+            repeats = 3,
+            accuracy = False,
+        )

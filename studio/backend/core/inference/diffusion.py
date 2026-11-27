@@ -5230,6 +5230,7 @@ def _measured_sizes(
     height: Any,
     guidance: Optional[float],
     steps: Optional[int] = None,
+    layout: Any = None,
 ) -> dict[int, dict]:
     from . import diffusion_batch_race
     from .image_request_batching import batch_max
@@ -5237,7 +5238,10 @@ def _measured_sizes(
         found = diffusion_batch_race.lookup(
             state, width, height, guidance, range(2, batch_max() + 1), steps = steps
         )
-        return {k: diffusion_batch_race.effective_verdict(v, k, state) for k, v in found.items()}
+        return {
+            k: diffusion_batch_race.effective_verdict(v, k, state, layout = layout)
+            for k, v in found.items()
+        }
     except Exception:  # noqa: BLE001 - no verdict: today's rules
         return {}
 
@@ -18420,9 +18424,11 @@ class DiffusionBackend:
         height: int,
         guidance: Optional[float] = None,
         steps: Optional[int] = None,
+        layout: Any = None,
     ) -> Optional[frozenset]:
         """Allowed batch sizes at this shape: None = any, empty = none; static compile offers only already-compiled sizes.
-        A race verdict at this shape refines it: a measured loser is dropped, a measured winner is offered."""
+        A race verdict at this shape refines it: a measured loser is dropped, a measured winner is offered. ``layout``:
+        the request's prompt layout key (coalesce_plan), which a verdict won by graph replay must match."""
         policy = self.request_batching()
         state = self._state
         if policy is None or policy["mode"] == "serial":
@@ -18430,7 +18436,7 @@ class DiffusionBackend:
         if _step_cache_couples_rows(state, steps):
             # An AUTO cache engages FBCache at this step count: its skip decision would couple the rows.
             return frozenset()
-        measured = _measured_sizes(state, width, height, guidance, steps)
+        measured = _measured_sizes(state, width, height, guidance, steps, layout)
         winners = frozenset(k for k, v in measured.items() if v.get("promoted"))
         losers = frozenset(k for k, v in measured.items() if not v.get("promoted"))
         if policy["mode"] == "measured":
@@ -18452,6 +18458,7 @@ class DiffusionBackend:
         guidance: Optional[float],
         images: int,
         steps: Optional[int] = None,
+        layout: Any = None,
     ) -> bool:
         """Whether an explicitly seeded request may share a call: the measured path at this shape is neighbour-exact
         and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join. A load that
@@ -18462,12 +18469,12 @@ class DiffusionBackend:
         from . import diffusion_batch_race
         from .image_request_batching import batch_max
 
-        admitted = self.coalesce_batch_sizes(width, height, guidance, steps)
+        admitted = self.coalesce_batch_sizes(width, height, guidance, steps, layout)
         sizes = set(range(2, batch_max() + 1)) if admitted is None else set(admitted)
         sizes = {k for k in sizes if k > int(images or 1)}
         if not sizes:
             return False
-        measured = _measured_sizes(state, width, height, guidance, steps)
+        measured = _measured_sizes(state, width, height, guidance, steps, layout)
         return all(diffusion_batch_race.seeded_join_ok(measured.get(k)) for k in sizes)
 
     def batch_race(
@@ -18527,6 +18534,17 @@ class DiffusionBackend:
             shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
             compiled = {int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims}
             allowed = compiled.__contains__
+        # The race prompts' layout key: a verdict won by graph replay holds only for requests in the same layout.
+        layout = None
+        try:
+            keys = [
+                coalesce_prompt_key(state.family, state.pipe, p)
+                for p in diffusion_batch_race.RACE_PROMPTS[: max([2, *(int(k) for k in sizes)])]
+            ]
+            if keys and keys[0] is not None and all(k == keys[0] for k in keys):
+                layout = keys[0]
+        except Exception:  # noqa: BLE001 - unknown layout: a graphed verdict then admits nothing
+            layout = None
         return diffusion_batch_race.run_race(
             self.generate,
             state,
@@ -18539,6 +18557,7 @@ class DiffusionBackend:
             repeats = repeats,
             accuracy = accuracy,
             allowed_sizes = allowed,
+            layout = layout,
         )
 
     @contextmanager

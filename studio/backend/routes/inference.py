@@ -56254,6 +56254,9 @@ async def _coalesced_image_generate(
         shape_kwargs["guidance"] = generate_kwargs.get("guidance")
     if sizes_of is not None and _callable_takes(sizes_of, "steps"):
         shape_kwargs["steps"] = generate_kwargs.get("steps")
+    if sizes_of is not None and _callable_takes(sizes_of, "layout"):
+        # A verdict won by graph replay holds only for the prompt layout it was raced at.
+        shape_kwargs["layout"] = prompt_key
 
     def fits(total: int) -> bool:
         if sizes_of is None:
@@ -56283,6 +56286,7 @@ async def _coalesced_image_generate(
 
     seeded_of = getattr(backend, "coalesce_seeded_ok", None)
     seeded_steps = seeded_of is not None and _callable_takes(seeded_of, "steps")
+    seeded_layout = seeded_of is not None and _callable_takes(seeded_of, "layout")
 
     def seeded_ok() -> bool:
         if seeded_of is None:
@@ -56295,6 +56299,7 @@ async def _coalesced_image_generate(
                     generate_kwargs.get("guidance"),
                     n,
                     **({"steps": generate_kwargs.get("steps")} if seeded_steps else {}),
+                    **({"layout": prompt_key} if seeded_layout else {}),
                 )
             )
         except Exception:  # noqa: BLE001 -- unknown: a seeded request renders alone
