@@ -5556,7 +5556,23 @@ def unsloth_save_pretrained_gguf(
             original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
                 self.config, "_name_or_path", None
             )
-            if _gguf_reuses_loaded_checkpoint(self, state_dict):
+            from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+            if is_gguf_packed_model(self):
+                # Packed GGUF linears are uint8 blocks to save_pretrained: the converter reads the dequantized
+                # (and any merged) weights instead.
+                print("Unsloth: Model is not a PEFT model. Saving its dequantized GGUF weights...")
+                try:
+                    write_gguf_dense_base(self, save_directory)
+                    if getattr(self, "generation_config", None) is not None:
+                        self.generation_config.save_pretrained(save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to save model: {_describe_exception(e)}"
+                        f"{_offloaded_parameter_hint(self)}"
+                    ) from e
+            elif _gguf_reuses_loaded_checkpoint(self, state_dict):
                 print(
                     f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
                 )
@@ -7642,7 +7658,7 @@ def unsloth_generic_save(
     if not _is_peft:
         if _defer_to_main_process(is_main_process):
             return
-        from .models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+        from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
 
         if is_gguf_packed_model(model):
             # GGUF blocks are not a checkpoint transformers reads: write the dequantized (and any merged) weights.
@@ -7838,7 +7854,7 @@ def unsloth_generic_save(
                 "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
                 "locally with `save_pretrained_merged` and upload that folder."
             )
-        from .models.gguf_packed import gguf_dense_base_for_merge
+        from unsloth.models.gguf_packed import gguf_dense_base_for_merge
 
         # A packed GGUF base has no 16-bit checkpoint to read: merge onto its dequantized copy.
         _merge_stack = ExitStack()

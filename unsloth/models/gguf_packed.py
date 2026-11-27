@@ -974,6 +974,8 @@ def _drop_gguf_quantizer(model):
 
 def is_gguf_packed_model(model):
     """Whether any Linear or expert stack of `model` (PEFT-wrapped or not) still holds GGUF blocks."""
+    if not isinstance(model, nn.Module):
+        return False
     return any(
         isinstance(module, UnslothGGUFLinear)
         or any(getattr(p, "packed_format", None) == "gguf" for p in module._parameters.values())

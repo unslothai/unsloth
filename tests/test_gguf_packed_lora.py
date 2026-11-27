@@ -83,6 +83,7 @@ def test_packed_linear_forward_backward_match_dense(name):
 
 
 def test_input_permutation_is_the_dense_column_reorder():
+    torch.manual_seed(0)
     permutation = torch.randperm(256)
     module, dense = _pair("Q4_K", permutation = permutation)
     x = torch.randn(4, 256)
@@ -90,7 +91,8 @@ def test_input_permutation_is_the_dense_column_reorder():
     blocks = ref.dequantize_gguf(
         module.weight_packed, module.ggml_type, module.shape, torch.float32
     )
-    assert torch.allclose(module(x), x[:, permutation] @ blocks.t(), atol = 1e-5)
+    # Same sums in another order: equal up to float32 rounding.
+    torch.testing.assert_close(module(x), x[:, permutation] @ blocks.t(), rtol = 1e-5, atol = 1e-4)
     assert torch.equal(module(x), dense(x))
 
 
@@ -471,6 +473,70 @@ def test_merged_16bit_save_of_an_unwrapped_packed_model(tmp_path):
     got = reloaded.state_dict()
     assert set(got) == set(want)
     for key, value in got.items():
+        assert torch.equal(value, want[key]), key
+
+
+def test_gguf_export_of_an_unwrapped_packed_model(tmp_path, monkeypatch):
+    # save_pretrained_gguf on a non-PEFT packed model hands the converter dequantized weights, not uint8 blocks.
+    _new_gguf_path()
+    from transformers import AutoModelForCausalLM
+
+    try:
+        import unsloth.save as save_mod
+    except Exception as exc:
+        pytest.skip(f"unsloth.save does not import here: {exc}")
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.float32,
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    import copy
+
+    want = copy.deepcopy(packed)
+    gp.densify_gguf_packed_model(want)
+    want = want.state_dict()
+    seen = {}
+
+    def _save_to_gguf(**kwargs):
+        from safetensors.torch import load_file
+
+        folder = kwargs.get("model_directory") or kwargs.get("save_directory")
+        tensors = {}
+        for name in os.listdir(folder):
+            if name.endswith(".safetensors"):
+                tensors.update(load_file(os.path.join(folder, name)))
+        seen.update(tensors)
+        output = tmp_path / "out_gguf" / "model.Q8_0.gguf"
+        output.parent.mkdir(exist_ok = True)
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _t: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_a, **_kw: None)
+    monkeypatch.setattr(save_mod, "_preflight_gguf_disk", lambda **kw: (kw["save_directory"], True))
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_a, **_kw: None)
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    class _Tokenizer:
+        bos_token_id = 1
+        chat_template = None
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[self.bos_token_id, 7]]}
+
+        def save_pretrained(self, path):
+            pass
+
+    save_mod.unsloth_save_pretrained_gguf(
+        packed, str(tmp_path / "out"), tokenizer = _Tokenizer(), quantization_method = "q8_0"
+    )
+    assert seen and not [k for k in seen if "weight_packed" in k]
+    for key, value in seen.items():
         assert torch.equal(value, want[key]), key
 
 
