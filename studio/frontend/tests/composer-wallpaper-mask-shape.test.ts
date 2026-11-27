@@ -50,7 +50,6 @@ test("the composer box variables do not inherit, so a resize frame restyles the 
       new RegExp(`@property --thread-composer-${name} \\{\\s*syntax: "\\*";\\s*inherits: false;\\s*\\}`),
     );
   }
-  // Per-frame values are read directly: a derived unregistered copy on the viewport would inherit again.
   assert.doesNotMatch(rule, /--(clip|below):/);
 });
 

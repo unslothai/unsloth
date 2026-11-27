@@ -6984,10 +6984,7 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-position: 0 0, right;
   mask-repeat: no-repeat;
 }
-/* The composer dock writes these on the viewport on every resize frame (composer easing, sidebar,
-   panels). Unregistered, they would inherit, and each write would restyle every message row;
-   inherits:false keeps it to the viewport, their only reader (the mask below). Unset still takes the
-   var(..., 0px) fallback. Engines without @property keep the inherited behaviour. */
+/* Non-inheriting so per-frame dock writes restyle only the viewport, not every message. */
 @property --thread-composer-clip {
 	syntax: "*";
 	inherits: false;

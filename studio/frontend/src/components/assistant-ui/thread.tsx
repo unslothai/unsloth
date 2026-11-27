@@ -1888,8 +1888,7 @@ const COMPOSER_SCROLL_GAP_PX = 8;
 // The scroll-to-bottom row follows the spacer in flow; 28px until it renders.
 const SCROLL_BUTTON_ROW_PX = 28;
 const SCROLL_BUTTON_GAP_PX = 14;
-// Written on the viewport (the mask reads them there) and registered inherits:false in index.css:
-// on an ancestor they would restyle every message on each composer resize frame.
+// Set on the viewport (inherits:false in index.css); on an ancestor every message restyles per frame.
 const THREAD_COMPOSER_VARS = [
   "--thread-composer-clip",
   "--thread-composer-bottom",
