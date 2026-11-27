@@ -201,6 +201,23 @@ def test_an_explicit_uv_project_config_closes_the_route(monkeypatch, tmp_path, p
     assert wr._managed_route_host({"UV_PROJECT": str(project / "sub"), "UV_NO_CONFIG": "1"}) is True
 
 
+@pytest.mark.parametrize("name", ["UV_WORKING_DIR", "UV_WORKING_DIRECTORY"])
+def test_a_working_directory_override_starts_discovery(monkeypatch, tmp_path, name):
+    # install.ps1's Test-MirrorConfigured walks up from the working-directory override even without
+    # UV_PROJECT, and resolves UV_PROJECT and UV_CONFIG_FILE against it.
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    work = tmp_path / "work"
+    (work / "proj").mkdir(parents = True)
+    (work / "uv.toml").write_text("index-url = 'https://mirror.example/simple'\n", encoding = "utf-8")
+    assert wr._managed_route_host({name: str(work)}) is False
+    assert wr._managed_route_host({name: str(work), "UV_PROJECT": "proj"}) is False
+    assert wr._managed_route_host({name: str(work), "UV_NO_CONFIG": "1"}) is True
+    (work / "clean.toml").write_text("cache-dir = 'D:/uv'\n", encoding = "utf-8")
+    assert wr._managed_route_host({name: str(work), "UV_CONFIG_FILE": "clean.toml"}) is True
+    (work / "mirror.toml").write_text("[[index]]\nurl = 'x'\n", encoding = "utf-8")
+    assert wr._managed_route_host({name: str(work), "UV_CONFIG_FILE": "mirror.toml"}) is False
+
+
 def test_the_mirror_gate_matches_install_ps1():
     install = (Path(__file__).resolve().parents[3] / "install.ps1").read_text(encoding = "utf-8")
     body = re.search(r"function Test-PypiUnslothAdmitsTorch \{.*?\n    \}", install, re.S).group(0)

@@ -102,10 +102,13 @@ _UV_INDEX_LINE = re.compile(
 def _uv_config_files(environ) -> list[str]:
     """The uv config files install.ps1's Test-MirrorConfigured reads, in its precedence: UV_CONFIG_FILE alone
     (even with UV_NO_CONFIG), else none under UV_NO_CONFIG, else the user file plus the system one unless
-    UV_NO_SYSTEM_CONFIG, plus the project UV_PROJECT names. Without UV_PROJECT the installer walks its
-    own working directory, unknown here."""
+    UV_NO_SYSTEM_CONFIG, plus the project found walking up from UV_WORKING_DIR / UV_PROJECT. Relative paths
+    resolve against the working-directory override, as uv's --directory does. With neither override the
+    installer walks its own working directory, unknown here, so no project file is read."""
+    work_dir = environ.get("UV_WORKING_DIR") or environ.get("UV_WORKING_DIRECTORY")
+    base = os.path.abspath(os.path.join(os.getcwd(), work_dir)) if work_dir else os.getcwd()
     if environ.get("UV_CONFIG_FILE"):
-        return [environ["UV_CONFIG_FILE"]]
+        return [os.path.abspath(os.path.join(base, environ["UV_CONFIG_FILE"]))]
     if str(environ.get("UV_NO_CONFIG", "")).strip().lower() in _UV_TRUE:
         return []
     files = []
@@ -116,10 +119,9 @@ def _uv_config_files(environ) -> list[str]:
         and str(environ.get("UV_NO_SYSTEM_CONFIG", "")).strip().lower() not in _UV_TRUE
     ):
         files.append(os.path.join(environ["ProgramData"], "uv", "uv.toml"))
-    # An explicit UV_PROJECT names the project the installer's discovery walks up from.
-    if environ.get("UV_PROJECT"):
-        base = environ.get("UV_WORKING_DIR") or environ.get("UV_WORKING_DIRECTORY") or os.getcwd()
-        directory = os.path.abspath(os.path.join(base, environ["UV_PROJECT"]))
+    # An explicit working directory or project names where the installer's discovery walks up from.
+    if work_dir or environ.get("UV_PROJECT"):
+        directory = os.path.abspath(os.path.join(base, environ.get("UV_PROJECT") or ""))
         while directory:
             if os.path.isfile(os.path.join(directory, "uv.toml")):
                 files.append(os.path.join(directory, "uv.toml"))
