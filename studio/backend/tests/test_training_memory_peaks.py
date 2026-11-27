@@ -288,3 +288,78 @@ def test_worker_sends_peaks_on_progress_and_complete():
     src = inspect.getsource(worker)
     assert src.count('"memory_peaks": _process_memory_peaks()') >= 2
     assert "memory_peaks = _process_memory_peaks()" in src  # MLX progress
+
+
+class _ListQueue:
+    def __init__(self):
+        self.items = []
+        self.closed = False
+
+    def put(
+        self,
+        item,
+        block = True,
+        timeout = None,
+    ):
+        self.items.append(item)
+
+    def close(self):
+        self.closed = True
+
+
+def test_stamping_queue_samples_every_terminal_event(monkeypatch):
+    sample = {**_PEAKS, "host_peak_rss_bytes": 20 * GIB}
+    monkeypatch.setattr(pmp, "process_memory_peaks", lambda: sample)
+    inner = _ListQueue()
+    q = pmp.PeakStampingQueue(inner)
+    q.put({"type": "error", "error": "CUDA out of memory"})
+    q.put({"type": "complete", "output_dir": None})  # the MLX completion path sends no sample
+    q.put({"type": "complete", "memory_peaks": _PEAKS})  # an existing sample is kept
+    q.put({"type": "progress", "step": 1})  # progress samples are taken by the callback
+    q.put({"type": "status", "message": "x"})
+    q.put("not a dict")
+    assert [e.get("memory_peaks") if isinstance(e, dict) else e for e in inner.items] == [
+        sample,
+        sample,
+        _PEAKS,
+        None,
+        None,
+        "not a dict",
+    ]
+    q.close()  # other queue methods pass through
+    assert inner.closed
+
+
+def test_stamping_queue_never_blocks_an_event_on_a_failed_sample(monkeypatch):
+    def boom():
+        raise RuntimeError("no reading")
+
+    monkeypatch.setattr(pmp, "process_memory_peaks", boom)
+    inner = _ListQueue()
+    pmp.PeakStampingQueue(inner).put({"type": "error", "error": "x"})
+    assert inner.items == [{"type": "error", "error": "x"}]
+
+
+def test_error_event_peak_reaches_the_errored_run_record(backend):
+    backend._handle_event(
+        {"type": "progress", "step": 1, "total_steps": 10, "memory_peaks": _PEAKS}
+    )
+    backend._handle_event(
+        {
+            "type": "error",
+            "error": "CUDA out of memory",
+            "memory_peaks": {**_PEAKS, "gpu_peak_reserved_bytes": 79 * GIB},
+        }
+    )
+    assert backend._progress.memory_peaks["gpu_peak_reserved_bytes"] == 79 * GIB
+    backend._finalize_run_in_db(status = "error")
+    assert studio_db.get_run("run-1")["gpu_peak_reserved_bytes"] == 79 * GIB
+
+
+def test_worker_wraps_its_event_queue():
+    import inspect
+
+    import core.training.worker as worker
+
+    src = inspect.getsource(worker.run_training_process)
+    assert "event_queue = _PeakStampingQueue(event_queue)" in src

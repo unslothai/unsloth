@@ -143,3 +143,38 @@ def merge_memory_peaks(current: Optional[dict], incoming: Any) -> Optional[dict]
     for key in (*MEMORY_PEAK_FIELDS, "gpu_device_count"):
         merged.setdefault(key, None)
     return merged
+
+
+# Terminal events: the last chance to record a peak, e.g. the OOM that ends a run or a final save.
+_TERMINAL_EVENT_TYPES = frozenset({"error", "complete"})
+
+
+class PeakStampingQueue:
+    """Wraps the worker's event queue so every terminal event carries a fresh sample.
+
+    Error events are emitted from many places (load failures, OOMs, security refusals) and the MLX
+    completion path sends its own events, so stamping them here keeps every exit covered. Events that
+    already carry ``memory_peaks`` are passed through unchanged.
+    """
+
+    def __init__(self, queue: Any):
+        self._queue = queue
+
+    def put(self, event: Any, *args: Any, **kwargs: Any) -> Any:
+        if (
+            isinstance(event, dict)
+            and event.get("type") in _TERMINAL_EVENT_TYPES
+            and event.get("memory_peaks") is None
+        ):
+            try:
+                peaks = process_memory_peaks()
+            except Exception:
+                peaks = None
+            if peaks is not None:
+                event = {**event, "memory_peaks": peaks}
+        return self._queue.put(event, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "_queue":  # not set yet (e.g. while unpickling): avoid recursing
+            raise AttributeError(name)
+        return getattr(self._queue, name)

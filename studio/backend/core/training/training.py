@@ -3183,7 +3183,7 @@ class TrainingBackend:
             return
 
         with self._lock:
-            if event.get("memory_peaks") and etype in ("progress", "complete"):
+            if event.get("memory_peaks") and etype in ("progress", "complete", "error"):
                 self._progress.memory_peaks = merge_memory_peaks(
                     self._progress.memory_peaks, event["memory_peaks"]
                 )
