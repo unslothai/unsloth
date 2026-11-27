@@ -99,7 +99,9 @@ from core.inference.sd_cpp_args import (
     device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    resolve_sd_cpp_sampling,
     sd_cli_output_paths,
+    sd_cpp_sampler_options,
     without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
@@ -5162,7 +5164,14 @@ class SdCppDiffusionBackend:
         # Interface parity only: the activation guard is diffusers-only.
         allow_oversized: bool = False,
         hires: Any = None,
+        sampler: Optional[str] = None,
+        schedule_type: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Render a native image batch with request-local public sampler/schedule choices.
+
+        Unset choices preserve the loaded model's defaults. Both transports receive the resolved
+        native settings without modifying resident state; the result records the public choices.
+        """
         import tempfile
 
         from PIL import Image
@@ -5246,6 +5255,11 @@ class SdCppDiffusionBackend:
                 # Publish step 0 before slow setup so a reload probe does not read idle.
                 self._gen = _SdGen(total_steps = int(steps))
             try:
+                sampling_method, scheduler, resolved_schedule = resolve_sd_cpp_sampling(
+                    sampler, schedule_type
+                )
+                if sampling_method is None:
+                    sampling_method = state.sampling_method
                 ref_pngs: list[bytes] = []
                 edit_only = bool(getattr(state.family, "edit", False))
                 if edit_only and not conditioned:
@@ -5374,6 +5388,8 @@ class SdCppDiffusionBackend:
                             ref_pngs = ref_pngs,
                             layers = _layer_count(state.family) or None,
                             hires_plan = hires_plan,
+                            sampling_method = sampling_method,
+                            scheduler = scheduler,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -5391,6 +5407,8 @@ class SdCppDiffusionBackend:
                             cancel = cancel,
                             ref_pngs = ref_pngs,
                             layers = _layer_count(state.family) or None,
+                            sampling_method = sampling_method,
+                            scheduler = scheduler,
                         )
                 except RuntimeError as exc:
                     # The mid-render hipBLAS death the video path records too; not a cancellation.
@@ -5437,6 +5455,8 @@ class SdCppDiffusionBackend:
                     "localized_edit": getattr(localized_edit, "mode", None)
                     if conditioned
                     else None,
+                    "sampler": sampler or "default",
+                    "schedule_type": resolved_schedule,
                 }
                 if hires_plan is not None:
                     result["hires"] = diffusion_hires.result_block(hires_plan)
@@ -5524,8 +5544,14 @@ class SdCppDiffusionBackend:
         ref_pngs: Optional[list[bytes]] = None,
         layers: Optional[int] = None,
         hires_plan: Any = None,
+        sampling_method: Optional[str] = None,
+        scheduler: Optional[str] = None,
     ) -> tuple[list, list[int]]:
-        """Chunked at base+offset so per-image seeds reproduce; LoRA goes in the structured lora field, since the sdcpp API ignores lora tags in the prompt."""
+        """Render server batches with request-local native sampling settings and per-image seeds.
+
+        Unset settings preserve the loaded defaults. LoRAs use the structured field because the
+        sd.cpp API ignores prompt tags. Returns decoded images and their corresponding seeds.
+        """
         import io
         import os
         import shutil
@@ -5666,12 +5692,14 @@ class SdCppDiffusionBackend:
                     steps = int(steps),
                     seed = chunk_seed,
                     batch_count = count,
-                    sample_method = state.sampling_method,
-                    scheduler = _request_scheduler(state),
+                    sample_method = sampling_method
+                    if sampling_method is not None
+                    else state.sampling_method,
+                    scheduler = scheduler if scheduler is not None else _request_scheduler(state),
                     flow_shift = _request_flow_shift(state, int(width), int(height)),
                     custom_sigmas = (
                         sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
-                        if state.sample_sigmas
+                        if state.sample_sigmas and scheduler is None
                         else None
                     ),
                     cfg_scale = cfg_scale,
@@ -6036,9 +6064,14 @@ class SdCppDiffusionBackend:
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
         layers: Optional[int] = None,
+        sampling_method: Optional[str] = None,
+        scheduler: Optional[str] = None,
     ) -> tuple[list, list[int]]:
-        """One-shot sd-cli LoRA uses --lora-model-dir plus <lora:ALIAS:w> prompt tags that sd-cli
-        parses out."""
+        """Render CLI images with request-local sampling settings, returning images and seeds.
+
+        Unset settings preserve the load defaults. LoRAs use --lora-model-dir and prompt tags.
+        An explicitly resolved schedule replaces preset sigmas, which would otherwise override it.
+        """
         import tempfile
 
         from PIL import Image
@@ -6052,7 +6085,7 @@ class SdCppDiffusionBackend:
         flow_shift = _request_flow_shift(state, int(width), int(height))
         if flow_shift is not None:
             extra_args += ["--flow-shift", repr(float(flow_shift))]
-        if state.sample_sigmas:
+        if state.sample_sigmas and scheduler is None:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
         extra_sample_args = _request_extra_sample_args(state)
@@ -6097,8 +6130,10 @@ class SdCppDiffusionBackend:
                     cfg_scale = cfg_scale,
                     guidance = flux_guidance,
                     seed = seed_i,
-                    sampling_method = state.sampling_method,
-                    scheduler = _request_scheduler(state),
+                    sampling_method = sampling_method
+                    if sampling_method is not None
+                    else state.sampling_method,
+                    scheduler = scheduler if scheduler is not None else _request_scheduler(state),
                     batch_count = 1,
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
@@ -6336,6 +6371,7 @@ class SdCppDiffusionBackend:
         return {"metal_vae_conv_direct": {"enabled": on, "reason": reason}}
 
     def status(self) -> dict[str, Any]:
+        """Return native load/progress state and the image controls available on a live load."""
         state = self._state
         # A resident sd-server can exit after load; drop stale state so clients reload, not 500 each time.
         if (
@@ -6451,6 +6487,7 @@ class SdCppDiffusionBackend:
             **self._metal_vae_conv_status(state),
             "resolved": state.resolved,
             "engine": "sd_cpp",
+            "samplers": sd_cpp_sampler_options(),
             "supports_lora": lora_reason is None,
             "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
