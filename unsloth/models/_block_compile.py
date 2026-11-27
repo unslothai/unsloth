@@ -1929,11 +1929,55 @@ def _route_sm_count(modules = None):
         module.get_multiprocessor_count = get_multiprocessor_count
 
 
+def _gdn_setup_pending(layer):
+    """The process-wide self-check has not run yet, or this GatedDeltaNet instance is not routed."""
+    gdn = getattr(layer, "linear_attn", None)
+    if gdn is None:
+        return False
+    return _GDN_OP[0] is None or (
+        bool(_GDN_OP[0]) and not gdn.__dict__.get("_unsloth_gdn_routed", False)
+    )
+
+
+def _route_gdn_instance(gdn):
+    """Route one GatedDeltaNet instance like the first one: transformers < 5.23 copies the chunk and
+    conv kernels into the instance at __init__, so a model built before the first routing keeps the
+    raw conv and one built after keeps the raw chunk kernel; each load then trains a different graph."""
+    from ._gdn_op import _causal_depthwise_conv
+
+    scan = gdn.__dict__.get("chunk_gated_delta_rule")
+    if callable(scan) and not getattr(scan, "_unsloth_block_adapter", False):
+        _route_fla_kernel()
+        scan = gdn.__dict__.get("chunk_gated_delta_rule")
+        # The walk finds callers of the kernel fla's module holds now; an earlier walk replaced it there.
+        if (
+            callable(scan)
+            and not getattr(scan, "_unsloth_block_adapter", False)
+            and str(getattr(scan, "__module__", "")).endswith("fla.ops.gated_delta_rule.chunk")
+        ):
+            gdn.__dict__["chunk_gated_delta_rule"] = _gdn_chunk_adapter(scan)
+    _route_causal_conv(gdn)
+    conv = gdn.__dict__.get("causal_conv1d_fn")
+    # Packing's per-instance varlen wrapper must stay outermost: it injects seq_idx the adapter reads.
+    if (
+        callable(conv)
+        and not getattr(conv, "_unsloth_block_adapter", False)
+        and not gdn.__dict__.get("_unsloth_varlen_wrapped", False)
+    ):
+        gdn.__dict__["causal_conv1d_fn"] = _causal_conv1d_adapter(conv, _causal_depthwise_conv)
+    gdn.__dict__["_unsloth_gdn_routed"] = True
+
+
 def _prepare_gdn(layer, hidden_states):
     """Self-check fla's opaque op on this layer's shapes, then point the GatedDeltaNet forward's
-    chunk kernel at the adapter. Runs eagerly, before the first trace."""
+    chunk kernel at the adapter. Runs eagerly, before the first trace; later instances (a second
+    load in the same process) are routed the same way."""
     gdn = getattr(layer, "linear_attn", None)
-    if gdn is None or _GDN_OP[0] is not None:
+    if gdn is None:
+        return
+    if _GDN_OP[0] is not None:
+        if _GDN_OP[0] and not gdn.__dict__.get("_unsloth_gdn_routed", False):
+            _route_gdn_instance(gdn)
         return
     _GDN_OP[0] = False
     try:
@@ -1968,7 +2012,7 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_VARLEN[0] = varlen_ok()
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
-            _route_causal_conv(gdn)
+            _route_gdn_instance(gdn)
     except torch.OutOfMemoryError:
         _GDN_OP[0] = None
         raise
@@ -3083,7 +3127,7 @@ def _wrap(
             return _inline(self, hidden_states, args, kwargs, mode)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
             _experts_outside(self)
-        if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
+        if _gdn_setup_pending(self):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             kwargs = _normalise_mask(self, hidden_states, kwargs)
@@ -3383,7 +3427,7 @@ def _eager_setup_pending(layer):
     return (
         not layer.__dict__.get("_unsloth_block_moe_done", False)
         and layer.__dict__.get("_unsloth_block_moe_may_move", False)
-    ) or (_GDN_OP[0] is None and hasattr(layer, "linear_attn"))
+    ) or _gdn_setup_pending(layer)
 
 
 @torch.compiler.disable
@@ -3391,7 +3435,7 @@ def _eager_setup(layer, hidden_states):
     """Eager first-call setup under an enclosing compile (expert move, GDN self-check): one break, once."""
     if not layer.__dict__.get("_unsloth_block_moe_done", False):
         _experts_outside(layer)
-    if _GDN_OP[0] is None and hasattr(layer, "linear_attn"):
+    if _gdn_setup_pending(layer):
         _prepare_gdn(layer, hidden_states)
 
 
