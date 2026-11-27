@@ -5292,6 +5292,10 @@ def _measured_sizes(
 ) -> dict[int, dict]:
     from . import diffusion_batch_race
     from .image_request_batching import batch_max
+
+    if _race_adapters_active(getattr(state, "pipe", None)):
+        # Verdicts are raced adapter-free and not keyed by adapter set: an adapted load keeps today's rules.
+        return {}
     try:
         found = diffusion_batch_race.lookup(
             state, width, height, guidance, range(2, batch_max() + 1), steps = steps

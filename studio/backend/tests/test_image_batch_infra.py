@@ -283,6 +283,26 @@ def test_seeded_requests_join_only_where_the_path_is_neighbour_and_replay_exact(
     assert engine.coalesce_seeded_ok(1024, 1024, 4.0, 1) is False
 
 
+def test_an_adapted_load_never_consumes_the_adapter_free_verdicts(monkeypatch):
+    _verdicts(
+        monkeypatch,
+        {2: {"promoted": True, "neighbour_exact": True, "replay_exact": True}},
+    )
+    applied = types.SimpleNamespace(_unsloth_loras = [("style", "default", 0.8)])
+    at_load = types.SimpleNamespace(_unsloth_load_lora_specs = (("style", 0.8),))
+    zeroed = types.SimpleNamespace(_unsloth_loras = [("style", "default", 0.0)])
+    assert _engine().coalesce_batch_sizes(1024, 1024, 4.0) == frozenset({2})
+    assert _engine(pipe = zeroed).coalesce_batch_sizes(1024, 1024, 4.0) == frozenset({2})
+    for pipe in (applied, at_load):
+        engine = _engine(pipe = pipe)
+        # Today's rule for a resident load: serial, and no seeded join on the base model's exactness.
+        assert engine.coalesce_batch_sizes(1024, 1024, 4.0) == frozenset()
+        assert engine.coalesce_seeded_ok(1024, 1024, 4.0, 1) is False
+        streamed = _engine(pipe = pipe, offload_policy = "sequential")
+        assert streamed.coalesce_batch_sizes(1024, 1024, 4.0) is None
+        assert streamed.coalesce_seeded_ok(1024, 1024, 4.0, 1) is False
+
+
 def test_a_seeded_request_joins_when_the_engine_says_its_path_is_exact():
     rendering = {"on": True}
     calls = []
