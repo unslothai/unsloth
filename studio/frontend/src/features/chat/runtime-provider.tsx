@@ -51,7 +51,7 @@ import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
-  findLatestUserAudioBase64,
+  hasUncountableChatAudio,
   findLatestUserVideoBase64,
   messagesContainImage,
   resolveProjectId,
@@ -4025,7 +4025,7 @@ function ThreadContextUsageRecount({
         loadedContextLength == null ||
         (!store.loadedIsGguf && !store.loadedIsMlx) ||
         messagesContainImage(messages) ||
-        findLatestUserAudioBase64(messages) ||
+        hasUncountableChatAudio(messages) ||
         findLatestUserVideoBase64(messages) ||
         (!store.loadedIsGguf && messages.some((message) => message.metadata?.custom?.contextTruncation))
       ) return;
@@ -4080,7 +4080,7 @@ function ThreadContextUsageRecount({
     if (
       localWindow != null &&
       !messagesContainImage(messages) &&
-      !findLatestUserAudioBase64(messages) &&
+      !hasUncountableChatAudio(messages) &&
       !findLatestUserVideoBase64(messages)
     ) {
       return;
@@ -4170,7 +4170,7 @@ function ThreadContextUsageRecount({
       !exact &&
       localWindow != null &&
       !messagesContainImage(messages) &&
-      !findLatestUserAudioBase64(messages) &&
+      !hasUncountableChatAudio(messages) &&
       !findLatestUserVideoBase64(messages);
     if (recount && (runActive || queuedPromptPending)) {
       store.setThreadContextUsage(activeThreadId, null);

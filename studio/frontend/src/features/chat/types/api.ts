@@ -629,6 +629,7 @@ export type ProviderCompactionContentPart = {
 export type OpenAIMessageContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string }; studio_replay: true }
   | OpenAIReasoningContentPart
   | OpenAIImageGenerationCallContentPart
   | ProviderCompactionContentPart;
