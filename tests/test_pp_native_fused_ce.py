@@ -259,3 +259,40 @@ def test_lora_head_takes_the_logits_route_and_a_plain_peft_head_fuses():
         assert after[route] - before[route] == 1, (targets, before, after)
         if route == "logits":  # the head adapter trains on this route
             assert any("lm_head.lora_B" in n for n in want[1])
+
+
+class _Scaler:
+    """GradScaler stand-in: the scale the pipeline's _loss_fn multiplies the returned loss by."""
+
+    def __init__(self, scale):
+        self.scale_value = scale
+
+    def get_scale(self):
+        return self.scale_value
+
+
+def test_fused_ce_saves_gradients_at_the_pipeline_loss_scale(monkeypatch):
+    """float16 + GradScaler: the fused CE computes its gradients in the forward, so they must be saved at the
+    step's loss scale (else they underflow before the scaled backward reaches them). The returned loss stays
+    unscaled and the scaled backward gives the scaled gradients, not the scale squared."""
+    from unsloth_zoo.fused_losses import cross_entropy_loss as zoo_ce
+
+    seen = []
+    original = zoo_ce.unsloth_fused_ce_loss
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs.get("scaling"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(zoo_ce, "unsloth_fused_ce_loss", recording)
+    model = build()
+    ids, labels = batch()
+    scale = 2.0**12
+    stage = _stage(model, 37)
+    stage._pp_ctx.loss_scaler = _Scaler(scale)
+    model.zero_grad(set_to_none = True)
+    loss = ppn._PPStageModule._model_stage_forward(stage, ids, {"labels": labels})
+    (loss * scale).backward()  # PipelineParallel._loss_fn: scaler.scale(loss)
+    assert seen == [scale]
+    unscaled = {n: g / scale for n, g in _grads(model).items()}
+    _assert_parity((loss.detach(), unscaled), _reference(model, ids, labels, 37))

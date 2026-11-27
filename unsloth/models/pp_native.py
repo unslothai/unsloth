@@ -1833,6 +1833,9 @@ class _StageContext:
         # The step's token count, given to every stage forward from here rather than as a schedule kwarg:
         # a non-tensor kwarg reaches torch's split backward (zero bubble) as a stage input on torch < 2.13.
         self.num_items_in_batch = None
+        # The step's enabled GradScaler: the last stage's fused CE saves its gradients at this scale (as the loss
+        # the schedule backpropagates is scaled), so float16 gradients do not underflow.
+        self.loss_scaler = None
         # Mixture-of-experts router auxiliary loss carry (_MoEAux), the router logits of the running stage
         # forward, and the last stage's per-micro-batch auxiliary losses of the step.
         self.moe = None
@@ -1973,8 +1976,17 @@ def _fusable_head_weight(head, h):
     return weight
 
 
-def _fused_stage_loss(inner, h, labels, num_items_in_batch):
-    """The causal LM loss of lm_head(h) without materializing the logits, or None when it does not apply."""
+def _fused_stage_loss(
+    inner,
+    h,
+    labels,
+    num_items_in_batch,
+    loss_scaler = None,
+):
+    """The causal LM loss of lm_head(h) without materializing the logits, or None when it does not apply.
+
+    The fused CE computes its gradients in the forward: with an enabled GradScaler (`loss_scaler`) they are saved at
+    its scale, and the backward divides the scaled incoming gradient by it, as the trainer's fused CE path does."""
     if os.environ.get("UNSLOTH_PP_FUSED_CE", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
     head = getattr(inner, "lm_head", None)
@@ -1987,6 +1999,9 @@ def _fused_stage_loss(inner, h, labels, num_items_in_batch):
         from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fused_ce_loss
     except Exception:
         return None
+    scaling = None
+    if loss_scaler is not None and torch.is_grad_enabled():
+        scaling = float(loss_scaler.get_scale())
     PP_FUSED_CE_STATS["fused"] += 1
     return unsloth_fused_ce_loss(
         trainer = None,
@@ -1996,7 +2011,7 @@ def _fused_stage_loss(inner, h, labels, num_items_in_batch):
         labels = labels,
         mask = None,
         n_items = num_items_in_batch,
-        scaling = None,
+        scaling = scaling,
         target_gb = None,
         torch_compile = True,
         shift_labels = True,
@@ -2073,7 +2088,9 @@ class _PPStageModule(nn.Module):
         labels = kwargs.get("labels")
         if labels is None:
             raise RuntimeError("Unsloth: the last pipeline stage needs labels to return a loss.")
-        loss = _fused_stage_loss(inner, h, labels, ctx.num_items_in_batch)
+        loss = _fused_stage_loss(
+            inner, h, labels, ctx.num_items_in_batch, getattr(ctx, "loss_scaler", None)
+        )
         if loss is not None:
             return loss
         PP_FUSED_CE_STATS["logits"] += 1
@@ -2889,6 +2906,7 @@ class PipelineParallel:
             )  # every stage's scaler holds the scale (unscale_)
             self._scaler = scaler
             self._bind_scaler(scaler)
+            self.ctx.loss_scaler = scaler
         self._step_scaler = scaler if scaler is not None and scaler.is_enabled() else None
         self._mb_losses = []
         self.ctx.aux_losses = []
@@ -2914,6 +2932,7 @@ class PipelineParallel:
                 schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
         finally:
             self._scaler = None
+            self.ctx.loss_scaler = None
             self.ctx.num_items_in_batch = None
             if kept:
                 _restore_grads(kept)
