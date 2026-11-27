@@ -2090,7 +2090,7 @@ export const it = {
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:
-            "Gli strumenti MCP abilitati usano le autorizzazioni del server e possono essere eseguiti senza chiedere l’approvazione. Python e il terminale usano il livello di sandbox selezionato. Le chiamate rischiose richiedono comunque l’approvazione se l’isolamento del sistema operativo non è disponibile o si seleziona il livello Basso.",
+            "Gli strumenti MCP abilitati usano le autorizzazioni del server e possono essere eseguiti senza chiedere l’approvazione. Python e il terminale usano il livello di sandbox selezionato. Le chiamate rischiose a Python e al terminale richiedono comunque l’approvazione se l’isolamento del sistema operativo non è disponibile o si seleziona il livello Basso.",
           full:
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },

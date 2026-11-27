@@ -12,6 +12,7 @@ const SETUP = readSrc("features/chat/editor-mcp-setup.tsx");
 const COMPOSER = readSrc("features/chat/mcp-composer-button.tsx");
 const BLENDER = readSrc("features/chat/blender-mcp-setup.tsx");
 const GUIDE = readSrc("features/chat/mcp-install-guide.ts");
+const PERMISSION = readSrc("features/chat/permission-mode-select.tsx");
 
 test("the MCP menu keeps Blender and adds the three managed editors after it", () => {
   for (const id of ["unity", "unreal", "godot", "figma", "roblox"]) {
@@ -75,5 +76,8 @@ test("editors that run code outside the sandbox say so before consent", () => {
     assert.doesNotMatch(CATALOG, new RegExp(`\\n  ${id}: \\{((?!\\n  \\},)[\\s\\S])*?sandboxWarning`));
   }
   assert.match(SETUP, /t\("settings\.sandbox\.editorMcpWarning", \{ name: copy\.name \}\)/);
+  // Run automatically must not promise the sandbox covers MCP tools (#19769).
+  assert.doesNotMatch(PERMISSION, /keep code in the sandbox/);
+  assert.match(PERMISSION, /MCP tools do not/);
   assert.match(SETUP, /aria-describedby=\{copy\.sandboxWarning \? `\$\{editorId\}-mcp-sandbox-warning` : undefined\}/);
 });
