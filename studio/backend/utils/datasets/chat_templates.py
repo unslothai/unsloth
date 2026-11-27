@@ -774,9 +774,10 @@ def apply_chat_template_to_dataset(
                     if (
                         answer != trimmed_answer
                         and isinstance(text, str)
-                        and not text.rstrip().endswith(eos_token)
+                        and trimmed_answer.strip()
+                        and text.rstrip().endswith(trimmed_answer.rstrip())
                     ):
-                        # Some native templates leave the terminator entirely to the caller.
+                        # The template closes no turn after the answer, so keep the row's own EOS.
                         messages[-1] = _alpaca_message("assistant", answer)
                         text = _render_messages(tokenizer, messages)
                     if not isinstance(text, str) or not text.strip():

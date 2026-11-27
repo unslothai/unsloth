@@ -154,3 +154,22 @@ def test_native_alpaca_renders_an_existing_assistant_eos_once(template_adds_eos)
     assert result["success"] is True
     text = result["dataset"][0]["text"]
     assert text.rstrip().endswith("done<|im_end|>")
+
+
+def test_native_alpaca_drops_an_eos_the_turn_terminator_replaces():
+    # Gemma (<eos> vs <end_of_turn>) and base Qwen (<|endoftext|> vs <|im_end|>).
+    tokenizer = _JinjaTokenizer(_QWEN3_TEMPLATE)
+    tokenizer.eos_token = "<|endoftext|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done<|endoftext|>"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    text = result["dataset"][0]["text"]
+    assert text.rstrip().endswith("done<|im_end|>")
+    assert "<|endoftext|>" not in text
