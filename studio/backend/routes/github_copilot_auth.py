@@ -16,6 +16,7 @@ from functools import wraps
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from filelock import AsyncFileLock, Timeout
 
 from auth.authentication import (
@@ -51,10 +52,11 @@ def _client_id() -> str:
 
 
 @asynccontextmanager
-async def provider_write_guard(provider_id: str):
+async def provider_write_guard(provider_id: str, *, poll: bool = False):
     # The vault path is account-scoped. Workers must take turns exchanging a rotating refresh token.
     key = hashlib.sha256(provider_id.encode()).hexdigest()[:24]
-    lock_path = studio_db_path().parent / f".github-copilot-{key}.lock"
+    suffix = "-poll" if poll else ""
+    lock_path = studio_db_path().parent / f".github-copilot-{key}{suffix}.lock"
     try:
         async with AsyncFileLock(lock_path, timeout = 30):
             yield
@@ -267,9 +269,15 @@ async def start(
     }
 
 
+def _matching_flow(provider_id: str, flow_id: str) -> dict | None:
+    raw = credential_secrets.get_secret(FLOW_KIND, provider_id)
+    flow = json.loads(raw) if raw else None
+    if flow and secrets.compare_digest(flow["id"], flow_id):
+        return flow
+    return None
+
+
 @router.post("/{provider_id}/github/flows/{flow_id}/poll")
-@serialize_provider_config
-@_serialize_github_credentials
 async def poll(
     provider_id: str,
     flow_id: str,
@@ -277,29 +285,39 @@ async def poll(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     _require_provider(provider_id, via_api_key, allow_new = True)
-    raw = credential_secrets.get_secret(FLOW_KIND, provider_id)
-    flow = json.loads(raw) if raw else None
-    if not flow or not secrets.compare_digest(flow["id"], flow_id):
-        raise HTTPException(404, "Sign-in attempt not found. Start again.")
-    now = time.time()
-    if now >= flow["expires_at"]:
-        with current_credential_write(credential):
-            credential_secrets.delete_secret(FLOW_KIND, provider_id)
-        return {"status": "expired"}
-    if now < flow["next_poll"]:
-        return {"status": "pending", "interval": flow["interval"]}
-    # Persist before network I/O, including on failures, to honor GitHub's polling limit.
-    flow["next_poll"] = now + flow["interval"]
-    with current_credential_write(credential):
-        credential_secrets.upsert_secret(FLOW_KIND, provider_id, json.dumps(flow))
-    result = await _github_post(
-        _TOKEN_PATH,
-        {
-            "client_id": flow["client_id"],
-            "device_code": flow["device_code"],
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        },
-    )
+    # Serialize polls across workers while letting cancel or disconnect take the write lock
+    # during the GitHub request. Recheck the flow before applying any response.
+    async with provider_write_guard(provider_id, poll = True):
+        async with provider_write_guard(provider_id):
+            flow = _matching_flow(provider_id, flow_id)
+            if not flow or "provider_id" in flow:
+                raise HTTPException(404, "Sign-in attempt not found. Start again.")
+            now = time.time()
+            if now >= flow["expires_at"]:
+                with current_credential_write(credential):
+                    credential_secrets.delete_secret(FLOW_KIND, provider_id)
+                return {"status": "expired"}
+            if now < flow["next_poll"]:
+                return {"status": "pending", "interval": flow["interval"]}
+            # Persist before network I/O, including on failures, to honor GitHub's polling limit.
+            flow["next_poll"] = now + flow["interval"]
+            with current_credential_write(credential):
+                credential_secrets.upsert_secret(FLOW_KIND, provider_id, json.dumps(flow))
+        result = await _github_post(
+            _TOKEN_PATH,
+            {
+                "client_id": flow["client_id"],
+                "device_code": flow["device_code"],
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+        )
+        async with provider_write_guard(provider_id):
+            if not _matching_flow(provider_id, flow_id):
+                raise HTTPException(404, "Sign-in attempt not found. Start again.")
+            return _apply_poll_result(provider_id, flow, result, credential)
+
+
+def _apply_poll_result(provider_id: str, flow: dict, result: dict, credential: tuple) -> dict:
     error = result.get("error")
     if error in ("authorization_pending", "slow_down"):
         if error == "slow_down":
@@ -311,6 +329,7 @@ async def poll(
     token = result.get("access_token")
     if not error and isinstance(token, str) and token:
         bundle = _token_bundle(result, flow["client_id"])
+        # Retain just the outcome so a late cancel can report that approval already finished.
         if provider_id == _NEW_CONNECTION:
             new_id = uuid.uuid4().hex[:16]
             info = PROVIDER_REGISTRY["github_copilot"]
@@ -331,7 +350,12 @@ async def poll(
                     json.dumps(bundle),
                     connection = conn,
                 )
-                credential_secrets.delete_secret(FLOW_KIND, provider_id, connection = conn)
+                credential_secrets.upsert_secret(
+                    FLOW_KIND,
+                    provider_id,
+                    json.dumps({"id": flow["id"], "provider_id": new_id}),
+                    connection = conn,
+                )
             return {"status": "connected", "provider_id": new_id}
         with current_credential_write(credential):
             with closing(credential_secrets.get_connection()) as conn, conn:
@@ -342,7 +366,12 @@ async def poll(
                     connection = conn,
                 )
                 credential_secrets.delete_provider_api_key(provider_id, connection = conn)
-                credential_secrets.delete_secret(FLOW_KIND, provider_id, connection = conn)
+                credential_secrets.upsert_secret(
+                    FLOW_KIND,
+                    provider_id,
+                    json.dumps({"id": flow["id"], "provider_id": provider_id}),
+                    connection = conn,
+                )
         return {"status": "connected"}
     with current_credential_write(credential):
         credential_secrets.delete_secret(FLOW_KIND, provider_id)
@@ -363,10 +392,18 @@ async def cancel(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     _require_provider(provider_id, via_api_key, allow_new = True)
-    raw = credential_secrets.get_secret(FLOW_KIND, provider_id)
-    if raw and secrets.compare_digest(json.loads(raw)["id"], flow_id):
-        with current_credential_write(credential):
-            credential_secrets.delete_secret(FLOW_KIND, provider_id)
+    flow = _matching_flow(provider_id, flow_id)
+    if flow is None:
+        return
+    connected_id = flow.get("provider_id")
+    if (
+        connected_id
+        and providers_db.get_own_provider(connected_id)
+        and auth_status(connected_id) == "connected"
+    ):
+        return JSONResponse({"provider_id": connected_id})
+    with current_credential_write(credential):
+        credential_secrets.delete_secret(FLOW_KIND, provider_id)
 
 
 @router.delete("/{provider_id}/github", status_code = 204)

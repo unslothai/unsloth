@@ -162,14 +162,23 @@ export function GitHubCopilotConnect({
     setBusy("cancelling");
     setError("");
     try {
-      await cancelGitHubCopilot(flow.providerId, flow.flow_id);
-      if (request === generation.current) setCancelled(true);
+      const completed = await cancelGitHubCopilot(flow.providerId, flow.flow_id);
+      if (request !== generation.current) return;
+      if (completed) {
+        setLoadingModels(true);
+        await changed.current(completed.provider_id, true);
+      } else {
+        setCancelled(true);
+      }
     } catch (err) {
       if (request === generation.current) {
         setError(err instanceof Error ? err.message : "Could not cancel GitHub sign-in.");
       }
     } finally {
-      if (request === generation.current) setBusy(null);
+      if (request === generation.current) {
+        setLoadingModels(false);
+        setBusy(null);
+      }
     }
   }
 

@@ -104,7 +104,10 @@ def test_device_token_stays_server_side_and_polling_is_throttled(monkeypatch, fl
         bundle = json.loads(vault[(auth.OAUTH_KIND, "connection")])
         assert bundle["access_token"] == "gho_private-token"
         assert bundle["client_id"] == "our-oauth-app"
-        assert (auth.FLOW_KIND, "connection") not in vault
+        assert json.loads(vault[(auth.FLOW_KIND, "connection")]) == {
+            "id": flow["flow_id"],
+            "provider_id": "connection",
+        }
         with pytest.raises(HTTPException) as exc:
             await auth.poll("connection", flow["flow_id"], ("user", None), False)
         assert exc.value.status_code == 404
@@ -280,14 +283,46 @@ def test_fresh_studio_uses_default_client_id_without_locking_auth_db(
             flow = await auth.start(scope, credential, False)
         stored = json.loads(auth.credential_secrets.get_secret(auth.FLOW_KIND, scope))
         monkeypatch.setattr(auth, "time", Obj(time = lambda: stored["next_poll"]))
+        waiting_for_github, release_approval = asyncio.Event(), asyncio.Event()
+
+        async def hold_approval(path, data):
+            waiting_for_github.set()
+            await release_approval.wait()
+            return await post(path, data)
+
+        monkeypatch.setattr(auth, "_github_post", hold_approval)
+        polling = asyncio.create_task(auth.poll(scope, flow["flow_id"], credential, False))
+        await asyncio.wait_for(waiting_for_github.wait(), timeout = 5)
+        try:
+            assert (
+                await asyncio.wait_for(
+                    auth.cancel(scope, flow["flow_id"], credential, False), timeout = 5
+                )
+                is None
+            )
+        finally:
+            release_approval.set()
+        with pytest.raises(HTTPException) as exc:
+            await polling
+        assert exc.value.status_code == 404
+        assert providers.list_provider_configs("unsloth", False) == []
+
+        monkeypatch.setattr(auth, "_github_post", post)
+        flow = await auth.start(scope, credential, False)
+        stored = json.loads(auth.credential_secrets.get_secret(auth.FLOW_KIND, scope))
         result = await auth.poll(scope, flow["flow_id"], credential, False)
         assert result["status"] == "connected"
         provider_id = result["provider_id"] if new_connection else scope
-        assert auth.credential_secrets.get_secret(auth.FLOW_KIND, scope) is None
+        assert json.loads(auth.credential_secrets.get_secret(auth.FLOW_KIND, scope)) == {
+            "id": flow["flow_id"],
+            "provider_id": provider_id,
+        }
         assert [provider.id for provider in providers.list_provider_configs("unsloth", False)] == [
             provider_id
         ]
-        await auth.cancel(scope, flow["flow_id"], credential, False)
+        late_cancel = await auth.cancel(scope, flow["flow_id"], credential, False)
+        assert late_cancel.status_code == 200
+        assert json.loads(late_cancel.body) == {"provider_id": provider_id}
         assert (
             await auth.resolve_access(provider_id, None, allow_saved_key = True) == "live-test-token"
         )

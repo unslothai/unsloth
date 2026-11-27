@@ -54,11 +54,19 @@ test("first sign-in can be cancelled without creating a provider", async () => {
 		return Response.json({ flow_id: "draft" });
 	}) as typeof fetch;
 	const flow = await api.startGitHubCopilot(null);
-	await api.cancelGitHubCopilot(null, flow.flow_id);
+	assert.equal(await api.cancelGitHubCopilot(null, flow.flow_id), null);
 	assert.deepEqual(paths, [
 		"/api/providers/new/github/start",
 		"/api/providers/new/github/flows/draft",
 	]);
+});
+
+test("cancelling after approval returns the connected provider", async () => {
+	globalThis.fetch = (async () =>
+		Response.json({ provider_id: "completed-connection" })) as typeof fetch;
+	assert.deepEqual(await api.cancelGitHubCopilot(null, "draft"), {
+		provider_id: "completed-connection",
+	});
 });
 
 test("Copilot errors preserve the actionable OAuth App setup message", async () => {

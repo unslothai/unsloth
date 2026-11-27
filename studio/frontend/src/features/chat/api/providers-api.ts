@@ -596,9 +596,12 @@ export async function pollGitHubCopilot(providerId: string | null, flowId: strin
   return parseJsonOrThrow(await authFetch(`/api/providers/${providerId ?? "new"}/github/flows/${flowId}/poll`, { method: "POST" }));
 }
 
-export async function cancelGitHubCopilot(providerId: string | null, flowId: string): Promise<void> {
+export async function cancelGitHubCopilot(
+  providerId: string | null,
+  flowId: string,
+): Promise<{ provider_id: string } | null> {
   const response = await authFetch(`/api/providers/${providerId ?? "new"}/github/flows/${flowId}`, { method: "DELETE" });
-  if (!response.ok) await parseJsonOrThrow(response);
+  return response.status === 204 ? null : parseJsonOrThrow(response);
 }
 
 export async function disconnectGitHubCopilot(providerId: string): Promise<void> {
