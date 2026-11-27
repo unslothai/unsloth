@@ -31208,14 +31208,6 @@ async def _finish_external_compaction(
             if plan.summary
             else 0
         )
-        chunks = cloud_compaction.summary_chunks(
-            plan.to_summarise,
-            estimate_message_tokens_without_unpriced_media,
-            # Room for the instructions, the summary so far and the reply.
-            max(1_000, room - 2 * reply_tokens - max(0, carried - reply_tokens) - 1_000)
-            if room
-            else None,
-        )
         summary = plan.summary
 
         async def _summarise(request: list[dict], limit: int, first_line_timeout: float) -> str:
@@ -31241,6 +31233,14 @@ async def _finish_external_compaction(
             )
 
         try:
+            chunks = cloud_compaction.summary_chunks(
+                plan.to_summarise,
+                estimate_message_tokens_without_unpriced_media,
+                # Room for the instructions, the summary so far and the reply.
+                max(1_000, room - 2 * reply_tokens - max(0, carried - reply_tokens) - 1_000)
+                if room
+                else None,
+            )
             for index, chunk in enumerate(chunks):
                 request = cloud_compaction.summary_request_messages(summary, chunk)
                 request_tokens = sum(
