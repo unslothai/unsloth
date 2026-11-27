@@ -81,9 +81,7 @@ def _glob_order(archived = False):
 
 def _mixed_gallery():
     for i in range(12):
-        # groups of equal mtimes: ties keep directory order, as the glob listing did
         _png(f"img{i:02d}.png", i, _T0 + (i // 3) * 1_000_000)
-    # dot-led names are all stem or keep a trailing dot, as Path.stem has them
     _png(".hidden.png", 50, _T0 + 1_000_000)
     _png(".png", 51, _T0 + 2_000_000)
     _png("a..png", 52, _T0 + 3_000_000)
