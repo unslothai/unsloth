@@ -70,6 +70,18 @@ test("a surname alone is matched to its own mention, never inside the full name"
   );
 });
 
+test("two names with one spelling are both left alone rather than guessed", () => {
+  const spelled = [
+    { source: "Sean", target: "Шоном" },
+    { source: "Shawn", target: "Шоном" },
+    { source: "Moscow", target: "Москве" },
+  ];
+  assert.equal(
+    annotateNames("Я поговорил с Шоном и Шоном в Москве.", spelled, new Set()),
+    "Я поговорил с Шоном и Шоном в Москве (Moscow).",
+  );
+});
+
 test("a spelling inside a longer word is skipped, an attached prefix is not", () => {
   const klopp = [{ source: "Jürgen Klopp", target: "يورغن كلوب" }];
   assert.equal(

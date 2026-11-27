@@ -87,7 +87,12 @@ export function annotateNames(
   // Longest first, every mention claimed: a surname alone must not match inside its full name.
   const claimed: Array<[number, number]> = [];
   const inserts: Array<[number, string]> = [];
-  const byLength = [...names].sort((a, b) => b.target.length - a.target.length);
+  // Two names spelled alike cannot be told apart in the output, so neither is annotated.
+  const shared = (target: string) =>
+    names.filter((name) => name.target === target).length > 1;
+  const byLength = names
+    .filter((name) => !shared(name.target))
+    .sort((a, b) => b.target.length - a.target.length);
   for (const { source, target } of byLength) {
     for (
       let at = text.indexOf(target);
