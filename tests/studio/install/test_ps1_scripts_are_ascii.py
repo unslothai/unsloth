@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The PowerShell installers stay ASCII-only.
-
-Windows reads a BOM-less script in the machine's ANSI code page, both when PowerShell 5.1 runs it
-and when Authenticode hashes it. A non-ASCII byte therefore made the signed install.ps1 report
-HashMismatch on every machine whose code page is not the signer's Windows-1252 (#19908).
-"""
+"""The PowerShell installers stay ASCII-only: Windows hashes a BOM-less signed script in the
+machine's ANSI code page, so any non-ASCII byte means HashMismatch outside Windows-1252 (#19908)."""
 
 from pathlib import Path
 
