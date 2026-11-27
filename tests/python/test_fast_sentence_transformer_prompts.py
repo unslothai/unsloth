@@ -4,17 +4,16 @@
 import json
 
 import pytest
-import torch
 
-from real_accelerator import has_real_accelerator
+from real_accelerator import has_real_cuda_or_xpu
 
 
 PROMPTS = {"query": "task: search result | query: ", "document": "title: none | text: "}
 
 
 def _save_decoder_sentence_model(tmp_path):
-    if not has_real_accelerator() or not torch.cuda.is_available():
-        pytest.skip("the FastModel route requires CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("the FastModel route requires CUDA or XPU")
     pytest.importorskip("sentence_transformers")
     import unsloth  # noqa: F401
     from transformers import Gemma3TextConfig, Gemma3TextModel, PreTrainedTokenizerFast

@@ -19,7 +19,8 @@
 import types
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
@@ -172,18 +173,20 @@ def test_a_module_without_modules_to_save_is_untouched():
     assert plain.to_calls == []
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
+    device = accelerator_device_type()
+
     class _Real:
         def __init__(self):
             self.modules_to_save = types.SimpleNamespace(
-                default = torch.nn.Linear(4, 4).cuda(),
+                default = torch.nn.Linear(4, 4).to(device),
             )
-            self.original_module = torch.nn.Linear(4, 4).cuda()
+            self.original_module = torch.nn.Linear(4, 4).to(device)
 
     w = _Real()
     before = w.modules_to_save.default.weight.device
-    offload(w, "cuda")
+    offload(w, device)
     assert w.modules_to_save.default.weight.device == before
     assert w.original_module.weight.device == torch.device("cpu")
     assert w.modules_to_save.default.weight.requires_grad

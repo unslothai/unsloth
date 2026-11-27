@@ -4,6 +4,11 @@
 """sm80 flex backward: tuned bwd_* kernel_options at 128 < head_dim <= 256."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models._utils as u
@@ -162,13 +167,26 @@ def test_tuned_backward_only_when_tiles_divide_the_sparse_blocks(monkeypatch, bl
 
 
 @pytest.mark.skipif(
-    not __import__("torch").cuda.is_available()
+    not has_real_cuda_or_xpu()
     or __import__("torch").version.hip is not None
     or tuple(int(x) for x in __import__("torch").__version__.split("+")[0].split(".")[:2])
     < (2, 10),
-    reason = "needs NVIDIA CUDA and torch >= 2.10 (bwd_ kernel_options)",
+    reason = "needs NVIDIA CUDA or Intel XPU and torch >= 2.10 (bwd_ kernel_options)",
 )
-@pytest.mark.parametrize("case", ["block16", "caller_m1_64"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        # XPU Inductor cannot compile 16-wide sparse blocks even without Unsloth: kept on CUDA.
+        pytest.param(
+            "block16",
+            marks = pytest.mark.skipif(
+                not has_real_cuda(),
+                reason = "needs NVIDIA CUDA and torch >= 2.10 (bwd_ kernel_options)",
+            ),
+        ),
+        "caller_m1_64",
+    ],
+)
 def test_tuned_backward_compiles_for_small_blocks_and_partial_caller_tiles(monkeypatch, case):
     # Real Inductor compile of the backward with the options the wrapper emits (tuned path forced).
     import torch
@@ -186,13 +204,14 @@ def test_tuned_backward_compiles_for_small_blocks_and_partial_caller_tiles(monke
     class M(torch.nn.Module):
         is_causal = True
 
+    device = accelerator_device_type()
     S = 128
     block = 16 if case == "block16" else 128
     mask = create_block_mask(
-        lambda b, h, q, kv: q >= kv, None, None, S, S, device = "cuda", BLOCK_SIZE = block
+        lambda b, h, q, kv: q >= kv, None, None, S, S, device = device, BLOCK_SIZE = block
     )
     q, k, v = (
-        torch.randn(1, 2, S, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+        torch.randn(1, 2, S, 256, device = device, dtype = torch.bfloat16, requires_grad = True)
         for _ in range(3)
     )
     if case == "block16":

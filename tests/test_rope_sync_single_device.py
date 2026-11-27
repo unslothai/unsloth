@@ -9,7 +9,7 @@ import pytest
 import torch
 
 import unsloth.kernels.rope_embedding as RE
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 
 
 class _FakeQ:
@@ -200,32 +200,33 @@ def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Triton RoPE kernel needs CUDA or XPU")
 @pytest.mark.parametrize("use_indices", [False, True])
 def test_real_kernel_single_device_no_sync_same_result(monkeypatch, use_indices):
     monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
     monkeypatch.setattr(RE, "_UNREGISTERED_SPLIT_SEEN", False, raising = False)
-    monkeypatch.setattr(RE, "_current_device", torch.cuda.current_device)
+    device, accelerator = accelerator_device_type(), accelerator_module()
+    monkeypatch.setattr(RE, "_current_device", accelerator.current_device)
     count = [0]
-    real = torch.cuda.Stream.synchronize
+    real = accelerator.Stream.synchronize
 
     def counting(self):
         count[0] += 1
         return real(self)
 
-    monkeypatch.setattr(torch.cuda.Stream, "synchronize", counting)
+    monkeypatch.setattr(accelerator.Stream, "synchronize", counting)
     torch.manual_seed(0)
     b, h, s, d = 2, 4, 32, 64
-    inv = 1.0 / (10000 ** (torch.arange(0, d, 2, device = "cuda").float() / d))
-    emb = torch.cat([torch.outer(torch.arange(s, device = "cuda").float(), inv)] * 2, -1)
+    inv = 1.0 / (10000 ** (torch.arange(0, d, 2, device = device).float() / d))
+    emb = torch.cat([torch.outer(torch.arange(s, device = device).float(), inv)] * 2, -1)
     cos, sin = emb.cos(), emb.sin()
-    idx = torch.arange(s, device = "cuda").expand(b, s).contiguous() if use_indices else None
-    x = torch.randn(b, h, s, d, device = "cuda")
+    idx = torch.arange(s, device = device).expand(b, s).contiguous() if use_indices else None
+    x = torch.randn(b, h, s, d, device = device)
 
     monkeypatch.setattr(RE, "DEVICE_COUNT", 1)
     ref_q, ref_k = RE.fast_rope_embedding(x.clone(), x.clone(), cos, sin, idx)
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     q, k = RE.fast_rope_embedding(x.clone(), x.clone(), cos, sin, idx)
-    torch.cuda.synchronize()
+    accelerator.synchronize()
     assert count[0] == 0
     assert torch.equal(q, ref_q) and torch.equal(k, ref_k)

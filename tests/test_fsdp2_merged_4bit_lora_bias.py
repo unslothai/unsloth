@@ -13,7 +13,10 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (  # tests/_shared, on sys.path via tests/conftest.py
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)
 import torch
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +64,7 @@ _GPU_SCRIPT = textwrap.dedent(
     r"""
     import importlib.util, json, os, sys, torch
     root = sys.argv[1]
+    dev = sys.argv[4]  # "cuda" or "xpu"
     def load(name):
         spec = importlib.util.spec_from_file_location(f"_u_{name}", f"{root}/unsloth/models/{name}.py")
         mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
@@ -70,8 +74,8 @@ _GPU_SCRIPT = textwrap.dedent(
     from torch.distributed.fsdp import fully_shard
     from peft import LoraConfig, get_peft_model
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = sys.argv[2], RANK = "0", WORLD_SIZE = "1")
-    torch.cuda.set_device(0)
-    dist.init_process_group("nccl", rank = 0, world_size = 1)
+    getattr(torch, dev).set_device(0)
+    dist.init_process_group("nccl" if dev == "cuda" else "xccl", rank = 0, world_size = 1)
     m = load("fsdp2_save"); q = load("fsdp2_qlora")
 
     def lin4(seed):
@@ -97,7 +101,7 @@ _GPU_SCRIPT = textwrap.dedent(
             for layer in self.layers: x = layer(x)
             return x
 
-    net = Net().cuda()
+    net = Net().to(dev)
     net.is_loaded_in_4bit = True  # what transformers sets; PEFT picks its bitsandbytes LoRA layer on it
     model = get_peft_model(net, LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "o_proj"],
                                            lora_bias = True))
@@ -112,7 +116,7 @@ _GPU_SCRIPT = textwrap.dedent(
         for name, p in params.items() if name.endswith(".base_layer.bias")
     }
     q.prepare_fsdp2_qlora(model)
-    mesh = init_device_mesh("cuda", (1,))
+    mesh = init_device_mesh(dev, (1,))
     for block in model.base_model.model.layers:
         fully_shard(block, mesh = mesh)
     fully_shard(model, mesh = mesh)
@@ -139,14 +143,20 @@ _GPU_SCRIPT = textwrap.dedent(
 )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 @pytest.mark.parametrize("save_method", ["merged_4bit", "merged_4bit_forced"])
 def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path, save_method):
     pytest.importorskip("bitsandbytes")
     pytest.importorskip("peft")
     fsdp = pytest.importorskip("torch.distributed.fsdp")
-    if not hasattr(fsdp, "fully_shard") or not torch.distributed.is_nccl_available():
-        pytest.skip(reason = "torch without FSDP2 fully_shard or NCCL cannot shard the model")
+    device = accelerator_device_type()
+    collectives = (
+        torch.distributed.is_nccl_available()
+        if device == "cuda"
+        else getattr(torch.distributed, "is_xccl_available", lambda: False)()
+    )
+    if not hasattr(fsdp, "fully_shard") or not collectives:
+        pytest.skip(reason = "torch without FSDP2 fully_shard or NCCL/XCCL cannot shard the model")
     from tests._rendezvous_port import free_port
 
     script = tmp_path / "fsdp2_lora_bias_merge.py"
@@ -156,7 +166,7 @@ def test_fsdp2_merged_4bit_merges_lora_bias_into_a_sharded_base_bias(tmp_path, s
     if "," in visible:
         env["CUDA_VISIBLE_DEVICES"] = visible.split(",")[0]
     proc = subprocess.run(
-        [sys.executable, str(script), str(_ROOT), str(free_port()), save_method],
+        [sys.executable, str(script), str(_ROOT), str(free_port()), save_method, device],
         env = env,
         capture_output = True,
         text = True,

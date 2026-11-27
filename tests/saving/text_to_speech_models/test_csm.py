@@ -11,6 +11,7 @@ _require_opt_in(
 )
 
 from unsloth import FastLanguageModel, FastModel
+from unsloth.device_type import DEVICE_TYPE_TORCH  # 'cuda' on CUDA / ROCm, 'xpu' on Intel XPU
 from transformers import CsmForConditionalGeneration
 import torch
 
@@ -146,7 +147,7 @@ output_audio_path = "csm_audio.wav"
 try:
     text = "We just finished fine tuning a text to speech model... and it's pretty good!"
     speaker_id = 0
-    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
+    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to(DEVICE_TYPE_TORCH)
     audio_values = model.generate(
         **inputs,
         max_new_tokens = 125,  # ~10 seconds of audio

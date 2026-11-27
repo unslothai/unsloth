@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
-from real_accelerator import has_real_cuda, has_real_accelerator
+from real_accelerator import has_real_cuda, has_real_accelerator, has_real_cuda_or_xpu
 
 import unsloth  # noqa: F401
 from unsloth.models.modelopt_fp8 import (
@@ -433,7 +433,7 @@ def _write_tiny_modelopt_llama(path):
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 kernels need CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fp8 kernels need CUDA or XPU")
 @pytest.mark.parametrize("dequantize", [False, True])
 def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
     from transformers import AutoConfig, AutoModelForCausalLM, FineGrainedFP8Config
@@ -648,7 +648,7 @@ def test_both_loaders_keep_task_heads_out_of_the_rewrite():
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 kernels need CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fp8 kernels need CUDA or XPU")
 def test_tiny_modelopt_llama_loads_a_classification_head(tmp_path):
     from transformers import AutoConfig, AutoModelForSequenceClassification
     from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
@@ -851,7 +851,7 @@ def test_merged_save_detects_a_rewritten_modelopt_checkpoint_as_fp8(tmp_path, mo
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "FastLanguageModel loads need CUDA or XPU")
 def test_merged_16bit_save_of_a_modelopt_lora_reloads_without_unsloth(tmp_path):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess

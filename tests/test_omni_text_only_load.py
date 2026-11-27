@@ -3,7 +3,10 @@
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 transformers = pytest.importorskip("transformers")
 omni_config = pytest.importorskip(
@@ -399,7 +402,7 @@ def _tiny_omni_checkpoint(path):
 def test_an_omni_adapter_reloads_onto_the_model_it_was_trained_on(
     tmp_path, text_only, target_modules
 ):
-    if not has_real_cuda():
+    if not has_real_cuda_or_xpu():
         pytest.skip("FastModel needs a GPU")
     from unsloth import FastModel
 

@@ -13,6 +13,7 @@ torch = pytest.importorskip("torch")
 hooks = pytest.importorskip("accelerate.hooks")
 
 from core.inference import diffusion_memory as dm  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu  # noqa: E402
 
 
 def _pipe(device, *names):
@@ -163,7 +164,11 @@ def test_model_offload_plan_wraps_the_pipeline():
     assert _wrapped(pipe.transformer)
 
 
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+cuda = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
+DEVICE = accelerator_device_type()
+# Host pinning (dm._pin_host_weights) only runs when torch.cuda is available: pinned cases keep
+# the CUDA gate.
+cuda_pin = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 
 
 def _render(pipe, x):
@@ -180,10 +185,10 @@ def _render(pipe, x):
 def test_real_offload_keeps_host_storage_and_is_bit_identical(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
     x = torch.randn(4, 8)
-    stock = _pipe("cuda", "text_encoder", "transformer")
+    stock = _pipe(DEVICE, "text_encoder", "transformer")
     stock.enable_model_cpu_offload()
     ref = _render(stock, x)
-    pipe = _pipe("cuda", "text_encoder", "transformer")
+    pipe = _pipe(DEVICE, "text_encoder", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     host = {n: _ptrs(m) for n, m in pipe.components.items()}
@@ -194,7 +199,7 @@ def test_real_offload_keeps_host_storage_and_is_bit_identical(monkeypatch):
 
 @cuda
 def test_a_weight_written_on_the_device_is_copied_back():
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     before = pipe.transformer.weight.detach().clone()
@@ -206,14 +211,14 @@ def test_a_weight_written_on_the_device_is_copied_back():
     assert torch.equal(pipe.transformer.weight.detach(), before + 1)
 
 
-@cuda
+@cuda_pin
 def test_weights_are_pinned_on_first_onload_into_shared_chunks(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
     x = torch.randn(4, 8)
-    stock = _pipe("cuda", "text_encoder", "transformer")
+    stock = _pipe(DEVICE, "text_encoder", "transformer")
     stock.enable_model_cpu_offload()
     ref = _render(stock, x)
-    pipe = _pipe("cuda", "text_encoder", "transformer")
+    pipe = _pipe(DEVICE, "text_encoder", "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     assert not pipe.transformer.weight.is_pinned()
@@ -229,7 +234,7 @@ def test_weights_are_pinned_on_first_onload_into_shared_chunks(monkeypatch):
 @cuda
 def test_pinning_is_off_by_switch_and_when_ram_is_short(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     _render(pipe, torch.randn(4, 8))
@@ -239,17 +244,17 @@ def test_pinning_is_off_by_switch_and_when_ram_is_short(monkeypatch):
     monkeypatch.delenv(dm.OFFLOAD_PIN_ENV)
     short = types.SimpleNamespace(total = 16 << 30, available = 2 << 30)
     monkeypatch.setattr(psutil, "virtual_memory", lambda: short)
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     _render(pipe, torch.randn(4, 8))
     assert not pipe.transformer.weight.is_pinned()
 
 
-@cuda
+@cuda_pin
 def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     lin = pipe.transformer
     lin.weight = torch.nn.Parameter(lin.weight.detach().t().contiguous().t())
     assert not lin.weight.is_contiguous()
@@ -260,7 +265,7 @@ def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
     assert lin.weight.stride() == (1, 8)
 
 
-@cuda
+@cuda_pin
 @pytest.mark.parametrize(
     "conv, fmt, shape",
     [
@@ -281,7 +286,7 @@ def test_a_channels_last_conv_weight_is_pinned_in_its_layout(monkeypatch, conv, 
         )
         pipe = types.SimpleNamespace(components = {"vae": module}, vae = module)
 
-        def enable_model_cpu_offload(device = "cuda"):
+        def enable_model_cpu_offload(device = DEVICE):
             hooks.remove_hook_from_module(module)
             module.to("cpu")
             hooks.add_hook_to_module(module, hooks.CpuOffload(execution_device = device))
@@ -309,7 +314,7 @@ def test_a_channels_last_conv_weight_is_pinned_in_its_layout(monkeypatch, conv, 
 
 @cuda
 def test_a_parameter_replaced_on_the_device_is_copied_back():
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     pipe.transformer(torch.ones(1, 8))
@@ -330,7 +335,7 @@ def _host_of(module):
     return {name: p.data for name, p in module.named_parameters()}
 
 
-@cuda
+@cuda_pin
 def test_the_ram_gate_counts_the_chunks_really_allocated(monkeypatch):
     # Weight 256 B and bias 32 B (256 aligned) do not share a 384 B chunk: 384 + 256 B are allocated for 512.
     monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
@@ -347,7 +352,7 @@ def test_the_ram_gate_counts_the_chunks_really_allocated(monkeypatch):
     assert lin.weight.is_pinned() and lin.bias.is_pinned()
 
 
-@cuda
+@cuda_pin
 def test_a_failed_pin_hands_the_partial_chunks_back(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
     monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
@@ -371,7 +376,7 @@ def test_a_failed_pin_hands_the_partial_chunks_back(monkeypatch):
 @cuda
 @pytest.mark.parametrize("how", ["parameter", "data"])
 def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(how):
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     pipe.transformer(torch.ones(1, 8))
@@ -393,12 +398,12 @@ def test_a_parameter_replaced_while_offloaded_is_not_restored_to_the_old_weight(
 
 @cuda
 def test_a_weight_reassigned_through_data_on_the_device_is_copied_back():
-    pipe = _pipe("cuda", "transformer")
+    pipe = _pipe(DEVICE, "transformer")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     pipe.transformer(torch.ones(1, 8))
     version = pipe.transformer.weight._version
-    pipe.transformer.weight.data = torch.full((8, 8), 7.0, device = "cuda")
+    pipe.transformer.weight.data = torch.full((8, 8), 7.0, device = DEVICE)
     assert pipe.transformer.weight._version == version
     pipe.transformer._hf_hook.init_hook(pipe.transformer)
     assert pipe.transformer.weight.device.type == "cpu"
@@ -523,14 +528,14 @@ def _buffer_ptrs(module):
 
 
 @cuda
-@pytest.mark.parametrize("pin", ["0", "1"])
+@pytest.mark.parametrize("pin", ["0", pytest.param("1", marks = cuda_pin)])
 def test_a_gguf_transformer_keeps_its_host_bytes_and_quant_type(monkeypatch, pin):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
     x = torch.randn(4, 8)
-    stock, _ = _gguf_pipe("cuda")
+    stock, _ = _gguf_pipe(DEVICE)
     stock.enable_model_cpu_offload()
     ref = _run(stock, x)
-    pipe, utils = _gguf_pipe("cuda")
+    pipe, utils = _gguf_pipe(DEVICE)
     raw = pipe.transformer.weight.detach().clone()
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
@@ -551,7 +556,7 @@ def test_a_gguf_transformer_keeps_its_host_bytes_and_quant_type(monkeypatch, pin
 @cuda
 def test_the_module_left_onloaded_by_a_call_is_offloaded_through_its_kept_hook(monkeypatch):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
-    pipe = _pipe("cuda", "text_encoder", "transformer", "vae")
+    pipe = _pipe(DEVICE, "text_encoder", "transformer", "vae")
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     held = {n: [p.data for p in m.parameters()] for n, m in pipe.components.items()}
@@ -563,14 +568,14 @@ def test_the_module_left_onloaded_by_a_call_is_offloaded_through_its_kept_hook(m
 
 
 @cuda
-@pytest.mark.parametrize("pin", ["0", "1"])
+@pytest.mark.parametrize("pin", ["0", pytest.param("1", marks = cuda_pin)])
 def test_buffer_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin):
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
     x = torch.randn(4, 8)
-    stock = _buffer_pipe("cuda")
+    stock = _buffer_pipe(DEVICE)
     stock.enable_model_cpu_offload()
     ref = _render(stock, x)
-    pipe = _buffer_pipe("cuda")
+    pipe = _buffer_pipe(DEVICE)
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     assert torch.equal(_render(pipe, x), ref)
@@ -583,7 +588,7 @@ def test_buffer_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin)
 
 @cuda
 def test_a_buffer_written_on_the_device_is_copied_back():
-    pipe = _buffer_pipe("cuda")
+    pipe = _buffer_pipe(DEVICE)
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     before = pipe.transformer.weight_scale.clone()
@@ -598,11 +603,11 @@ def test_a_buffer_written_on_the_device_is_copied_back():
 def test_buffers_onloaded_under_inference_mode_do_not_break_the_hook():
     """A buffer moved under inference_mode is an inference tensor with no version counter; it takes the stock copy."""
     x = torch.randn(4, 8)
-    stock = _buffer_pipe("cuda")
+    stock = _buffer_pipe(DEVICE)
     stock.enable_model_cpu_offload()
     with torch.inference_mode():
         ref = _render(stock, x)
-    pipe = _buffer_pipe("cuda")
+    pipe = _buffer_pipe(DEVICE)
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     for _ in range(3):
@@ -646,16 +651,16 @@ def _inner_of(t):
 
 
 @cuda
-@pytest.mark.parametrize("pin", ["0", "1"])
+@pytest.mark.parametrize("pin", ["0", pytest.param("1", marks = cuda_pin)])
 def test_torchao_int8_weights_keep_their_host_storage_and_are_pinned(monkeypatch, pin):
     """Each offload re-points the int8 weight at its kept host tensors (no device-to-host copy, no new host
     allocation), the inner tensors are pinned once, and every render matches the stock offload bit for bit."""
     monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
     x = torch.randn(4, 8, dtype = torch.bfloat16)
-    stock = _int8_pipe("cuda")
+    stock = _int8_pipe(DEVICE)
     stock.enable_model_cpu_offload()
     ref = _render(stock, x)
-    pipe = _int8_pipe("cuda")
+    pipe = _int8_pipe(DEVICE)
     pipe.enable_model_cpu_offload()
     dm.keep_cpu_weights_on_offload(pipe)
     assert _wrapped(pipe.transformer)

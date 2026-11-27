@@ -5,11 +5,16 @@ in eval (where use_cache stays on), and Mistral's window matches transformers' (
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 pytestmark = pytest.mark.skipif(
-    not has_real_cuda(), reason = "Unsloth's model forwards need a CUDA device"
+    not has_real_cuda_or_xpu(), reason = "Unsloth's model forwards need a CUDA or XPU device"
 )
+
+DEVICE = accelerator_device_type()
 
 WINDOW = 4
 LENGTHS = [7, 9, 5]
@@ -113,9 +118,9 @@ def fake_flash(monkeypatch):
 
 def test_packed_documents_do_not_attend_across_each_other(model, fake_flash):
     torch.manual_seed(0)
-    docs = [torch.randint(5, 100, (n,), device = "cuda") for n in LENGTHS]
+    docs = [torch.randint(5, 100, (n,), device = DEVICE) for n in LENGTHS]
     packed = torch.cat(docs)[None]
-    position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None]
+    position_ids = torch.cat([torch.arange(n, device = DEVICE) for n in LENGTHS])[None]
     out = _logits(
         model,
         packed,
@@ -131,7 +136,7 @@ def test_flash_window_matches_sdpa(model, monkeypatch):
     from unsloth.utils import attention_dispatch as ad
 
     torch.manual_seed(1)
-    ids = torch.randint(5, 100, (1, 12), device = "cuda")
+    ids = torch.randint(5, 100, (1, 12), device = DEVICE)
     sdpa = _logits(model, ids)
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", True)
     monkeypatch.setattr(ad, "flash_attn_func", _flash_attn_func)
@@ -144,9 +149,9 @@ def test_flash_window_matches_sdpa(model, monkeypatch):
 def test_packed_eval_keeps_documents_apart(model, monkeypatch, window, flash):
     # Eval builds a causal mask over the whole row unless the row is packed (padding-free eval batches are).
     torch.manual_seed(2)
-    docs = [torch.randint(5, 100, (n,), device = "cuda") for n in LENGTHS]
+    docs = [torch.randint(5, 100, (n,), device = DEVICE) for n in LENGTHS]
     packed = torch.cat(docs)[None]
-    position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None]
+    position_ids = torch.cat([torch.arange(n, device = DEVICE) for n in LENGTHS])[None]
     if flash:
         _use_fake_flash(monkeypatch)
     model.config.sliding_window = window
@@ -187,11 +192,11 @@ def test_packed_eval_with_cache_keeps_documents_apart_on_flash(name, monkeypatch
     other.eval()
     torch.manual_seed(3)
     vocab = other.config.vocab_size
-    docs = [torch.randint(5, min(vocab, 100), (n,), device = "cuda") for n in LENGTHS]
+    docs = [torch.randint(5, min(vocab, 100), (n,), device = DEVICE) for n in LENGTHS]
     out = _logits(
         other,
         torch.cat(docs)[None],
-        position_ids = torch.cat([torch.arange(n, device = "cuda") for n in LENGTHS])[None],
+        position_ids = torch.cat([torch.arange(n, device = DEVICE) for n in LENGTHS])[None],
         use_cache = True,
         packed_seq_lengths = torch.tensor(LENGTHS, dtype = torch.int32),
     )

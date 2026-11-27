@@ -13,7 +13,11 @@ import os
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (  # tests/_shared, on sys.path via tests/conftest.py
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
 
 pytest.importorskip("torchao.quantization.qat")
 peft = pytest.importorskip("peft")
@@ -23,6 +27,7 @@ from unsloth.models import _qat_weight_memo as memo
 from unsloth.models._utils import _prepare_model_for_qat
 
 DIM = 128
+DEVICE = accelerator_device_type()
 
 
 def test_imports_this_tree():
@@ -115,10 +120,12 @@ def test_dynamic_scheme_still_cached():
 
 
 @pytest.mark.skipif(
-    not has_real_cuda() or not torch.cuda.is_available(), reason = "needs CUDA streams"
+    not has_real_cuda_or_xpu() or not getattr(torch, DEVICE).is_available(),
+    reason = "needs CUDA or XPU streams",
 )
 def test_cached_weight_not_served_to_another_stream(monkeypatch):
-    model = _model().cuda()
+    acc = accelerator_module()
+    model = _model().to(DEVICE)
     base = _base(model)
     quantizer, w = base.weight_fake_quantizer, base.weight
     monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
@@ -132,13 +139,19 @@ def test_cached_weight_not_served_to_another_stream(monkeypatch):
     assert memo.qat_weight_memo_stats()["hits"] > hits
     memo.clear_qat_weight_memo(model)
     quantizer(w)  # remembered on the default stream
-    producer, consumer = torch.cuda.Stream(), torch.cuda.Stream()
-    torch.cuda.synchronize()
-    with torch.cuda.stream(producer):
-        torch.cuda._sleep(300_000_000)
+    producer, consumer = acc.Stream(), acc.Stream()
+    # torch.xpu has no _sleep: a queue of large matmuls holds the producer stream back instead.
+    busy = None if DEVICE == "cuda" else torch.randn(4096, 4096, device = DEVICE)
+    acc.synchronize()
+    with acc.stream(producer):
+        if busy is None:
+            torch.cuda._sleep(300_000_000)
+        else:
+            for _ in range(50):
+                torch.mm(busy, busy)
         produced = quantizer(w)
-    with torch.cuda.stream(consumer):
+    with acc.stream(consumer):
         consumed = quantizer(w).clone()
-    torch.cuda.synchronize()
+    acc.synchronize()
     assert torch.equal(produced, ref)
     assert torch.equal(consumed, ref), int((consumed != ref).sum())

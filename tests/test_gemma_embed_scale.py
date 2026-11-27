@@ -9,9 +9,11 @@ import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
 from unsloth.models._utils import embedding_applies_scale
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
+
+DEVICE = accelerator_device_type()
 
 
 class _Scaled(torch.nn.Embedding):
@@ -75,7 +77,8 @@ def _tiny_checkpoint(path, repo):
 
 
 @pytest.mark.skipif(
-    not has_real_cuda(), reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA"
+    not has_real_cuda_or_xpu(),
+    reason = "loads tiny Gemma checkpoints through FastLanguageModel on CUDA or XPU",
 )
 @pytest.mark.parametrize(
     "repo, module_name",
@@ -113,7 +116,7 @@ def test_prefill_and_decode_scale_once(monkeypatch, tmp_path, repo, module_name)
         "fast_rms_layernorm_inference_gemma",
         lambda ln, x, *a, **k: (decode.append(x.detach().clone()), original(ln, x, *a, **k))[1],
     )
-    ids = torch.tensor([[2, 10, 11, 12, 13]], device = "cuda")
+    ids = torch.tensor([[2, 10, 11, 12, 13]], device = DEVICE)
     out = model.generate(
         input_ids = ids, attention_mask = torch.ones_like(ids), max_new_tokens = 2, do_sample = False
     )

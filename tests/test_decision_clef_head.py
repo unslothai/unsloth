@@ -9,7 +9,7 @@ import random
 from pathlib import Path
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
 
@@ -18,6 +18,7 @@ from unsloth.models import clef
 
 HIDDEN, WIDTH, VOCAB = 64, 32, 500
 VENDOR = Path(reference.__file__).parent
+DEVICE = accelerator_device_type()
 
 
 def test_vendored_files_match_the_manifest():
@@ -279,7 +280,7 @@ def test_autocast_matches_the_per_record_head(monkeypatch):
     assert torch.equal(ours[0].argmax(-1), theirs[0].argmax(-1))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "Inductor pads saved strides on CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "Inductor pads saved strides on CUDA or XPU")
 def test_checkpointed_head_trains_under_a_compiled_layer_norm(monkeypatch):
     # #13160: over 1024 tokens the first (static) graph pads mean / rstd strides; the queries'
     # dynamic recompile then served the checkpoint recompute and that backward crashed.
@@ -289,14 +290,14 @@ def test_checkpointed_head_trains_under_a_compiled_layer_norm(monkeypatch):
     torch._dynamo.reset()
     torch.manual_seed(0)
     length, width = 1222, 512
-    head = clef.JointSchemaHead(HIDDEN, width, 2, 2, 4, 64).cuda().train()
+    head = clef.JointSchemaHead(HIDDEN, width, 2, 2, 4, 64).to(DEVICE).train()
     question = reference.EncodedQuestion("q", 0, (5, 8), ((10, 12), (14, 17)), ("0", "1"))
     records = [reference.EncodedRecord(tuple(range(length)), (question,), "r")] * 2
-    hidden = torch.randn(len(records), length, HIDDEN, device = "cuda")
-    ids = torch.zeros(len(records), length, dtype = torch.long, device = "cuda")
+    hidden = torch.randn(len(records), length, HIDDEN, device = DEVICE)
+    ids = torch.zeros(len(records), length, dtype = torch.long, device = DEVICE)
     mask = torch.ones_like(ids)
-    embedding = torch.randn(length, HIDDEN, device = "cuda")
-    grad_out = torch.randn(len(records), 2, device = "cuda")
+    embedding = torch.randn(length, HIDDEN, device = DEVICE)
+    grad_out = torch.randn(len(records), 2, device = DEVICE)
     results = {}
     for checkpoint in ("1", "0"):
         monkeypatch.setenv("UNSLOTH_CLEF_CHECKPOINT", checkpoint)

@@ -17,6 +17,10 @@
 
 import ast, functools, os
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import torch.nn as nn
 
@@ -31,7 +35,8 @@ except Exception:
 pytestmark = pytest.mark.skipif(
     _zoo_op is None, reason = "unsloth_zoo without the shared offloaded_embedding op"
 )
-needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+DEVICE = accelerator_device_type()
+needs_gpu = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 
 
 def _load_installer():
@@ -164,15 +169,15 @@ def test_decorated_scaled_forward_is_declined():
     assert not getattr(emb, "_unsloth_offload_op_forward", False)
 
 
-@needs_cuda
+@needs_gpu
 def test_max_norm_set_after_install_keeps_module():
     ref = _make()
     emb = _make()
-    head = _head("cuda")
-    install(emb, head, torch.device("cuda"))
+    head = _head(DEVICE)
+    install(emb, head, torch.device(DEVICE))
     assert getattr(emb, "_unsloth_offload_op_forward", False)
     emb.max_norm = ref.max_norm = 0.5
-    ids = torch.randint(0, V, (4, 9), device = "cuda")
+    ids = torch.randint(0, V, (4, 9), device = DEVICE)
     torch._dynamo.reset()
     with torch.no_grad():
         out = torch.compile(lambda i: emb(i), backend = "aot_eager")(ids)
@@ -188,14 +193,14 @@ def test_globally_patched_embedding_forward_is_declined(monkeypatch):
     assert not getattr(emb, "_unsloth_offload_op_forward", False)
 
 
-@needs_cuda
+@needs_gpu
 def test_other_pre_hook_keeps_module_path():
     emb = _make()
-    head = _head("cuda")
-    install(emb, head, torch.device("cuda"))
+    head = _head(DEVICE)
+    install(emb, head, torch.device(DEVICE))
     seen = []
     emb.register_forward_pre_hook(lambda m, args: seen.append(args[0].device))
-    ids = torch.randint(0, V, (4, 9), device = "cuda")
+    ids = torch.randint(0, V, (4, 9), device = DEVICE)
     torch._dynamo.reset()
     with torch.no_grad():
         out = torch.compile(lambda i: emb(i), backend = "aot_eager")(ids)
@@ -241,15 +246,15 @@ def test_eager_unchanged_on_cpu(kind):
     assert torch.equal(emb(ids), ref(ids))
 
 
-@needs_cuda
+@needs_gpu
 @pytest.mark.parametrize("kind", ["plain", "scaled", "float32"])
 def test_compiled_no_grad_matches_module_and_breaks_only_when_declined(kind):
     from torch._dynamo.utils import counters
 
     ref = _make(kind)
     emb = _make(kind)
-    head = _head("cuda")
-    install(emb, head, torch.device("cuda"))
+    head = _head(DEVICE)
+    install(emb, head, torch.device(DEVICE))
 
     def step(ids):
         return head(emb(ids).to(torch.bfloat16))
@@ -257,10 +262,10 @@ def test_compiled_no_grad_matches_module_and_breaks_only_when_declined(kind):
     torch._dynamo.reset()
     counters.clear()
     compiled = torch.compile(step, backend = "aot_eager")
-    ids = torch.randint(0, V, (4, 9), device = "cuda")
+    ids = torch.randint(0, V, (4, 9), device = DEVICE)
     with torch.no_grad():
         out = compiled(ids)
-        expected = head(ref(ids.cpu()).cuda().to(torch.bfloat16))
+        expected = head(ref(ids.cpu()).to(DEVICE).to(torch.bfloat16))
     breaks = sum(counters["graph_break"].values())
     assert torch.equal(out, expected)
     if kind == "float32":
@@ -269,34 +274,34 @@ def test_compiled_no_grad_matches_module_and_breaks_only_when_declined(kind):
         assert breaks == 0, dict(counters["graph_break"])
 
 
-@needs_cuda
+@needs_gpu
 @pytest.mark.parametrize("kind", ["plain", "scaled"])
 def test_cuda_graph_decode_loop(kind):
     ref = _make(kind)
     emb = _make(kind)
-    head = nn.Linear(H, V, bias = False, dtype = torch.bfloat16).cuda()
-    install(emb, head, torch.device("cuda"))
+    head = nn.Linear(H, V, bias = False, dtype = torch.bfloat16).to(DEVICE)
+    install(emb, head, torch.device(DEVICE))
 
     def step(ids):
         return head(emb(ids)).argmax(-1)
 
     compiled = torch.compile(step, fullgraph = True, mode = "reduce-overhead")
-    ids = torch.randint(0, V, (4, 1), device = "cuda")
+    ids = torch.randint(0, V, (4, 1), device = DEVICE)
     ref_ids = ids.clone()
     with torch.no_grad():
         for _ in range(8):
             torch.compiler.cudagraph_mark_step_begin()
             ids = compiled(ids).clone()
-            ref_ids = head(ref(ref_ids.cpu()).cuda()).argmax(-1)
+            ref_ids = head(ref(ref_ids.cpu()).to(DEVICE)).argmax(-1)
             assert torch.equal(ids, ref_ids)
 
 
-@needs_cuda
+@needs_gpu
 def test_grad_enabled_keeps_module_and_hooks():
     # Frozen table under grad: enable_input_require_grads' hook must still fire.
     emb = _make()
-    head = _head("cuda").requires_grad_(True)
-    install(emb, head, torch.device("cuda"))
+    head = _head(DEVICE).requires_grad_(True)
+    install(emb, head, torch.device(DEVICE))
     fired = []
     emb.register_forward_hook(lambda m, i, o: (fired.append(1), o.requires_grad_(True))[1])
 
@@ -304,6 +309,6 @@ def test_grad_enabled_keeps_module_and_hooks():
         return head(emb(ids)).float().sum()
 
     torch._dynamo.reset()
-    loss = torch.compile(step, backend = "aot_eager")(torch.randint(0, V, (2, 5), device = "cuda"))
+    loss = torch.compile(step, backend = "aot_eager")(torch.randint(0, V, (2, 5), device = DEVICE))
     loss.backward()
     assert fired and head.weight.grad is not None and head.weight.grad.abs().sum() > 0

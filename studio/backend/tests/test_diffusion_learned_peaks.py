@@ -20,6 +20,7 @@ import pytest
 import core.inference.diffusion_measured_peaks as mp
 import core.inference.diffusion_memory as dm
 import core.inference.video_stream_residency as vsr
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 KLEIN_LOADED = {
     "transformer": (4091, "dit"),
@@ -447,12 +448,12 @@ def test_partial_residency_keeps_tied_weights_together():
     """Base: the embedding group went resident while the tied head streamed; the head's offload pointed the shared
     weight back at the host and the next encode failed (index on cuda, weight on cpu)."""
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA and diffusers group offloading")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU and diffusers group offloading")
     from diffusers.hooks import apply_group_offloading
 
     te = _tied_tiny_encoder(torch)
-    dev = torch.device("cuda")
+    dev = torch.device(accelerator_device_type())
     apply_group_offloading(
         te,
         onload_device = dev,

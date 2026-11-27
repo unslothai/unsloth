@@ -4,15 +4,21 @@
 """Chunked vocabs (> 65536): in-place ops on the forward output zeroed compiled grads (torch 2.11)."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
-if not torch.cuda.is_available() or torch.version.hip is not None:
+if not has_real_cuda_or_xpu() or torch.version.hip is not None:
     pytest.skip(
-        "Triton cross entropy kernels under torch.compile need an NVIDIA CUDA device",
+        "Triton cross entropy kernels under torch.compile need an NVIDIA CUDA or Intel XPU device",
         allow_module_level = True,
     )
 
 from unsloth.kernels import cross_entropy_loss as ce_mod
+
+DEVICE = accelerator_device_type()
 
 _TORCH = tuple(int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
 
@@ -25,11 +31,15 @@ def test_compiled_grads_match_the_fp64_reference(vocab, fullgraph, dynamic):
         # torch 2.6 Dynamo also rejects bool() of the symbolic softcap int; checked from 2.10 on.
         pytest.skip("dynamic=True Triton cross entropy is checked on torch 2.10+")
     torch._dynamo.reset()
-    generator = torch.Generator(device = "cuda").manual_seed(vocab)
-    # sm75 (T4) has no bf16 Triton under torch.compile.
-    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
-    logits = torch.randn(2, 5, vocab, device = "cuda", generator = generator).to(dtype)
-    labels = torch.randint(0, vocab, (2, 5), device = "cuda", generator = generator)
+    generator = torch.Generator(device = DEVICE).manual_seed(vocab)
+    # sm75 (T4) has no bf16 Triton under torch.compile; XPU has bf16.
+    dtype = (
+        torch.bfloat16
+        if DEVICE != "cuda" or torch.cuda.get_device_capability()[0] >= 8
+        else torch.float16
+    )
+    logits = torch.randn(2, 5, vocab, device = DEVICE, generator = generator).to(dtype)
+    labels = torch.randint(0, vocab, (2, 5), device = DEVICE, generator = generator)
     labels[0, 1] = -100
     reference = logits.double().requires_grad_(True)
     n_items = (labels != -100).sum()

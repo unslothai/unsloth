@@ -16,6 +16,7 @@ from core.inference import diffusion_eager_patches as ep  # noqa: E402
 from core.inference.diffusion_autoopt import apply as aa  # noqa: E402
 from core.inference.diffusion_autoopt import patches as ap  # noqa: E402
 from diffusers.models.normalization import AdaLayerNormZero, RMSNorm  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 
 class ZImageTransformer2DModel(torch.nn.Module):  # name-only stand-in for the class gate
@@ -92,13 +93,14 @@ def test_registry_kill_switch(monkeypatch):
     assert RMSNorm.forward is orig
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA for fp16 kernels")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU for fp16 kernels")
 def test_fused_fp16_is_at_least_as_close_to_fp64():
     torch.manual_seed(0)
-    m = RMSNorm(3840, eps = 1e-6).to("cuda", torch.float16)
+    dev = accelerator_device_type()
+    m = RMSNorm(3840, eps = 1e-6).to(dev, torch.float16)
     with torch.no_grad():
         m.weight.copy_(torch.randn(3840) * 0.2 + 1)
-    x = (torch.randn(4, 4096, 3840) * 3).to("cuda", torch.float16)
+    x = (torch.randn(4, 4096, 3840) * 3).to(dev, torch.float16)
     ref = (
         x.double() * torch.rsqrt(x.double().pow(2).mean(-1, keepdim = True) + 1e-6)
     ) * m.weight.double()

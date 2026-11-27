@@ -3,14 +3,18 @@
 
 import pytest
 from real_accelerator import (
+    accelerator_device_type,
     has_real_cuda,
+    has_real_cuda_or_xpu,
 )
 import torch
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required"),
 ]
+
+DEVICE = accelerator_device_type()
 
 TOL = {torch.float32: 1e-4, torch.float16: 2e-3, torch.bfloat16: 1.6e-2}
 
@@ -21,7 +25,7 @@ def _layer(
     bias = True,
     trainable = True,
 ):
-    layer = torch.nn.LayerNorm(cols, bias = bias, device = "cuda", dtype = dtype)
+    layer = torch.nn.LayerNorm(cols, bias = bias, device = DEVICE, dtype = dtype)
     with torch.no_grad():
         layer.weight.uniform_(0.5, 1.5)
         if bias:
@@ -61,8 +65,8 @@ def _close(actual, exact, dtype):
 def test_layernorm_trainable_weight_and_bias_get_grads(rows, cols, dtype, bias):
     torch.manual_seed(3407)
     layer = _layer(cols, dtype, bias)
-    inputs = torch.randn(rows, cols, device = "cuda", dtype = dtype)
-    grad = torch.randn(rows, cols, device = "cuda", dtype = dtype)
+    inputs = torch.randn(rows, cols, device = DEVICE, dtype = dtype)
+    grad = torch.randn(rows, cols, device = DEVICE, dtype = dtype)
     y, dx, dw, db = _fast(layer, inputs, grad)
     ey, edx, edw, edb = _exact(layer, inputs, grad)
     assert dw is not None and dw.dtype == dtype and dw.shape == (cols,)
@@ -78,8 +82,8 @@ def test_layernorm_trainable_weight_and_bias_get_grads(rows, cols, dtype, bias):
 @pytest.mark.parametrize("cols", [128, 1000, 4096])
 def test_layernorm_trainable_matches_frozen_y_and_dx(cols, dtype):
     torch.manual_seed(0)
-    inputs = torch.randn(2050, cols, device = "cuda", dtype = dtype)
-    grad = torch.randn(2050, cols, device = "cuda", dtype = dtype)
+    inputs = torch.randn(2050, cols, device = DEVICE, dtype = dtype)
+    grad = torch.randn(2050, cols, device = DEVICE, dtype = dtype)
     layer = _layer(cols, dtype)
     y, dx, _, _ = _fast(layer, inputs, grad)
     layer.zero_grad(set_to_none = True)
@@ -96,8 +100,8 @@ def test_layernorm_only_bias_trainable():
     torch.manual_seed(1)
     layer = _layer(512, torch.bfloat16)
     layer.weight.requires_grad_(False)
-    inputs = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
-    grad = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
+    inputs = torch.randn(700, 512, device = DEVICE, dtype = torch.bfloat16)
+    grad = torch.randn(700, 512, device = DEVICE, dtype = torch.bfloat16)
     _, _, dw, db = _fast(layer, inputs, grad)
     assert dw is None
     _close(db, grad.double().sum(0), torch.bfloat16)
@@ -107,13 +111,14 @@ def test_layernorm_only_weight_trainable():
     torch.manual_seed(5)
     layer = _layer(512, torch.bfloat16)
     layer.bias.requires_grad_(False)
-    inputs = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
-    grad = torch.randn(700, 512, device = "cuda", dtype = torch.bfloat16)
+    inputs = torch.randn(700, 512, device = DEVICE, dtype = torch.bfloat16)
+    grad = torch.randn(700, 512, device = DEVICE, dtype = torch.bfloat16)
     _, _, dw, db = _fast(layer, inputs, grad)
     assert db is None
     _close(dw, _exact(layer, inputs, grad)[2], torch.bfloat16)
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_layernorm_compiled_matches_eager_bytes(dtype):
     from unsloth.kernels.layernorm import fast_layernorm
@@ -122,8 +127,8 @@ def test_layernorm_compiled_matches_eager_bytes(dtype):
     if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation = False):
         pytest.skip("Inductor does not compile bf16 without native bf16 support")
     torch.manual_seed(6)
-    inputs = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
-    grad = torch.randn(3000, 1000, device = "cuda", dtype = dtype)
+    inputs = torch.randn(3000, 1000, device = DEVICE, dtype = dtype)
+    grad = torch.randn(3000, 1000, device = DEVICE, dtype = dtype)
     layer = _layer(1000, dtype)
     eager = _fast(layer, inputs, grad)
     layer.zero_grad(set_to_none = True)
@@ -136,6 +141,7 @@ def test_layernorm_compiled_matches_eager_bytes(dtype):
 
 
 # One trainable of the two: the unused gradient slot must not alias the used one under compile.
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize(
     "bias, train_w, train_b",
     [(True, False, True), (True, True, False), (False, True, False)],
@@ -146,8 +152,8 @@ def test_layernorm_compiled_single_trainable_matches_eager(dtype, bias, train_w,
     from unsloth.kernels.layernorm import fast_layernorm
 
     torch.manual_seed(7)
-    inputs = torch.randn(2, 300, 1000, device = "cuda", dtype = dtype)
-    grad = torch.randn(2, 300, 1000, device = "cuda", dtype = dtype)
+    inputs = torch.randn(2, 300, 1000, device = DEVICE, dtype = dtype)
+    grad = torch.randn(2, 300, 1000, device = DEVICE, dtype = dtype)
     layer = _layer(1000, dtype, bias = bias)
     layer.weight.requires_grad_(train_w)
     if bias:
@@ -169,8 +175,8 @@ def test_layernorm_compiled_single_trainable_matches_eager(dtype, bias, train_w,
 
 def test_layernorm_dw_is_deterministic():
     torch.manual_seed(2)
-    inputs = torch.randn(33000, 1024, device = "cuda", dtype = torch.bfloat16)
-    grad = torch.randn(33000, 1024, device = "cuda", dtype = torch.bfloat16)
+    inputs = torch.randn(33000, 1024, device = DEVICE, dtype = torch.bfloat16)
+    grad = torch.randn(33000, 1024, device = DEVICE, dtype = torch.bfloat16)
     runs = []
     for _ in range(3):
         layer = _layer(1024, torch.bfloat16)
@@ -182,8 +188,8 @@ def test_layernorm_dw_is_deterministic():
 
 def test_layernorm_empty_input_gives_zero_grads():
     layer = _layer(256, torch.float16)
-    inputs = torch.randn(0, 256, device = "cuda", dtype = torch.float16)
-    y, dx, dw, db = _fast(layer, inputs, torch.randn(0, 256, device = "cuda", dtype = torch.float16))
+    inputs = torch.randn(0, 256, device = DEVICE, dtype = torch.float16)
+    y, dx, dw, db = _fast(layer, inputs, torch.randn(0, 256, device = DEVICE, dtype = torch.float16))
     assert y.shape == (0, 256) and dx.shape == (0, 256)
     assert dw is not None and not dw.any() and db is not None and not db.any()
 
@@ -193,6 +199,6 @@ def test_layernorm_no_bias_forward_matches_torch():
     layer = _layer(768, torch.float32, bias = False, trainable = False)
     from unsloth.kernels.layernorm import fast_layernorm
 
-    inputs = torch.randn(4, 9, 768, device = "cuda")
+    inputs = torch.randn(4, 9, 768, device = DEVICE)
     expected = torch.nn.functional.layer_norm(inputs, (768,), layer.weight, None, layer.eps)
     torch.testing.assert_close(fast_layernorm(layer, inputs), expected, rtol = 1e-5, atol = 1e-5)

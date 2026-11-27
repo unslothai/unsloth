@@ -11,7 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models.loader_utils import _dequantize_bitsandbytes_for_full_finetuning
 
@@ -73,8 +75,8 @@ def test_other_quant_methods_and_on_the_fly_configs_are_left_alone():
 
 
 @pytest.mark.skipif(
-    not has_real_cuda() or importlib.util.find_spec("bitsandbytes") is None,
-    reason = "needs CUDA and bitsandbytes",
+    not has_real_cuda_or_xpu() or importlib.util.find_spec("bitsandbytes") is None,
+    reason = "needs CUDA or XPU and bitsandbytes",
 )
 def test_full_finetune_a_local_bnb_4bit_folder(tmp_path):
     script = textwrap.dedent(
@@ -83,8 +85,9 @@ def test_full_finetune_a_local_bnb_4bit_folder(tmp_path):
         from unsloth import FastLanguageModel
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         src, quantized, saved = sys.argv[1:4]
+        device = "cuda" if torch.cuda.is_available() else "xpu"
         AutoModelForCausalLM.from_pretrained(
-            src, quantization_config = BitsAndBytesConfig(load_in_4bit = True), device_map = "cuda:0"
+            src, quantization_config = BitsAndBytesConfig(load_in_4bit = True), device_map = f"{device}:0"
         ).save_pretrained(quantized)
         AutoTokenizer.from_pretrained(src).save_pretrained(quantized)
         model, tokenizer = FastLanguageModel.from_pretrained(

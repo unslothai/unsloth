@@ -11,7 +11,7 @@ import sys
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fp8_16bit_text_loader_dequant import _write_tiny_block_fp8_llama  # noqa: E402
@@ -21,6 +21,8 @@ try:
     _HAS_DEQUANTIZE = "dequantize" in inspect.signature(FineGrainedFP8Config).parameters
 except Exception:
     _HAS_DEQUANTIZE = False
+
+DEVICE = accelerator_device_type()
 
 # Records the quantization config FastModel hands transformers, then stops before any weight is read.
 _CAPTURE = """
@@ -120,10 +122,10 @@ import unsloth
 from unsloth import FastModel
 from safetensors.torch import load_file
 from transformers import AutoModelForCausalLM
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, device = sys.argv[1], sys.argv[2], sys.argv[3]
 state = load_file(src + "/model.safetensors")
 model, _ = FastModel.from_pretrained(src, max_seq_length = 64, dtype = torch.bfloat16,
-    full_finetuning = True, load_in_4bit = False, device_map = "cuda:0")
+    full_finetuning = True, load_in_4bit = False, device_map = device + ":0")
 loaded = {k: v.detach().cpu() for k, v in model.state_dict().items() if k.endswith("proj.weight")}
 bad = []
 for k, w in loaded.items():
@@ -159,14 +161,16 @@ def _write_tiny_tokenizer(path):
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load as fp8 only on CUDA")
+@pytest.mark.skipif(
+    not has_real_cuda_or_xpu(), reason = "fp8 checkpoints load as fp8 only on CUDA or XPU"
+)
 def test_full_finetuning_loads_and_saves_dequantized_weights(tmp_path):
     src, dst = tmp_path / "src", tmp_path / "saved"
     src.mkdir()
     _write_tiny_block_fp8_llama(str(src))
     _write_tiny_tokenizer(str(src))
     out = subprocess.run(
-        [sys.executable, "-c", _FULL_FT, str(src), str(dst)],
+        [sys.executable, "-c", _FULL_FT, str(src), str(dst), DEVICE],
         capture_output = True,
         text = True,
         timeout = 900,

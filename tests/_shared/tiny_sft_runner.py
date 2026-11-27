@@ -25,7 +25,7 @@ def main():
     p.add_argument("--save-steps", type = int, default = 0)
     p.add_argument("--resume", default = None)
     p.add_argument("--memory-probe", type = int, default = -1, help = "warmup steps; -1 = off")
-    p.add_argument("--leak-bytes", type = int, default = 0, help = "inject a per-step CUDA leak")
+    p.add_argument("--leak-bytes", type = int, default = 0, help = "inject a per-step device-memory leak")
     a = p.parse_args()
     os.makedirs(a.out, exist_ok = True)
 
@@ -35,9 +35,15 @@ def main():
     from datasets import Dataset
     from transformers import TrainerCallback
     from trl import SFTConfig, SFTTrainer
+    from real_accelerator import (
+        accelerator_device_type,
+    )  # tests/_shared, this script's own directory
 
+    # torch.cuda on CUDA / ROCm, torch.xpu on Intel XPU: same bf16 / synchronize / memory-stats API.
+    device_type = accelerator_device_type()
+    gpu = getattr(torch, device_type)
     # V100 / T4 have no bf16: train in fp16 there, as the notebooks do.
-    use_bf16 = torch.cuda.is_bf16_supported()
+    use_bf16 = gpu.is_bf16_supported()
     model, tokenizer = FastLanguageModel.from_pretrained(
         MODEL,
         max_seq_length = 64,
@@ -75,15 +81,15 @@ def main():
     class Probe(TrainerCallback):
         def on_step_end(self, args, state, control, **kwargs):
             if a.leak_bytes:
-                leaked.append(torch.empty(a.leak_bytes, dtype = torch.uint8, device = "cuda"))
+                leaked.append(torch.empty(a.leak_bytes, dtype = torch.uint8, device = device_type))
             if a.memory_probe >= 0 and state.global_step > a.memory_probe:
                 gc.collect()
-                torch.cuda.synchronize()
+                gpu.synchronize()
                 trace["step"].append(state.global_step)
-                trace["allocated"].append(torch.cuda.memory_allocated())
+                trace["allocated"].append(gpu.memory_allocated())
 
     if a.memory_probe >= 0:
-        torch.cuda.memory._record_memory_history(max_entries = 100000)
+        gpu.memory._record_memory_history(max_entries = 100000)
 
     config = SFTConfig(
         output_dir = os.path.join(a.out, "trainer"),
@@ -126,9 +132,9 @@ def main():
     result = {"steps": steps, "trace": trace}
     if a.memory_probe >= 0:
         try:
-            torch.cuda.memory._dump_snapshot(os.path.join(a.out, "memory_snapshot.pickle"))
+            gpu.memory._dump_snapshot(os.path.join(a.out, "memory_snapshot.pickle"))
         finally:
-            torch.cuda.memory._record_memory_history(enabled = None)
+            gpu.memory._record_memory_history(enabled = None)
     with open(os.path.join(a.out, "result.json"), "w") as f:
         json.dump(result, f)
 

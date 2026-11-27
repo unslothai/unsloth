@@ -9,6 +9,9 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -17,7 +20,11 @@ pytest.importorskip("triton")
 
 CUDA = torch.cuda.is_available()
 FP8_GPU = CUDA and torch.version.hip is None and torch.cuda.get_device_capability() >= (8, 9)
+DEVICE = accelerator_device_type()
 needs_fp8_gpu = pytest.mark.skipif(not FP8_GPU, reason = "needs an sm89+ NVIDIA GPU")
+needs_fp8_gpu_or_xpu = pytest.mark.skipif(
+    not (FP8_GPU or DEVICE == "xpu"), reason = "needs an sm89+ NVIDIA GPU or an XPU"
+)
 
 
 @pytest.fixture(scope = "module")
@@ -32,8 +39,8 @@ def _weights(
     K,
     seed = 0,
 ):
-    g = torch.Generator(device = "cuda").manual_seed(seed)
-    W = torch.randn(N, K, device = "cuda", generator = g) * 0.02
+    g = torch.Generator(device = DEVICE).manual_seed(seed)
+    W = torch.randn(N, K, device = DEVICE, generator = g) * 0.02
     scale = (W.abs().amax(1, keepdim = True) / 448.0).float()
     return (W / scale).to(torch.float8_e4m3fn), scale
 
@@ -84,29 +91,29 @@ def test_split_k_rule(F, dtype, N, K, split):
 def test_routing(F, monkeypatch):
     Wq, scale = _weights(1024, 512)
     for M, ok in ((1, True), (2, True), (16, True), (17, False)):
-        X = torch.randn(M, 1, 512, device = "cuda", dtype = torch.bfloat16)
+        X = torch.randn(M, 1, 512, device = DEVICE, dtype = torch.bfloat16)
         assert F.can_use_fp8_rowwise_gemv(X, Wq, scale) is ok, M
-    X = torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(4, 1, 512, device = DEVICE, dtype = torch.bfloat16, requires_grad = True)
     assert not F.can_use_fp8_rowwise_gemv(X, Wq, scale)
-    blocks = torch.ones(8, 4, device = "cuda")
+    blocks = torch.ones(8, 4, device = DEVICE)
     assert not F.can_use_fp8_rowwise_gemv(X.detach(), Wq, blocks)
     monkeypatch.setattr(F, "_FP8_GEMV_ROWS", False)
     assert not F.can_use_fp8_rowwise_gemv(X.detach(), Wq, scale)
     assert F.can_use_fp8_rowwise_gemv(X.detach()[:1], Wq, scale)
 
 
-@needs_fp8_gpu
+@needs_fp8_gpu_or_xpu
 def test_one_row_keeps_the_single_row_kernel(F, monkeypatch):
     def boom(*a, **k):
         raise AssertionError("rows kernel used for one row")
 
     monkeypatch.setattr(F, "_fp8_rowwise_gemv_rows", boom)
     Wq, scale = _weights(512, 256)
-    X = torch.randn(1, 1, 256, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(1, 1, 256, device = DEVICE, dtype = torch.bfloat16)
     F.fp8_rowwise_gemv(X, Wq, scale)
 
 
-@needs_fp8_gpu
+@needs_fp8_gpu_or_xpu
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("M", [2, 3, 8, 16])
 @pytest.mark.parametrize("N, K", [(1024, 4096), (4096, 4096), (200, 320)])
@@ -114,7 +121,7 @@ def test_one_row_keeps_the_single_row_kernel(F, monkeypatch):
 def test_rows_accuracy(F, monkeypatch, dtype, M, N, K, cfg):
     monkeypatch.setattr(F, "_FP8_ROWS_CONFIG_OVERRIDE", cfg)
     Wq, scale = _weights(N, K)
-    X = torch.randn(M, 1, K, device = "cuda", dtype = dtype)
+    X = torch.randn(M, 1, K, device = DEVICE, dtype = dtype)
     Wref = Wq.double() * scale.double()
     ref = (X.double().reshape(M, K) @ Wref.t()).reshape(M, 1, N)
     y = F.fp8_rowwise_gemv(X, Wq, scale)
@@ -129,7 +136,7 @@ def test_rows_accuracy(F, monkeypatch, dtype, M, N, K, cfg):
     assert torch.equal(y, F.fp8_rowwise_gemv(X, Wq, scale))
 
 
-@needs_fp8_gpu
+@needs_fp8_gpu_or_xpu
 def test_rows_through_fp8_linear_callers(F):
     from unsloth.kernels.utils import fast_linear_forward
 
@@ -144,7 +151,7 @@ def test_rows_through_fp8_linear_callers(F):
             raise AssertionError("not routed")
 
     Wq, scale = _weights(1024, 512)
-    X = torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(4, 1, 512, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
         out = fast_linear_forward(P(Wq, scale), X)
     ref = X.double() @ (Wq.double() * scale.double()).t()
@@ -158,8 +165,8 @@ def test_rows_off_where_triton_miscompiles_the_gemv(F, monkeypatch):
     monkeypatch.setattr(F, "_triton_builds_blackwell", lambda: True)
     Wq, scale = _weights(1024, 512)
     assert not F.can_use_fp8_rowwise_gemv(
-        torch.randn(4, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale
+        torch.randn(4, 1, 512, device = DEVICE, dtype = torch.bfloat16), Wq, scale
     )
     assert F.can_use_fp8_rowwise_gemv(
-        torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16), Wq, scale
+        torch.randn(1, 1, 512, device = DEVICE, dtype = torch.bfloat16), Wq, scale
     )

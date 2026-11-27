@@ -5,9 +5,15 @@
 normed = Y / W in backward, so the norm and the LoRA layer after it share one saved activation."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 from unsloth.kernels import rms_layernorm
+
+DEVICE = accelerator_device_type()
 
 
 def test_guard_rejects_weights_y_cannot_be_divided_by():
@@ -37,6 +43,7 @@ def test_guard_cache_follows_in_place_updates():
 
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+gpu = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 
 
 def _run(
@@ -76,14 +83,14 @@ def _ref_grad(
     return x64.grad
 
 
-@cuda
+@gpu
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("dim", [64, 127, 1000, 4097])
 def test_save_output_grads_and_storage(gemma, dtype, dim, monkeypatch):
-    gen = torch.Generator("cuda").manual_seed(0)
-    x = (torch.randn(3, 37, dim, device = "cuda", generator = gen) * 2 + 0.3).to(dtype)
-    w = torch.randn(dim, device = "cuda", generator = gen) * 0.1 + (0 if gemma else 1)
+    gen = torch.Generator(DEVICE).manual_seed(0)
+    x = (torch.randn(3, 37, dim, device = DEVICE, generator = gen) * 2 + 0.3).to(dtype)
+    w = torch.randn(dim, device = DEVICE, generator = gen) * 0.1 + (0 if gemma else 1)
     w = w.to(dtype)
     y0, dx0, saved0 = _run(x, w, gemma, False, monkeypatch)
     y1, dx1, saved1 = _run(x, w, gemma, True, monkeypatch)
@@ -100,12 +107,12 @@ def test_save_output_grads_and_storage(gemma, dtype, dim, monkeypatch):
     assert torch.isfinite(dx1).all()
 
 
-@cuda
+@gpu
 @pytest.mark.parametrize("gemma", [False, True])
 def test_save_output_off_or_unsafe_is_bitwise_old_path(gemma, monkeypatch):
-    gen = torch.Generator("cuda").manual_seed(0)
-    x = torch.randn(2, 33, 256, device = "cuda", generator = gen).to(torch.bfloat16)
-    w = (torch.randn(256, device = "cuda", generator = gen) * 0.1 + (0 if gemma else 1)).to(
+    gen = torch.Generator(DEVICE).manual_seed(0)
+    x = torch.randn(2, 33, 256, device = DEVICE, generator = gen).to(torch.bfloat16)
+    w = (torch.randn(256, device = DEVICE, generator = gen) * 0.1 + (0 if gemma else 1)).to(
         torch.bfloat16
     )
     y0, dx0, _ = _run(x, w, gemma, False, monkeypatch)
@@ -122,12 +129,12 @@ def test_save_output_off_or_unsafe_is_bitwise_old_path(gemma, monkeypatch):
     assert saved[0].data_ptr() != y4.data_ptr()
 
 
-@cuda
+@gpu
 def test_lora_does_not_overwrite_a_saved_norm_output(monkeypatch):
     from unsloth.kernels import fast_lora
 
-    x = torch.randn(2, 8, 128, device = "cuda", dtype = torch.float16)
-    w = torch.ones(128, device = "cuda", dtype = torch.float16)
+    x = torch.randn(2, 8, 128, device = DEVICE, dtype = torch.float16)
+    w = torch.ones(128, device = DEVICE, dtype = torch.float16)
     for enabled in (False, True):
         monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", enabled)
         y = rms_layernorm.Fast_RMS_Layernorm.apply(
@@ -137,13 +144,13 @@ def test_lora_does_not_overwrite_a_saved_norm_output(monkeypatch):
         assert fast_lora._may_overwrite_input(y) is not enabled
 
 
-@cuda
+@gpu
 def test_views_of_a_saved_norm_output_are_not_overwritten(monkeypatch):
     # The tiled MLP backward feeds the LoRA MLP chunk views of its saved input: split + unsqueeze.
     from unsloth.kernels import fast_lora
 
-    x = torch.randn(2, 8, 128, device = "cuda", dtype = torch.float16)
-    w = torch.ones(128, device = "cuda", dtype = torch.float16)
+    x = torch.randn(2, 8, 128, device = DEVICE, dtype = torch.float16)
+    w = torch.ones(128, device = DEVICE, dtype = torch.float16)
     for enabled in (False, True):
         monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", enabled)
         y = rms_layernorm.Fast_RMS_Layernorm.apply(
@@ -172,12 +179,12 @@ def test_guard_skips_inference_tensor_weights():
     assert not rms_layernorm._save_output_ok(w, False, torch.bfloat16)
 
 
-@cuda
+@gpu
 def test_save_output_with_inference_created_weights(monkeypatch):
     monkeypatch.setattr(rms_layernorm, "_SAVE_OUTPUT", True)
     with torch.inference_mode():
-        x = torch.randn(1, 8, 128, device = "cuda", dtype = torch.float16)
-        w = torch.ones(128, device = "cuda", dtype = torch.float16)
+        x = torch.randn(1, 8, 128, device = DEVICE, dtype = torch.float16)
+        w = torch.ones(128, device = DEVICE, dtype = torch.float16)
         y = rms_layernorm.Fast_RMS_Layernorm.apply(x, w, 1e-6, False, True)
     assert torch.isfinite(y).all()
     assert not getattr(y, "_unsloth_rmsnorm_saved", False)

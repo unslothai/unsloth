@@ -8,18 +8,23 @@ import sys
 import types
 
 import pytest
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_fsdp2_native_units import _load_native  # noqa: E402
 from test_fsdp2_native_trainer_ckpt_gloo import _free_port  # noqa: E402
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
+
+DEVICE = accelerator_device_type()
+# The device-side collective backend: NCCL on CUDA, XCCL on Intel XPU.
+_DEVICE_BACKEND = "nccl" if DEVICE == "cuda" else "xccl"
 
 
 class _Handler:
     def to_kwargs(self):
-        return {"device": "cuda", "init_scale": 2.0**8}
+        return {"device": DEVICE, "init_scale": 2.0**8}
 
 
 @pytest.fixture(scope = "module")
@@ -28,8 +33,8 @@ def world_of_one():
     import torch.distributed as dist
 
     os.environ.update(MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(_free_port()))
-    dist.init_process_group("cpu:gloo,cuda:nccl", rank = 0, world_size = 1)
-    torch.cuda.set_device(0)
+    dist.init_process_group(f"cpu:gloo,{DEVICE}:{_DEVICE_BACKEND}", rank = 0, world_size = 1)
+    accelerator_module().set_device(0)
     try:
         yield
     finally:
@@ -40,7 +45,7 @@ def world_of_one():
 @pytest.mark.parametrize("overflow", ["cpu", "cuda", "both"])
 def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_unscale, overflow):
     native = _load_native()
-    old = torch.amp.GradScaler("cuda", init_scale = 2.0**8)
+    old = torch.amp.GradScaler(DEVICE, init_scale = 2.0**8)
     trainer = types.SimpleNamespace(
         accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler())
     )
@@ -48,10 +53,10 @@ def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_
     scaler = trainer.accelerator.scaler
     torch.manual_seed(0)
     on_cpu = torch.nn.Parameter(torch.randn(8, 8))
-    on_cuda = torch.nn.Parameter(torch.randn(8, 8, device = "cuda"))
+    on_cuda = torch.nn.Parameter(torch.randn(8, 8, device = DEVICE))
     opt = torch.optim.AdamW([on_cpu, on_cuda], lr = 1e-2, fused = True)
     before = [on_cpu.detach().clone(), on_cuda.detach().clone()]
-    loss = on_cpu.sum().cuda() + on_cuda.sum()
+    loss = on_cpu.sum().to(DEVICE) + on_cuda.sum()
     scaler.scale(loss).backward()
     if overflow in ("cpu", "both"):
         on_cpu.grad[0, 0] = float("inf")
@@ -73,9 +78,16 @@ def test_mixed_device_fused_adamw_skips_an_overflow_step(world_of_one, explicit_
     assert scaler.get_scale() == 2.0**7
 
 
+def _keep_stream_busy():
+    # torch.xpu has no _sleep: queue enough matmuls to keep the device stream busy instead.
+    busy = torch.randn(4096, 4096, device = DEVICE)
+    for _ in range(64):
+        busy = torch.tanh(busy @ busy)
+
+
 def _scaler():
     native = _load_native()
-    old = torch.amp.GradScaler("cuda", init_scale = 2.0**8)
+    old = torch.amp.GradScaler(DEVICE, init_scale = 2.0**8)
     trainer = types.SimpleNamespace(
         accelerator = types.SimpleNamespace(scaler = old, scaler_handler = _Handler())
     )
@@ -89,25 +101,27 @@ def test_late_device_to_host_copies_keep_the_step_right(world_of_one, explicit_u
     scaler = _scaler()
     torch.manual_seed(0)
     on_cpu = torch.nn.Parameter(torch.randn(8, 8))
-    on_cuda = torch.nn.Parameter(torch.randn(8, 8, device = "cuda"))
+    on_cuda = torch.nn.Parameter(torch.randn(8, 8, device = DEVICE))
     opt = torch.optim.AdamW([on_cpu, on_cuda], lr = 1e-2, fused = True)
     ref_cpu = torch.nn.Parameter(on_cpu.detach().clone())
     ref_opt = torch.optim.AdamW([ref_cpu], lr = 1e-2)
     before = [on_cpu.detach().clone(), on_cuda.detach().clone()]
-    scaler.scale(on_cpu.sum().cuda() + on_cuda.sum()).backward()
+    scaler.scale(on_cpu.sum().to(DEVICE) + on_cuda.sum()).backward()
     if overflow in ("cpu", "both"):
         on_cpu.grad[0, 0] = float("inf")
     if overflow in ("cuda", "both"):
         on_cuda.grad[0, 0] = float("inf")
-    torch.cuda.synchronize()
-    torch.cuda._sleep(
-        200_000_000
-    )  # keep the stream busy: any non_blocking copy to the host lands late
+    accelerator_module().synchronize()
+    # keep the stream busy: any non_blocking copy to the host lands late
+    if DEVICE == "cuda":
+        torch.cuda._sleep(200_000_000)
+    else:
+        _keep_stream_busy()
     if explicit_unscale:
         scaler.unscale_(opt)
     scaler.step(opt)
     scaler.update()
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     if overflow == "none":
         ref_cpu.grad = torch.ones_like(ref_cpu)
         ref_opt.step()

@@ -5,9 +5,16 @@
 must emit the same greedy tokens as re-encoding the whole conversation."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
+
+DEVICE = accelerator_device_type()
 
 MODELS = [
     "trl-internal-testing/tiny-LlamaForCausalLM-3.2",
@@ -33,11 +40,11 @@ def model_and_tokenizer(request):
     FastLanguageModel.for_inference(model)
     yield model, tokenizer
     del model
-    torch.cuda.empty_cache()
+    accelerator_module().empty_cache()
 
 
 def _ids(tokenizer, text):
-    return tokenizer(text, return_tensors = "pt", add_special_tokens = False).to("cuda")
+    return tokenizer(text, return_tensors = "pt", add_special_tokens = False).to(DEVICE)
 
 
 def _cache(model, ids):

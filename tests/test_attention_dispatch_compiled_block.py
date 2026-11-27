@@ -144,17 +144,27 @@ def test_varlen_probe_takes_symbolic_head_sizes(dynamic):
     assert breaks == 0
 
 
-def _has_real_cuda():
+def _has_real_cuda_or_xpu():
     try:
         from real_accelerator import (
-            has_real_cuda,
+            has_real_cuda_or_xpu,
         )  # tests/_shared, on sys.path via tests/conftest.py
     except Exception:
         return torch.cuda.is_available()
-    return has_real_cuda()
+    return has_real_cuda_or_xpu()
 
 
-@pytest.mark.skipif(not _has_real_cuda(), reason = "needs a real CUDA device")
+def _accelerator_device_type():
+    try:
+        from real_accelerator import (
+            accelerator_device_type,
+        )  # tests/_shared, on sys.path via tests/conftest.py
+    except Exception:
+        return "cuda"
+    return accelerator_device_type()
+
+
+@pytest.mark.skipif(not _has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device")
 @pytest.mark.parametrize("dynamic", [False, True])
 def test_cuda_gqa_sdpa_compiles_fullgraph(dynamic):
     # The CUDA GQA probe runs only on CUDA tensors: noncausal bf16 GQA, no mask, forward + backward.
@@ -183,15 +193,16 @@ def test_cuda_gqa_sdpa_compiles_fullgraph(dynamic):
 
     from torch._dynamo.utils import counters
 
+    device = _accelerator_device_type()
     torch._dynamo.reset()
     counters.clear()
     compiled = torch.compile(attend, fullgraph = True, dynamic = dynamic)
     shapes = ((3, 32), (5, 48), (3, 40))  # no size equal to a head count (duck sizing)
     for bsz, q_len in shapes:
-        g = torch.Generator(device = "cuda").manual_seed(q_len)
+        g = torch.Generator(device = device).manual_seed(q_len)
         Q, K, V = (
             torch.randn(
-                bsz, h, q_len, 64, device = "cuda", generator = g, dtype = torch.bfloat16
+                bsz, h, q_len, 64, device = device, generator = g, dtype = torch.bfloat16
             ).requires_grad_()
             for h in (8, 2, 2)
         )

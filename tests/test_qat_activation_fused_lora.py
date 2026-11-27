@@ -9,12 +9,17 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "needs a real CUDA device"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real CUDA or XPU device"),
 ]
+
+DEVICE = accelerator_device_type()
 torchao_qat = pytest.importorskip("torchao.quantization.qat")
 
 H, I, R = 64, 128, 32
@@ -40,7 +45,7 @@ def _qat_block(base_config, filter_fn = None):
 
     torch.manual_seed(3407)
     cfg = LoraConfig(r = R, lora_alpha = R, target_modules = TARGETS, init_lora_weights = False)
-    model = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16)
+    model = get_peft_model(_Block(), cfg).to(DEVICE, torch.bfloat16)
     # Prepared after LoRA is attached, as _prepare_model_for_qat does.
     quantize_(model, torchao_qat.QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
     for name, p in model.named_parameters():
@@ -61,7 +66,7 @@ def _run(fn, model, X):
     out = fn(X)
     out = out if isinstance(out, tuple) else (out,)
     sum(
-        (o.float() * torch.linspace(-1, 1, o.shape[-1], device = "cuda")).sum() for o in out
+        (o.float() * torch.linspace(-1, 1, o.shape[-1], device = DEVICE)).sum() for o in out
     ).backward()
     grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
     model.zero_grad(set_to_none = True)
@@ -75,7 +80,7 @@ def _assert_matches_modules(
 ):
     from unsloth.kernels import apply_lora_mlp_swiglu, apply_lora_o, apply_lora_qkv
 
-    X = torch.randn(2, 5, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(2, 5, H, device = DEVICE, dtype = torch.bfloat16)
     pairs = {
         "qkv": (
             lambda X: apply_lora_qkv(block, X),
@@ -120,7 +125,7 @@ def test_weight_only_qat_keeps_fused_path(monkeypatch):
     fused = []
     real_apply = fast_lora._apply
     monkeypatch.setattr(fast_lora, "_apply", lambda fn, *a: fused.append(fn) or real_apply(fn, *a))
-    X = torch.randn(2, 5, H, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(2, 5, H, device = DEVICE, dtype = torch.bfloat16)
     with torch.no_grad():
         fast_lora.apply_lora_qkv(block, X.clone())
         fast_lora.apply_lora_o(block, X.clone())

@@ -8,12 +8,14 @@ import types
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 from unsloth.kernels import fp8 as F8
 
 OLD = "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
 NEW = "torchao.kernel.blockwise_quantization"
+
+DEVICE = accelerator_device_type()
 
 
 def _stub(monkeypatch, name, fn):
@@ -186,17 +188,17 @@ def test_torchao_block_matmul_routes_empty_inputs_to_triton(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not has_real_cuda() or F8.torchao_blockwise_gemm is None,
-    reason = "needs CUDA and torchao's blockwise GEMM",
+    not has_real_cuda_or_xpu() or F8.torchao_blockwise_gemm is None,
+    reason = "needs CUDA or XPU and torchao's blockwise GEMM",
 )
 def test_fp8_block_matmul_empty_rows_on_gpu():
     # The real kernels: an empty activation gives an empty output instead of a math domain error.
-    if torch.cuda.get_device_capability()[0] < 9:
+    if DEVICE == "cuda" and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("block FP8 GEMM needs sm_89 or newer")
     K, N = 512, 256
-    act_q = torch.empty(0, K, device = "cuda", dtype = torch.float8_e4m3fn)
-    act_s = torch.empty(0, K // 128, device = "cuda")
-    w_q = torch.randn(N, K, device = "cuda").to(torch.float8_e4m3fn)
-    w_s = torch.ones(N // 128, K // 128, device = "cuda")
+    act_q = torch.empty(0, K, device = DEVICE, dtype = torch.float8_e4m3fn)
+    act_s = torch.empty(0, K // 128, device = DEVICE)
+    w_q = torch.randn(N, K, device = DEVICE).to(torch.float8_e4m3fn)
+    w_s = torch.ones(N // 128, K // 128, device = DEVICE)
     out = F8.torchao_block_matmul(act_q, w_q, act_s, w_s, [128, 128])
     assert out.shape == (0, N) and out.dtype == torch.bfloat16

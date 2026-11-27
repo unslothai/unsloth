@@ -15,8 +15,13 @@ import textwrap
 import pytest
 
 torch = pytest.importorskip("torch")
-if not torch.cuda.is_available() or getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
-    pytest.skip("needs a real CUDA GPU", allow_module_level = True)
+
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
+
+if not has_real_cuda_or_xpu() or getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
+    pytest.skip("needs a real CUDA or XPU GPU", allow_module_level = True)
 trl = pytest.importorskip("trl")
 
 MODEL = os.environ.get("UNSLOTH_TEST_DPO_MODEL", "trl-internal-testing/tiny-Qwen3ForCausalLM")
@@ -38,6 +43,7 @@ SCRIPT = textwrap.dedent(
     from datasets import Dataset
     from trl import DPOConfig, DPOTrainer
     PatchDPOTrainer()
+    accelerator = torch.cuda if torch.cuda.is_available() else torch.xpu
     model, tok = FastLanguageModel.from_pretrained(sys.argv[1], max_seq_length = 128, load_in_4bit = False)
     model = FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 8, target_modules = ["q_proj", "v_proj"])
     if tok.pad_token is None:
@@ -49,7 +55,7 @@ SCRIPT = textwrap.dedent(
     args = DPOConfig(
         output_dir = sys.argv[2], per_device_train_batch_size = 2, max_steps = 3, learning_rate = 1e-4,
         logging_steps = 1, report_to = "none", max_length = 64, beta = 0.1, save_strategy = "no",
-        fp16 = not torch.cuda.is_bf16_supported(), bf16 = torch.cuda.is_bf16_supported(),
+        fp16 = not accelerator.is_bf16_supported(), bf16 = accelerator.is_bf16_supported(),
     )
     trainer = DPOTrainer(model = model, ref_model = None, args = args, train_dataset = Dataset.from_list(rows), processing_class = tok)
     trainer.train()

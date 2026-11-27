@@ -12,6 +12,11 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_torchao_patches as patches  # noqa: E402
+from real_accelerator import (  # noqa: E402
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
 
 
 def _patched(monkeypatch, env = None):
@@ -87,7 +92,7 @@ def test_a_tag_only_rocm_wheel_keeps_the_row_major_copy(monkeypatch):
     assert seen[-1].is_contiguous()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU (cuBLASLt int8)")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA GPU (cuBLASLt int8) or an XPU")
 @pytest.mark.parametrize(
     "m,k,n", [(4384, 7168, 5376), (4128, 5376, 7168), (17, 64, 32), (1024, 14336, 5376)]
 )
@@ -111,11 +116,12 @@ def test_cuda_transposed_int_mm_is_exact(monkeypatch, m, k, n):
     fn = patches._make_safe_int_mm(
         intmm, getattr(intmm.safe_int_mm, "__unsloth_original__", intmm.safe_int_mm)
     )
-    g = torch.Generator(device = "cuda").manual_seed(0)
-    x = torch.randint(-127, 128, (m, k), dtype = torch.int8, device = "cuda", generator = g)
-    w = torch.randint(-127, 128, (n, k), dtype = torch.int8, device = "cuda", generator = g)
+    dev = accelerator_device_type()
+    g = torch.Generator(device = dev).manual_seed(0)
+    x = torch.randint(-127, 128, (m, k), dtype = torch.int8, device = dev, generator = g)
+    w = torch.randint(-127, 128, (n, k), dtype = torch.int8, device = dev, generator = g)
     got = fn(x, w.t())
-    torch.cuda.synchronize()
+    accelerator_module().synchronize()
     ref = (x.double() @ w.double().t()).to(torch.int64)
     assert torch.equal(got.to(torch.int64), ref)
 

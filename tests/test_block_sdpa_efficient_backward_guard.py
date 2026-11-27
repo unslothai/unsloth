@@ -10,9 +10,15 @@ import sys
 import types
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)
 
 torch = pytest.importorskip("torch")
+
+DEVICE = accelerator_device_type()
 
 _DIR = os.path.join(os.path.dirname(__file__), "..", "unsloth", "models")
 
@@ -127,7 +133,7 @@ def test_align_guard_env_keeps_every_guard(monkeypatch, stock_lowering):
     assert stock_lowering.sdpa_constraint is stock
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "compiled block needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "compiled block needs CUDA or XPU")
 def test_padded_batches_train_in_a_compiled_block(monkeypatch, stock_lowering):
     """Right-padded batches at every length 9 to 17 through a compiled layer with masked memory-efficient
     SDPA: no fault, the loss and gradients match the stock layer, and no `% 8` recompile."""
@@ -164,18 +170,18 @@ def test_padded_batches_train_in_a_compiled_block(monkeypatch, stock_lowering):
     cfg._attn_implementation = "sdpa"
     torch.manual_seed(0)
     cls = modeling.Qwen3DecoderLayer
-    model = modeling.Qwen3Model(cfg).cuda().float().train()
+    model = modeling.Qwen3Model(cfg).to(DEVICE).float().train()
 
     def step(L):
-        g = torch.Generator(device = "cuda").manual_seed(L)
-        ids = torch.randint(1, 64, (2, L), device = "cuda", generator = g)
-        mask = torch.ones(2, L, dtype = torch.long, device = "cuda")
+        g = torch.Generator(device = DEVICE).manual_seed(L)
+        ids = torch.randint(1, 64, (2, L), device = DEVICE, generator = g)
+        mask = torch.ones(2, L, dtype = torch.long, device = DEVICE)
         mask[1, L - 3 :] = 0
         model.zero_grad(set_to_none = True)
         out = model(input_ids = ids, attention_mask = mask, use_cache = False).last_hidden_state
         loss = (out * mask[..., None]).square().mean()
         loss.backward()
-        torch.cuda.synchronize()
+        accelerator_module().synchronize()
         grads = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
         return loss.detach(), grads
 

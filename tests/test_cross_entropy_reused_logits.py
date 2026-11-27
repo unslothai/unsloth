@@ -2,14 +2,16 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import pytest
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 import torch
 import torch.nn.functional as F
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required"),
+    pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required"),
 ]
+
+DEVICE = accelerator_device_type()
 
 
 def _reference_loss(logits, labels, softcap, scaling):
@@ -28,14 +30,14 @@ def test_two_cross_entropy_losses_share_logits(dtype, vocab_size, softcap, scali
     from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
 
     torch.manual_seed(42)
-    hidden = torch.randn(2, 3, 8, device = "cuda")
-    weight = torch.randn(vocab_size, 8, device = "cuda", requires_grad = True)
+    hidden = torch.randn(2, 3, 8, device = DEVICE)
+    weight = torch.randn(vocab_size, 8, device = DEVICE, requires_grad = True)
     reference_weight = weight.detach().clone().requires_grad_()
     logits = F.linear(hidden, weight).to(dtype)
     reference_logits = F.linear(hidden, reference_weight).to(dtype)
     original_logits = logits.detach().clone()
-    labels_a = torch.tensor([[0, 1, -100], [2, vocab_size - 1, 3]], device = "cuda")
-    labels_b = torch.tensor([[vocab_size - 1, -100, 2], [3, 1, 0]], device = "cuda")
+    labels_a = torch.tensor([[0, 1, -100], [2, vocab_size - 1, 3]], device = DEVICE)
+    labels_b = torch.tensor([[vocab_size - 1, -100, 2], [3, 1, 0]], device = DEVICE)
     assert logits.is_contiguous()
 
     actual = fast_cross_entropy_loss(
@@ -67,10 +69,10 @@ def test_cross_entropy_retained_graph(dtype, vocab_size, softcap, scaling, use_a
     from unsloth.kernels.cross_entropy_loss import fast_cross_entropy_loss
 
     torch.manual_seed(42)
-    logits = torch.randn(2, 3, vocab_size, device = "cuda", dtype = dtype, requires_grad = True)
+    logits = torch.randn(2, 3, vocab_size, device = DEVICE, dtype = dtype, requires_grad = True)
     original_logits = logits.detach().clone()
     reference_logits = logits.detach().clone().requires_grad_()
-    labels = torch.tensor([[0, 1, -100], [2, vocab_size - 1, 3]], device = "cuda")
+    labels = torch.tensor([[0, 1, -100], [2, vocab_size - 1, 3]], device = DEVICE)
     actual = fast_cross_entropy_loss(
         logits, labels, logit_softcapping = softcap, logit_scaling = scaling
     )

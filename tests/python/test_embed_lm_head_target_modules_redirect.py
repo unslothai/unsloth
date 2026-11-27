@@ -5,6 +5,10 @@
 
 import os
 import pytest
+from real_accelerator import (
+    accelerator_module,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 
@@ -19,8 +23,8 @@ def _shared_setup_1():
 
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason = "embedding target redirect integration test needs a CUDA GPU",
+    not has_real_cuda_or_xpu(),
+    reason = "embedding target redirect integration test needs a CUDA or XPU GPU",
 )
 
 
@@ -90,7 +94,7 @@ def _run_redirect_check(new_model_path: bool, target_modules):
         assert not any("lm_head.lora_A" in k for k in state)
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
         if previous_new_model is None:
             os.environ.pop("UNSLOTH_USE_NEW_MODEL", None)
         else:
@@ -130,7 +134,7 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
         )
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
 
 
 @pytest.mark.slow
@@ -169,7 +173,7 @@ def test_dropping_the_embeddings_from_a_repeat_call_is_not_silently_ignored(firs
             )
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
 
 
 @pytest.mark.slow
@@ -194,7 +198,7 @@ def test_qualified_targets_are_not_collapsed_to_their_leaf():
                 )
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
 
 
 @pytest.mark.slow
@@ -213,7 +217,7 @@ def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
         FastLanguageModel.get_peft_model(model, ensure_weight_tying = True, **kwargs)
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
 
 
 @pytest.mark.slow
@@ -242,7 +246,7 @@ def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
             FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_proj"])
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()
 
 
 @pytest.mark.slow
@@ -259,4 +263,4 @@ def test_embedding_only_target_list_raises_instead_of_training_nothing():
             )
     finally:
         del model
-        torch.cuda.empty_cache()
+        accelerator_module().empty_cache()

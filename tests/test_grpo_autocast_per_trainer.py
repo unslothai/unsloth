@@ -593,9 +593,13 @@ if __name__ == "__main__":
 def test_an_outer_autocast_is_inherited_rather_than_overridden():
     """Omit the dtype key rather than passing a nullcontext sentinel: autocast only accepts a
     torch.dtype."""
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA: torch.is_autocast_enabled('cuda') is the branch")
+    from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
+
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU: torch.is_autocast_enabled(device) is the branch")
     from unsloth.models.rl_replacements import _unsloth_grpo_autocast_kwargs
+
+    device = accelerator_device_type()
 
     class _Trainer:
         pass
@@ -608,16 +612,16 @@ def test_an_outer_autocast_is_inherited_rather_than_overridden():
     outside = _unsloth_grpo_autocast_kwargs(trainer)
     assert outside == {"enabled": True, "dtype": torch.float16}, outside
 
-    with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
+    with torch.amp.autocast(device_type = device, dtype = torch.bfloat16):
         inside = _unsloth_grpo_autocast_kwargs(trainer)
         assert "dtype" not in inside, inside
-        with torch.amp.autocast(device_type = "cuda", **inside):
-            x = torch.randn(4, 4, device = "cuda")
+        with torch.amp.autocast(device_type = device, **inside):
+            x = torch.randn(4, 4, device = device)
             assert (x @ x).dtype is torch.bfloat16
 
     # Forcing float32 keeps naming float16 even inside an outer autocast.
     trainer._autocast_force_float32 = True
-    with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
+    with torch.amp.autocast(device_type = device, dtype = torch.bfloat16):
         forced = _unsloth_grpo_autocast_kwargs(trainer)
     assert forced == {"enabled": True, "dtype": torch.float16}, forced
 

@@ -3,14 +3,17 @@
 
 import pytest
 from real_accelerator import (
-    has_real_cuda,
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 pytestmark = pytest.mark.gpu
 
+DEVICE = accelerator_device_type()
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "rows", "expanded"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -19,16 +22,16 @@ def test_rmsnorm_backward_gradient_layout(gemma, layout, dtype):
 
     torch.manual_seed(42)
     shape = (1, 4, 64)
-    inputs = torch.randn(shape, device = "cuda", dtype = dtype)
-    weights = torch.rand(shape[-1], device = "cuda", dtype = dtype)
+    inputs = torch.randn(shape, device = DEVICE, dtype = dtype)
+    weights = torch.rand(shape[-1], device = DEVICE, dtype = dtype)
     if layout == "columns":
-        grad = torch.randn(1, 4, 128, device = "cuda", dtype = dtype)[..., ::2]
+        grad = torch.randn(1, 4, 128, device = DEVICE, dtype = dtype)[..., ::2]
     elif layout == "rows":
-        grad = torch.randn(1, 8, 64, device = "cuda", dtype = dtype)[:, ::2]
+        grad = torch.randn(1, 8, 64, device = DEVICE, dtype = dtype)[:, ::2]
     elif layout == "expanded":
-        grad = torch.ones(1, device = "cuda", dtype = dtype).expand(shape)
+        grad = torch.ones(1, device = DEVICE, dtype = dtype).expand(shape)
     else:
-        grad = torch.randn(shape, device = "cuda", dtype = dtype)
+        grad = torch.randn(shape, device = DEVICE, dtype = dtype)
     assert grad.is_contiguous() == (layout == "contiguous")
     reference_inputs = inputs.clone().requires_grad_()
     normalized = reference_inputs.float() * torch.rsqrt(
@@ -47,7 +50,7 @@ def test_rmsnorm_backward_gradient_layout(gemma, layout, dtype):
     torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_rmsnorm_forward_column_strided_input(gemma, dtype):
@@ -55,10 +58,10 @@ def test_rmsnorm_forward_column_strided_input(gemma, dtype):
     from unsloth.kernels.rms_layernorm import Fast_RMS_Layernorm
 
     torch.manual_seed(42)
-    source = torch.randn(1, 4, 128, device = "cuda", dtype = dtype, requires_grad = True)
+    source = torch.randn(1, 4, 128, device = DEVICE, dtype = dtype, requires_grad = True)
     strided = source[..., ::2]
     assert not strided.is_contiguous()
-    weights = torch.rand(strided.shape[-1], device = "cuda", dtype = dtype)
+    weights = torch.rand(strided.shape[-1], device = DEVICE, dtype = dtype)
 
     reference_source = source.detach().clone().requires_grad_()
     reference_inputs = reference_source[..., ::2]
@@ -77,7 +80,7 @@ def test_rmsnorm_forward_column_strided_input(gemma, dtype):
     torch.testing.assert_close(source.grad, reference_source.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "CUDA or XPU Triton kernels required")
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "expanded"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
@@ -88,15 +91,15 @@ def test_rmsnorm_weight_layout(gemma, layout, dtype):
     torch.manual_seed(42)
     shape = (1, 4, 64)
     dim = shape[-1]
-    inputs = torch.randn(shape, device = "cuda", dtype = dtype)
+    inputs = torch.randn(shape, device = DEVICE, dtype = dtype)
     if layout == "columns":
-        weights = torch.rand(2 * dim, device = "cuda", dtype = dtype)[::2]
+        weights = torch.rand(2 * dim, device = DEVICE, dtype = dtype)[::2]
     elif layout == "expanded":
-        weights = torch.rand(1, device = "cuda", dtype = dtype).expand(dim)
+        weights = torch.rand(1, device = DEVICE, dtype = dtype).expand(dim)
     else:
-        weights = torch.rand(dim, device = "cuda", dtype = dtype)
+        weights = torch.rand(dim, device = DEVICE, dtype = dtype)
     assert weights.is_contiguous() == (layout == "contiguous")
-    grad = torch.randn(shape, device = "cuda", dtype = dtype)
+    grad = torch.randn(shape, device = DEVICE, dtype = dtype)
 
     reference_inputs = inputs.clone().requires_grad_()
     normalized = reference_inputs.float() * torch.rsqrt(

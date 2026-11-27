@@ -3,9 +3,15 @@
 `CUDA error: misaligned address`."""
 
 import pytest
+from real_accelerator import (
+    accelerator_device_type,
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 import unsloth  # noqa: F401  (must precede transformers)
 import unsloth.models._utils as u
+
+DEVICE = accelerator_device_type()
 
 
 @pytest.fixture(autouse = True)
@@ -192,8 +198,8 @@ def test_compiled_flex_backward_matches_eager_for_a_short_static_batch():
     # where flex_decoding's padded logsumexp gave grads off by 10x.
     import torch
 
-    if not torch.cuda.is_available():
-        pytest.skip("needs a CUDA device for the Triton flex kernels")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs a CUDA or XPU device for the Triton flex kernels")
     try:
         from torch.nn.attention.flex_attention import create_block_mask
     except ImportError:
@@ -202,13 +208,13 @@ def test_compiled_flex_backward_matches_eager_for_a_short_static_batch():
 
     torch._dynamo.reset()
     B, H, S, D = 2, 16, 121, 64
-    gen = torch.Generator(device = "cuda").manual_seed(0)
+    gen = torch.Generator(device = DEVICE).manual_seed(0)
     q, k, v, grad = (
-        torch.randn(B, H, S, D, device = "cuda", dtype = torch.bfloat16, generator = gen)
+        torch.randn(B, H, S, D, device = DEVICE, dtype = torch.bfloat16, generator = gen)
         for _ in range(4)
     )
     mask = create_block_mask(
-        lambda b, h, qi, ki: qi >= ki, B = B, H = None, Q_LEN = S, KV_LEN = S, device = "cuda"
+        lambda b, h, qi, ki: qi >= ki, B = B, H = None, Q_LEN = S, KV_LEN = S, device = DEVICE
     )
     module = torch.nn.Module().train()
 

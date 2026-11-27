@@ -15,10 +15,11 @@ import pytest
 import torch
 import unsloth  # noqa: F401
 
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
 from unsloth.kernels import multi_lora as ml
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+DEVICE = accelerator_device_type()
 
 
 def _case(
@@ -335,19 +336,19 @@ def test_chunked_per_adapter_loss_handles_one_token_rows():
     assert torch.equal(logits.grad, torch.zeros_like(logits))
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("V", [7, 70000])
 def test_gpu_per_adapter_loss_matches_the_dense_loss(dtype, V):
-    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+    if dtype == torch.bfloat16 and not accelerator_module().is_bf16_supported():
         pytest.skip("no bf16")
     g = torch.Generator().manual_seed(0)
     B, T, U = 4, 9, 3
-    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype).cuda()
-    labels = torch.randint(0, V, (B, T), generator = g).cuda()
+    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype).to(DEVICE)
+    labels = torch.randint(0, V, (B, T), generator = g).to(DEVICE)
     labels[1, 4:] = -100
-    ids = torch.randint(-1, U, (B, T), generator = g).cuda()
-    scale = torch.tensor([2.0**10, 1.0, 2.0**4], device = "cuda")[ids.clamp_min(0)]
+    ids = torch.randint(-1, U, (B, T), generator = g).to(DEVICE)
+    scale = torch.tensor([2.0**10, 1.0, 2.0**4], device = DEVICE)[ids.clamp_min(0)]
 
     def run(fn, **kw):
         x = logits.clone().requires_grad_()
@@ -491,16 +492,16 @@ def test_triton_kernels_match_fp64_in_the_interpreter(tmp_path, negative_control
         assert proc.returncode == 0 and "KERNELS OK" in proc.stdout, proc.stdout + proc.stderr
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
     "shape", [(3, 37, 48, 40, 8), (4, 1000, 512, 768, 16), (2, 257, 4096, 1024, 64)]
 )
 def test_triton_kernels_match_fp64_on_gpu(dtype, shape):
-    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+    if dtype == torch.bfloat16 and not accelerator_module().is_bf16_supported():
         pytest.skip("no bf16")
     U, M, K, N, R = shape
-    X, W, A, B, scales, ids = _case(U, M, K, N, R, dtype = dtype, device = "cuda")
+    X, W, A, B, scales, ids = _case(U, M, K, N, R, dtype = dtype, device = DEVICE)
     X.requires_grad_()
     A.requires_grad_()
     B.requires_grad_()
@@ -767,7 +768,7 @@ def test_ddp_two_ranks_train_each_adapter_on_its_global_mean(tmp_path):
     )
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 @pytest.mark.parametrize("triton_kernels", [True, False])
 def test_compiles_fullgraph_without_recompiling_per_batch(triton_kernels):
     from torch._dynamo.utils import counters
@@ -775,7 +776,7 @@ def test_compiles_fullgraph_without_recompiling_per_batch(triton_kernels):
     def model():
         torch.manual_seed(0)
         m = torch.nn.Sequential(torch.nn.Linear(64, 128), torch.nn.GELU(), torch.nn.Linear(128, 32))
-        m = m.cuda().to(torch.bfloat16)
+        m = m.to(DEVICE).to(torch.bfloat16)
         ml.inject_multi_lora(m, ["0", "2"], 3, r = [4, 8, 8])
         for _, layer in ml._layers(m):
             for B in layer.lora_B:
@@ -797,8 +798,8 @@ def test_compiles_fullgraph_without_recompiling_per_batch(triton_kernels):
         fn = torch.compile(compiled, fullgraph = True)
         g = torch.Generator().manual_seed(0)
         for _ in range(4):  # same size, different routing: one graph
-            x = torch.randn(48, 64, generator = g).cuda().to(torch.bfloat16)
-            ids = torch.randint(-1, 3, (48,), generator = g).cuda()
+            x = torch.randn(48, 64, generator = g).to(DEVICE).to(torch.bfloat16)
+            ids = torch.randint(-1, 3, (48,), generator = g).to(DEVICE)
             for a, b in zip(step(compiled, fn, x, ids), step(eager, eager, x, ids)):
                 rel = (a.float() - b.float()).norm() / b.float().norm().clamp_min(1e-12)
                 assert rel < 3e-2, rel

@@ -5,7 +5,9 @@ import unsloth  # noqa: F401
 import transformers
 
 from unsloth.models import _utils
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, accelerator_module, has_real_cuda_or_xpu
+
+DEVICE = accelerator_device_type()
 
 pytestmark = pytest.mark.skipif(
     not hasattr(transformers, "MllamaConfig"), reason = "needs transformers with Mllama"
@@ -65,24 +67,24 @@ def test_flash_entries_of_a_mapping_fall_back(monkeypatch):
     assert impl == {"": "sdpa", "vision_config": "eager"}
 
 
-# has_real_cuda(): the zoo CUDA spoof patches torch.cuda.is_available() True process-wide.
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
+# has_real_cuda_or_xpu(): the zoo CUDA spoof patches torch.cuda.is_available() True process-wide.
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs CUDA or XPU")
 def test_mllama_image_forward_runs_on_the_resolved_implementation(monkeypatch):
     monkeypatch.setattr(_utils, "HAS_FLASH_ATTENTION", True)
     model_class, config = _tiny_mllama()
     impl = _utils.resolve_attention_implementation(model_class, config, supports_sdpa = True)
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    dtype = torch.bfloat16 if accelerator_module().is_bf16_supported() else torch.float16
     # No dtype keyword: Transformers 4.x names it torch_dtype, 5.x dtype.
-    model = model_class._from_config(config, attn_implementation = impl).to("cuda", dtype).eval()
-    ids = torch.tensor([[255, 5, 6, 7, 8, 9]], device = "cuda")
-    pixels = torch.randn(1, 1, 1, 3, 56, 56, device = "cuda", dtype = dtype)
+    model = model_class._from_config(config, attn_implementation = impl).to(DEVICE, dtype).eval()
+    ids = torch.tensor([[255, 5, 6, 7, 8, 9]], device = DEVICE)
+    pixels = torch.randn(1, 1, 1, 3, 56, 56, device = DEVICE, dtype = dtype)
     with torch.no_grad():
         out = model(
             input_ids = ids,
             pixel_values = pixels,
-            aspect_ratio_ids = torch.tensor([[1]], device = "cuda"),
-            aspect_ratio_mask = torch.ones(1, 1, 1, device = "cuda", dtype = torch.long),
-            cross_attention_mask = torch.ones(1, 6, 1, 1, device = "cuda", dtype = torch.long),
+            aspect_ratio_ids = torch.tensor([[1]], device = DEVICE),
+            aspect_ratio_mask = torch.ones(1, 1, 1, device = DEVICE, dtype = torch.long),
+            cross_attention_mask = torch.ones(1, 6, 1, 1, device = DEVICE, dtype = torch.long),
         )
     assert torch.isfinite(out.logits.float()).all()
 

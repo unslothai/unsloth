@@ -24,6 +24,7 @@ from core.inference.diffusion_quant_pad import (  # noqa: E402
     wrap_small_m_linears,
     wrap_zero_row_linears,
 )
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 
 class _RecordingLinear(nn.Linear):
@@ -350,7 +351,7 @@ def test_the_guard_list_is_read_with_the_same_substring_rule():
     assert model.image_embedder(torch.zeros(1, 0, 8)).shape == (1, 0, 6)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 dynamic quant needs CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "int8 dynamic quant needs CUDA or XPU")
 def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
     """Closes the loop the fakes leave open: a genuinely torchao-quantized Linear, at the row
     counts H3's seven eval prompts produce (M = 10..19, straddling ``_int_mm``'s floor of 16)."""
@@ -359,7 +360,7 @@ def test_int8_padding_is_bitwise_exact_on_a_real_quantized_linear():
 
     from core.inference.diffusion_transformer_quant import _make_quant_config, make_filter_fn
 
-    lin = nn.Linear(1024, 768, bias = False).cuda().bfloat16().eval()
+    lin = nn.Linear(1024, 768, bias = False).to(accelerator_device_type()).bfloat16().eval()
     quantize_(lin, _make_quant_config("int8"), filter_fn = make_filter_fn(0))
     assert is_quantized_linear(lin)
     assert activation_granularity_is_per_row(lin) is True

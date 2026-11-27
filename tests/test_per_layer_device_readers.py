@@ -12,7 +12,10 @@ import re
 
 import pytest
 from real_accelerator import (
+    accelerator_device_type,
+    accelerator_module,
     has_real_cuda,
+    has_real_cuda_or_xpu,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
@@ -429,7 +432,7 @@ def test_per_accelerator_tuples_are_still_subscripted_by_an_int(path):
         assert "layer_device, device_index = per_layer_device(decoder_layer)" in source
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "needs a real GPU")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a real GPU")
 def test_cuda_layer_path_is_unchanged():
     from unsloth.models._utils import move_to_device, per_layer_device
 
@@ -438,12 +441,12 @@ def test_cuda_layer_path_is_unchanged():
     except Exception as exception:  # pragma: no cover
         pytest.skip(f"unsloth_zoo not importable: {exception}")
 
-    layer = torch.nn.Linear(4, 4).cuda()
+    layer = torch.nn.Linear(4, 4).to(accelerator_device_type())
     verify_and_set_device(layer)
     device, buffer_index = per_layer_device(layer)
 
-    assert device.type == "cuda"
-    assert buffer_index == torch.cuda.current_device()
+    assert device.type == accelerator_device_type()
+    assert buffer_index == accelerator_module().current_device()
     moved = move_to_device(device, torch.zeros(2))
     assert moved.device == next(layer.parameters()).device
 

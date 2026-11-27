@@ -22,6 +22,7 @@ if str(BACKEND) not in sys.path:
 
 from core.inference import diffusion_cast_cache as CC  # noqa: E402
 from core.inference import diffusion_prequant_cache as C  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 FP16_DEFAULT = {"vae": torch.float32, "default": torch.float16}
 
@@ -281,12 +282,12 @@ def test_save_when_kept_fp32_tensors_exceed_the_sample_size(pipe_dir, monkeypatc
     _identical(dense, CC.read(cand))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU device")
 def test_resident_device_module_is_read_back_bit_identical(pipe_dir):
     cand = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
     dense = _dense(cand)
     reference = {k: v.clone() for k, v in dense.state_dict().items()}
-    dense.to("cuda")
+    dense.to(accelerator_device_type())
     assert _save(cand, dense) is not None
     hit = CC.read(cand)
     for k, v in hit.state_dict().items():

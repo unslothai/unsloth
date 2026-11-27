@@ -8,9 +8,11 @@ import sys
 import textwrap
 
 import pytest
-import torch
+from real_accelerator import (
+    has_real_cuda_or_xpu,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "bitsandbytes needs a GPU")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "bitsandbytes needs a GPU")
 
 NOTICE = "Switching to 16bit LoRA"
 

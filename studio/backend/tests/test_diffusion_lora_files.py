@@ -10,6 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_lora_files as lf  # noqa: E402
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu  # noqa: E402
 
 REWRITE_METADATA_ENV = "UNSLOTH_DIFFUSION_LORA_REWRITE_METADATA"
 
@@ -369,12 +370,13 @@ def test_a_dora_lokr_is_refused(tmp_path):
 
 
 def test_compiled_block_reads_a_new_lokr_weight():
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA")
-    block = _Block().cuda().bfloat16()
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
+    dev = accelerator_device_type()
+    block = _Block().to(dev).bfloat16()
     adapter = lf.KronAdapter(block, block.proj["q"], torch.randn(4, 3), torch.randn(9, 8), 1.0)
     block.compile(fullgraph = True)
-    x = torch.randn(2, 24, device = "cuda", dtype = torch.bfloat16)
+    x = torch.randn(2, 24, device = dev, dtype = torch.bfloat16)
     on = block(x)
     adapter.set_weight(0.0)
     off = block(x)
@@ -391,8 +393,8 @@ def test_moss_and_anima_have_a_lora_loader():
 @pytest.mark.parametrize("use_stream", [False, True])
 def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_stream):
     """LoKR attached under group offload: groups rebuild, so factors move with their block."""
-    if not torch.cuda.is_available():
-        pytest.skip("needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("needs CUDA or XPU")
     from diffusers.hooks import apply_group_offloading
     from safetensors.torch import save_file
 
@@ -413,16 +415,17 @@ def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_st
         def unload_lora_weights(self):
             pass
 
+    dev = accelerator_device_type()
     net = _Net().bfloat16()
     apply_group_offloading(
         net,
-        onload_device = torch.device("cuda"),
+        onload_device = torch.device(dev),
         offload_device = torch.device("cpu"),
         offload_type = "block_level",
         num_blocks_per_group = 1,
         use_stream = use_stream,
     )
-    x = torch.randn(2, 24, device = "cuda", dtype = torch.bfloat16)
+    x = torch.randn(2, 24, device = dev, dtype = torch.bfloat16)
     bare = net(x)
     w1, w2 = torch.randn(4, 3), torch.randn(9, 8)
     path = tmp_path / "lokr.safetensors"
@@ -437,7 +440,7 @@ def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_st
     lf.load_adapter(pipe, str(path), "k", "moss-image")
     out = net(x)
     inner = net.blocks[1](x)
-    expected = bare + (inner @ torch.kron(w1, w2).to("cuda", torch.bfloat16).T)
+    expected = bare + (inner @ torch.kron(w1, w2).to(dev, torch.bfloat16).T)
     assert torch.allclose(out.float(), expected.float(), atol = 0.25, rtol = 0.05)
     lf.unload_adapters(pipe)
     assert torch.equal(net(x), bare)

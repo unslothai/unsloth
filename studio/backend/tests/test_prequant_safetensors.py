@@ -20,6 +20,7 @@ except ImportError:
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_safetensors as ps
 from core.inference.diffusion_families import DiffusionFamily
+from real_accelerator import accelerator_device_type, has_real_cuda, has_real_cuda_or_xpu
 
 
 def _family(**overrides) -> DiffusionFamily:
@@ -330,7 +331,8 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
     _real_libs()
     import torch
 
-    if not torch.cuda.is_available():
+    # int8 keeps the CUDA gate: unverified on XPU (torchao 0.17 cannot write int8 to safetensors).
+    if not (has_real_cuda() if scheme == "int8" else has_real_cuda_or_xpu()):
         pytest.skip("fp8 / int8 quantization needs CUDA")
     from torchao.quantization import quantize_
 
@@ -342,7 +344,7 @@ def test_quantized_round_trip_is_exact(tmp_path, scheme):
                 torch.nn.Linear(1024, 1024, bias = False),
                 torch.nn.Linear(1024, 1024, bias = True),
             )
-            .cuda()
+            .to(accelerator_device_type())
             .bfloat16()
         )
         quantize_(module, _make_quant_config(scheme), filter_fn = make_filter_fn(512))

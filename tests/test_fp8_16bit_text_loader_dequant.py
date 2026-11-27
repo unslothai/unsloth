@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from real_accelerator import has_real_cuda
+from real_accelerator import accelerator_device_type, has_real_cuda_or_xpu
 
 import unsloth  # noqa: F401
 from unsloth.models.loader_utils import _fp8_dequantize_quantization_config
@@ -22,6 +22,8 @@ try:
     _HAS_DEQUANTIZE = "dequantize" in inspect.signature(FineGrainedFP8Config).parameters
 except Exception:
     _HAS_DEQUANTIZE = False
+
+DEVICE = accelerator_device_type()
 
 _BLOCK_FP8 = {
     "quant_method": "fp8",
@@ -109,7 +111,7 @@ def _write_tiny_block_fp8_llama(path):
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fp8 checkpoints load on CUDA or XPU")
 @pytest.mark.parametrize("load_in_16bit", [True, False])
 def test_fast_language_model_16bit_load_dequantizes(tmp_path, load_in_16bit):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
@@ -186,7 +188,7 @@ def _write_tiny_block_fp8_qwen3_moe(path):
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fp8 checkpoints load on CUDA or XPU")
 @pytest.mark.parametrize("arch", ["llama", "qwen3_moe"])
 def test_dequantized_load_saves_and_reloads_16bit_weights(tmp_path, arch):
     from safetensors import safe_open
@@ -198,7 +200,7 @@ def test_dequantized_load_saves_and_reloads_16bit_weights(tmp_path, arch):
     (_write_tiny_block_fp8_llama if arch == "llama" else _write_tiny_block_fp8_qwen3_moe)(str(src))
     config = FineGrainedFP8Config.from_dict(dict(_BLOCK_FP8), dequantize = True)
     model = AutoModelForCausalLM.from_pretrained(
-        str(src), dtype = torch.bfloat16, device_map = "cuda", quantization_config = config
+        str(src), dtype = torch.bfloat16, device_map = DEVICE, quantization_config = config
     )
     assert _drop_fp8_dequantize_conversions(model) > 0
     before = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -327,7 +329,7 @@ def _write_tiny_tokenizer(path):
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
-@pytest.mark.skipif(not has_real_cuda(), reason = "fp8 checkpoints load on CUDA")
+@pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "fp8 checkpoints load on CUDA or XPU")
 @pytest.mark.parametrize("cls_name", ["FastLanguageModel", "FastModel"])
 def test_explicit_dequantize_config_saves_without_fp8_config(tmp_path, cls_name):
     src, dst = tmp_path / "src", tmp_path / "saved"

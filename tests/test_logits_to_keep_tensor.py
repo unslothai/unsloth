@@ -6,11 +6,11 @@
 import pytest
 
 import unsloth  # noqa: F401  (must precede transformers)
-from real_accelerator import has_real_cuda
+from real_accelerator import has_real_cuda_or_xpu
 
 torch = pytest.importorskip("torch")
 
-pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA GPU")
+pytestmark = pytest.mark.skipif(not has_real_cuda_or_xpu(), reason = "needs a CUDA or XPU GPU")
 
 
 @pytest.fixture(

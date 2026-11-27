@@ -4,7 +4,7 @@
 import pytest
 import torch
 
-from real_accelerator import has_real_accelerator
+from real_accelerator import has_real_accelerator, has_real_cuda_or_xpu
 
 LONG_TEXT = " ".join(f"word{i % 60 + 3}" for i in range(200))
 
@@ -14,8 +14,8 @@ def _save_encoder_sentence_model(
     family,
     position_limit = 32,
 ):
-    if not has_real_accelerator() or not torch.cuda.is_available():
-        pytest.skip("FastSentenceTransformer needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("FastSentenceTransformer needs CUDA or XPU")
     pytest.importorskip("sentence_transformers")
     import unsloth  # noqa: F401
     from sentence_transformers import SentenceTransformer
@@ -90,8 +90,8 @@ def test_saved_max_seq_length_stays_when_none_is_requested(tmp_path):
 
 
 def test_router_uses_the_smallest_encoder_position_limit(tmp_path):
-    if not has_real_accelerator() or not torch.cuda.is_available():
-        pytest.skip("FastSentenceTransformer needs CUDA")
+    if not has_real_cuda_or_xpu():
+        pytest.skip("FastSentenceTransformer needs CUDA or XPU")
     pytest.importorskip("sentence_transformers")
     from sentence_transformers import SentenceTransformer
     from sentence_transformers.models import Router
