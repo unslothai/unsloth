@@ -8976,7 +8976,7 @@ main()
     # Declared with its neighbours, not inside the block below: the arms that read
     # it are outside that gate, so an NVIDIA host would leave it undefined.
     $ROCmUnsupportedGfxArch = $null
-    $_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()
+    $_hipAllArches = @(); $amdAdapters = @()
     # Mixed hosts are probed too (flag, mask, notice); a pin skips it, as in install.sh.
     $ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not $SkipTorch -and
         [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL) -and
@@ -9304,7 +9304,7 @@ main()
     $MixedHostRoute = $null
     $MixedHostAmdArch = $null
     if ($ProbeAmdBesideNvidia) {
-        $_mixedArches = @(@($_hipAllArches) + @($_smiGfxTokens) + @($_asicGfxTokens) | Where-Object { $_ })
+        $_mixedArches = @(@($_hipAllArches) | Where-Object { $_ })
         if ($_mixedArches.Count -eq 0 -and $wmiAmdNames -and $nameArchTable -and -not $env:UNSLOTH_ROCM_GFX_ARCH) {
             # WMI-only: every adapter's inferred arch ("" when unmapped, so indexes line up), as setup.ps1 scores them.
             $_wmiArchAt = @(foreach ($n in $wmiAmdNames) { $a = ""; foreach ($row in $nameArchTable) { if ($n -match $row.P) { $a = $row.A; break } }; $a })
@@ -9330,7 +9330,7 @@ main()
             $AmdHasGpuWheels = $true
         }
         # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo or WMI must see one.
-        $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches + $_smiGfxTokens + $_asicGfxTokens).Count -gt 0
+        $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches).Count -gt 0
         $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels ($AmdHasGpuWheels -and $_amdSeen) `
             -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
             -NoticeArch $(if ($_amdSeen) { Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)) })

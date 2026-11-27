@@ -1663,16 +1663,6 @@ def _bnb_rocm_arch_has_binary() -> bool:
     return {"amd64": "x86_64", "arm64": "aarch64"}.get(arch, arch) != "aarch64"
 
 
-def _amd_smi_env() -> dict[str, str] | None:
-    """On Windows, env with __COMPAT_LAYER=RunAsInvoker; None elsewhere.
-    NB: RunAsInvoker doesn't stop amd-smi's runtime elevation (its manifest is
-    asInvoker -- it elevates a child via ShellExecute). The real guard is
-    _amd_smi_allowed() below; this is harmless belt-and-suspenders."""
-    if platform.system() != "Windows":
-        return None
-    return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
-
-
 def _amd_smi_allowed() -> bool:
     """Never on Windows: amd-smi.exe elevates a child and pops a UAC/DiskPart prompt RunAsInvoker
     cannot suppress, with or without a HIP SDK."""
@@ -1733,7 +1723,6 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 5,
-                env = _amd_smi_env(),
             )
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
@@ -1942,10 +1931,8 @@ def _pick_visible_index(
 def _detect_windows_gfx_arch() -> str | None:
     """Return the gcnArchName on Windows (e.g. 'gfx1200'), or None.
 
-    Probe order matches the PowerShell installer: env-var override, then
-    hipinfo (PATH or HIP_PATH/ROCM_PATH bin), then amd-smi. Without the
-    amd-smi fallback, runtime-only AMD installs lacking hipinfo on PATH
-    return early and `studio update` cannot repair a CPU-only venv.
+    Probe order matches the PowerShell installer: env-var override, hipinfo
+    (PATH or HIP_PATH/ROCM_PATH bin), then the WMI name. Never amd-smi (_amd_smi_allowed).
 
     On multi-GPU hosts, detected gfx tokens are deduplicated (preserving
     enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
@@ -2046,33 +2033,6 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
         except Exception:
             pass
-
-    amd_smi = shutil.which("amd-smi") if _amd_smi_allowed() else None
-    if amd_smi:
-        for _args in (("static", "--asic"), ("list",)):
-            try:
-                result = subprocess.run(
-                    [amd_smi, *_args],
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.DEVNULL,
-                    timeout = 10,
-                    env = _amd_smi_env(),
-                )
-                if result.returncode != 0:
-                    continue
-                text = result.stdout.decode(errors = "replace")
-                _labelled = re.findall(
-                    r"(?im)^\s*(?:target_graphics_version|gfx|arch|asic)\b[^:\r\n]*:\s*(gfx[1-9][0-9a-z]{2,3})\b",
-                    text,
-                )
-                _tokens = [t.lower() for t in _labelled]
-                if not _tokens:
-                    _tokens = re.findall(r"\bgfx[1-9][0-9a-z]{2,3}\b", text.lower())
-                _pick = _dedup_pick(_tokens)
-                if _pick:
-                    return _pick
-            except Exception:
-                continue
 
     # Last resort: GPU name via WMI -> arch table (mirrors setup.ps1's $nameArchTable) for driver-only
     # hosts. Only AMD adapters with ConfigManagerErrorCode 0, as setup.ps1 filters $wmiGpus.
@@ -2764,7 +2724,6 @@ def _has_rocm_gpu() -> bool:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-                env = _amd_smi_env() if cmd[0] == "amd-smi" else None,
             )
         except Exception:
             continue
@@ -2921,7 +2880,7 @@ def _detect_amd_gfx_codes(
         probes.append(["amd-smi", "list"])
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
-        _env = _amd_smi_env() if cmd[0] == "amd-smi" else None
+        _env = None
         _strip = set()
         if ignore_hsa_override:
             _strip.add("HSA_OVERRIDE_GFX_VERSION")

@@ -674,13 +674,13 @@ def test_a_wmi_only_mixed_host_weighs_every_amd_adapter(names, env, arch, notice
 
 
 @requires_pwsh
-def test_a_forced_mixed_host_weighs_the_amd_smi_arches():
+def test_a_forced_mixed_host_weighs_the_hipinfo_arches():
     kv = _ps_kv(
         _script(
             COLLECT,
             INSTALL_HELPERS,
             INSTALL_WHEEL_MAPS,
-            "$_hipAllArches = @(); $_asicGfxTokens = @(); $_smiGfxTokens = @('gfx90c', 'gfx1100')",
+            "$_hipAllArches = @('gfx90c', 'gfx1100')",
             _env(UNSLOTH_FORCE_ROCM_TORCH = "1"),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
             "$HasNvidiaSmi = $true; $ProbeAmdBesideNvidia = $true",
@@ -743,7 +743,7 @@ def test_a_forced_mixed_host_falls_back_to_a_mapped_peer_when_adapter_0_is_unkno
             INSTALL_HELPERS,
             INSTALL_WHEEL_MAPS,
             NAME_ARCH_TABLE,
-            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()",
+            "$_hipAllArches = @()",
             "$wmiAmdNames = @('AMD Radeon(TM) Graphics', 'AMD Radeon RX 9070 XT')",
             _env(UNSLOTH_FORCE_ROCM_TORCH = "1"),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
@@ -782,7 +782,7 @@ def test_a_wmi_only_mixed_host_applies_the_mask_to_every_adapter(env, route, arc
             INSTALL_HELPERS,
             INSTALL_WHEEL_MAPS,
             NAME_ARCH_TABLE,
-            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @()",
+            "$_hipAllArches = @()",
             "$wmiAmdNames = @('AMD Radeon(TM) Graphics', 'AMD Radeon RX 9070 XT')",
             _env(**env),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
@@ -813,7 +813,7 @@ def test_install_ps1_needs_a_card_behind_a_declared_arch(evidence, route):
             COLLECT,
             INSTALL_HELPERS,
             INSTALL_WHEEL_MAPS,
-            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()",
+            "$_hipAllArches = @(); $amdAdapters = @()",
             evidence,
             _env(UNSLOTH_FORCE_ROCM_TORCH = "1", UNSLOTH_ROCM_GFX_ARCH = "gfx1201"),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
@@ -885,7 +885,7 @@ def test_the_notice_needs_a_card_behind_a_declared_arch(evidence, route):
             COLLECT,
             INSTALL_HELPERS,
             INSTALL_WHEEL_MAPS,
-            "$_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()",
+            "$_hipAllArches = @(); $amdAdapters = @()",
             evidence,
             _env(UNSLOTH_ROCM_GFX_ARCH = "gfx1201"),
             "$nvMaskHidesAll = Test-CudaMaskHidesNvidia",
