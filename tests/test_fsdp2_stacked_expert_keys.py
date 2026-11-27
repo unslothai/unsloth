@@ -274,7 +274,7 @@ def test_multi_lora_sizes_experts_from_the_whole_stack():
     import importlib
     import types
 
-    pytest.importorskip("triton")  # unsloth.kernels.utils
+    pytest.importorskip("triton")
     _tp()
     kernels = types.ModuleType("unsloth.kernels")
     kernels.__path__ = [

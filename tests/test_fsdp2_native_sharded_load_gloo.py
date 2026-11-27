@@ -587,7 +587,7 @@ def _spawn(
         ("qwen3_moe", {"num_experts": 5}, "full", False),  # uneven chunks
         ("mixtral", None, "lora", False),
         ("glm4_moe", None, "expert_lora", False),
-        ("gpt_oss", None, "full", False),  # stored stacked
+        ("gpt_oss", None, "full", False),
         ("qwen2_5_vl", None, "lora", False),  # vision tower + projector linears sliced too
         # FSDP2Config.ignored_params naming a sharded-loaded weight: gathered whole and kept replicated.
         ("llama", {"intermediate_size": 37}, "full", "ignore"),
