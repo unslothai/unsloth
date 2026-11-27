@@ -97,6 +97,103 @@ def test_anthropic_lists_past_the_default_page(mock_http):
     assert "limit" not in mock_http[-1].url.params
 
 
+def test_gemini_lists_past_the_default_page(mock_http):
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert mock_http[-1].url.params["pageSize"] == "1000"
+
+
+def test_gemini_through_a_proxy_gets_no_native_page_size(mock_http):
+    _run(ExternalProviderClient("gemini", "https://litellm.example/v1", "sk").list_models())
+    assert "pageSize" not in mock_http[-1].url.params
+
+
+def _gemini_row(name):
+    return {"name": f"models/{name}", "supportedGenerationMethods": ["generateContent"]}
+
+
+def test_gemini_follows_next_page_token(mock_http):
+    pages = {
+        None: {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "p2"},
+        "p2": {"models": [_gemini_row("gemini-2.5-pro")], "nextPageToken": "p3"},
+        "p3": {"models": [_gemini_row("gemini-3.6-pro")]},
+    }
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = pages[request.url.params.get("pageToken")]
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    models = _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert [m["id"] for m in models] == ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.6-pro"]
+    assert [r.url.params.get("pageToken") for r in mock_http] == [None, "p2", "p3"]
+    assert all(r.url.params["pageSize"] == "1000" for r in mock_http)
+    assert all(r.headers["x-goog-api-key"] == "AIza" for r in mock_http)
+
+
+def test_gemini_through_a_proxy_follows_its_page_token(mock_http):
+    def handle(request):
+        if request.url.params.get("pageToken") == "next":
+            return httpx.Response(200, json = {"models": [_gemini_row("gemini-2.5-pro")]})
+        return httpx.Response(
+            200, json = {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "next"}
+        )
+
+    mock_http.state["handler"] = handle
+    client = ExternalProviderClient("gemini", "https://gateway.example/v1beta", "sk")
+    assert [m["id"] for m in _run(client.list_models())] == ["gemini-2.5-flash", "gemini-2.5-pro"]
+    assert dict(mock_http[-1].url.params) == {"pageToken": "next"}
+
+
+def test_gemini_paging_stops_on_a_repeated_token(mock_http):
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = {"models": [_gemini_row("gemini-2.5-flash")], "nextPageToken": "same"}
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert len(mock_http) == 2
+
+
+def test_gemini_paging_stops_at_the_page_cap(mock_http):
+    count = iter(range(1_000))
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = {"models": [], "nextPageToken": f"t{next(count)}"}
+    )
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+    assert len(mock_http) == ep._GEMINI_MAX_MODEL_PAGES
+
+
+def test_gemini_later_page_error_is_reported(mock_http):
+    def handle(request):
+        if request.url.params.get("pageToken"):
+            return httpx.Response(429)
+        return httpx.Response(200, json = {"models": [], "nextPageToken": "p2"})
+
+    mock_http.state["handler"] = handle
+    base = "https://generativelanguage.googleapis.com/v1beta"
+    with pytest.raises(httpx.HTTPStatusError):
+        _run(ExternalProviderClient("gemini", base, "AIza").list_models())
+
+
+def test_gemini_route_lists_allowlisted_models_from_later_pages(mock_http):
+    filler = [_gemini_row(f"gemma-3-{n}b-it") for n in range(50)]
+    pages = {
+        None: {"models": [_gemini_row("gemini-2.5-flash"), *filler], "nextPageToken": "p2"},
+        "p2": {
+            "models": [
+                _gemini_row("gemini-4-argon"),
+                _gemini_row("gemini-2.5-flash-preview-tts"),
+                _gemini_row("imagen-4.0"),
+            ]
+        },
+    }
+    mock_http.state["handler"] = lambda request: httpx.Response(
+        200, json = pages[request.url.params.get("pageToken")]
+    )
+    payload = ProviderModelsRequest(provider_type = "gemini")
+    listed = _run(providers_route.list_provider_models(payload, "tester", False))
+    assert [m.id for m in listed] == ["gemini-2.5-flash", "gemini-4-argon"]
+
+
 @pytest.mark.parametrize(
     "status,expected",
     [
@@ -193,11 +290,21 @@ def test_responses_probe_stops_at_the_total_budget(monkeypatch):
     assert time.monotonic() - started < 1.0
 
 
-def _saved_row(monkeypatch, tmp_path, *, has_key: bool):
+def _saved_row(
+    monkeypatch,
+    tmp_path,
+    *,
+    has_key: bool,
+    api_type: str = "chat_completions",
+):
     monkeypatch.setattr(providers_db, "studio_db_path", lambda: tmp_path / "studio.db")
     providers_db.reset_schema_state_for_tests()
     providers_db.create_provider(
-        id = "row", provider_type = "custom", display_name = "Local", base_url = "http://a.example/v1"
+        id = "row",
+        provider_type = "custom",
+        display_name = "Local",
+        base_url = "http://a.example/v1",
+        api_type = api_type,
     )
     monkeypatch.setattr(
         providers_route.credential_secrets, "provider_api_key_saved", lambda _id: has_key
@@ -220,6 +327,45 @@ def test_a_saved_key_stays_pinned_to_the_saved_base_url(monkeypatch, tmp_path):
         provider_type = "custom", provider_id = "row", base_url = "http://b.example/v1"
     )
     assert providers_route._bind_saved_provider_target(payload).base_url == "http://a.example/v1"
+
+
+def test_editing_a_saved_custom_row_tests_the_draft_api_format(mock_http, monkeypatch, tmp_path):
+    _saved_row(monkeypatch, tmp_path, has_key = True)
+    mock_http.state["handler"] = lambda request: (
+        httpx.Response(200, json = {"data": [{"id": "m"}]})
+        if request.url.path.endswith("/models")
+        else httpx.Response(404, json = {"error": {"message": "no such route"}})
+    )
+    result = _test(
+        ProviderTestRequest(
+            provider_type = "custom",
+            provider_id = "row",
+            api_type = "responses",
+            base_url = "http://b.example/v1",
+            model_id = "m",
+        )
+    )
+    assert not result.success
+    assert any(request.url.path.endswith("/responses") for request in mock_http)
+    assert all(request.url.host == "a.example" for request in mock_http)
+
+    mock_http.clear()
+    result = _test(ProviderTestRequest(provider_type = "custom", provider_id = "row", model_id = "m"))
+    assert result.success
+    assert not any(request.url.path.endswith("/responses") for request in mock_http)
+
+
+def test_the_saved_api_format_holds_without_an_edited_one(monkeypatch, tmp_path):
+    _saved_row(monkeypatch, tmp_path, has_key = True, api_type = "responses")
+    unsent = ProviderTestRequest(provider_type = "custom", provider_id = "row")
+    assert providers_route._bind_saved_provider_target(unsent).api_type == "responses"
+
+    row = providers_db.get_provider("row")
+    monkeypatch.setattr(providers_db, "get_own_provider", lambda _id: None)
+    monkeypatch.setattr(providers_db, "get_provider", lambda _id: row)
+    shared = unsent.model_copy(update = {"api_type": "chat_completions"})
+    assert "api_type" in shared.model_fields_set
+    assert providers_route._bind_saved_provider_target(shared).api_type == "responses"
 
 
 def test_base_url_validation_runs_off_the_event_loop(mock_http, monkeypatch):
@@ -251,3 +397,87 @@ def test_base_url_validation_runs_off_the_event_loop(mock_http, monkeypatch):
 def test_pasted_endpoint_paths_normalise_to_the_base(pasted, base):
     assert validate_provider_base_url(pasted) == base
     assert validate_provider_base_url(base) == base
+
+
+@pytest.mark.parametrize(
+    "status,kind,text",
+    [
+        (401, "auth", "The server rejected the API key."),
+        (402, "billing", "The key was accepted, but its account has no credit."),
+        (429, "rate_limit", "The server is rate limiting this key right now."),
+        (404, "not_found", "No /models endpoint at this URL"),
+        (500, "other", ""),
+    ],
+)
+def test_a_failed_check_names_its_cause(mock_http, status, kind, text):
+    mock_http.state["handler"] = lambda request: httpx.Response(status)
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert not result.success
+    assert result.error_kind == kind
+    assert text in result.message
+
+
+def test_a_passing_check_has_no_error_kind(mock_http):
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert result.success and result.error_kind is None
+
+
+def test_a_slow_server_is_a_timeout_not_an_unreachable_one(mock_http):
+    def stall(request):
+        raise httpx.ReadTimeout("timed out", request = request)
+
+    mock_http.state["handler"] = stall
+    result = _test(ProviderTestRequest(provider_type = "openai", base_url = "http://gw.example/v1"))
+    assert result.error_kind == "timeout"
+    assert result.message == "Connection failed: The server took too long to answer."
+    payload = ProviderModelsRequest(provider_type = "custom", base_url = "http://gw.example/v1")
+    with pytest.raises(HTTPException) as caught:
+        _run(providers_route.list_provider_models(payload, "tester", False))
+    assert caught.value.detail == "The server took too long to answer."
+
+
+def test_a_custom_check_reports_the_named_cause_not_a_missing_model_id(mock_http):
+    mock_http.state["handler"] = lambda request: httpx.Response(402)
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1"))
+    assert result.error_kind == "billing"
+    assert result.message == (
+        "Connection failed: The key was accepted, but its account has no credit."
+    )
+    # No named cause: the old hint about adding a model ID still stands.
+    mock_http.state["handler"] = lambda request: httpx.Response(404)
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1"))
+    assert "no model ID was provided" in result.message
+
+
+def test_a_custom_probe_keeps_the_models_cause_over_its_own_plain_error(mock_http):
+    def handle(request):
+        return httpx.Response(401 if request.url.path.endswith("/models") else 404)
+
+    mock_http.state["handler"] = handle
+    result = _test(
+        ProviderTestRequest(provider_type = "custom", base_url = "http://gw.example/v1", model_id = "m")
+    )
+    assert not result.success
+    assert result.error_kind == "auth"
+    assert result.message == "Connection failed: The server rejected the API key."
+
+
+def test_an_invalid_base_url_is_its_own_kind(monkeypatch):
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-bad"
+    )
+    result = _test(ProviderTestRequest(provider_type = "custom", base_url = "ftp://gw.example/v1"))
+    assert not result.success and result.error_kind == "invalid_url"
+
+
+def test_the_registry_links_each_keyed_provider_to_its_key_page():
+    rows = {row["provider_type"]: row for row in providers_route.list_available_providers(True)}
+    assert rows["openai"]["api_key_url"] == "https://platform.openai.com/api-keys"
+    assert rows["openai_codex"]["api_key_url"] is None
+    assert rows["ollama"]["api_key_url"] is None
+    for row in rows.values():
+        url = row["api_key_url"]
+        assert url is None or url.startswith("https://")
+        # A subscription or a self-hosted server has no key page to send anyone to.
+        if row["auth_kind"] != "api_key" or row["hidden"]:
+            assert url is None

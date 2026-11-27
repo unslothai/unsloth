@@ -22,6 +22,8 @@ import {
 } from "@/components/assistant-ui/markdown-table";
 import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math as streamdownMath } from "@streamdown/math";
+// Its own: the chat renderers that also import this are not loaded before the Hub.
+import "katex/dist/katex.min.css";
 import { mermaid as streamdownMermaid } from "@/components/assistant-ui/mermaid-plugin";
 import {
   createContext,
@@ -40,7 +42,9 @@ import {
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
+import { badgeRowsRef } from "../lib/badge-rows";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -143,13 +147,13 @@ const PROSE = cn(
   "[&_p]:my-2.5 [&_ul]:my-2 [&_ol]:my-2 [&_li]:my-0.5",
   "[&_a]:text-primary [&_a:hover]:underline",
   "[&_code]:rounded-md [&_code]:bg-muted/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-ui-12 [&_code]:font-mono",
-  "[&_pre]:rounded-[12px] [&_pre]:border [&_pre]:border-border/60 [&_pre]:bg-muted/40 [&_pre]:p-3 [&_pre]:text-ui-12 [&_pre]:overflow-x-auto",
+  "[&_pre]:rounded-lg [&_pre]:border [&_pre]:border-border/60 [&_pre]:bg-muted/40 [&_pre]:p-3 [&_pre]:text-ui-12 [&_pre]:overflow-x-auto",
   "[&_pre_code]:bg-transparent [&_pre_code]:p-0",
   "[&_blockquote]:border-l-2 [&_blockquote]:border-border/60 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
   "[&_table]:text-ui-12p5",
-  "[&_img]:rounded-[10px] [&_img]:my-2 [&_img]:max-w-full",
+  "[&_img]:rounded-lg [&_img]:my-2 [&_img]:max-w-full",
   "[&_audio]:my-1 [&_audio]:max-w-full [&_audio]:h-9 [&_audio]:align-middle",
-  "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-[10px]",
+  "[&_video]:my-2 [&_video]:max-w-full [&_video]:rounded-lg",
   "[&_hr]:my-4 [&_hr]:border-border/40",
 );
 
@@ -165,7 +169,7 @@ function ReadmeLink({
 }: ComponentProps<"a"> & { node?: unknown }) {
   void node;
   const online = useContext(ReadmeOnlineContext);
-  const rawHref = typeof href === "string" ? href.trim() : "";
+  const rawHref = useHubPageUrl(typeof href === "string" ? href.trim() : "");
   const disabledExternal =
     !online &&
     rawHref.length > 0 &&
@@ -185,7 +189,7 @@ function ReadmeLink({
   return (
     <a
       {...props}
-      href={href}
+      href={rawHref || href}
       rel={rel ?? "noreferrer noopener"}
       target={target ?? "_blank"}
       className={className}
@@ -294,11 +298,13 @@ async function loadReadmeFromCache({
   repoId,
   kind,
   hfToken,
+  revision,
 }: {
   cacheKey: string;
   repoId: string;
   kind: "model" | "dataset";
   hfToken: string | undefined;
+  revision: string | null;
 }): Promise<ReadmeCacheEntry> {
   const cached = readmeCache.get(cacheKey);
   if (cached) {
@@ -307,7 +313,7 @@ async function loadReadmeFromCache({
     readmeCache.delete(cacheKey);
   }
 
-  const promise = fetchReadme(repoId, kind, hfToken || null).then((fetched) => {
+  const promise = fetchReadme(repoId, kind, hfToken || null, revision).then((fetched) => {
     if (fetched == null) {
       return {
         body: null,
@@ -353,18 +359,22 @@ export function ModelReadme({
   repoId,
   kind = "model",
   subject = kind,
+  revision = null,
 }: {
   repoId: string;
   kind?: "model" | "dataset";
   subject?: ReadmeSubject;
+  /** A branch or commit to read instead of main, then master. */
+  revision?: string | null;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
   const hfEndpoint = useHfEndpoint();
   const stateKey = useMemo(
-    () => `${hfEndpoint}::${kind}::${repoId}::${tokenFingerprint}`,
-    [hfEndpoint, kind, repoId, tokenFingerprint],
+    () =>
+      `${hfEndpoint}::${kind}::${repoId}${revision ? `@${revision}` : ""}::${tokenFingerprint}`,
+    [hfEndpoint, kind, repoId, revision, tokenFingerprint],
   );
   const [state, setState] = useState<ReadmeState>(() => {
     const cached = readResolvedReadmeCache(stateKey);
@@ -429,6 +439,7 @@ export function ModelReadme({
       repoId,
       kind,
       hfToken,
+      revision,
     })
       .then((entry) => {
         if (canceled) return;
@@ -460,11 +471,10 @@ export function ModelReadme({
     return () => {
       canceled = true;
     };
-  }, [repoId, kind, hfToken, stateKey, online]);
+  }, [repoId, kind, hfToken, revision, stateKey, online]);
 
   useEffect(() => {
-    // Plugin assembly is synchronous, so it runs regardless of connectivity: a
-    // body served from the README cache while offline still clears the preparing gate.
+    // Runs offline too: a cached README body must still clear the preparing gate.
     if (!current.body || current.loading || current.error || current.plugins) {
       return;
     }
@@ -543,7 +553,7 @@ export function ModelReadme({
   }
 
   return (
-    <div className={cn("hub-readme-prose", PROSE)}>
+    <div ref={badgeRowsRef} className={cn("hub-readme-prose", PROSE)}>
       <ReadmeOnlineContext.Provider value={online}>
         <Streamdown
           mode="static"

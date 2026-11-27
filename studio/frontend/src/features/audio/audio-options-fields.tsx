@@ -22,10 +22,11 @@ import {
   audioVoiceLabel,
   coerceAudioOptionValue,
 } from "./audio-options";
+import { FieldLabel } from "./components/field";
 
 function OptionHint({ text }: { text?: string | null }) {
   return text ? (
-    <p className="text-ui-11p5 leading-snug text-muted-foreground">{text}</p>
+    <p className="text-ui-12 leading-normal text-muted-foreground">{text}</p>
   ) : null;
 }
 
@@ -43,7 +44,6 @@ export function AudioOptionFields({
   /** `undefined` clears the option back to the model's default. */
   onChange: (name: string, value: AudioOptionValue | undefined) => void;
   disabled?: boolean;
-  /** The loaded model's runtime family, for readable voice names. */
   family?: string | null;
 }) {
   return (
@@ -54,8 +54,8 @@ export function AudioOptionFields({
         const value = audioOptionDisplayValue(spec, values);
         if (spec.type === "bool") {
           return (
-            <div key={spec.name} className="grid gap-1.5">
-              <label
+            <div key={spec.name} className="grid gap-2">
+              <FieldLabel
                 htmlFor={id}
                 className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
               >
@@ -66,7 +66,7 @@ export function AudioOptionFields({
                   disabled={disabled}
                   onCheckedChange={(checked) => onChange(spec.name, checked)}
                 />
-              </label>
+              </FieldLabel>
               <OptionHint text={spec.description} />
             </div>
           );
@@ -91,10 +91,10 @@ export function AudioOptionFields({
         }
         if (spec.type === "enum") {
           return (
-            <div key={spec.name} className="grid gap-1.5">
-              <label className="text-ui-13 font-medium text-foreground" htmlFor={id}>
+            <div key={spec.name} className="grid gap-2">
+              <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
                 {label}
-              </label>
+              </FieldLabel>
               <Select
                 value={typeof value === "string" ? value : undefined}
                 onValueChange={(next) => onChange(spec.name, next)}
@@ -117,10 +117,10 @@ export function AudioOptionFields({
         }
         const numeric = spec.type === "int" || spec.type === "float";
         return (
-          <div key={spec.name} className="grid gap-1.5">
-            <label className="text-ui-13 font-medium text-foreground" htmlFor={id}>
+          <div key={spec.name} className="grid gap-2">
+            <FieldLabel className="text-ui-13 font-medium text-foreground" htmlFor={id}>
               {label}
-            </label>
+            </FieldLabel>
             <Input
               id={id}
               type={numeric ? "number" : "text"}
@@ -128,8 +128,7 @@ export function AudioOptionFields({
               step={spec.type === "int" ? 1 : numeric ? "any" : undefined}
               min={spec.min ?? undefined}
               max={spec.max ?? undefined}
-              // The typed value as typed: clamping mid-entry would turn "1" into a minimum of
-              // 5 before the "0" of "10" arrives. The request clamps instead.
+              // As typed: clamping mid-entry breaks multi-digit input. The request clamps.
               value={
                 values[spec.name] === undefined ? "" : String(values[spec.name])
               }

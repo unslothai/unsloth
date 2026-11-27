@@ -37,37 +37,26 @@ test("compact numbers match the tile format", () => {
 });
 
 test("sub-unit counts stay whole, in every locale", () => {
-  // averageTokensPerChat is the one fractional caller and these are whole tokens:
-  // 25 across 2 chats is 13, not 12.5. The pre-localization code rounded anything
-  // under 1000; the unit boundary replaces that hardcoded 1000 because it is
-  // per-locale (ja and de do not compact until \u4e07 / Mio.).
+  // Whole tokens: the unit boundary is per-locale (ja/de compact later), not a fixed 1000.
   assert.equal(formatCompactNumber(12.5, "en"), "13");
   assert.equal(formatCompactNumber(12.4, "en"), "12");
   assert.equal(formatCompactNumber(0.5, "en"), "1");
-  // Intl rounds half away from zero, Math.round rounds half UP, so an exact negative
-  // half differs from the pre-localization code (-13 vs -12). Every caller here is a
-  // count, so this is unreachable in practice; pinned so the difference is deliberate.
+  // Intl rounds half away from zero, unlike Math.round; pinned so the difference is deliberate.
   assert.equal(formatCompactNumber(-12.5, "en"), "-13");
   // ja does not compact below \u4e07, so a four-digit value is still whole there.
   assert.equal(formatCompactNumber(5000.4, "ja"), "5000");
-  // ...and past the unit the decimal comes back.
   assert.equal(formatCompactNumber(12_340, "en"), "12.3K");
   assert.equal(formatCompactNumber(12_340, "ja"), "1.2\u4e07");
 });
 
 test("a non-Latin numbering system keeps its decimal", () => {
-  // The threshold used to be read off the DISPLAY string, so a locale whose
-  // digits are not ASCII gave Number("\u0661") -> NaN, NaN < 100 -> false, and every
-  // Arabic value silently lost its decimal. Which locales default to `arab`
-  // varies by ICU build, so pin an explicit one rather than bare "ar".
+  // Non-ASCII digits once made the threshold NaN; pin ar-EG since `arab` default varies by ICU.
   const arab = "ar-EG" as Parameters<typeof formatCompactNumber>[1];
   const onePointNine = formatCompactNumber(1_900_000, arab);
-  // The decimal separator is the Arabic one; what matters is that a fraction survived.
   assert.ok(
     /\u0661[\u066b.,]\u0669/.test(onePointNine),
     `expected a 1.9-style value, got ${onePointNine}`,
   );
-  // ...and past 100 of a unit it is still dropped, exactly as in en.
   assert.ok(
     !/[\u066b.,]/.test(formatCompactNumber(190_000_000, arab)),
     "expected no decimal past 100 of a unit",
@@ -75,8 +64,7 @@ test("a non-Latin numbering system keeps its decimal", () => {
 });
 
 test("the latn probe does not change which unit Intl picked", () => {
-  // Unit grouping is a locale property, not a numbering-system one, so probing
-  // in latn must leave ja/zh (\u4e07) and hi (\u0932\u093e\u0916) exactly as they were.
+  // Unit grouping is a locale property, so probing in latn must not change ja/zh/hi.
   assert.equal(formatCompactNumber(1_900_000, "ja"), "190\u4e07");
   assert.equal(formatCompactNumber(190_000_000, "ja"), "1.9\u5104");
   assert.equal(formatCompactNumber(1_900_000, "zh-CN"), "190\u4e07");
@@ -90,25 +78,20 @@ test("rounding up a unit steps to the next suffix", () => {
   assert.equal(formatCompactNumber(999_999_999, "en"), "1B");
   assert.equal(formatCompactNumber(999_999_999_999, "en"), "1T");
   assert.equal(formatCompactNumber(-999_999, "en"), "-1M");
-  // Just below the rounding boundary the unit is unchanged.
   assert.equal(formatCompactNumber(999_499, "en"), "999K");
 });
 
 test("compact numbers use each locale's own magnitude units", () => {
-  // K/M/B is an English convention. ja and ko group in 万/억, zh in 万/亿,
-  // and hi in लाख, so a hardcoded ladder is wrong in half the locales.
+  // K/M/B is English-only; ja/ko/zh/hi group differently.
   assert.equal(formatCompactNumber(12_340, "ja"), "1.2万");
   assert.equal(formatCompactNumber(1_900_000_000, "ja"), "19億");
   assert.equal(formatCompactNumber(12_340, "zh-CN"), "1.2万");
   assert.equal(formatCompactNumber(1_900_000_000, "zh-CN"), "19亿");
-  // U+00A0, not a plain space: CLDR keeps the unit from wrapping away from
-  // its number, so an assertion with a normal space silently fails.
+  // CLDR uses U+00A0 here, so a normal space silently fails.
   assert.equal(formatCompactNumber(1_900_000, "hi"), "19\u00a0लाख");
-  // Decimal separator and unit word follow the locale too.
   assert.equal(formatCompactNumber(1_900_000, "de"), "1,9\u00a0Mio.");
   assert.equal(formatCompactNumber(1_900_000, "ru"), "1,9\u00a0млн");
-  // German CLDR has no short form below a million, so thousands stay written
-  // out. That is the locale's rule, not a fallback.
+  // German CLDR has no short form below a million.
   assert.equal(formatCompactNumber(12_340, "de"), "12.340");
 });
 
@@ -179,7 +162,7 @@ test("profile counts follow the selected locale's plural rules", () => {
 test("heat levels split the active days into quartiles", () => {
   const days = [0, 0, 100, 200, 300, 400, 500, 600, 700, 50_000];
   const thresholds = heatThresholds(days);
-  assert.deepEqual(thresholds, [300, 500, 700]);
+  assert.deepEqual(thresholds, [300, 500, 700, 50_000]);
   assert.equal(heatLevel(0, thresholds), 0);
   assert.equal(heatLevel(100, thresholds), 1);
   assert.equal(heatLevel(400, thresholds), 2);
@@ -192,11 +175,23 @@ test("heat levels split the active days into quartiles", () => {
 test("a lone active day, or days all alike, take the strongest shade", () => {
   assert.equal(heatLevel(5, heatThresholds([0, 5, 0])), 4);
   assert.equal(heatLevel(80, heatThresholds([80, 80, 80])), 4);
-  assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0]);
+  assert.deepEqual(heatThresholds([0, 0]), [0, 0, 0, 0]);
   // Coinciding quartiles promote only the days at them, not a smaller day below.
   const repeated = heatThresholds([10, 100, 100, 100, 100, 100, 100, 100]);
   assert.equal(heatLevel(100, repeated), 4);
   assert.equal(heatLevel(10, repeated), 1);
+});
+
+test("the busiest day takes the strongest shade with only a few active days", () => {
+  for (const days of [
+    [1_000, 50_000],
+    [1_000, 20_000, 50_000],
+    [1_000, 8_000, 20_000, 50_000],
+  ]) {
+    const thresholds = heatThresholds(days);
+    assert.equal(heatLevel(50_000, thresholds), 4, String(days));
+    assert.equal(heatLevel(1_000, thresholds), 1, String(days));
+  }
 });
 
 test("the grid ends on today's week and pads only real gaps", () => {
@@ -299,7 +294,6 @@ test("daily and cumulative still total the window, as the card always did", () =
     const expected = legacyVisibleTotal(grid);
     assert.equal(activitySummaryForMode(grid, "daily"), expected);
     assert.equal(activitySummaryForMode(grid, "cumulative"), expected);
-    // A peak week is one column, so it can never exceed the whole window.
     assert.ok(activitySummaryForMode(grid, "weekly") <= expected);
   }
 });
@@ -339,7 +333,6 @@ test("series modes reshape the same daily data", () => {
 
   assert.deepEqual(seriesForMode(daily, "daily"), [10, 20, 5, 100]);
   assert.deepEqual(seriesForMode(daily, "cumulative"), [10, 30, 35, 135]);
-  // First three days are in the week of Mar 2 (35), Mar 9 starts a new week.
   assert.deepEqual(seriesForMode(daily, "weekly"), [35, 35, 35, 100]);
   assert.deepEqual(seriesForMode([], "weekly"), []);
 });
@@ -354,8 +347,7 @@ test("a trimmed cumulative window rebases off the last hidden day", () => {
   const values = seriesForMode(daily, "cumulative");
   assert.deepEqual(values, [1000, 3000, 3005, 3015]);
 
-  // Showing only the last two days: without rebasing, both bars sit at ~3000
-  // and the 5 vs 10 difference is invisible.
+  // Without rebasing both bars sit near 3000 and the 5 vs 10 difference is invisible.
   const baseline = windowBaseline(values, 2, "cumulative");
   assert.equal(baseline, 3000);
   assert.deepEqual(

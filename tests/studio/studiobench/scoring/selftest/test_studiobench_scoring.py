@@ -606,8 +606,7 @@ def test_an_improvement_to_zero_jank_is_bounded_the_other_way():
 
 
 def test_two_arms_below_the_floor_are_not_a_difference():
-    """score.py's reason, at the ratio layer: instrument noise on a fast machine must not invent
-    a difference between two perfect builds."""
+    """Readings below the floor are not a difference: instrument noise must not invent one."""
 
     pair = _jank_pair(SMOOTH, Measure.read(0.02, "%", floor = JANK_FLOOR))
 
@@ -618,8 +617,7 @@ def test_two_arms_below_the_floor_are_not_a_difference():
 
 
 def test_a_reading_that_was_never_taken_is_still_not_a_zero():
-    """THE LINE THIS MUST NOT CROSS. Both of these carry `value is None`, which is a different
-    thing from a measured zero, and neither may enter a ratio."""
+    """Unmeasured and failed readings carry `value is None`, never a zero, and enter no ratio."""
 
     never = Measure.not_attempted("%", "no window had the frame recorder installed")
     failed = Measure.failed("%", "the recorder ran but exported no per-frame deltas")
@@ -649,9 +647,7 @@ def test_a_zero_with_no_declared_floor_stays_unusable():
 
 
 def test_a_null_control_voids_on_jank_it_introduced_over_a_zero_base():
-    """The coupling. The null control decides whether this machine can tell two identical builds
-    apart; blind to the jank transition, it passed and published a floor derived from what was
-    left."""
+    """A null control blind to the jank it introduced over a zero base passed and published a floor."""
 
     result = compare(
         "null control: main vs itself",

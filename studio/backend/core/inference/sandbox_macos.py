@@ -4,6 +4,8 @@
 """Default-deny Seatbelt profiles for sandbox-exec; file rules do not block AF_UNIX connect, so sockets get their own."""
 
 from __future__ import annotations
+import contextvars
+import functools
 import json
 import os
 import posixpath
@@ -16,6 +18,9 @@ import sysconfig
 import tempfile
 import threading
 
+from loggers import get_logger
+
+from . import sandbox_egress
 from .os_sandbox import (
     PROFILE_VERSION,
     SESSION_PACKAGES_RELPATH,
@@ -27,8 +32,12 @@ from .os_sandbox import (
     editable_source_roots,
     model_library_roots,
     scan_workdir_for_host_channels,
+    session_package_paths,
+    session_script_dirs,
     studio_state_roots,
 )
+
+logger = get_logger(__name__)
 
 BACKEND_NAME = "macos-seatbelt"
 PROFILE_ID = f"macos-seatbelt-{PROFILE_VERSION}"
@@ -217,9 +226,16 @@ def available() -> tuple[bool, str]:
     return True, "the system Seatbelt launcher is present and executable"
 
 
+@functools.lru_cache(maxsize = 4096)
 def _sbpl_string(value: str) -> str:
     """An SBPL string literal with non-ASCII left RAW: TinyScheme has no u-escape, so json's default breaks accented paths."""
     return json.dumps(value, ensure_ascii = False)
+
+
+# One render's path spellings (each a realpath, asked for by several rules); a later launch re-resolves.
+_render_spellings: contextvars.ContextVar = contextvars.ContextVar(
+    "seatbelt_render_spellings", default = None
+)
 
 
 def _validated(path: str) -> str:
@@ -265,6 +281,18 @@ def _rule(operations: str, filters: list[str]) -> str:
 
 def _sbpl_spellings(path: str, *, resolve: bool = True) -> tuple[str, ...]:
     """Both /private aliases even when absent; ``resolve = False`` keeps symlink targets out."""
+    memo = _render_spellings.get()
+    if memo is None:
+        return _compute_sbpl_spellings(path, resolve)
+    key = (path, resolve)
+    found = memo.get(key)
+    if found is None:
+        # A rejected path raises and is not stored, so every use still refuses it.
+        found = memo[key] = _compute_sbpl_spellings(path, resolve)
+    return found
+
+
+def _compute_sbpl_spellings(path: str, resolve: bool) -> tuple[str, ...]:
     selected = [posixpath.abspath(_validated(path))]
     if resolve:
         # Validated: a newline in a symlink target would end up inside a quoted string.
@@ -411,7 +439,7 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         pass
 
     selected: list[str] = []
-    for candidate in candidates:
+    for candidate in dict.fromkeys(candidates):
         if not candidate or not posixpath.isabs(candidate):
             continue
         written = posixpath.abspath(candidate)
@@ -456,7 +484,8 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             posixpath.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python")
         )
-    for candidate in candidates:
+    # sys.executable stays first, keeping its identity check below.
+    for candidate in dict.fromkeys(candidates):
         if not os.path.exists(candidate):
             continue
         resolved = os.path.realpath(candidate)
@@ -526,8 +555,30 @@ def build_profile(
     private_tmp: str,
     runtime_paths: tuple[str, ...],
     developer_paths: tuple[str, ...] = (),
+    egress_port: int | None = None,
 ) -> str:
     """Writes and spawns nothing, so a test can assert on the text anywhere."""
+    token = _render_spellings.set({})
+    try:
+        return _build_profile(
+            workdir = workdir,
+            private_tmp = private_tmp,
+            runtime_paths = runtime_paths,
+            developer_paths = developer_paths,
+            egress_port = egress_port,
+        )
+    finally:
+        _render_spellings.reset(token)
+
+
+def _build_profile(
+    *,
+    workdir: str,
+    private_tmp: str,
+    runtime_paths: tuple[str, ...],
+    developer_paths: tuple[str, ...],
+    egress_port: int | None,
+) -> str:
     readable_paths = (
         *_READ_ROOTS,
         *_TLS_TRUST_PATHS,
@@ -597,6 +648,8 @@ def build_profile(
         # bash process substitution opens /dev/fd/63.
         '(allow file-read* (regex #"^/dev/fd/[0-9]+$"))',
         '(allow file-write* (regex #"^/dev/fd/[0-9]+$"))',
+        # Unlistable, CPython close()s every fd up to RLIMIT_NOFILE before exec: forever when unlimited.
+        '(allow file-read* (literal "/dev/fd"))',
         _rule("allow file-ioctl", device_filters),
         "(allow ipc-posix-sem)",
         # write-data: libomp writes its registration into the segment.
@@ -615,7 +668,12 @@ def build_profile(
         '(allow network-bind (local ip "*:*"))',
         "(allow network-inbound)",
         # Filtered to ip: an unfiltered outbound covers AF_UNIX, e.g. /var/run/docker.sock.
-        '(allow network-outbound (remote ip "*:*"))',
+        # A proxied call reaches only its proxy, which resolves and checks every destination on the host.
+        (
+            f'(allow network-outbound (remote ip "localhost:{int(egress_port)}"))'
+            if egress_port is not None
+            else '(allow network-outbound (remote ip "*:*"))'
+        ),
         # One path filter per endpoint; combining paths breaks multiprocessing on macOS 15.
         *(f"(allow network-bind (local unix-socket {path}))" for path in tmp_subpaths),
         *(f"(allow network-outbound (remote unix-socket {path}))" for path in tmp_subpaths),
@@ -664,13 +722,16 @@ def _sandbox_environment(env: dict[str, str], workdir: str, private_tmp: str) ->
             "TMP": tmpdir,
             "TEMP": tmpdir,
             "XDG_RUNTIME_DIR": private_tmp,
-            "PIP_TARGET": packages,
+            "PIP_PREFIX": packages,
+            "PIP_IGNORE_INSTALLED": "1",
             # <target>/bin LAST: it is tool-writable and must not shadow a command approval treats as safe.
             "PATH": os.pathsep.join(
-                part for part in (env.get("PATH") or "", posixpath.join(packages, "bin")) if part
+                part for part in (env.get("PATH") or "", *session_script_dirs(packages)) if part
             ),
             "PYTHONPATH": os.pathsep.join(
-                part for part in (env.get("PYTHONPATH") or "", packages) if part
+                part
+                for part in (env.get("PYTHONPATH") or "", *session_package_paths(packages))
+                if part
             ),
         }
     )
@@ -693,6 +754,11 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise WorkdirUnsafeError(str(exc)) from exc
     if not os.path.isdir(workdir):
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
+    # Every rule below grants whatever the path resolves to, and tool code can write the workdir's parent
+    # entry: a workdir swapped for a link would move the grants to the link's target.
+    if os.path.islink(workdir):
+        raise WorkdirUnsafeError(f"the session workdir is a symbolic link: {workdir}")
+    resolved = os.path.realpath(workdir)
     if posixpath.dirname(workdir) == workdir:
         # "/" would make the entire filesystem the writable set.
         raise WorkdirUnsafeError(f"the session workdir cannot be a filesystem root: {workdir}")
@@ -702,29 +768,61 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     private_tmp = tempfile.mkdtemp(
         prefix = "us-seatbelt-", dir = "/tmp" if sys.platform == "darwin" else None
     )
+    proxy = None
+    rc_dir = None
     try:
+        if plan.egress_proxy:
+            try:
+                # Readable, not writable, inside the profile: the empty rc files stay empty.
+                rc_dir = tempfile.mkdtemp(
+                    prefix = "us-egress-rc-", dir = "/tmp" if sys.platform == "darwin" else None
+                )
+                sandbox_egress.write_empty_rc_files(rc_dir)
+                proxy = sandbox_egress.EgressProxy()
+            except OSError:
+                logger.warning("Could not start the sandbox egress proxy", exc_info = True)
+        egress_url = f"http://127.0.0.1:{proxy.port}" if proxy else None
         runtime_paths = tuple(
             path for path in runtime_read_paths(workdir) if not _within(path, workdir)
-        )
-        profile = build_profile(
-            workdir = workdir,
-            private_tmp = private_tmp,
-            runtime_paths = runtime_paths,
-            developer_paths = _developer_paths(),
-        )
+        ) + ((rc_dir,) if proxy else ())
+        try:
+            profile = build_profile(
+                workdir = workdir,
+                private_tmp = private_tmp,
+                runtime_paths = runtime_paths,
+                developer_paths = _developer_paths(),
+                egress_port = proxy.port if proxy else None,
+            )
+        except SandboxUnavailableError as exc:
+            # A refusal here is this workdir's (a link swapped in to a target Seatbelt cannot name): it must
+            # not select auto's unisolated fallback.
+            raise WorkdirUnsafeError(str(exc)) from exc
+        if os.path.islink(workdir) or os.path.realpath(workdir) != resolved:
+            raise WorkdirUnsafeError(
+                f"the session workdir was replaced while it was prepared: {workdir}"
+            )
+        env = _sandbox_environment(plan.env, workdir, private_tmp)
+        if egress_url:
+            env.update(sandbox_egress.proxy_environment(egress_url, rc_dir))
         return PreparedSandboxLaunch(
             argv = (SANDBOX_EXEC, "-p", profile, "--", *plan.argv),
             workdir = workdir,
-            env = _sandbox_environment(plan.env, workdir, private_tmp),
+            env = env,
             # Preserved: it is the os.setsid() tools.py's killpg teardown signals.
             preexec_fn = plan.preexec_fn,
             backend = BACKEND_NAME,
-            cleanup_paths = [private_tmp],
+            cleanup_paths = [private_tmp, *((rc_dir,) if rc_dir else ())],
             timeout_seconds = plan.timeout_seconds,
             close_fds = plan.close_fds,
             terminate_descendants = plan.terminate_descendants,
+            cleanup_callbacks = [proxy.close] if proxy else [],
             launch_limitations = workdir_limitations,
+            egress_proxy = egress_url,
         )
     except Exception:
+        if proxy:
+            proxy.close()
+        if rc_dir:
+            shutil.rmtree(rc_dir, ignore_errors = True)
         shutil.rmtree(private_tmp, ignore_errors = True)
         raise

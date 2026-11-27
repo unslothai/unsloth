@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Trusted-org checks for the ``trust_remote_code`` auto-enable paths.
-
-A bare ``name.startswith("unsloth/")`` is spoofable by a local path like
-``./unsloth/evil``. ``is_trusted_org_repo`` rejects local paths, requires an
-``org/repo`` under a trusted org, and (online) confirms via the Hub. Fails CLOSED
-on any uncertainty and never raises; a False just means "do not auto-enable".
-"""
+"""Trusted-org check for remote-code auto-enable; rejects local paths, fails closed on any
+uncertainty, never raises; a bare name prefix is spoofable."""
 
 from __future__ import annotations
 
 import hashlib
-import os
 from typing import Optional
 
 from loggers import get_logger
@@ -23,9 +17,7 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
-# authenticated lookup; the token is hashed, never stored raw. And on the endpoint, which
-# decides who owns the name.
+# Keyed on (name, verify_remote, token hash, endpoint) so an unauthenticated failure cannot poison a later authenticated lookup.
 _verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
@@ -36,22 +28,13 @@ def _token_key(hf_token: Optional[str]) -> str:
     return hashlib.sha256(hf_token.encode("utf-8")).hexdigest()[:12]
 
 
-def _env_offline() -> bool:
-    return os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or os.environ.get(
-        "TRANSFORMERS_OFFLINE", ""
-    ).lower() in ("1", "true", "yes")
-
-
 def is_trusted_org_repo(
     name: str,
     hf_token: Optional[str] = None,
     *,
     verify_remote: bool = True,
 ) -> bool:
-    """True only if *name* is a genuine HF repo under a trusted org. Fails closed
-    (local paths, malformed names, untrusted namespaces, Hub errors); never raises.
-    Offline trusts the namespace shape, since the Hub is unreachable by design.
-    """
+    """Fails closed on any error; offline it trusts the namespace shape, as the Hub is unreachable."""
     if not name or not isinstance(name, str):
         return False
     from utils.hub_settings import MODELSCOPE, active_source
@@ -65,6 +48,9 @@ def is_trusted_org_repo(
     cache_key = (name, verify_remote, _token_key(hf_token), endpoint)
     if cache_key in _verdict_cache:
         return _verdict_cache[cache_key]
+    # Hub client offline: the load reads only the cache, so trust the shape, uncached so an online lookup still verifies.
+    if verify_remote and constants.HF_HUB_OFFLINE:
+        return _evaluate(name, hf_token, False, endpoint)
 
     verdict = _evaluate(name, hf_token, verify_remote, endpoint)
     _verdict_cache[cache_key] = verdict
@@ -92,8 +78,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool, endpoint:
     if ns is None or ns not in TRUSTED_ORGS:
         return False
 
-    # Offline: trust the shape (Hub intentionally unreachable).
-    if not verify_remote or _env_offline():
+    if not verify_remote:
         return True
 
     try:

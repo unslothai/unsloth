@@ -4,6 +4,7 @@
 """A custom folder behind a hung mount must not hold the model list hostage."""
 
 import asyncio
+import os
 import threading
 
 import pytest
@@ -150,3 +151,79 @@ def test_macos_case_variants_are_one_folder(tmp_path, monkeypatch):
     assert not inserted
     assert row["path"] == real.upper() and row["recursive"]
     assert len(scan_folders.list_scan_folders()) == 1
+
+
+def _block_on(hung: str, release: threading.Event, identity):
+    def resolve(raw):
+        if str(raw) == hung:
+            release.wait(5)
+        return identity(raw)
+
+    return resolve
+
+
+def test_a_hung_folder_cannot_stall_the_hub_folder_list(monkeypatch, tmp_path):
+    release = threading.Event()
+    healthy = str(tmp_path)
+    monkeypatch.setattr(
+        local_inventory,
+        "list_scan_folders",
+        lambda: [{"id": 1, "path": "/mnt/nas"}, {"id": 2, "path": healthy}],
+    )
+    monkeypatch.setattr(
+        local_inventory,
+        "_inventory_path_identity",
+        _block_on("/mnt/nas", release, local_inventory._inventory_path_identity),
+    )
+    try:
+        folders = asyncio.run(asyncio.wait_for(local_inventory._load_custom_folders(), 2))
+        assert [folder["_identity"] for folder in folders] == [
+            os.path.normcase("/mnt/nas"),
+            local_inventory._inventory_path_identity(healthy),
+        ]
+        assert _status("/mnt/nas") == STATUS_SLOW
+    finally:
+        release.set()
+
+
+def test_a_hung_folder_cannot_stall_the_compat_model_list(monkeypatch, tmp_path):
+    from routes import models as models_route
+
+    release = threading.Event()
+    sources = models_route._CompatLocalInventorySources(
+        tmp_path / "active", tmp_path / "legacy", tmp_path / "default", (), ()
+    )
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders", lambda: [{"id": 1, "path": "/mnt/nas"}]
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_compat_inventory_path_identity",
+        _block_on("/mnt/nas", release, models_route._compat_inventory_path_identity),
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", lambda *_args, **_kwargs: [])
+
+    async def listing_and_loop():
+        ticks = 0
+
+        async def tick():
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        ticker = asyncio.create_task(tick())
+        try:
+            rows = await asyncio.wait_for(
+                models_route._shared_compat_local_inventory_scan(tmp_path / "models", sources), 2
+            )
+        finally:
+            ticker.cancel()
+        return rows, ticks
+
+    try:
+        rows, ticks = asyncio.run(listing_and_loop())
+        assert rows == [] and ticks > 5
+        assert _status("/mnt/nas") == STATUS_SLOW
+    finally:
+        release.set()

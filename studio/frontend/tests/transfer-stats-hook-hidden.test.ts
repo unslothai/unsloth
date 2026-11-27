@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The training-start overlay reaches the estimator through useTransferStats,
-// the fifth caller and the last one without a visibility guard. It polls on a
-// 1.5s interval, which a hidden tab clamps to about once a minute, and the
-// estimator reads gaps between increases as the burst cadence.
-//
-// This one bites harder than the other callers because the hook's effect is
-// keyed on ``bytes``: a counter that stops moving never runs it again, so
-// whatever was last computed stays on screen indefinitely. Measured at 50 MB/s
-// with 22 minutes left, still displayed after the transfer was dead and the tab
-// visible again.
+// Hidden tabs clamp the 1.5s poll to about a minute, and the effect is keyed on bytes, so a
+// stalled counter never recomputes and a stale estimate would stay on screen.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -63,12 +55,10 @@ test("a stale estimate does not outlive the transfer that produced it", () => {
       bytes += 75 * MB;
       render(t, bytes, false);
     }
-    // Hidden: the 1.5s interval is clamped to about a minute.
     for (; t <= 660; t += 60) {
       bytes += 3_000 * MB;
       render(t, bytes, true);
     }
-    // The transfer stops and the tab comes back. Bytes never change again.
     for (; t <= 660 + 1_800; t += 1.5) render(t, bytes, false);
     return shown;
   };

@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The "Partial" badge used to say "Click to continue" while being a status dot with no handler,
-// and the button beside it said "Redownload" for a Xet partial even though completed shards are
-// kept. Both read as a 56 GB refetch nobody asked for (issue #8927).
-//
-// The resume wording is driven by the backend's verdict on THIS partial, never by the installed
-// huggingface_hub alone: a cache shared with a newer environment holds nonce-named partials that
-// even a resuming writer will not reopen.
+// Resume wording follows the backend verdict on this partial: shared caches can hold
+// nonce-named partials no writer reopens.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,7 +16,6 @@ import {
 const RESUMABLE = true;
 
 test("a partial the backend cannot resume is continued, never redownloaded", () => {
-  // "Redownload" priced the whole repo. The transfer skips every completed file.
   assert.equal(partialResumeLabel(false), "Continue");
 });
 
@@ -47,7 +41,6 @@ test("the badge tooltip names the button, since the badge is not one", () => {
 });
 
 test("a restart-only partial leads with the file that starts over", () => {
-  // A one-file quant has nothing to keep, so "files are kept" must not come first.
   const hint = partialDownloadHint(false);
   assert.match(hint, /Click Continue/);
   assert.match(

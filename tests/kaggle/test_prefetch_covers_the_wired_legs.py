@@ -51,9 +51,7 @@ def test_every_wired_leg_loads_a_prefetched_checkpoint():
 
 
 def test_the_model_walk_reads_the_payload_default_and_not_only_the_args():
-    """Three of the five wired legs carry no --model at all. A rule that read
-    the args alone would report them as having no checkpoint and pass by
-    finding nothing, which is the shape of a guard that guards nothing."""
+    """Three legs pass no --model, so read the payload default too, or the walk finds nothing."""
     assert models_for(legs.LEGS["canary"]) == {"unsloth/Qwen2.5-0.5B-Instruct"}
     assert "unsloth/gpt-oss-20b-unsloth-bnb-4bit" in models_for(legs.LEGS["gptoss"]), (
         "the gpt-oss redirect is not being applied, so the prefetch would warm "

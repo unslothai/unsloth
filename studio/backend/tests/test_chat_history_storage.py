@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import os
 import platform
 import shutil
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from routes import chat_history
 from storage import studio_db
 from utils.paths import studio_db_path
 
@@ -30,11 +32,7 @@ def _reset_studio_db(
 
 @pytest.fixture
 def workspace_projects_home(tmp_path):
-    """Projects root outside the platform delete denylist.
-
-    macOS tmp_path resolves under /private/tmp, which the delete guard refuses;
-    only the denied case falls back to a home subdir.
-    """
+    """Avoid the delete denylist: macOS tmp_path resolves under /private/tmp, which the guard refuses."""
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
     check = os.path.normcase(resolved) if platform.system() == "Windows" else resolved
@@ -129,6 +127,38 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
 
 
+def test_chat_history_revisions_move_on_every_write(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert studio_db.get_chat_history_revisions(["thread-1"]) == (0, {"thread-1": 0})
+
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_thread(_thread("thread-2"))
+    total, threads = studio_db.get_chat_history_revisions(["thread-1", "thread-2"])
+    assert total > 0 and threads["thread-1"] > 0 and threads["thread-2"] > 0
+
+    def snapshot():
+        return studio_db.get_chat_history_revisions(["thread-1", "thread-2"])
+
+    before = snapshot()
+    studio_db.upsert_chat_message(_message("msg-1", 1, "hi"))
+    after_insert = snapshot()
+    assert after_insert[0] > before[0]
+    assert after_insert[1]["thread-1"] > before[1]["thread-1"]
+    assert after_insert[1]["thread-2"] == before[1]["thread-2"]
+
+    # An in-place content edit does not move updatedAt, so the counter is what other devices see.
+    updated_at = studio_db.get_chat_thread("thread-1")["updatedAt"]
+    studio_db.sync_chat_messages("thread-1", [_message("msg-1", 1, "streamed more")])
+    after_edit = snapshot()
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == updated_at
+    assert after_edit[1]["thread-1"] > after_insert[1]["thread-1"]
+
+    studio_db.delete_chat_threads(["thread-1"])
+    after_delete = snapshot()
+    assert after_delete[0] > after_edit[0]
+    assert after_delete[1] == {"thread-1": 0, "thread-2": before[1]["thread-2"]}
+
+
 def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     thread = studio_db.upsert_chat_thread(_thread())
@@ -189,6 +219,25 @@ def test_chat_export_reads_one_snapshot_during_concurrent_delete(tmp_path, monke
     assert [item["id"] for item in messages] == ["msg-1"]
 
 
+def test_chat_export_streams_one_message_per_line_and_filters_archived(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("open"))
+    studio_db.upsert_chat_thread({**_thread("archived"), "archived": True})
+    studio_db.upsert_chat_message(_message("msg-1", 1, "a\nb", "open"))
+    studio_db.upsert_chat_message(_message("msg-2", 2, "old", "archived"))
+
+    full = chat_history.export_history(archived = False, current_subject = "test").body
+    lines = full.split(b"\n")
+    assert json.loads(lines[0] + b"]}")["threadCount"] == 2
+    assert [json.loads(line.rstrip(b","))["id"] for line in lines[1:-1]] == ["msg-1", "msg-2"]
+    assert lines[-1] == b"]}"
+    assert [m["id"] for m in json.loads(full)["messages"]] == ["msg-1", "msg-2"]
+
+    archived = json.loads(chat_history.export_history(archived = True, current_subject = "test").body)
+    assert [t["id"] for t in archived["threads"]] == ["archived"]
+    assert [m["id"] for m in archived["messages"]] == ["msg-2"]
+
+
 def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     thread = studio_db.upsert_chat_thread(_thread())
@@ -202,7 +251,6 @@ def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
     )
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
 
-    # Pruning the newest message must lower updated_at to the remaining one.
     studio_db.sync_chat_messages(
         "thread-1",
         [_message("msg-1", 1_700_000_000_500, "older")],
@@ -210,7 +258,6 @@ def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
     )
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
 
-    # Pruning every message falls back to created_at.
     studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == thread["createdAt"]
 
@@ -297,7 +344,6 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, mon
             "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
             ("thread-empty", "Empty", "base", 1_700_000_050_000),
         )
-        # Fork-like thread: copied ancestor messages predate the thread itself.
         conn.execute(
             "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
             ("thread-fork", "Fork", "base", 1_700_000_100_000),
@@ -378,7 +424,6 @@ def test_clear_reports_only_threads_that_had_a_row(tmp_path, monkeypatch):
 
     _, deleted_ids = studio_db.clear_chat_history_with_active_research_runs(["never-committed"])
 
-    # the fenced id is still tombstoned, but reporting it would inflate the cleared count
     assert deleted_ids == ["thread-1"]
     with pytest.raises(studio_db.ChatThreadDeletedError):
         studio_db.upsert_chat_thread(_thread("never-committed"))
@@ -408,7 +453,6 @@ def test_chat_project_delete_files_removes_workspace(
 ):
     _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
     project = studio_db.upsert_chat_project(_project())
-    # Derive root from the created project so it tracks the projects home.
     root = Path(project["rootPath"])
     marker = root / "sandbox" / "marker.txt"
     marker.write_text("created by code execution", encoding = "utf-8")
@@ -439,6 +483,300 @@ def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     )
 
     assert [message["id"] for message in messages] == ["msg-2"]
+
+
+def _turn(message_id: str, parent_id: str | None, created_at: int) -> dict:
+    return _stored_message(
+        id = message_id,
+        threadId = "thread-1",
+        parentId = parent_id,
+        role = "assistant" if message_id.startswith("a") else "user",
+        createdAt = created_at,
+    )
+
+
+def test_a_stale_window_delete_keeps_turns_it_never_saw(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    seen = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", seen)
+    studio_db.sync_chat_messages("thread-1", seen + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)])
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        seen[:2],
+        prune_missing = True,
+        deleted_message_ids = ["u2", "a2"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+
+
+@pytest.mark.parametrize(
+    "other_window, seen_count, deleted",
+    [
+        ([_turn("a2b", "u2", 5)], 4, ["u2", "a2"]),
+        ([], 3, ["u2"]),
+    ],
+)
+def test_a_stale_window_delete_drops_replies_it_never_saw(
+    tmp_path, monkeypatch, other_window, seen_count, deleted
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns + other_window)
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [m for m in turns[:seen_count] if m["id"] not in deleted],
+        prune_missing = True,
+        deleted_message_ids = deleted,
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1"}
+
+
+def test_a_stale_full_save_does_not_restore_deleted_turns(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", turns + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)]
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(turns[2])
+    assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["u1", "a1", "u3", "a3"]
+
+
+def test_a_late_reply_to_a_deleted_turn_is_dropped(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", turns + [_turn("a2", "u2", 4), _turn("u3", "a2", 5)]
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1"}
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(_turn("a2b", "u2", 6))
+    studio_db.upsert_chat_message(_turn("u3", "a2", 5))
+    studio_db.upsert_chat_message(_turn("u4", "a2b", 7))
+    parents = {m["id"]: m["parentId"] for m in studio_db.list_chat_messages("thread-1")}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "u4": "a1"}
+
+
+def test_a_late_reply_does_not_orphan_a_turn_saved_under_it(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns[:3])
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+    studio_db.upsert_chat_message(_turn("u3", "a2", 5))
+
+    studio_db.sync_chat_messages("thread-1", turns)
+
+    parents = {m["id"]: m["parentId"] for m in studio_db.list_chat_messages("thread-1")}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1"}
+
+
+def test_a_resent_late_reply_keeps_its_recorded_parent(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u0", None, 1), _turn("a0", "u0", 2), _turn("u1", "a0", 3), _turn("u2", "u0", 4)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u1", "u2"]
+    )
+    studio_db.sync_chat_messages("thread-1", turns[:2] + [_turn("a1", "u1", 5)])
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1", [_turn("a1", "u2", 5), _turn("u3", "a1", 6)]
+    )
+
+    assert {message["id"]: message["parentId"] for message in messages}["u3"] == "a0"
+
+
+def test_a_stale_save_after_a_delete_in_a_flat_legacy_chat_keeps_the_branch(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    # The last turn shares a timestamp; the runtime puts the prompt before its reply.
+    times = {"u1": 0, "a1": 1, "u2": 2, "a2": 2}
+    studio_db.sync_chat_messages("thread-1", [_turn(m, None, t) for m, t in times.items()])
+    # As the chat runtime loads it: each row hangs off the one before.
+    parents = {"u1": None, "a1": "u1", "u2": "a1", "a2": "u2"}
+    shown = [_turn(m, parents[m], t) for m, t in times.items()]
+    studio_db.sync_chat_messages(
+        "thread-1", shown[:3], prune_missing = True, deleted_message_ids = ["a2"]
+    )
+
+    messages = studio_db.sync_chat_messages("thread-1", shown + [_turn("u3", "a2", 4)])
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u2": "a1", "u3": "u2"}
+
+
+def test_a_deleted_root_edit_in_a_branched_chat_stays_a_root(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [
+        _turn("u1", None, 1),
+        _turn("a1", "u1", 2),
+        _turn("u1b", None, 3),
+        _turn("a1b", "u1b", 4),
+    ]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u1b", "a1b"]
+    )
+
+    messages = studio_db.sync_chat_messages("thread-1", turns + [_turn("u2", "a1b", 5)])
+
+    assert {message["id"]: message["parentId"] for message in messages}["u2"] is None
+
+
+def test_a_run_admitted_after_its_placeholder_was_deleted_still_settles(tmp_path, monkeypatch):
+    from storage import chat_generation_runs_db as runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:1], prune_missing = True, deleted_message_ids = ["a1"]
+    )
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "u1",
+        assistant_message_id = "a1",
+        request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+    settled = studio_db.get_chat_message("thread-1", "a1")
+    settled["content"] = [{"type": "text", "text": "answer"}]
+    settled["metadata"].update(
+        generationSeq = runs_db.get_run("run-1", "alice")["lastEventSeq"],
+        generationStatus = "completed",
+        generationSettled = True,
+    )
+
+    studio_db.upsert_chat_message(settled)
+
+    assert studio_db.get_chat_message("thread-1", "a1")["content"] == settled["content"]
+
+
+def test_a_stale_save_of_a_kept_generation_reply_does_not_delete_it(tmp_path, monkeypatch):
+    from storage import chat_generation_runs_db as runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "u2",
+        assistant_message_id = "a2",
+        request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run("run-1", worker_token = token, status = "completed", finish_reason = "stop")
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2"]
+    )
+    reply = studio_db.get_chat_message("thread-1", "a2")
+
+    synced = studio_db.sync_chat_messages("thread-1", turns + [{**reply, "parentId": "u2"}])
+
+    assert [(m["id"], m["parentId"]) for m in synced] == [("u1", None), ("a1", "u1"), ("a2", "a1")]
+    edited = {key: value for key, value in reply.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited"}]
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert (saved["parentId"], saved["content"]) == ("a1", edited["content"])
+
+
+def test_a_stale_delete_does_not_reparent_onto_a_row_it_prunes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [
+        _turn("u1", None, 1),
+        _turn("a1", "u1", 2),
+        _turn("u2", "a1", 3),
+        _turn("a2", "u2", 4),
+        _turn("u3", "a2", 5),
+    ]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages(
+        "thread-1", turns[:2], prune_missing = True, deleted_message_ids = ["u2", "a2"]
+    )
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [turns[0], {**turns[2], "parentId": "u1"}, *turns[3:]],
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "u3": "u1"}
+
+
+def test_a_recreated_thread_can_reuse_deleted_message_ids(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, deleted_message_ids = ["u1"])
+    studio_db.delete_chat_threads(["thread-1"])
+    studio_db.lift_chat_thread_tombstones(["thread-1"])
+    studio_db.upsert_chat_thread(_thread())
+
+    messages = studio_db.sync_chat_messages("thread-1", turns)
+
+    assert [m["id"] for m in messages] == ["u1", "a1"]
+
+
+def test_a_prune_does_not_walk_the_chain_of_rows_it_deletes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    ids = [f"u{i}" if i % 2 == 0 else f"a{i}" for i in range(40)]
+    turns = [_turn(m, ids[i - 1] if i else None, i) for i, m in enumerate(ids)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    walked = []
+    real = studio_db._surviving_parent_id
+    monkeypatch.setattr(
+        studio_db,
+        "_surviving_parent_id",
+        lambda conn, thread_id, message_id, pruned: walked.append(message_id)
+        or real(conn, thread_id, message_id, pruned),
+    )
+
+    assert studio_db.sync_chat_messages("thread-1", [], prune_missing = True) == []
+    assert walked == []
 
 
 def test_upsert_chat_message_rejects_cross_thread_id_conflict(tmp_path, monkeypatch):
@@ -572,9 +910,8 @@ def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path
 
 
 def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp_path, monkeypatch):
-    """An empty patch is not a settings change. Without the same short-circuit the
-    unconditional merge has, it would rewrite updated_at on every key, which reads
-    as a fresh edit to anything watching those timestamps."""
+    """An empty patch is not a settings change: without a short-circuit, the merge would rewrite
+    updated_at on every key, reading as a fresh edit."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParams": {"temperature": 0.6}, "autoTitle": True}
@@ -600,9 +937,8 @@ def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp
 
 
 def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_path, monkeypatch):
-    """Normalizing a differently cased model key writes a whole new exact-key row.
-    The subset compare only checks the spelling that was read, so the exact key
-    needs its own absence fence or a newer tab's row is overwritten wholesale."""
+    """Normalizing a cased model key writes a new exact-key row, and the subset compare only sees
+    the read spelling, so it needs an absence fence or a newer row is overwritten."""
     _reset_studio_db(tmp_path, monkeypatch)
     lower = "unsloth/qwen3.8-27b-gguf"
     exact = "unsloth/Qwen3.8-27B-GGUF"
@@ -622,9 +958,8 @@ def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_pa
 
 
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
-    """Per-model memory patches one model at a time, so the merge has to keep the
-    others. Without this, tuning a second model would wipe the first one's settings
-    and the switch back would land on whatever the last edit happened to be."""
+    """Per-model memory patches one model at a time, so the merge must keep the others; otherwise
+    tuning a second model would wipe the first one's remembered settings."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
@@ -632,7 +967,6 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
     studio_db.upsert_chat_settings_merge(
         {"inferenceParamsByModel": {"llama": {"temperature": 0.9}}}
     )
-    # A second edit to the first model merges into its own entry.
     studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}})
 
     by_model = studio_db.list_chat_settings()["inferenceParamsByModel"]
@@ -640,9 +974,8 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
 
 
 def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
-    """A preset pick drops the loaded model's preset-owned keys (#14068); a merge alone cannot
-    remove a key. The forget runs first, so an edit in the same debounced patch starts fresh, and
-    a key it does not name (a Fast mode another tab just set) survives."""
+    """A preset pick drops the loaded model's preset-owned keys (issue 14068) because a merge cannot
+    remove a key; the forget runs first, so a key it does not name survives."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge(
         {
@@ -803,7 +1136,6 @@ def test_count_chat_messages_for_threads_follows_the_newest_branch(tmp_path, mon
     msg("flat", "f1", None, "user", 1)
     msg("flat", "f2", None, "assistant", 2)
     msg("flat", "f3", None, "system", 3)
-    # b1 -> b2 (old reply) and b1 -> b3 (regenerated, newest) -> b4
     msg("branched", "b1", None, "user", 10)
     msg("branched", "b2", "b1", "assistant", 11)
     msg("branched", "b3", "b1", "assistant", 12)
@@ -812,11 +1144,6 @@ def test_count_chat_messages_for_threads_follows_the_newest_branch(tmp_path, mon
     counts = studio_db.count_chat_messages_for_threads(["flat", "branched", "empty", "missing"])
     assert counts == {"flat": 2, "branched": 3, "empty": 0, "missing": 0}
     assert studio_db.count_chat_messages_for_threads([]) == {}
-
-
-# ---------------------------------------------------------------------------
-# Legacy Dexie import ledger
-# ---------------------------------------------------------------------------
 
 
 def test_legacy_imports_empty_by_default(tmp_path, monkeypatch):
@@ -843,7 +1170,6 @@ def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
         ["legacy-b", "legacy-c"],
     )
     assert (accepted1, inserted1) == (2, 2)
-    # legacy-b is already in the ledger, only legacy-c is genuinely new.
     assert (accepted2, inserted2) == (2, 1)
     assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
 
@@ -853,8 +1179,6 @@ def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
     accepted, inserted = studio_db.upsert_chat_legacy_imports(
         ["x", "x", "y", "x"],
     )
-    # accepted is the deduped non-empty input size; inserted is the rows newly
-    # added to the ledger after ON CONFLICT DO NOTHING.
     assert accepted == 2
     assert inserted == 2
     assert set(studio_db.list_chat_legacy_imports()) == {"x", "y"}
@@ -865,11 +1189,6 @@ def test_legacy_imports_ignores_empty(tmp_path, monkeypatch):
     assert studio_db.upsert_chat_legacy_imports([]) == (0, 0)
     assert studio_db.upsert_chat_legacy_imports(["", None]) == (0, 0)  # type: ignore[list-item]
     assert studio_db.list_chat_legacy_imports() == []
-
-
-# ---------------------------------------------------------------------------
-# fork_chat_thread
-# ---------------------------------------------------------------------------
 
 
 def _msg(mid: str, parent: str | None, t: int) -> dict:
@@ -886,15 +1205,13 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
             "openaiCodeExecContainerId": "cnt-x",
         }
     )
-    # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
-    # be copied since we fork at m3).
     studio_db.sync_chat_messages(
         "src",
         [
             _msg("m1", None, 1),
             _msg("m2", "m1", 2),
             _msg("m3", "m2", 3),
-            _msg("m4", "m2", 4),  # sibling — must be excluded
+            _msg("m4", "m2", 4),
         ],
     )
 
@@ -916,17 +1233,13 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     assert forked["forkedFromThreadId"] == "src"
     assert forked["forkedFromMessageId"] == "m3"
     assert forked["modelGgufVariant"] == "Q6_K"
-    # Container ids reset on fork.
     assert forked["openaiCodeExecContainerId"] is None
 
     copied = studio_db.list_chat_messages("fork-1")
-    # 3 ancestors (m1, m2, m3); m4 excluded.
     assert len(copied) == 3
-    # parent_id rewritten using new ids; root has parentId None.
     assert copied[0]["parentId"] is None
     assert copied[1]["parentId"] == copied[0]["id"]
     assert copied[2]["parentId"] == copied[1]["id"]
-    # All new ids regenerated.
     assert {m["id"] for m in copied}.isdisjoint({"m1", "m2", "m3"})
 
 
@@ -1125,10 +1438,8 @@ def test_fork_counts_for_thread(tmp_path, monkeypatch):
 
     counts = studio_db.fork_counts_for_thread("src")
     assert counts == {"m1": 2, "m2": 1}
-    # Same answer as the per-message read it replaces, message for message.
     for message_id in ["m1", "m2", "m3"]:
         assert counts.get(message_id, 0) == studio_db.count_forks_for_message("src", message_id)
-    # Another thread's forks never leak in.
     assert studio_db.fork_counts_for_thread("f1") == {}
 
 
@@ -1138,10 +1449,7 @@ def _research_thread(
     *,
     extra_ancestors: int = 1,
 ):
-    """A thread shaped `a0 -> ... -> prompt -> report`, with the pair claimed by a research run.
-
-    Returns the ancestor ids in order. `prompt` and `report` are the server-managed pair.
-    """
+    """Returns ancestor ids; the prompt and report pair is server-managed and claimed by a research run."""
     from storage import research_runs_db
 
     _reset_studio_db(tmp_path, monkeypatch)
@@ -1176,7 +1484,6 @@ def _research_thread(
         config = {},
         created_at = 1,
     )
-    # create_run may rewrite the pair, so the baseline has to be what the server now holds.
     return ancestors, studio_db.list_chat_messages("src")
 
 
@@ -1242,8 +1549,6 @@ def test_reparented_managed_prompt_invalidates_saved_usage_after_reload(
 
 
 def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
-    # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
-    # and the guard must read that as the repair it is rather than an edit.
     _, messages = _research_thread(tmp_path, monkeypatch)
     payload = _without(messages, "a0")
     payload[0]["parentId"] = None
@@ -1264,10 +1569,25 @@ def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
+def test_a_stale_window_delete_relinks_a_research_prompt_it_never_saw(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 2)
+
+    synced = studio_db.sync_chat_messages(
+        "src",
+        _without(messages, "a1", "prompt", "report"),
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    assert {m["id"]: m["parentId"] for m in synced} == {
+        "a0": None,
+        "prompt": "a0",
+        "report": "prompt",
+    }
+
+
 def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
-    # The bulk sync keeps the server copy instead of rejecting the batch, so the protection is
-    # that the claim is dropped: the reseat is walked from the stored chain, and a client cannot
-    # use a pruned parent as cover for pointing a protected message anywhere it likes.
+    # The bulk sync drops the claim instead of rejecting the batch; reseat uses the stored chain.
     _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
     payload = _without(messages, "a1", "a2")
     next(m for m in payload if m["id"] == "prompt")["parentId"] = "report"
@@ -1284,7 +1604,6 @@ def test_a_relink_with_nothing_pruned_leaves_the_stored_parent_alone(tmp_path, m
 
     synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
 
-    # Nothing was deleted, so there is no repair to make and the claim is simply dropped.
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
 
@@ -1295,7 +1614,6 @@ def test_a_relink_is_ignored_when_pruning_is_off(tmp_path, monkeypatch):
 
     synced = studio_db.sync_chat_messages("src", payload, prune_missing = False)
 
-    # With pruning off the omitted ancestor survives, so the stored parent still resolves.
     assert {m["id"] for m in synced} >= {"a0", "prompt"}
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
 
@@ -1310,8 +1628,6 @@ def test_a_relink_is_ignored_when_pruning_is_off(tmp_path, monkeypatch):
     ],
 )
 def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, value):
-    # Structure is repaired, content is not adopted: the reseat must not become a hole through
-    # which a drifted autosave rewrites the protected row.
     _, messages = _research_thread(tmp_path, monkeypatch)
     stored = next(m for m in messages if m["id"] == "prompt")
     payload = _without(messages, "a0")
@@ -1321,7 +1637,6 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
     synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
 
     prompt = next(m for m in synced if m["id"] == "prompt")
-    # The deleted ancestor was the root, so the repair is a reseat to the root.
     assert prompt["parentId"] is None
     expected = stored.get(field)
     if field == "metadata":
@@ -1331,8 +1646,6 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
 
 
 def test_deleting_a_protected_message_itself_is_still_refused(tmp_path, monkeypatch):
-    # Update permission is not delete permission. Omitting a protected message no longer 409s
-    # the batch, but it must not delete it either.
     _, messages = _research_thread(tmp_path, monkeypatch)
 
     for dropped in ("prompt", "report"):
@@ -1361,8 +1674,6 @@ def test_an_unrelated_sibling_can_still_be_deleted(tmp_path, monkeypatch):
 
 
 def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monkeypatch):
-    # Only protected ids reach the guard at all; an ordinary relink must stay untouched by any of
-    # this, including when its own parent is the pruned node.
     _, messages = _research_thread(tmp_path, monkeypatch)
     plain_parent = _stored_message(
         id = "plain-parent",
@@ -1385,8 +1696,6 @@ def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monke
 
 
 def test_a_corrupt_self_link_resolves_to_the_root_rather_than_itself(tmp_path, monkeypatch):
-    # A thread can only reach this shape by storing a cycle among its own unprotected rows, but
-    # the walk must still hand back a link the tree can hold rather than a message's own id.
     _, messages = _research_thread(tmp_path, monkeypatch)
     cyclic = [dict(m) for m in messages]
     next(m for m in cyclic if m["id"] == "a0")["parentId"] = "prompt"
@@ -1400,8 +1709,6 @@ def test_a_corrupt_self_link_resolves_to_the_root_rather_than_itself(tmp_path, m
 
 
 def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
-    # parent_id is nullable, so '' is only reachable through a direct writer, but the helper and
-    # the caller's `or None` normalization must agree about it either way.
     _, messages = _research_thread(tmp_path, monkeypatch)
     conn = studio_db.get_connection()
     try:
@@ -1413,16 +1720,13 @@ def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
 
 
 def test_deleting_a_thread_signals_only_research_runs_a_worker_owns(tmp_path, monkeypatch):
-    # A fresh run sits in 'planning' with no lease. Deleting its thread cascades the row away, so
-    # no worker can ever claim it; signalling it would leave a cancellation event in the
-    # supervisor that nothing is left to consume.
+    # A planning run has no worker; signalling it would leave an unconsumed cancellation event.
     _research_thread(tmp_path, monkeypatch)
 
     assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == []
 
 
 def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
-    # The same run once a worker owns it: that worker is still running and has to be told.
     _research_thread(tmp_path, monkeypatch)
     conn = studio_db.get_connection()
     try:
@@ -1438,9 +1742,6 @@ def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
 
 
 def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, monkeypatch):
-    # The request that recorded the operation already signalled these runs on its way out. Its
-    # worker may have exited since, so a second signal would leave a cancellation event in the
-    # supervisor that nothing is left to consume.
     _research_thread(tmp_path, monkeypatch)
     conn = studio_db.get_connection()
     try:
@@ -1485,7 +1786,6 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
         }
     )
 
-    # Second turn with identical text & attachments, but distinct message ID
     msg2 = {
         "id": "u2",
         "threadId": "thread-1",
@@ -1498,7 +1798,6 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
     res = studio_db.upsert_chat_message(msg2)
     assert res["id"] == "u2"
 
-    # Both messages must persist separately
     messages = studio_db.list_chat_messages("thread-1")
     assert {m["id"] for m in messages} == {"u1", "a1", "u2"}
 
@@ -1517,22 +1816,17 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     assert [m["id"] for m in messages] == ["u1", "u2"]
 
 
-# ---------------------------------------------------------------------------
-# fork titles and the inherited-history boundary
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "stored,title,base",
     [
-        ("Chat", "Chat (2)", "Chat"),  # generated, so the stored base wins
-        ("Chat (2)", "Chat (2) (3)", "Chat (2)"),  # a base may hold a number of its own
+        ("Chat", "Chat (2)", "Chat"),
+        ("Chat (2)", "Chat (2) (3)", "Chat (2)"),
         (None, "Chat", "Chat"),
-        (None, "Budget (2026)", "Budget (2026)"),  # the user's number, kept whole
+        (None, "Budget (2026)", "Budget (2026)"),
         (None, "Release (2)", "Release (2)"),
         (None, "(2)", "(2)"),
         (None, "  Spaced  ", "Spaced"),
-        ("", "Chat (2)", "Chat (2)"),  # blank is no base at all
+        ("", "Chat (2)", "Chat (2)"),
         ("  ", "Chat (2)", "Chat (2)"),
     ],
 )
@@ -1556,9 +1850,7 @@ def test_fork_of_an_ordinary_chat_keeps_a_numeric_suffix(tmp_path, monkeypatch):
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Budget (2026)"})
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
 
-    # The year is the user's, not a fork number, so it survives into the fork's name.
     assert _fork("src", "f0", 10)["title"] == "Budget (2026) (1)"
-    # And a fork of that fork still numbers from the same base rather than nesting again.
     assert _fork("f0", "f1", 11)["title"] == "Budget (2026) (2)"
 
 
@@ -1571,7 +1863,6 @@ def test_a_renamed_fork_keeps_the_name_the_user_gave_it(tmp_path, monkeypatch):
     )
     studio_db.sync_chat_messages("f", [_msg("m1", None, 1)])
 
-    # No "Report" family to join, so the year is the user's and the whole name is the base.
     assert _fork("f", "f2", 10)["title"] == "Report (2026) (1)"
 
 
@@ -1592,7 +1883,7 @@ def test_a_fork_numbers_from_its_base_after_the_source_is_gone(tmp_path, monkeyp
     studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
     assert _fork("orig", "f", 10)["title"] == "Notes (1)"
 
-    studio_db.delete_chat_threads(["orig"])  # "Notes (1)" is now the only one left
+    studio_db.delete_chat_threads(["orig"])
 
     assert _fork("f", "f2", 11)["title"] == "Notes (2)"
 
@@ -1605,7 +1896,6 @@ def test_a_fork_numbers_from_its_base_after_the_source_is_renamed(tmp_path, monk
 
     studio_db.update_chat_thread("orig", {"title": "Journal"})
 
-    # The fork keeps its own family rather than following a name it never had.
     assert _fork("f", "f2", 11)["title"] == "Notes (2)"
 
 
@@ -1618,7 +1908,6 @@ def test_renaming_a_fork_ends_the_generated_name(tmp_path, monkeypatch):
     studio_db.update_chat_thread("f", {"title": "Report (2026)"})
     assert studio_db.get_chat_thread("f")["forkTitleBase"] is None
 
-    # The year is the user's now, so the whole name is the base.
     assert _fork("f", "f2", 11)["title"] == "Report (2026) (1)"
 
 
@@ -1629,7 +1918,6 @@ def test_a_rename_through_upsert_also_ends_it(tmp_path, monkeypatch):
     studio_db.sync_chat_messages("orig", [_msg("m1", None, 1)])
     _fork("orig", "f", 10)
 
-    # Same title, no base in the payload: the stored one survives.
     studio_db.upsert_chat_thread({**_thread("f"), "title": "Notes (1)", "archived": True})
     assert studio_db.get_chat_thread("f")["forkTitleBase"] == "Notes"
 
@@ -1645,7 +1933,6 @@ def test_fork_titles_number_from_the_original_name(tmp_path, monkeypatch):
     titles = [_fork("src", f"f{i}", 10 + i)["title"] for i in range(3)]
     assert titles == ["Research notes (1)", "Research notes (2)", "Research notes (3)"]
 
-    # Forking a fork numbers from the same base rather than nesting suffixes.
     assert _fork("f0", "deep", 20)["title"] == "Research notes (4)"
 
 
@@ -1655,7 +1942,7 @@ def test_fork_title_fills_the_lowest_free_number(tmp_path, monkeypatch):
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
     for i in range(3):
         _fork("src", f"f{i}", 10 + i)
-    studio_db.delete_chat_threads(["f1"])  # frees "Notes (2)"
+    studio_db.delete_chat_threads(["f1"])
 
     assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
 
@@ -1664,9 +1951,7 @@ def test_fork_title_ignores_other_names_and_archived_state(tmp_path, monkeypatch
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Notes"})
     studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
-    # A different chat whose name merely starts with the base must not consume a number.
     studio_db.upsert_chat_thread({**_thread("other"), "title": "Notes extra (1)"})
-    # An archived chat still holds its number, so restoring it cannot collide.
     studio_db.upsert_chat_thread({**_thread("old"), "title": "Notes (1)", "archived": True})
 
     assert _fork("src", "f-new", 30)["title"] == "Notes (2)"
@@ -1705,15 +1990,13 @@ def test_fork_records_the_last_inherited_message(tmp_path, monkeypatch):
     )
     copied = studio_db.list_chat_messages("fork-1")
     boundary = forked["forkBoundaryMessageId"]
-    # The fork's own copy of the branch message, not the source's id.
     assert boundary == copied[-1]["id"]
     assert boundary not in {"m1", "m2", "m3"}
     assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == boundary
 
 
 def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monkeypatch):
-    """An imported chat can end on a system message, which the thread renders as nothing.
-    Anchoring there would hang the divider off a row that never mounts."""
+    """A trailing system message paints no row, so the divider must not anchor on it."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread({**_thread("src"), "title": "Imported"})
     studio_db.sync_chat_messages(
@@ -1728,7 +2011,6 @@ def test_the_boundary_skips_a_trailing_message_that_paints_no_row(tmp_path, monk
     forked = _fork("src", "fork-1", 99)
     copied = {m["id"]: m for m in studio_db.list_chat_messages("fork-1")}
 
-    # The system message is still inherited, it just does not close the history.
     assert [m["role"] for m in copied.values()] == ["user", "assistant", "system"]
     assert copied[forked["forkBoundaryMessageId"]]["role"] == "assistant"
 
@@ -1740,7 +2022,6 @@ def test_a_fork_with_nothing_visible_to_inherit_has_no_boundary(tmp_path, monkey
         "src", [_stored_message(id = "m1", parentId = None, role = "system", createdAt = 1)]
     )
 
-    # Nothing the reader can see, so no inherited history to close and no divider.
     assert _fork("src", "fork-1", 99)["forkBoundaryMessageId"] is None
 
 
@@ -1771,7 +2052,7 @@ def test_a_stale_whole_record_save_cannot_move_the_boundary_back(tmp_path, monke
         ],
     )
     _fork("src", "fork-1", 99)
-    stale = dict(studio_db.get_chat_thread("fork-1"))  # read before the delete
+    stale = dict(studio_db.get_chat_thread("fork-1"))
 
     copied = studio_db.list_chat_messages("fork-1")
     studio_db.sync_chat_messages(
@@ -1782,7 +2063,6 @@ def test_a_stale_whole_record_save_cannot_move_the_boundary_back(tmp_path, monke
     reseated = studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"]
     assert reseated != stale["forkBoundaryMessageId"]
 
-    # The first writer now saves its old record for an unrelated change.
     studio_db.upsert_chat_thread({**stale, "archived": True})
 
     assert studio_db.get_chat_thread("fork-1")["forkBoundaryMessageId"] == reseated
@@ -1815,13 +2095,12 @@ def test_a_stale_whole_record_save_cannot_restore_a_cleared_base(tmp_path, monke
     assert stale["forkTitleBase"] == "Notes"
 
     studio_db.update_chat_thread("fork-1", {"title": "Report"})
-    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})  # the user's own name now
+    studio_db.update_chat_thread("fork-1", {"title": "Notes (1)"})
     assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
 
     studio_db.upsert_chat_thread({**stale, "archived": True})
 
     assert studio_db.get_chat_thread("fork-1")["forkTitleBase"] is None
-    # The number is the user's, so it is kept whole rather than taken.
     assert _fork("fork-1", "fork-2", 100)["title"] == "Notes (1) (1)"
 
 
@@ -1869,7 +2148,6 @@ def test_pruning_every_inherited_message_clears_the_boundary(tmp_path, monkeypat
     _forked_thread(tmp_path, monkeypatch)
     studio_db.sync_chat_messages("f", [], prune_missing = True)
 
-    # Nothing was inherited any more, so there is no history for a divider to close.
     assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None
 
 
@@ -1902,7 +2180,6 @@ def test_the_reseat_skips_an_ancestor_that_paints_no_row(tmp_path, monkeypatch):
     by_id = {m["id"]: m for m in copied}
     boundary = forked["forkBoundaryMessageId"]
 
-    # Prune the boundary; the system message directly above it survives.
     studio_db.sync_chat_messages(
         "f", [m for m in copied if m["id"] != boundary], prune_missing = True
     )
@@ -1929,5 +2206,36 @@ def test_the_reseat_clears_when_only_hidden_ancestors_survive(tmp_path, monkeypa
         "f", [m for m in copied if m["id"] != boundary], prune_missing = True
     )
 
-    # Only the system prompt is left, so there is no visible inherited history to close.
     assert studio_db.get_chat_thread("f")["forkBoundaryMessageId"] is None
+
+
+def test_concurrent_chat_settings_patch_seeds_defaults_without_overwriting_another_window():
+    from storage import studio_db
+
+    import json
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute(
+            "CREATE TABLE chat_threads (id text, settings_json text, settings_seqs text)"
+        )
+        connection.execute("INSERT INTO chat_threads VALUES ('chat', NULL, NULL)")
+        assert studio_db._write_chat_thread_settings_in_conn(
+            connection, "chat", merge = {"systemPrompt": "new prompt"}, seq = 1, writer = "first"
+        )
+        assert studio_db._write_chat_thread_settings_in_conn(
+            connection,
+            "chat",
+            merge = {"temperature": 0.7},
+            defaults = {"systemPrompt": "stale prompt", "topP": 0.9},
+            seq = 1,
+            writer = "second",
+        )
+        settings = json.loads(
+            connection.execute("SELECT settings_json FROM chat_threads").fetchone()[0]
+        )
+        assert settings == {"systemPrompt": "new prompt", "temperature": 0.7, "topP": 0.9}
+    finally:
+        connection.close()

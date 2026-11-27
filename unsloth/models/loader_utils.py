@@ -11,6 +11,7 @@
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 from ..fsdp2_launch import fsdp_version_from_env
+from ._cache_kwarg import get_cache_kwarg
 import hashlib
 import importlib
 import os
@@ -20,7 +21,10 @@ import tempfile
 import types
 import shutil
 import contextlib
+import contextvars
+import copy
 import threading as _threading
+from time import monotonic as _time_monotonic
 import functools
 import inspect
 from typing import Union
@@ -43,7 +47,9 @@ _MAPPER_HELPERS = {
 
 from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
+from ..import_fixes import unsloth_logging_enabled
 from unsloth_zoo.utils import Version, get_quant_type
+from .packed_expert_loader import quantize_moe_experts_if_requested  # noqa: F401  (re-exported)
 import gc
 import traceback as _traceback
 
@@ -201,14 +207,71 @@ def fsdp2_keeps_fused_lora():
     return fsdp2_requested()
 
 
+# Pre-quantized bnb 4-bit repos whose fused MoE experts are bare Params4bit stacks. They store the dtype they were
+# quantized in, so without unsloth_zoo's patching_utils.BARE_PARAMS4BIT_COMPUTE_DTYPE a float16 GPU dequantizes their
+# experts in bfloat16 (2x T4: 36.5 vs 24.1 s per step, about 1.2 GB more per card). An older zoo keeps quantize-on-load.
+_BARE_4BIT_EXPERT_REPOS = frozenset(("unsloth/inkling-2-mini-unsloth-bnb-4bit",))
+
+
+def _zoo_sets_bare_4bit_compute_dtype():
+    """unsloth_zoo gives fused 4-bit expert stacks (bare Params4bit) the compute dtype (older ones keep the saved one)."""
+    try:
+        from unsloth_zoo import patching_utils
+    except Exception:
+        return False
+    return getattr(patching_utils, "BARE_PARAMS4BIT_COMPUTE_DTYPE", False) is True
+
+
+def _complete_in_cache(repo_id, cache_dir = None):
+    """config.json and every safetensors shard of `repo_id` (default revision) are in the local Hub cache."""
+    import json
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        if cache_dir is None:
+            from transformers.utils import hub as _tf_hub
+            cache_dir = getattr(_tf_hub, "TRANSFORMERS_CACHE", None)
+
+        def cached(filename):
+            path = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+            return path if isinstance(path, str) else None
+
+        if cached("config.json") is None:
+            return False
+        index = cached("model.safetensors.index.json")
+        if index is None:
+            return cached("model.safetensors") is not None
+        with open(index, encoding = "utf-8") as f:
+            shards = set(json.load(f)["weight_map"].values())
+        return bool(shards) and all(isinstance(s, str) and cached(s) is not None for s in shards)
+    except Exception:
+        return False
+
+
+def _zoo_gathers_fsdp2_lora():
+    """unsloth_zoo hands vLLM whole adapters from FSDP2 DTensor shards (older ones pass the shards)."""
+    try:
+        from unsloth_zoo import vllm_utils
+    except Exception:
+        return False
+    return hasattr(vllm_utils, "_lora_state_dict")
+
+
 def raise_if_fast_inference_under_fsdp2(fast_inference):
-    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
-    if fast_inference and fsdp2_requested():
-        raise NotImplementedError(
-            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
-            "Load the model with `fast_inference = False` to train with FSDP2, "
-            "or launch without FSDP2 to use vLLM."
-        )
+    """Refuse vLLM under accelerate's FSDP2 early (unsloth#3551); native FSDP2 keeps it (one engine per rank)."""
+    if not fast_inference or not fsdp2_requested():
+        return
+    from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+    if unsloth_fsdp2_native_requested() and _zoo_gathers_fsdp2_lora():
+        return
+    raise NotImplementedError(
+        "Unsloth: `fast_inference = True` (vLLM) is not supported with accelerate's FSDP2, or with an "
+        "unsloth_zoo that cannot gather FSDP2 adapters for vLLM (update unsloth_zoo).\n"
+        "Load the model with `fast_inference = False` to train with FSDP2, launch with "
+        "`UNSLOTH_FSDP2=1 torchrun ...` (Unsloth's native FSDP2 keeps vLLM), "
+        "or launch without FSDP2 to use vLLM."
+    )
 
 
 def prepare_device_map():
@@ -601,6 +664,30 @@ def _single_device_index(device_map):
     return None
 
 
+def no_placement_matcher(model, names = None):
+    """Predicate: is this tensor name one of `model._no_placement_params`? transformers reads the names relative to a
+    `_no_split_modules` module: a bare name ("weight", DeepSeek-V4.1's engram table) matches only a direct tensor of
+    such a module (a suffix match would take every weight in the model); a dotted one (Qwen4Exp's
+    "ple.ple_embedding.ngram_embedding.weight") keeps the suffix match."""
+    names = list(getattr(model, "_no_placement_params", None) or [] if names is None else names)
+    dotted = [n for n in names if "." in n]
+    bare = {n for n in names if "." not in n}
+    roots = set()
+    if bare:
+        no_split = set(getattr(model, "_no_split_modules", None) or [])
+        roots = {
+            path for path, module in model.named_modules() if type(module).__name__ in no_split
+        }
+
+    def match(name):
+        if any(name == n or name.endswith("." + n) for n in dotted):
+            return True
+        owner, _, leaf = name.rpartition(".")
+        return leaf in bare and owner in roots
+
+    return match
+
+
 def no_placement_tensor_names(model):
     """Every tensor name under a module owning one of the model's `_no_placement_params`."""
     names = getattr(model, "_no_placement_params", None)
@@ -609,11 +696,8 @@ def no_placement_tensor_names(model):
     tensors = list(model.named_parameters(remove_duplicate = False)) + list(
         model.named_buffers(remove_duplicate = False)
     )
-    owners = {
-        name.rsplit(".", 1)[0]
-        for name, _ in tensors
-        if any(name == n or name.endswith("." + n) for n in names)
-    }
+    match = no_placement_matcher(model, names)
+    owners = {name.rsplit(".", 1)[0] for name, _ in tensors if match(name)}
     return {name for name, _ in tensors if any(name.startswith(o + ".") for o in owners)}
 
 
@@ -643,10 +727,11 @@ def exclude_no_placement_params(device_map, model_class, config):
             f"Unsloth: could not build {model_class.__name__} on meta to place {names} ({error})."
         )
         return device_map
+    match = no_placement_matcher(meta, names)
     matched = {
         name
         for name, _ in list(meta.named_parameters()) + list(meta.named_buffers())
-        if any(name == n or name.endswith("." + n) for n in names)
+        if match(name)
     }
     if not matched:
         return device_map
@@ -771,6 +856,40 @@ def planner_model_class(config, trust_remote_code = False):
         return None
 
 
+def explain_weight_conversion_error(error):
+    """The first failure transformers 5.x only logged (a CUDA OOM among them) before its generic RuntimeError, else None."""
+    if not isinstance(error, RuntimeError) or "automatic conversion of the weights" not in str(
+        error
+    ):
+        return None
+    conversion_errors = None
+    tb = error.__traceback__
+    while tb is not None:
+        # log_state_dict_report raises with the report's LoadStateDictInfo still in its frame.
+        info = tb.tb_frame.f_locals.get("loading_info")
+        found = getattr(info, "conversion_errors", None)
+        if isinstance(found, dict) and found:
+            conversion_errors = found
+        tb = tb.tb_next
+    if not conversion_errors:
+        return None
+    key, message = next(iter(conversion_errors.items()))
+    lines = [line.strip() for line in str(message).splitlines() if line.strip()]
+    oom = next((line for line in lines if "out of memory" in line.lower()), None)
+    if oom is not None:
+        import torch
+        oom = oom.split("OutOfMemoryError:", 1)[-1].strip()
+        return torch.OutOfMemoryError(
+            f"Unsloth: the GPU ran out of memory while loading `{key}`: {oom} Load the model in 4-bit, "
+            "use a smaller model, or use more or larger GPUs."
+        )
+    detail = next(
+        (line for line in reversed(lines) if not line.startswith("Error:")),
+        lines[-1] if lines else "",
+    )
+    return RuntimeError(f"Unsloth: converting the checkpoint's weights failed at `{key}`: {detail}")
+
+
 def planner_class_mismatch_reason(loaded_class, planned_class):
     """Why the planner's model differs from the one being loaded, else None. Overriding the config's own choice gets a map for a module tree the model does not have: `num_labels` swaps in a `score` head where `lm_head` was planned, and dispatch refuses with "does not give any device for ... score.weight". Compared as model classes, since two distinct auto classes can resolve to the same VLM."""
     if loaded_class is None or planned_class is None or loaded_class is planned_class:
@@ -810,6 +929,16 @@ def _as_bytes(size):
             amount //= 8
         return amount if amount >= 0 else None
     return None
+
+
+def _placement_report(plan):
+    """One line by default (unsloth_zoo's DeviceMapPlan.summary); the planner's full table with
+    UNSLOTH_ENABLE_LOGGING on (any value Unsloth accepts), or from an older unsloth_zoo without
+    summary()."""
+    summary = getattr(plan, "summary", None)
+    if unsloth_logging_enabled() or not callable(summary):
+        return plan.describe()
+    return summary()
 
 
 def resolve_unsloth_device_map(
@@ -954,7 +1083,8 @@ def resolve_unsloth_device_map(
             f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
         )
         return {"": single_device}
-    print(plan.describe())
+    # A plan that does not fit raised DeviceMapInfeasible above with its whole arithmetic.
+    print(_placement_report(plan))
     return plan.device_map
 
 
@@ -1144,7 +1274,7 @@ def resolve_auto_block_swap(
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
-        print(plan.device_plan.describe())
+        print(_placement_report(plan.device_plan))
         return plan.layers, plan.device_plan.device_map, embedding
     return plan.layers, {"": target}, embedding
 
@@ -1164,6 +1294,18 @@ def __get_model_name(
 
     assert load_in_fp8 in (True, False, "block")
     if load_in_fp8 != False:
+        # The FBGEMM probe is lazy (at import it ran on GPU 0 for every torchrun rank): run it now, on this rank's
+        # card, so UNSLOTH_HAS_FBGEMM is known. Only once the FP8 kernels are loaded; never imports them here.
+        import sys
+
+        _resolve_fp8 = getattr(
+            sys.modules.get("unsloth.kernels.fp8"), "resolve_fp8_block_quant_linear", None
+        )
+        if _resolve_fp8 is not None:
+            try:
+                _resolve_fp8()
+            except Exception:
+                pass
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
                 # Faster row scaling only works if FBGEMM works; otherwise use the slower blockwise type.
@@ -1638,7 +1780,6 @@ def _get_new_mapper():
                         table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
                     except ValueError:
                         continue
-                pass
             elif isinstance(node, ast.Delete):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -1785,6 +1926,225 @@ def _prefer_legacy_lowercase_cache(
     return repo_id
 
 
+_LOAD_PROBE_MEMO = contextvars.ContextVar("_unsloth_load_probe_memo", default = None)
+
+
+def _load_probe_memo_scope(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        if _LOAD_PROBE_MEMO.get() is not None:
+            return fn(*args, **kwargs)
+        scope = _LOAD_PROBE_MEMO.set({})
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOAD_PROBE_MEMO.reset(scope)
+
+    return _wrapper
+
+
+# Failed fetches retry after a short pause, not per load: a firewall would cost each load the timeout.
+_NEW_MAPPER_TTL_S = 3600.0
+_NEW_MAPPER_RETRY_S = 300.0
+_NEW_MAPPER_CACHE = {"entry": None}  # (tables, fetched_at): one slot, never a torn pair
+
+
+def _new_mapper_tables():
+    memo = _LOAD_PROBE_MEMO.get()
+    if memo is not None and "new_mapper" in memo:
+        return tuple(dict(table) for table in memo["new_mapper"])
+    entry = _NEW_MAPPER_CACHE["entry"]
+    tables = None
+    if entry is not None:
+        cached, at = entry
+        age = _time_monotonic() - at
+        if 0 <= age < (_NEW_MAPPER_TTL_S if any(cached) else _NEW_MAPPER_RETRY_S):
+            tables = tuple(dict(table) for table in cached)
+    if tables is None:
+        # No lock around the fetch: a fork while another thread is fetching must not leave the child waiting.
+        tables = _get_new_mapper()
+        _NEW_MAPPER_CACHE["entry"] = (tuple(dict(table) for table in tables), _time_monotonic())
+    if memo is not None and any(tables):
+        memo["new_mapper"] = tuple(dict(table) for table in tables)
+    return tables
+
+
+def _copy_error(error):
+    try:
+        clone = copy.copy(error)
+    except Exception:
+        return None
+    if type(clone) is not type(error) or str(clone) != str(error):
+        return None
+    # copy.copy shares exception notes.
+    notes = getattr(error, "__notes__", None)
+    if isinstance(notes, list):
+        clone.__notes__ = list(notes)
+    clone.__cause__ = error.__cause__
+    clone.__context__ = error.__context__
+    clone.__suppress_context__ = error.__suppress_context__
+    clone.__traceback__ = None
+    return clone
+
+
+try:
+    # transformers >= 5.18: each from_pretrained sends a repo_info request to resolve its revision.
+    from transformers.utils.hub import resolve_revision as _hub_resolve_revision
+    from huggingface_hub import ResolvedRevision as _ResolvedRevision
+except ImportError:
+    _hub_resolve_revision = None
+    _ResolvedRevision = None
+
+
+def _resolved_revision(
+    model_name,
+    revision,
+    token = None,
+    local_files_only = False,
+    cache_dir = None,
+):
+    """Resolve once per load, only for transformers `revision =` args: a ResolvedRevision equals "main", not None."""
+    memo = _LOAD_PROBE_MEMO.get()
+    if (
+        memo is None
+        or _hub_resolve_revision is None
+        or not isinstance(model_name, str)
+        or not model_name
+        or isinstance(revision, _ResolvedRevision)
+        or os.path.exists(model_name)
+    ):
+        return revision
+    try:
+        key = (
+            "resolved_revision",
+            model_name,
+            revision,
+            token,
+            bool(local_files_only),
+            _env_says_offline(),
+            None if cache_dir is None else os.fspath(cache_dir),
+        )
+        hash(key)
+    except TypeError:
+        return revision
+    if key not in memo:
+        try:
+            resolved = _hub_resolve_revision(
+                model_name,
+                revision,
+                token = token,
+                local_files_only = bool(local_files_only),
+                cache_dir = cache_dir,
+            )
+        except Exception:
+            resolved = revision
+        memo[key] = resolved if isinstance(resolved, _ResolvedRevision) else revision
+    return memo[key]
+
+
+_COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _cached_missing_adapter_error(
+    model_name,
+    model_config,
+    revision,
+    token = None,
+    local_files_only = False,
+):
+    """PeftConfig's error without a Hub HEAD if the cache records no adapter_config.json at this commit, else None."""
+    if (
+        model_config is None
+        or local_files_only
+        or not isinstance(model_name, str)
+        or not model_name
+        or _env_says_offline()
+        or os.path.exists(model_name)
+    ):
+        return None
+    try:
+        # Memo hit from the config probe; transformers < 5.18 stamps _commit_hash instead.
+        resolved = _resolved_revision(model_name, revision, token, local_files_only)
+        if _ResolvedRevision is not None and isinstance(resolved, _ResolvedRevision):
+            commit = resolved.resolved
+        elif isinstance(revision, str) and _COMMIT_HASH_RE.fullmatch(revision):
+            commit = revision
+        else:
+            commit = getattr(model_config, "_commit_hash", None)
+        if not isinstance(commit, str) or not _COMMIT_HASH_RE.fullmatch(commit):
+            return None
+        from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+        from peft.utils import CONFIG_NAME
+
+        if try_to_load_from_cache(model_name, CONFIG_NAME, revision = commit) is not _CACHED_NO_EXIST:
+            return None
+    except Exception:
+        return None
+    return ValueError(f"Can't find '{CONFIG_NAME}' at '{model_name}'")
+
+
+_TOKEN_FROM_KWARGS = object()
+
+
+def _kwargs_with_resolved_revision(
+    model_name,
+    kwargs,
+    token = _TOKEN_FROM_KWARGS,
+):
+    revision = kwargs.get("revision")
+    resolved = _resolved_revision(
+        model_name,
+        revision,
+        token = kwargs.get("token") if token is _TOKEN_FROM_KWARGS else token,
+        local_files_only = kwargs.get("local_files_only", False),
+        cache_dir = kwargs.get("cache_dir"),
+    )
+    if resolved is revision:
+        return kwargs
+    return {**kwargs, "revision": resolved}
+
+
+def _memo_config_probe(loader, model_name, **kwargs):
+    memo = _LOAD_PROBE_MEMO.get()
+    # Keyed on the owning class: import_fixes wraps AutoConfig.from_pretrained; PeftConfig keeps the plain ref.
+    owner = getattr(loader, "__self__", loader)
+    pin = (getattr(owner, "__module__", None) or "").startswith("transformers.")
+    if memo is None or kwargs.get("trust_remote_code") or not isinstance(model_name, str):
+        return loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
+    if kwargs.get("cache_dir", 0) is None:
+        kwargs.pop("cache_dir")
+    try:
+        key = (loader, model_name, tuple(sorted(kwargs.items())), _env_says_offline())
+        hash(key)
+    except TypeError:
+        return loader(model_name, **kwargs)
+    hit = memo.get(key)
+    if hit is not None:
+        result, error = hit
+        if error is not None:
+            raise _copy_error(error)
+        return copy.deepcopy(result)
+    try:
+        result = loader(
+            model_name, **(_kwargs_with_resolved_revision(model_name, kwargs) if pin else kwargs)
+        )
+    except ImportError:
+        raise
+    except Exception as error:
+        if not _is_offline_related_error(error):
+            stored = _copy_error(error)
+            if stored is not None and _copy_error(stored) is not None:
+                memo[key] = (None, stored)
+        raise
+    try:
+        memo[key] = (copy.deepcopy(result), None)
+    except Exception:
+        pass
+    return result
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
@@ -1794,6 +2154,7 @@ def get_model_name(
     local_files_only = False,
     cache_dir = None,
     revision = None,
+    quantization_config = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -1815,6 +2176,24 @@ def get_model_name(
         new_model_name = BAD_MAPPINGS[model_name.lower()]
 
     if (
+        load_in_4bit
+        and type(new_model_name) is str
+        and new_model_name.lower() in _BARE_4BIT_EXPERT_REPOS
+        and new_model_name.lower() != str(model_name).lower()
+        and (
+            not _zoo_sets_bare_4bit_compute_dtype()
+            or (
+                (local_files_only or _env_says_offline())
+                and not _complete_in_cache(new_model_name, cache_dir)
+            )
+        )
+    ):
+        # Mapped to the pre-quantized repo, but this unsloth_zoo would dequantize its experts in the saved dtype, or
+        # an offline load has not cached it: load the requested checkpoint and quantize on load, as before. Not
+        # None, so the fetched mapper is not probed.
+        new_model_name = str(model_name)
+
+    if (
         new_model_name is None
         and model_name.count("/") == 1
         and model_name[0].isalnum()
@@ -1826,7 +2205,7 @@ def get_model_name(
             NEW_MAP_TO_UNSLOTH_16bit,
             NEW_FP8_BLOCK_MAPPER,
             NEW_FP8_ROW_MAPPER,
-        ) = _get_new_mapper()
+        ) = _new_mapper_tables()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
@@ -1846,17 +2225,111 @@ def get_model_name(
                 'pip install --upgrade --no-cache-dir "git+https://github.com/unslothai/unsloth-zoo.git"\n'
             )
 
+    if (
+        quantization_config is not None
+        and load_in_4bit
+        and load_in_fp8 == False
+        and type(new_model_name) is str
+        and new_model_name.lower() != str(model_name).lower()
+        and new_model_name.lower().endswith("bnb-4bit")
+    ):
+        # Transformers keeps a pre-quantized repo's saved config over the caller's, so take the 16bit lookup instead.
+        # Installed tables only: the fetched-mapper probe would raise "not supported" for a name they already know.
+        unquantized = _resolve_with_mappers(
+            model_name = model_name,
+            load_in_4bit = False,
+            load_in_fp8 = False,
+            int_to_float = INT_TO_FLOAT_MAPPER,
+            float_to_int = FLOAT_TO_INT_MAPPER,
+            map_to_unsloth_16bit = MAP_TO_UNSLOTH_16bit,
+        )
+        if type(unquantized) is str and unquantized.lower() in BAD_MAPPINGS:
+            unquantized = BAD_MAPPINGS[unquantized.lower()]
+        unquantized = str(model_name) if type(unquantized) is not str else unquantized
+        # A requested FP8 / bnb checkpoint honours the config no better, and offline the 16bit repo may be
+        # missing: keep the 4bit remap then.
+        if not (
+            unquantized.lower().endswith("bnb-4bit")
+            or "fp8" in unquantized.lower()
+            or (
+                (local_files_only or _env_says_offline())
+                and not _complete_in_cache(unquantized, cache_dir)
+            )
+        ):
+            print(
+                f"Unsloth: Loading `{unquantized}` and quantizing it with your `quantization_config`, "
+                f"since the pre-quantized `{new_model_name}` would override it with its own."
+            )
+            new_model_name = unquantized
+
     if new_model_name is None:
         new_model_name = model_name
     else:
-        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
-        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        # Also when equal to the input: main returned it lowercased. A real remap drops the revision.
         same_repo = new_model_name.lower() == str(model_name).lower()
         new_model_name = _prefer_legacy_lowercase_cache(
             new_model_name, local_files_only, cache_dir, revision if same_repo else None
         )
 
     return new_model_name
+
+
+def hub_cache_snapshot_repo(path):
+    """(repo id, revision) when `path` is a Hugging Face hub cache snapshot folder
+    (``.../models--org--name/snapshots/<revision>``), else None. A snapshot's files link into the cache's
+    content-addressed blobs, so the folder is that repo at that revision: a training run started from a cached model
+    (Studio's pinned snapshot) records the folder, not the repo id."""
+    if not isinstance(path, (str, os.PathLike)):
+        return None
+    parts = re.split(r"[\\/]+", os.path.abspath(os.fspath(path)).rstrip("\\/"))
+    if (
+        len(parts) < 3
+        or parts[-2] != "snapshots"
+        or not parts[-3].startswith("models--")
+        or not parts[-1]
+    ):
+        return None
+    # The Hub forbids "--" inside a namespace or name, so it only ever stands for the "/".
+    names = parts[-3][len("models--") :].split("--")
+    if not 1 <= len(names) <= 2 or not all(names):
+        return None
+    return "/".join(names), parts[-1]
+
+
+def checkpoint_folder_quant_method(folder):
+    """quant_method of the checkpoint config in a local folder (lowercase), "" when it has none or no config."""
+    import json
+
+    path = os.path.join(folder, "config.json")
+    try:
+        with open(path, encoding = "utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(config, dict):
+        return ""
+    for cfg in (config, config.get("text_config") or {}):
+        quant = cfg.get("quantization_config") if isinstance(cfg, dict) else None
+        if isinstance(quant, dict) and quant.get("quant_method"):
+            return str(quant["quant_method"]).lower()
+    return ""
+
+
+def prequantized_snapshot_original(path):
+    """Hub id of the 16-bit checkpoint a cached pre-quantized bitsandbytes snapshot was made from, else None.
+
+    `path` must be a hub cache snapshot of a repo the mapper lists as a pre-quantized copy of an original, and the
+    answer is the one a merge of the repo id gets. Any other folder, even one named like the repo, is not mapped: its
+    tensors are not provably the repo's."""
+    if not os.path.isdir(str(path)):
+        return None
+    snapshot = hub_cache_snapshot_repo(path)
+    if snapshot is None or checkpoint_folder_quant_method(path) != "bitsandbytes":
+        return None
+    original = get_model_name(snapshot[0], load_in_4bit = False)
+    if not isinstance(original, str) or original.lower() == snapshot[0].lower():
+        return None
+    return original
 
 
 def _refuse_unless_private(path, what):
@@ -2033,9 +2506,7 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
 
 
 def _drop_fp8_dequantize_conversions(model):
-    """Forget the Fp8Dequantize load conversions of a dequantizing fp8 load. save_pretrained reverses
-    them into Fp8Quantize, writing fp8 weights under a config with no quantization_config, so a reload
-    reads the raw fp8 values as 16bit weights. Returns how many conversions changed."""
+    """Drop reverse FP8 conversions that would save unmarked FP8 weights as a 16-bit checkpoint."""
     conversions = getattr(model, "_weight_conversions", None)
     if not conversions:
         return 0
@@ -2048,44 +2519,97 @@ def _drop_fp8_dequantize_conversions(model):
         patterns = getattr(conversion, "_original_target_patterns", None) or []
         return tuple(p[:-1] if p.endswith("$") else p for p in patterns)
 
+    def _sources(patterns):
+        patterns = [p[:-1] if p.endswith("$") else p for p in patterns or []]
+        return tuple(
+            sorted(
+                p for p in patterns if not p.endswith((".weight_scale_inv", ".activation_scale"))
+            )
+        )
+
+    def _source_forms(conversion):
+        return {
+            _sources(getattr(conversion, "_original_source_patterns", None)),
+            _sources(getattr(conversion, "source_patterns", None)),
+        }
+
+    def _ops(conversion):
+        operations = getattr(conversion, "operations", None) or []
+        return tuple(type(op).__name__ for op in operations if not isinstance(op, Fp8Dequantize))
+
+    def _signature(conversion):
+        return (
+            type(conversion),
+            getattr(conversion, "scope_prefix", None),
+            min(_source_forms(conversion)),
+            _targets(conversion),
+            _ops(conversion),
+        )
+
+    def _has_dequant(conversion):
+        return any(
+            isinstance(op, Fp8Dequantize) for op in getattr(conversion, "operations", None) or []
+        )
+
     plain = None
     kept, changed = [], 0
+    retained = {_signature(c) for c in conversions if not _has_dequant(c)}
     for conversion in conversions:
         operations = getattr(conversion, "operations", None) or []
-        if not any(isinstance(op, Fp8Dequantize) for op in operations):
+        if not _has_dequant(conversion):
             kept.append(conversion)
             continue
+        if getattr(getattr(model, "config", None), "quantization_config", None) is None:
+            # transformers dropped the fp8 config: 16bit weights, so no bitsandbytes stamp either.
+            model._unsloth_fp8_dequantized = True
         if all(isinstance(op, Fp8Dequantize) for op in operations):
-            # weight + weight_scale_inv -> weight: the 16bit weight saves as it is.
             changed += 1
             continue
-        # A model converter (expert merge, ...) with the dequant prepended: keep its quantizer-free form.
         if plain is None:
             try:
                 from transformers.conversion_mapping import get_model_conversion_mapping
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
-        match = next(
-            (
-                c
-                for c in plain
-                if type(c) is type(conversion) and _targets(c) == _targets(conversion)
-            ),
-            None,
-        )
-        if match is None:
+        # Dequantization can lose scope_prefix; restore every matching scoped counterpart.
+        scope = getattr(conversion, "scope_prefix", None)
+        sources = _source_forms(conversion)
+        matches = [
+            c
+            for c in plain
+            if type(c) is type(conversion)
+            and _targets(c) == _targets(conversion)
+            and _source_forms(c) & sources
+            and _ops(c) == _ops(conversion)
+            and (scope is None or getattr(c, "scope_prefix", None) == scope)
+        ]
+        if not matches:
             print(
                 "Unsloth: an fp8 load conversion has no 16bit counterpart; save_pretrained may write fp8 "
                 f"weights for {list(_targets(conversion))}."
             )
             kept.append(conversion)
             continue
-        kept.append(match)
+        for match in matches:
+            signature = _signature(match)
+            if signature not in retained:
+                retained.add(signature)
+                kept.append(match)
         changed += 1
     if changed:
         model._weight_conversions = kept
     return changed
+
+
+def _loaded_quant_method(config):
+    """quant_method of `config.quantization_config` as a lower-case string, dict or config object, else None."""
+    qc = getattr(config, "quantization_config", None)
+    if qc is None:
+        return None
+    method = qc.get("quant_method") if isinstance(qc, dict) else getattr(qc, "quant_method", None)
+    if method is None:
+        return None
+    return str(getattr(method, "value", method)).lower()
 
 
 def _fp8_dequantize_quantization_config(model_config):
@@ -2229,6 +2753,50 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
+def backfill_fp8_modules_to_convert(
+    config,
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """List per-tensor fp8 tables (`.weight_scale`) a config leaves out of `modules_to_convert` (Qwen3.8-Flash-Next-FP8)."""
+    quant = getattr(config, "quantization_config", None)
+    if (
+        not isinstance(quant, dict)
+        or quant.get("quant_method") != "fp8"
+        or quant.get("modules_to_convert")
+    ):
+        return None
+    try:
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
+        )
+    except Exception:
+        return None
+    skip = set(quant.get("modules_to_not_convert") or [])
+    modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
+    # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
+    if found:
+        quant["modules_to_convert"] = found
+        print(
+            f"Unsloth: {model_name} ships fp8 scales for {found} without listing them in modules_to_convert; added."
+        )
+    return found or None
+
+
 def _load_fp8_weight_map(
     model_name,
     local_files_only,
@@ -2237,8 +2805,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2283,7 +2853,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None
@@ -2441,7 +3011,7 @@ def _route_compressed_tensors_fp8_to_unsloth(
     skip = (),
     default = "0",
 ):
-    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4, where the
+    # Opt-in for FP8 checkpoints (on-the-fly dequant trains slower than bf16); default beside NVFP4.
     # decompressed FP8 layers would keep compressed-tensors' graph-breaking fake-quant forward.
     if os.environ.get("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", default) != "1":
         return 0
@@ -2602,8 +3172,7 @@ class _UnslothNVFP4Linear(torch.nn.Linear):
         fn,
         recurse = True,
     ):
-        # model.to(dtype) / .half() may move the packed weight and its scales but never cast them: an fp16 global
-        # scale overflows past 65504 and dequantizes the layer to zeros.
+        # model.to(dtype) must never cast the packed weight or scales: an fp16 global scale overflows.
         quant = {}
         for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
             param = self._parameters.get(name)
@@ -2710,7 +3279,66 @@ def _routed_dense_weight(module):
             module.weight_scale,
             getattr(module, "_unsloth_ct_compute_dtype", torch.bfloat16),
         )
-    return None
+    return _native_fp8_dense_weight(module)
+
+
+def _native_fp8_dense_weight(module):
+    """Dense weight of a native fp8 linear (transformers FineGrainedFP8 / ModelOpt FP8Linear: float8 weight with
+    `weight_scale_inv`, FbgemmFP8Linear: `weight_scale`), else None. PEFT's DoRA would read the raw float8."""
+    weight = getattr(module, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.dtype not in _FP8_DTYPES or weight.ndim != 2:
+        return None
+    scale = None
+    for name in ("weight_scale_inv", "weight_scale"):
+        candidate = getattr(module, name, None)
+        if isinstance(candidate, torch.Tensor):
+            scale = candidate
+            break
+    if scale is None:
+        return None
+    bias = getattr(module, "bias", None)
+    dtype = getattr(module, "_unsloth_ct_compute_dtype", None) or (
+        bias.dtype
+        if isinstance(bias, torch.Tensor) and bias.dtype in (torch.float16, torch.bfloat16)
+        else torch.bfloat16
+    )
+    from unsloth.kernels.fp8 import (
+        _blockwise_weight_dequant_any_shape,
+        _torch_blockwise_dequant,
+        weight_dequant,
+    )
+
+    block_size = getattr(module, "block_size", None)
+    # Block scales by the module's block_size, also a single block column ((256, 128) with 128x128 blocks).
+    if block_size is not None and scale.ndim == 2 and scale.numel() > 1:
+        block_size = [int(block_size[0]), int(block_size[1])]
+        # The Triton kernel is CUDA / ROCm only; a CPU-resident (offloaded) weight takes the torch expansion.
+        dequant = (
+            _blockwise_weight_dequant_any_shape if weight.is_cuda else _torch_blockwise_dequant
+        )
+        return dequant(weight, scale, block_size, dtype)
+    return weight_dequant(weight, scale, dtype)
+
+
+def _patch_peft_for_native_fp8(model):
+    """Before get_peft_model on a model with native fp8 linears: DoRA reads the dense weight (see above)."""
+    try:
+        modules = model.modules()
+    except Exception:
+        return False
+    for module in modules:
+        weight = getattr(module, "weight", None)
+        if (
+            isinstance(weight, torch.Tensor)
+            and weight.dtype in _FP8_DTYPES
+            and any(
+                isinstance(getattr(module, name, None), torch.Tensor)
+                for name in ("weight_scale_inv", "weight_scale")
+            )
+        ):
+            _patch_peft_for_routed_compressed_tensors()
+            return True
+    return False
 
 
 def _dequantize_routed_linear_(module):
@@ -3186,7 +3814,7 @@ def _checkpointed_layer_forward(original):
             or not torch.is_grad_enabled()
             # A cache would be written a second time by the recompute.
             or kwargs.get("past_key_value") is not None
-            or kwargs.get("past_key_values") is not None
+            or get_cache_kwarg(kwargs) is not None
         ):
             return original(self, *args, **kwargs)
         if not args and "hidden_states" in kwargs:
@@ -3284,25 +3912,107 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     return True
 
 
+def _move_compressed_tensors_inputs(value, device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device = device)
+    if isinstance(value, list):
+        return [_move_compressed_tensors_inputs(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
+    from dataclasses import fields, is_dataclass
+
+    if is_dataclass(value):
+        return type(value)(
+            **{
+                field.name: _move_compressed_tensors_inputs(getattr(value, field.name), device)
+                for field in fields(value)
+            }
+        )
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    return value
+
+
+def _align_compressed_tensors_inputs(module, args, kwargs):
+    reference = next((p for p in module._parameters.values() if p is not None), None)
+    if reference is None:
+        reference = next((b for b in module._buffers.values() if b is not None), None)
+    if reference is None:
+        reference = next(module.parameters(), None)
+    if reference is None:
+        reference = next(module.buffers(), None)
+    if reference is None:
+        return args, kwargs
+    if len(args) == 1 and not kwargs and isinstance(args[0], torch.Tensor):
+        if args[0].device == reference.device:
+            return None
+        return (args[0].to(device = reference.device),), kwargs
+    return _move_compressed_tensors_inputs((args, kwargs), reference.device)
+
+
+def _compressed_tensors_input_forward(original_forward, module):
+    from functools import wraps
+
+    mapping_name, tensor_name = next(
+        (
+            (mapping, name)
+            for mapping in ("_parameters", "_buffers")
+            for name, value in getattr(module, mapping).items()
+            if value is not None
+        ),
+        (None, None),
+    )
+
+    @wraps(original_forward)
+    def forward(module, *args, **kwargs):
+        if (
+            mapping_name is not None
+            and len(args) == 1
+            and not kwargs
+            and isinstance(args[0], torch.Tensor)
+        ):
+            reference = getattr(module, mapping_name).get(tensor_name)
+            if reference is not None:
+                value = args[0]
+                if value.device != reference.device:
+                    value = value.to(device = reference.device)
+                return original_forward(module, value)
+        aligned = _align_compressed_tensors_inputs(module, args, kwargs)
+        if aligned is not None:
+            args, kwargs = aligned
+        return original_forward(module, *args, **kwargs)
+
+    return forward
+
+
 def _remove_same_device_compressed_tensors_offload(model):
-    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
     try:
         from compressed_tensors.offload.cache import OffloadCache
         from compressed_tensors.offload.module import remove_module_offload
     except Exception:
         return 0
-    removed = 0
+    same_device = []
+    onload_devices = set()
     for module in model.modules():
         cache = module._parameters
         if not isinstance(cache, OffloadCache):
             continue
         onload = getattr(cache, "onload_device", None)
         offload = getattr(cache, "offload_device", None)
+        if onload is not None:
+            onload_devices.add(torch.device(onload))
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
+        same_device.append(module)
+    split = len(onload_devices) > 1
+    for module in same_device:
         remove_module_offload(module)
-        removed += 1
-    return removed
+        if split:
+            # The original mover disables autograd and compares data pointers.
+            module.forward = _compressed_tensors_input_forward(
+                module.forward.__func__, module
+            ).__get__(module)
+    return len(same_device)
 
 
 def _decompress_compressed_tensors_model(model):
@@ -3404,10 +4114,59 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     return True
 
 
+def _compressed_tensors_format(quant_config):
+    if isinstance(quant_config, dict):
+        fmt = quant_config.get("format", None)
+    else:
+        fmt = getattr(quant_config, "format", None)
+        inner = getattr(quant_config, "quantization_config", None)
+        if inner is not None:
+            fmt = getattr(inner, "format", None) or fmt
+    return str(getattr(fmt, "value", fmt) or "unknown format")
+
+
+def _prepare_compressed_tensors_full_finetuning(model):
+    """Full finetuning marks every parameter trainable; integer leftovers of a compressed-tensors checkpoint reject that."""
+    quant_config = getattr(getattr(model, "config", None), "quantization_config", None)
+    if isinstance(quant_config, dict):
+        method = quant_config.get("quant_method", None)
+    else:
+        method = getattr(quant_config, "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "compressed-tensors":
+        return 0
+    name = getattr(getattr(model, "config", None), "_name_or_path", "") or "this model"
+    fmt = _compressed_tensors_format(quant_config)
+    moved = 0
+    for module_name, module in model.named_modules():
+        for param_name, param in list(module._parameters.items()):
+            if param is None or param.is_floating_point() or param.is_complex():
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            # A weight still packed to integers was not decompressed and cannot be trained.
+            if param_name in ("weight", "weight_packed"):
+                raise RuntimeError(
+                    f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}) and `{full_name}` "
+                    f"is still stored as {param.dtype}, so full finetuning cannot train it. "
+                    "Use `full_finetuning = False` to train LoRA on top of it, or full finetune "
+                    "the original 16bit model instead."
+                )
+            # Kept by decompress_model (e.g. int64 `weight_shape`) so the module can be recompressed on save:
+            # a persistent buffer keeps the state_dict key but leaves the trainable parameter list.
+            delattr(module, param_name)
+            module.register_buffer(param_name, param.data, persistent = True)
+            moved += 1
+    print(
+        f"Unsloth: `{name}` is a compressed-tensors checkpoint ({fmt}), so full finetuning trains "
+        "its decompressed 16bit weights. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    return moved
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
         _decompress_compressed_tensors_model(model)
+        _prepare_compressed_tensors_full_finetuning(model)
         return
     _tag_compressed_tensors_modules(model)
     if _route_compressed_tensors_nvfp4_to_unsloth(model):
@@ -3906,6 +4665,18 @@ def check_and_disable_bitsandbytes_loading(
     """Disable bnb flags for non-bnb quantized checkpoints; returns ``(load_in_4bit, load_in_8bit, quant_method)``.
 
     ``requantize_packed = False`` under fast_inference / full_finetuning: nothing would consume the plan."""
+    # Inkling 2's "modelopt" config describes its own expert layout, decoded by transformers' conversion mapping:
+    # drop it so the generic ModelOpt rewrite stays off and bitsandbytes can quantize the dequantized weights.
+    from .inkling2 import (
+        inkling2_owns_modelopt_quantization,
+        drop_inkling2_quantization_config,
+        register_inkling2_expert_dequantization,
+    )
+
+    if inkling2_owns_modelopt_quantization(model_config):
+        drop_inkling2_quantization_config(model_config, verbose = verbose, load_in_4bit = load_in_4bit)
+        register_inkling2_expert_dequantization()
+        return load_in_4bit, load_in_8bit, None
     quant_method = get_quant_type(model_config)
     if quant_method is None:
         # Also under vLLM: it reads the file itself, but the bitsandbytes flags must still drop.
@@ -3924,7 +4695,11 @@ def check_and_disable_bitsandbytes_loading(
 
     if str(quant_method).lower() in ("compressed-tensors", "compressed_tensors", "sparseml"):
         from .mxfp4_compressed_linear import install_compressed_tensors_keep_packed
+
         install_compressed_tensors_keep_packed()
+        from .packed_expert_loader import install_packed_expert_loading
+
+        install_packed_expert_loading()
 
     # Packed compressed-tensors: drop its quant config here and keep load_in_4bit for on-the-fly bnb re-quantization.
     if (
@@ -3941,6 +4716,10 @@ def check_and_disable_bitsandbytes_loading(
         # Whoever loads the weights (vLLM included), a merged_16bit save must dequantize them.
         from .modelopt_fp8 import enable_modelopt_merged_save
         enable_modelopt_merged_save(model_config)
+    if rewrite_modelopt and str(quant_method).lower() == "modelopt":
+        from .modelopt_nvfp4 import arm_modelopt_nvfp4_loading
+        if arm_modelopt_nvfp4_loading(model_config, verbose = verbose) is not None:
+            quant_method = "compressed-tensors"
     if rewrite_modelopt and str(quant_method).lower() == "modelopt":
         from .modelopt_fp8 import arm_modelopt_fp8_loading
         if arm_modelopt_fp8_loading(model_config, verbose = verbose) is not None:
@@ -4032,6 +4811,10 @@ def _index_weight_map(path):
 
 
 def _bin_dtypes(path):
+    from ..import_fixes import refuse_pickle_checkpoint_on_old_torch
+
+    # torch < 2.6 can run code from the pickle even with weights_only (CVE-2025-32434).
+    refuse_pickle_checkpoint_on_old_torch(path)
     # mmap + weights_only reads the pickle and storage metadata, not the tensor bytes.
     state_dict = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
     return {k: str(v.dtype) for k, v in state_dict.items() if isinstance(v, torch.Tensor)}
@@ -4055,6 +4838,44 @@ def _hub_safetensors_header_dtypes(
     return {k: v.get("dtype") for k, v in header.items() if k != "__metadata__"}
 
 
+def _hub_live_commit(
+    repo_id,
+    revision = None,
+    token = None,
+):
+    """The commit `revision` names on the Hub now, or None when it cannot be resolved (offline,
+    network error). A branch or tag can move past what the cache holds; transformers' online
+    `hf_hub_download` refreshes it, so cache lookups must use the live commit too."""
+    if isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return revision
+    try:
+        from huggingface_hub import HfApi
+        return HfApi(token = token).model_info(repo_id, revision = revision).sha or None
+    except Exception:
+        return None
+
+
+_ESCAPING_WEIGHTS_FILENAME = object()
+
+
+def _explicit_weights_filename(transformers_weights, model_dir = None):
+    """File transformers loads instead of standard names; None if unused, sentinel if it escapes the model dir.
+    `model_dir` is the real local dir (+ subfolder): transformers accepts an absolute name inside it."""
+    if not isinstance(transformers_weights, str) or not transformers_weights.endswith(
+        (".safetensors", ".safetensors.index.json")
+    ):
+        return None
+    base = os.path.abspath(model_dir or "model_dir")
+    try:
+        contained = (
+            os.path.commonpath([base, os.path.abspath(os.path.join(base, transformers_weights))])
+            == base
+        )
+    except ValueError:
+        contained = False
+    return transformers_weights if contained else _ESCAPING_WEIGHTS_FILENAME
+
+
 def _checkpoint_tensor_dtypes(
     model_name,
     token = None,
@@ -4064,10 +4885,17 @@ def _checkpoint_tensor_dtypes(
     local_files_only = False,
     variant = None,
     use_safetensors = None,
+    transformers_weights = None,
 ):
     """{tensor name: dtype} (dtype only for fused experts) without downloading weights; mirrors transformers'
-    file order, `variant` and `use_safetensors`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
+    file order, `variant`, `use_safetensors` and `transformers_weights`. Raises _UnreadableCheckpointNames for an unreadable lone .bin."""
     if not isinstance(model_name, str) or not model_name:
+        return None
+    local_root = None
+    if os.path.isdir(model_name):
+        local_root = os.path.join(model_name, subfolder) if subfolder else model_name
+    explicit = _explicit_weights_filename(transformers_weights, local_root)
+    if explicit is _ESCAPING_WEIGHTS_FILENAME:
         return None
     st_index, st_single = (
         _with_variant(f, variant) for f in ("model.safetensors.index.json", "model.safetensors")
@@ -4079,6 +4907,13 @@ def _checkpoint_tensor_dtypes(
         st_index = st_single = None
     elif use_safetensors:
         bin_index = bin_single = None
+    if explicit is not None:
+        # Loaded verbatim (no variant / use_safetensors) with no fallback to standard names.
+        bin_index = bin_single = None
+        if explicit.endswith(".safetensors.index.json"):
+            st_index, st_single = explicit, None
+        else:
+            st_index, st_single = None, explicit
     index_files = [f for f in (st_index, bin_index) if f]
 
     def _local_shard_dtypes(path, names):
@@ -4104,27 +4939,32 @@ def _checkpoint_tensor_dtypes(
     try:
         if os.path.isdir(model_name):
             root = os.path.join(model_name, subfolder) if subfolder else model_name
-            for index_file in index_files:
-                index_path = os.path.join(root, index_file)
-                if not os.path.exists(index_path):
+            # transformers' order: a lone file beats an index of the same format, so a stale index
+            # left beside a re-saved model.safetensors must not decide the layout.
+            for filename in (st_single, st_index, bin_single, bin_index):
+                path = os.path.join(root, filename) if filename else None
+                if not path or not os.path.isfile(path):
                     continue
-                weight_map = _index_weight_map(index_path)
-                return _fill_fused_dtypes(
-                    weight_map,
-                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
-                )
-            single_path = os.path.join(root, st_single) if st_single else None
-            if single_path and os.path.exists(single_path):
-                return _safetensors_dtypes(single_path)
-            single_path = os.path.join(root, bin_single) if bin_single else None
-            if single_path and os.path.exists(single_path):
+                if filename in index_files:
+                    return _fill_fused_dtypes(
+                        _index_weight_map(path),
+                        lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                    )
+                if filename == st_single:
+                    return _safetensors_dtypes(path)
                 try:
-                    return _bin_dtypes(single_path)
+                    return _bin_dtypes(path)
                 except Exception:
-                    raise _UnreadableCheckpointNames(single_path)
+                    raise _UnreadableCheckpointNames(path)
             return None
 
-        if not local_files_only and not subfolder and not variant and st_single:
+        if (
+            not local_files_only
+            and not subfolder
+            and not variant
+            and st_single
+            and explicit is None
+        ):
             try:
                 from huggingface_hub import get_safetensors_metadata
 
@@ -4139,13 +4979,20 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
-        for index_file in index_files:
+        if not local_files_only and not _env_says_offline():
+            # Cached files of a moved branch are stale: look them up under the commit it names now
+            # (a miss falls through to the live header read), as transformers' online resolver does.
+            live_commit = _hub_live_commit(model_name, revision, token)
+            if live_commit is not None:
+                hub["revision"] = live_commit
+
+        def _hub_index_dtypes(index_file):
             try:
                 index_path = hf_hub_download(
                     model_name, index_file, local_files_only = local_files_only, **hub
                 )
             except Exception:
-                continue
+                return None
             weight_map = _index_weight_map(index_path)
 
             def _hub_shard_dtypes(shard, names):
@@ -4158,9 +5005,11 @@ def _checkpoint_tensor_dtypes(
                 if local_files_only or not shard.endswith(".safetensors"):
                     return {}
                 remote = f"{subfolder}/{shard}" if subfolder else shard
-                return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                return _hub_safetensors_header_dtypes(model_name, remote, hub["revision"], token)
 
             return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+
+        # Same order as transformers: model.safetensors, its index, pytorch_model.bin, its index.
         if st_single:
             try:
                 return _safetensors_dtypes(
@@ -4171,11 +5020,17 @@ def _checkpoint_tensor_dtypes(
             if not local_files_only:
                 remote = f"{subfolder}/{st_single}" if subfolder else st_single
                 try:
-                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                    return _hub_safetensors_header_dtypes(
+                        model_name, remote, hub["revision"], token
+                    )
                 except Exception:
                     pass
+        if st_index:
+            found = _hub_index_dtypes(st_index)
+            if found is not None:
+                return found
         if not bin_single:
-            return None
+            return _hub_index_dtypes(bin_index) if bin_index else None
         try:
             cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
         except Exception:
@@ -4190,12 +5045,12 @@ def _checkpoint_tensor_dtypes(
 
             remote = f"{subfolder}/{bin_single}" if subfolder else bin_single
             try:
-                exists = file_exists(model_name, remote, revision = revision, token = token)
+                exists = file_exists(model_name, remote, revision = hub["revision"], token = token)
             except Exception:
                 exists = False
             if exists:
                 raise _UnreadableCheckpointNames(f"{model_name}/{remote}")
-        return None
+        return _hub_index_dtypes(bin_index) if bin_index else None
     except _UnreadableCheckpointNames:
         raise
     except Exception:
@@ -4243,18 +5098,27 @@ def gpt_oss_checkpoint_has_fused_experts(
     quant_method = getattr(quant_method, "value", quant_method)
     if str(quant_method).lower() != "bitsandbytes":
         return False
+    hub_kwargs.setdefault("transformers_weights", getattr(config, "transformers_weights", None))
     try:
         dtypes = _checkpoint_tensor_dtypes(model_name, **hub_kwargs)
     except _UnreadableCheckpointNames as exc:
         # Anything not named *-unsloth-bnb-4bit may be a fused save; guessing split loads random experts.
         if "unsloth-bnb-4bit" in str(model_name).lower():
             return False
+        # A lone .bin outranks its index (transformers' order): advising an index cannot help.
+        unreadable = str(exc)
+        fix = (
+            "Re-save it with `safe_serialization = True` (safetensors), or re-save "
+            f"`{os.path.basename(unreadable)}` with a recent torch (zip serialization) so it can be "
+            "memory-mapped."
+        )
+        if not os.path.isfile(unreadable):
+            fix += " Downloading it locally first also lets its tensor names be read."
         raise GptOssUnknownExpertLayoutError(
-            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint saved as a single "
-            f"`{os.path.basename(str(exc))}` with no index, so its expert layout (fused or Unsloth's split "
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint whose weights load from a "
+            f"single `{os.path.basename(unreadable)}`, so its expert layout (fused or Unsloth's split "
             "pre-quantized layout) cannot be read without loading the weights, and a wrong guess loads "
-            "random experts. Re-save it with `safe_serialization = True` (safetensors), add its "
-            "`pytorch_model.bin.index.json`, or download it locally first."
+            f"random experts. {fix}"
         ) from None
     layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
     if layout == "fused_unknown_dtype":
@@ -4282,13 +5146,16 @@ def quantization_config_is_bnb_4bit(quantization_config):
     return quantization_config_selects_bnb_4bit(quantization_config)
 
 
-def refuse_gpt_oss_fused_4bit_float16(dtype):
-    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32)."""
-    if dtype != torch.float16:
+def refuse_gpt_oss_fused_4bit_float16(dtype, supports_bfloat16 = True):
+    """Fused 4-bit experts compute in the model dtype and overflow float16 (split classes keep down_projs fp32).
+    Without bfloat16, dtype = torch.float32 still computes in float16: gpt-oss is a FORCE_FLOAT32 family, whose
+    float32 request there becomes the float16 weights + float32 islands recipe."""
+    if dtype != torch.float16 and (supports_bfloat16 or dtype != torch.float32):
         return
     raise NotImplementedError(
         "Unsloth: this gpt-oss checkpoint stores fused experts, and in float16 (this GPU has no bfloat16, "
-        "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
+        "or dtype = torch.float16) its fused 4-bit experts would overflow. dtype = torch.float32 does not "
+        "help on a GPU without bfloat16, since gpt-oss then still computes in float16. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
 
@@ -4334,6 +5201,18 @@ def sync_unsloth_model_name_bnb_flags(
     os.environ["UNSLOTH_MODEL_NAME"] = name
 
 
+def _allow_torchao_perblock_safetensors():
+    """torchao's safetensors loader allow-lists PerRow but not PerBlock, and transformers 5 always saves safetensors, so a `load_in_fp8 = "block"` artifact failed to reload with `Failed to find class PerBlock`."""
+    try:
+        from torchao.prototype.safetensors import safetensors_utils
+        from torchao.quantization import PerBlock
+    except Exception:
+        return
+    allowed = getattr(safetensors_utils, "ALLOWED_CLASSES", None)
+    if isinstance(allowed, dict):
+        allowed.setdefault("PerBlock", PerBlock)
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
@@ -4342,7 +5221,7 @@ def _get_fp8_mode_and_check_settings(
     load_in_8bit: bool = False,
     load_in_16bit: bool = False,
 ) -> str:
-    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires H100+, torchao 0.15.0+, torch 2.9.0+, and fbgemm_gpu_genai 1.4.1+ if installed."""
+    """Validate `load_in_fp8` settings/environment and return the fp8 mode ("row" or "block"). Requires torch 2.9.0+ and either H100+ with torchao 0.15.0+, or Intel XPU with torchao 0.18.0+ and fast_inference = False. fbgemm_gpu_genai 1.4.1+ is used if installed."""
     assert load_in_fp8 is not False
     if load_in_fp8 is True:
         fp8_mode = "row"  # default
@@ -4358,7 +5237,14 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
 
-    if not (
+    min_torchao = "0.15.0"
+    if DEVICE_TYPE_TORCH == "xpu":
+        if fast_inference:
+            raise ValueError(
+                "Unsloth: On the fly `load_in_fp8` on Intel XPU needs `fast_inference = False`."
+            )
+        min_torchao = "0.18.0"
+    elif not (
         torch.cuda.is_available()
         and torch.version.cuda
         and torch.cuda.get_device_capability() >= (9, 0)
@@ -4372,20 +5258,36 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
         )
 
-    # Check if torchao has pytorch/ao#3158, released in 0.15.0.
+    # CUDA needs pytorch/ao#3158 (0.15.0); XPU was validated on 0.18.0.
     if importlib.util.find_spec("torchao") is None:
         raise ValueError(
             "Unsloth: Please install torchao for on the fly float8 to work! Try `unsloth/Qwen3-8B` instead."
         )
     import torchao
 
-    error_message = (
-        "Unsloth: `load_in_fp8` requires torchao 0.15.0+ (or nightly).\n"
-        f"You have torchao version={torchao.__version__}\n"
-        "Use `pip install --upgrade --force-reinstall torchao`"
-    )
-    if Version(torchao.__version__) < Version("0.15.0"):
-        raise ValueError(error_message)
+    if Version(torchao.__version__) < Version(min_torchao):
+        on_xpu = " on Intel XPU" if DEVICE_TYPE_TORCH == "xpu" else ""
+        raise ValueError(
+            f"Unsloth: `load_in_fp8`{on_xpu} requires torchao {min_torchao}+ (or nightly).\n"
+            f"You have torchao version={torchao.__version__}\n"
+            "Use `pip install --upgrade --force-reinstall torchao`"
+        )
+    _allow_torchao_perblock_safetensors()
+
+    if fp8_mode == "row" and load_in_fp8 is True and DEVICE_TYPE_TORCH != "xpu":
+        # torchao's per-row GEMM is torch's row-wise _scaled_mm, which the Windows wheels do not ship; the
+        # per-block one is a Triton kernel and runs there.
+        from ..kernels.fp8_lora import rowwise_supported
+        try:
+            rowwise = rowwise_supported(torch.device("cuda", torch.cuda.current_device()))
+        except Exception:  # no verdict: keep per-row
+            rowwise = True
+        if not rowwise:
+            print(
+                "Unsloth: this torch build has no row-wise fp8 _scaled_mm, so `load_in_fp8 = True` "
+                "quantizes per block instead (as `load_in_fp8 = 'block'`)."
+            )
+            fp8_mode = "block"
 
     # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (
@@ -4407,6 +5309,78 @@ def _get_fp8_mode_and_check_settings(
 _ROTARY_INV_FREQ_BUFFER_NAMES = ("inv_freq", "short_inv_freq", "long_inv_freq")
 
 
+def _is_tensor_subclass_weight(t):
+    """A wrapper tensor subclass weight such as torchao's Float8Tensor (load_in_fp8). DDP's start-up
+    broadcast flattens every parameter (reshape to [-1]), which Float8Tensor does not implement.
+    torchao.float8's training weights (WeightWithDynamicFloat8CastTensor) implement it and DDP trains
+    them, so they are not counted, as in fsdp2_native's _float8_params."""
+    if type(t).__module__.startswith("torchao.float8"):
+        return False
+    if any(c.__module__.split(".")[0] == "torchao" for c in type(t).__mro__):
+        return True
+    try:
+        from torch.distributed.tensor import DTensor
+        if isinstance(t, DTensor):
+            return False
+    except Exception:
+        pass
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        return is_traceable_wrapper_subclass(t)
+    except Exception:
+        return False
+
+
+def _holds_float8(t, depth = 0):
+    """True when a tensor, or a tensor subclass's inner tensors (__tensor_flatten__), stores float8."""
+    if "float8" in str(t.dtype):
+        return True
+    if depth > 3 or not hasattr(t, "__tensor_flatten__"):
+        return False
+    try:
+        names = t.__tensor_flatten__()[0]
+    except Exception:
+        return False
+    for name in names:
+        inner = getattr(t, name, None)
+        if isinstance(inner, torch.Tensor) and _holds_float8(inner, depth + 1):
+            return True
+    return False
+
+
+def _ddp_can_flatten(t):
+    """DDP's start-up broadcast flattens every parameter (_flatten_dense_tensors); probe that on the weight."""
+    try:
+        torch._utils._flatten_dense_tensors([t.detach()])
+        return True
+    except Exception:
+        return False
+
+
+def _frozen_tensor_subclass_names_for_ddp(model, refuse_trainable = False):
+    """Frozen tensor subclass weights (load_in_fp8's Float8Tensor) stay out of DDP: every rank loads and
+    quantizes the same checkpoint, so there is nothing to broadcast, and a frozen weight has no gradient to
+    reduce. A trainable one would need both, which DDP cannot do for it: refused when asked."""
+    frozen, trainable = [], []
+    for name, p in model.named_parameters():
+        if not _is_tensor_subclass_weight(p):
+            continue
+        if not p.requires_grad:
+            frozen.append(name)
+        elif _holds_float8(p) or not _ddp_can_flatten(p):
+            # FP8 storage, and weights DDP's broadcast cannot flatten (Int8Tensor, AffineQuantizedTensor),
+            # are refused: trainable subclasses that flatten (torchao's int8 mixed precision training
+            # weight, NF4Tensor) train as before.
+            trainable.append(name)
+    if trainable and refuse_trainable:
+        raise NotImplementedError(
+            f"Unsloth: DDP cannot train the {type(model.get_parameter(trainable[0])).__name__} weight "
+            f"{trainable[0]} ({len(trainable)} such weights are trainable); it cannot be broadcast or have "
+            "its gradient all-reduced. Train LoRA on the frozen FP8 base (get_peft_model), or load in 16-bit."
+        )
+    return frozen
+
+
 def _exclude_rope_inv_freq_from_ddp(model):
     ignored = list(getattr(model, "_ddp_params_and_buffers_to_ignore", None) or [])
     for module_name, module in model.named_modules():
@@ -4415,6 +5389,12 @@ def _exclude_rope_inv_freq_from_ddp(model):
                 fqn = f"{module_name}.{buffer_name}" if module_name else buffer_name
                 if fqn not in ignored:
                     ignored.append(fqn)
+    try:
+        for fqn in _frozen_tensor_subclass_names_for_ddp(model):
+            if fqn not in ignored:
+                ignored.append(fqn)
+    except Exception:
+        pass
     if ignored:
         try:
             from torch.nn.parallel import DistributedDataParallel
@@ -4452,12 +5432,14 @@ _LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
 _LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
 
 
-def _mark_loaded_revision(result, revision):
-    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
-    if revision is None:
-        return result
+def _mark_loaded_revision(
+    result,
+    revision,
+    cache_dir = None,
+    load_kwargs = None,
+):
+    from ..save import _capture_source_tokenizer_class
     for obj in result if isinstance(result, (tuple, list)) else (result,):
-        # Objects that reject new attributes (__slots__) are skipped.
         try:
             targets = (obj, getattr(obj, "tokenizer", None))
         except Exception:
@@ -4466,7 +5448,23 @@ def _mark_loaded_revision(result, revision):
             if target is None:
                 continue
             try:
-                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if revision is not None:
+                    setattr(target, _LOADED_REVISION_ATTR, str(revision))
+                if cache_dir and not getattr(target, _LOADED_CACHE_DIR_ATTR, None):
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
+                source_tokenizer = getattr(target, "tokenizer", target)
+                context = load_kwargs or {}
+                _capture_source_tokenizer_class(
+                    target,
+                    source = getattr(source_tokenizer, "name_or_path", None)
+                    if load_kwargs is not None
+                    else None,
+                    cache_dir = _tokenizer_cache_dir(source_tokenizer),
+                    revision = _tokenizer_revision(source_tokenizer)
+                    or context.get("tokenizer_revision")
+                    or context.get("revision"),
+                    subfolder = context.get("subfolder") or "",
+                )
             except Exception:
                 pass
     return result
@@ -4790,14 +5788,21 @@ def _offline_aware_load(fn):
 
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
+        def finish(result):
+            return _mark_loaded_revision(
+                result, None, cache_dir = kwargs.get("cache_dir"), load_kwargs = kwargs
+            )
+
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
                 # Stamp inside the window: the env vars are restored on exit, so the request has to travel on the objects themselves to reach saving.
-                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                return finish(
+                    _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
+                )
         _pb_were_disabled = _progress_bars_were_disabled()
         try:
-            return fn(*args, **kwargs)
+            return finish(fn(*args, **kwargs))
         except Exception as e:
             # Skip if not network-related, or already retried by a nested decorator (else outer layers reload the whole model again).
             if not _is_offline_related_error(e) or getattr(e, "_unsloth_offline_retried", False):
@@ -4816,7 +5821,7 @@ def _offline_aware_load(fn):
         kwargs["local_files_only"] = True
         try:
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                return finish(fn(*args, **kwargs))
         except Exception as e:
             # A real retry failure (corrupt checkpoint, OOM) is news and goes out as itself; only the empty-cache artifact is worth replacing.
             if not _empty_cache_artifact(e):

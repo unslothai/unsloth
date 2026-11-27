@@ -134,8 +134,7 @@ assert_eq "TIMED_OUT cleared"           "$(field "$OUT" TIMED_OUT)" 0
 assert_eq "no guide_fail"               "$(count "$OUT" 'GUIDE_FAIL')" 0
 
 echo "6. only file-edit turn 1 rescues a soft timeout"
-# Only turn 1 is judged on a side effect the harness verifies, so only it may waive a cap.
-# Count `||` waivers on whole statements, separately from the fatal checks.
+# Only turn 1 may waive a cap, as its side effect is verified; count || waivers per statement.
 WAIVERS="$(grep -c '|| \[ "${TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
 assert_eq "exactly one TIMED_OUT waiver (file-edit turn 1)" "$WAIVERS" 1
 
@@ -149,8 +148,7 @@ assert_eq "attribution-ab keeps a hang fatal" \
 assert_eq "and all four of its invokes go through that guard" \
     "$(grep -c 'ab_invoke "\$LOGS_DIR/claude-ab-' "$DRIVE_SH" || true)" 4
 
-# Connection still refuses a bare cap; it now also accepts an end-of-run marker line,
-# which a startup banner never prints.
+# Connection refuses a bare cap but accepts an end-of-run marker a startup banner never prints.
 CONN_LINE="$(grep -n 'documented launch command exited non-zero' "$DRIVE_SH" | cut -d: -f1)"
 CONN_STMT="$(sed -n "$((CONN_LINE - 2)),${CONN_LINE}p" "$DRIVE_SH")"
 assert_eq "connection guard has no TIMED_OUT escape" \
@@ -203,8 +201,7 @@ assert_eq "the transcript survived the kill" \
     "$(grep -c '^pong$' "$WORK/out.txt" || true)" 1
 
 echo "9f. the agent under the wrapper is killed too, not orphaned"
-# The agent is a grandchild of timeout(1) via a wrapper script; killing only the wrapper
-# would leave it running. The stand-in records its pid and ignores TERM.
+# Agent is timeout(1)'s grandchild via a wrapper, so killing only the wrapper would orphan it.
 rm -f "$WORK/kid.pid"
 # Two statements so bash cannot exec-optimize the wrapper away.
 cat > "$WORK/agent.sh" <<AGENT

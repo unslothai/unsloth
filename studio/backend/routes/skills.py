@@ -3,16 +3,19 @@
 
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
 from core.inference.skills import (
+    MAX_SKILL_ARCHIVE_BYTES,
     SkillError,
     SkillExistsError,
     SkillNotFoundError,
     create_skill,
     delete_skill,
+    export_skill,
+    import_skill_archive,
     list_skills,
     read_skill_manifest,
     set_all_skills_enabled,
@@ -71,6 +74,20 @@ class SkillCreateRequest(SkillDraft):
     name: StrictStr
 
 
+class SkillImportFailure(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str
+    error: str
+
+
+class SkillImportResult(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    imported: list[SkillRecord]
+    failed: list[SkillImportFailure]
+
+
 def _invalidate_catalog() -> None:
     from routes.inference import _invalidate_agent_skills_cache
     _invalidate_agent_skills_cache()
@@ -119,12 +136,44 @@ def create_skill_route(
     return record
 
 
+# 200, not 201: results can be partial.
+@router.post("/import", response_model = SkillImportResult)
+def import_skill_route(
+    file: UploadFile = File(...), current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
+    data = file.file.read(MAX_SKILL_ARCHIVE_BYTES + 1)
+    if len(data) > MAX_SKILL_ARCHIVE_BYTES:
+        raise HTTPException(status_code = 413, detail = "Skill archive exceeds the 20 MB limit.")
+    try:
+        result = import_skill_archive(data)
+    except SkillError as exc:
+        raise _http_error(exc) from exc
+    _invalidate_catalog()
+    return result
+
+
 @router.get("/{name}", response_model = SkillManifest)
 def get_skill(name: str, current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
     try:
         return read_skill_manifest(name)
     except SkillError as exc:
         raise _http_error(exc) from exc
+
+
+@router.get("/{name}/export", response_class = Response)
+def export_skill_route(name: str, current_subject: str = Depends(get_current_subject)) -> Response:
+    try:
+        skill_name, archive = export_skill(name)
+    except SkillError as exc:
+        raise _http_error(exc) from exc
+    return Response(
+        content = archive,
+        media_type = "application/zip",
+        headers = {
+            "Content-Disposition": f'attachment; filename="{skill_name}.zip"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.put("/{name}", response_model = SkillRecord)

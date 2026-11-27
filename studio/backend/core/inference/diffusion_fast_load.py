@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
-cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
-moves plain host tensors (and the inner tensors of torchao-style wrapper subclasses) through a pinned
-ring and hands them to the existing ``.to`` via a ``TorchFunctionMode``, so placement semantics stay
-the module's own. Kill switches
-``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
-"""
+"""Byte-neutral image-load I/O. Off: UNSLOTH_DIFFUSION_PREFETCH=0, UNSLOTH_DIFFUSION_FAST_UPLOAD=0."""
 
 from __future__ import annotations
 
@@ -19,6 +13,8 @@ import threading
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
 PREFETCH_ENV = "UNSLOTH_DIFFUSION_PREFETCH"
+# "0": every slice is read whole, its page-cache-resident chunks included.
+PREFETCH_SKIP_CACHED_ENV = "UNSLOTH_DIFFUSION_PREFETCH_SKIP_CACHED"
 FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_FAST_UPLOAD"
 _SWITCH_OFF = ("0", "off", "false", "no")
 
@@ -33,10 +29,11 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins; variant="fp16" opens only those.
 _DEFAULT_WEIGHT_RE = re.compile(
     r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
 )
+_FP16_WEIGHT_RE = re.compile(r"^(?:diffusion_pytorch_model|model)\.fp16\.safetensors$")
 _DENOISER_COMPONENTS = ("transformer", "unet")
 
 
@@ -77,6 +74,57 @@ def _uncached_bytes(path: str) -> int:
     return uncached(path)
 
 
+_LSB = bytes(b & 1 for b in range(256))  # mincore defines only bit 0 of each byte
+_LIBC: list = []
+
+
+def _mincore() -> Any:
+    if not _LIBC:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno = True)
+        libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+        _LIBC.append(libc.mincore)
+    return _LIBC[0]
+
+
+def _chunk_resident(mapped: Any, start: int, length: int) -> bool:
+    """True when every page of the chunk is in the page cache; False when it cannot tell."""
+    import ctypes
+    import mmap
+
+    try:
+        page = mmap.PAGESIZE
+        first = start - start % page
+        span = start + length - first
+        pages = (span + page - 1) // page
+        mincore = _mincore()
+        anchor = ctypes.c_char.from_buffer(mapped, first)
+        try:
+            vector = (ctypes.c_ubyte * pages)()
+            if mincore(ctypes.addressof(anchor), ctypes.c_size_t(span), vector) != 0:
+                return False
+            return b"\x00" not in bytes(vector).translate(_LSB)
+        finally:
+            del anchor
+    except Exception:  # noqa: BLE001 - unknown residency: read it
+        return False
+
+
+def _residency_map(path: str) -> Any:
+    """A mapping for ``mincore``, or None (non-Linux, switch off, unmappable)."""
+    import sys
+
+    if not sys.platform.startswith("linux") or not _switch_on(PREFETCH_SKIP_CACHED_ENV):
+        return None
+    try:
+        import mmap
+        with open(path, "rb") as handle:
+            return mmap.mmap(handle.fileno(), 0, access = mmap.ACCESS_COPY)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _available_host_mib() -> Optional[int]:
     try:
         from .diffusion_memory import _available_system_memory_mib
@@ -115,10 +163,7 @@ def start_prefetch(
     threads: int = _PREFETCH_THREADS,
     min_bytes: int = _PREFETCH_MIN_BYTES,
 ) -> Optional[LoadPrefetch]:
-    """Read the uncached parts of ``paths`` into the page cache on worker threads, in the given order.
-
-    None when switched off, when nothing needs it, or when the uncached bytes exceed half the available
-    host RAM (the reads would evict what the load itself needs). Never raises."""
+    """Prefetches uncached paths in order, skipping when uncached bytes exceed half of host RAM; never raises."""
     if not prefetch_enabled():
         return None
     try:
@@ -146,7 +191,14 @@ def start_prefetch(
                 logger.info("diffusion.prefetch: skipped, the weights are on a rotational disk")
             return None
         available = _available_host_mib()
-        if available is None or need > (int(available) << 20) // 2:
+        threads = max(1, int(threads))
+        largest = max(os.path.getsize(path) for path in pending)
+        buffer_bytes = max(1 << 20, min(_PREFETCH_READ_BYTES, -(-largest // threads)))
+        if available is not None:
+            # each worker's read buffer counts too: fewer workers before none
+            room = (int(available) << 20) // 2 - need
+            threads = max(1, min(threads, room // buffer_bytes))
+        if available is None or need + threads * buffer_bytes > (int(available) << 20) // 2:
             if logger is not None:
                 logger.info(
                     "diffusion.prefetch: skipped, %.1f GiB uncached against %s MiB available host RAM",
@@ -154,7 +206,6 @@ def start_prefetch(
                     available,
                 )
             return None
-        threads = max(1, int(threads))
         # Thread i reads slice i of every file, files in load order, so the first file is warm first.
         plan: list[list[tuple[str, int, int]]] = [[] for _ in range(threads)]
         for path in pending:
@@ -168,20 +219,29 @@ def start_prefetch(
     stop = threading.Event()
 
     def _worker(jobs: list[tuple[str, int, int]]) -> None:
-        buffer = bytearray(_PREFETCH_READ_BYTES)
+        buffer = bytearray(buffer_bytes)
         view = memoryview(buffer)
         try:
             for path, start, end in jobs:
                 if stop.is_set():
                     return
-                with open(path, "rb", buffering = 0) as handle:
-                    handle.seek(start)
-                    at = start
-                    while at < end and not stop.is_set():
-                        got = handle.readinto(view[: min(_PREFETCH_READ_BYTES, end - at)])
-                        if not got:
-                            break
-                        at += got
+                mapped = _residency_map(path)
+                try:
+                    with open(path, "rb", buffering = 0) as handle:
+                        at = start
+                        while at < end and not stop.is_set():
+                            want = min(buffer_bytes, end - at)
+                            if mapped is not None and _chunk_resident(mapped, at, want):
+                                at += want
+                                continue
+                            handle.seek(at)
+                            got = handle.readinto(view[:want])
+                            if not got:
+                                break
+                            at += got
+                finally:
+                    if mapped is not None:
+                        mapped.close()
         except Exception:  # noqa: BLE001 - a prefetch is only a hint
             pass
 
@@ -237,9 +297,11 @@ def pipeline_component_files(
     *,
     skip_denoiser: bool,
     skip_components: Iterable[str] = (),
+    variant: Optional[str] = None,
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
-    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only."""
+    ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only.
+    ``variant="fp16"`` names the ``.fp16`` twins instead."""
     if not snapshot:
         return []
     try:
@@ -277,8 +339,9 @@ def pipeline_component_files(
             entries = sorted(os.listdir(folder))
         except OSError:
             continue
+        pattern = _FP16_WEIGHT_RE if variant == "fp16" else _DEFAULT_WEIGHT_RE
         for entry in entries:
-            if _DEFAULT_WEIGHT_RE.match(entry):
+            if pattern.match(entry):
                 path = os.path.join(folder, entry)
                 if os.path.isfile(path):
                     files.append(path)
@@ -307,6 +370,7 @@ def start_load_prefetch(
     text_encoders_replaced: Iterable[str] = (),
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    variant: Optional[str] = None,
 ) -> Optional[LoadPrefetch]:
     """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises."""
     if not prefetch_enabled():
@@ -339,6 +403,7 @@ def start_load_prefetch(
             _snapshot_dir(base, base_local_dir, cache_dir),
             skip_denoiser = seeded,
             skip_components = text_encoders_replaced,
+            variant = variant,
         )
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint
@@ -515,18 +580,17 @@ def fast_upload(
     *,
     logger: Any = None,
 ) -> Iterator[int]:
-    """Inside the block, ``Tensor.to(device)`` on the modules' plain CPU tensors returns a ring-uploaded copy.
-
-    Wrap the existing placement call (``module.to(device)`` / ``pipe.to(device)``): it still decides
-    what moves and how parameters are re-wrapped; only the bytes arrive faster. Yields how many tensors
-    were staged (0 = the block runs exactly as without this wrapper)."""
+    """Inside the block, Tensor.to from CPU goes through a ring upload; placement itself is unchanged."""
     staged: dict[int, tuple[Any, Any]] = {}
     mode = None
     try:
         if fast_upload_enabled():
             import torch
+            from .host_pinning import host_pinning_allowed
+
             target = torch.device(device)
-            if target.type == "cuda" and torch.cuda.is_available():
+            # The ring is pinned memory: an integrated GPU takes the stock ``.to`` instead.
+            if target.type == "cuda" and torch.cuda.is_available() and host_pinning_allowed(target):
                 if target.index is None:
                     target = torch.device("cuda", torch.cuda.current_device())
                 sources = _upload_candidates(modules, target)

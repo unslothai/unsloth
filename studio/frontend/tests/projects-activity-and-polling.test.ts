@@ -19,7 +19,7 @@ test("project recency is chat activity, everywhere a recent list is drawn", () =
     /return Math\.max\(project\.lastActivityAt \?\? 0, project\.updatedAt\);/,
   );
   assert.match(PAGE, /projectActivityAt\(b\) - projectActivityAt\(a\)/);
-  assert.match(PAGE, /formatUpdated\(projectActivityAt\(project\)\)/);
+  assert.match(PAGE, /formatUpdated\(projectActivityAt\(project\), t, locale\)/);
   assert.ok(!PAGE.includes("b.updatedAt - a.updatedAt : "), "the page still sorts by edit time");
   assert.match(THREAD, /sortProjectsByActivity\(projects\)\.slice\(0, 3\)/);
 });
@@ -41,7 +41,11 @@ test("exporting every project lists chats once, not once per project", () => {
 });
 
 test("streamed chunk saves reload open project rows on a longer lull", () => {
-  assert.match(PAGE, /isCoalescedHistoryEvent\(event\)\n\s*\? PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS/);
+  assert.match(
+    PAGE,
+    /PROJECT_CHATS_REFRESH_DEBOUNCE_MS,\n\s*PROJECT_CHATS_STREAM_REFRESH_DEBOUNCE_MS,\n\s*\);/,
+  );
+  assert.match(PAGE, /addEventListener\(CHAT_HISTORY_UPDATED_EVENT, debounce\.onEvent\)/);
 });
 
 test("a mount reuses a fresh project list instead of refetching it", () => {

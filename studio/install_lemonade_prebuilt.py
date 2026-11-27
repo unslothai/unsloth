@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -29,9 +30,18 @@ if _STUDIO_DIR not in sys.path:
 
 import prebuilt_core as core  # noqa: E402
 from backend.utils.auth_safe import auth_safe_open  # noqa: E402
+from backend.utils.npu_runtime_config import (  # noqa: E402
+    LEMONADE_ARCHIVE_ENV,
+    custom_runtime_configured,
+    local_lemonade_archive,
+)
 
 PINS_PATH = Path(_STUDIO_DIR) / "lemonade_prebuilt_pins.json"
 MARKER_NAME = "UNSLOTH_LEMONADE_INFO.json"
+FLM_MARKER_NAME = "UNSLOTH_FLM_INFO.json"
+# Stands in for lemond: Studio drives the AMD-signed flm directly (lemond.exe is unsigned, so
+# Smart App Control may refuse it).
+FLM_HOST = Path(_STUDIO_DIR) / "backend" / "core" / "inference" / "flm_host.py"
 _CHUNK = 1 << 20
 _DOWNLOAD_TIMEOUT_S = 60
 
@@ -48,6 +58,20 @@ def load_pins(path: Path = PINS_PATH) -> dict:
     if pins.get("schema_version") != 1:
         raise RuntimeError(f"{path} has an unsupported schema_version.")
     return pins
+
+
+@lru_cache(maxsize = 8)
+def _archive_sha256(path: Path, _signature: tuple[int, int, int]) -> str:
+    return core.sha256_file(path)
+
+
+def _local_archive_asset(archive: Path, key: str) -> dict:
+    suffix = ".zip" if key == "windows-x64" else ".tar.gz"
+    if not archive.is_absolute() or not archive.name.endswith(suffix) or not archive.is_file():
+        raise RuntimeError(f"{LEMONADE_ARCHIVE_ENV} must be an absolute path to a {suffix} file.")
+    info = archive.stat()
+    sha256 = _archive_sha256(archive, (info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return {"name": archive.name, "sha256": sha256, "size": info.st_size}
 
 
 def host_asset_key() -> Optional[str]:
@@ -68,6 +92,10 @@ def lemond_name() -> str:
 
 def install_dir(root: Path, pins: Optional[dict] = None) -> Path:
     pins = pins or load_pins()
+    archive = local_lemonade_archive()
+    key = host_asset_key()
+    if archive is not None and key is not None:
+        return Path(root) / ("local-" + _local_archive_asset(archive, key)["sha256"])
     return Path(root) / pins["lemonade"]["version"]
 
 
@@ -79,9 +107,42 @@ def _read_marker(directory: Path) -> Optional[dict]:
     return marker if isinstance(marker, dict) else None
 
 
+def direct_flm() -> bool:
+    """Run FastFlowLM without Lemonade; UNSLOTH_NPU_LEMONADE=1 keeps lemond."""
+    return (
+        host_asset_key() is not None
+        and not custom_runtime_configured()
+        and os.environ.get("UNSLOTH_NPU_LEMONADE", "").strip() != "1"
+    )
+
+
+def flm_dir(root: Path) -> Path:
+    """Where lemond's /v1/install puts FastFlowLM, and where Studio looks for flm."""
+    return Path(root) / "cache" / "bin" / "flm" / "npu"
+
+
+def installed_flm_host(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
+    """flm_host.py when the pinned FastFlowLM is installed directly, else None."""
+    pins = pins or load_pins()
+    key = host_asset_key()
+    target = flm_dir(root)
+    try:
+        marker = json.loads((target / FLM_MARKER_NAME).read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        marker = None
+    asset = pins["fastflowlm"]["assets"].get(key or "")
+    if not isinstance(marker, dict) or not asset or marker.get("sha256") != asset["sha256"]:
+        return None
+    return (
+        FLM_HOST if (target / ("flm.exe" if sys.platform == "win32" else "flm")).is_file() else None
+    )
+
+
 def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     """The lemond binary of a complete install matching the pin, else None."""
     pins = pins or load_pins()
+    if direct_flm():
+        return installed_flm_host(root, pins)
     key = host_asset_key()
     if key is None:
         return None
@@ -89,11 +150,16 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     marker = _read_marker(target)
     if marker is None:
         return None
-    asset = pins["lemonade"]["assets"][key]
+    archive = local_lemonade_archive()
+    asset = (
+        _local_archive_asset(archive, key)
+        if archive is not None
+        else pins["lemonade"]["assets"][key]
+    )
     if marker.get("sha256") != asset["sha256"] or marker.get("asset") != asset["name"]:
         return None
     # A FastFlowLM-only pin change must rewrite backend_versions.json, whose version lemond installs.
-    if marker.get("fastflowlm") != pins["fastflowlm"]:
+    if archive is None and marker.get("fastflowlm") != pins["fastflowlm"]:
         return None
     binary = target / lemond_name()
     return binary if binary.is_file() else None
@@ -172,22 +238,40 @@ def install(
             "Lemonade publishes FastFlowLM builds for Windows and Linux on x86_64 only."
         )
     root = Path(root)
-    target = install_dir(root, pins)
+    if direct_flm():
+        host = _install_flm_direct(root, pins, key, progress, cancel)
+        remove_lemond_installs(root)
+        return host
+    source = local_lemonade_archive()
+    asset = (
+        _local_archive_asset(source, key) if source is not None else pins["lemonade"]["assets"][key]
+    )
+    target = root / ("local-" + asset["sha256"]) if source is not None else install_dir(root, pins)
     with core.install_lock(core.install_lock_path(target)):
         existing = installed_lemond(root, pins)
         if existing is not None:
             return existing
-        asset = pins["lemonade"]["assets"][key]
-        url = core.release_asset_download_url(
-            pins["lemonade"]["repo"], f"v{pins['lemonade']['version']}", asset["name"]
-        )
         root.mkdir(parents = True, exist_ok = True)
         with tempfile.TemporaryDirectory(prefix = ".lemonade-install-", dir = root) as scratch:
             scratch_dir = Path(scratch)
             archive = scratch_dir / asset["name"]
-            _download(
-                url, archive, expected_sha256 = asset["sha256"], progress = progress, cancel = cancel
-            )
+            if source is None:
+                url = core.release_asset_download_url(
+                    pins["lemonade"]["repo"], f"v{pins['lemonade']['version']}", asset["name"]
+                )
+                _download(
+                    url, archive, expected_sha256 = asset["sha256"], progress = progress, cancel = cancel
+                )
+            else:
+                if cancel is not None and cancel.is_set():
+                    raise LemonadeInstallCancelled("Lemonade installation was cancelled.")
+                shutil.copyfile(source, archive)
+                if core.sha256_file(archive) != asset["sha256"]:
+                    raise RuntimeError(
+                        f"{LEMONADE_ARCHIVE_ENV} changed during installation. Try again."
+                    )
+                if cancel is not None and cancel.is_set():
+                    raise LemonadeInstallCancelled("Lemonade installation was cancelled.")
             extracted = scratch_dir / "extracted"
             extracted.mkdir()
             core.extract_archive(archive, extracted)
@@ -196,11 +280,12 @@ def install(
             if not binaries:
                 raise RuntimeError(f"{asset['name']} does not contain {lemond_name()}.")
             payload = binaries[0].parent
-            _pin_fastflowlm_checksum(payload / "resources", pins)
+            if source is None:
+                _pin_fastflowlm_checksum(payload / "resources", pins)
             (payload / MARKER_NAME).write_text(
                 json.dumps(
                     {
-                        "version": pins["lemonade"]["version"],
+                        "version": pins["lemonade"]["version"] if source is None else asset["name"],
                         "asset": asset["name"],
                         "sha256": asset["sha256"],
                         "fastflowlm": pins["fastflowlm"],
@@ -217,6 +302,75 @@ def install(
     if binary is None:
         raise RuntimeError(f"Lemonade install at {target} did not verify.")
     return binary
+
+
+def remove_lemond_installs(root: Path) -> list[str]:
+    """Delete lemond version folders (those carrying MARKER_NAME) once FastFlowLM runs without them.
+
+    Renamed first: Windows refuses to rename a folder whose lemond.exe still runs, so a live
+    lemond is left whole and retried next time. cache/ (FastFlowLM, models) has no marker.
+    """
+    removed: list[str] = []
+    try:
+        children = sorted(Path(root).iterdir())
+    except OSError:
+        return removed
+    for child in children:
+        doomed = child.name.startswith(".lemond-remove-")
+        if not doomed and not (child.is_dir() and (child / MARKER_NAME).is_file()):
+            continue
+        try:
+            if not doomed:
+                renamed = child.with_name(f".lemond-remove-{child.name}-{os.getpid()}")
+                os.replace(child, renamed)
+                child = renamed
+            shutil.rmtree(child)
+            removed.append(child.name)
+        except OSError:
+            continue
+    return removed
+
+
+def _install_flm_direct(
+    root: Path,
+    pins: dict,
+    key: str,
+    progress: Optional[ProgressCallback],
+    cancel: Optional[threading.Event],
+) -> Path:
+    """Install the pinned FastFlowLM where lemond would, verified, with no Lemonade at all."""
+    target = flm_dir(root)
+    with core.install_lock(core.install_lock_path(target)):
+        existing = installed_flm_host(root, pins)
+        if existing is not None:
+            return existing
+        flm = pins["fastflowlm"]
+        asset = flm["assets"][key]
+        url = core.release_asset_download_url(flm["repo"], flm["version"], asset["name"])
+        target.parent.mkdir(parents = True, exist_ok = True)
+        with tempfile.TemporaryDirectory(prefix = ".flm-install-", dir = target.parent) as scratch:
+            archive = Path(scratch) / asset["name"]
+            _download(
+                url, archive, expected_sha256 = asset["sha256"], progress = progress, cancel = cancel
+            )
+            payload = Path(scratch) / "payload"
+            payload.mkdir()
+            core.extract_archive(archive, payload)
+            core.restore_tar_exec_bits(archive, payload)
+            (payload / FLM_MARKER_NAME).write_text(
+                json.dumps(
+                    {"version": flm["version"], "asset": asset["name"], "sha256": asset["sha256"]}
+                )
+                + "\n",
+                encoding = "utf-8",
+            )
+            if target.exists():
+                shutil.rmtree(target)
+            os.replace(payload, target)
+    host = installed_flm_host(root, pins)
+    if host is None:
+        raise RuntimeError(f"FastFlowLM install at {target} did not verify.")
+    return host
 
 
 def main(argv: Optional[list[str]] = None) -> int:

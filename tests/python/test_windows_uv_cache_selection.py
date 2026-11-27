@@ -164,11 +164,7 @@ def test_isolation_wins_over_a_warm_default(tmp_path):
 @requires_pwsh
 @pytest.mark.parametrize("isolated", [False, True])
 def test_uv_no_cache_records_nothing_even_when_the_directory_is_decided(tmp_path, isolated):
-    """uv leaves the chosen directory completely empty under --no-cache.
-
-    Both branches that pick a directory without probing returned before the no-cache check, so
-    the marker named a cache this install never filled and the next repair could prefer it.
-    """
+    """--no-cache leaves the directory empty, so no marker is written even if decided unprobed."""
     root = tmp_path / "studio"
     env = {"UV_NO_CACHE": "1"}
     if not isolated:
@@ -248,11 +244,7 @@ def test_a_bucket_lookalike_is_not_warmth(tmp_path, name):
 
 @requires_pwsh
 def test_a_studio_cache_with_an_unusable_bucket_is_not_a_fallback(tmp_path):
-    """The root can be writable while a bucket uv renames into is not.
-
-    A file where a bucket belongs is an existing path to the create uv makes, so uv refuses it.
-    Selecting that cache anyway turns an install that reported success into a uv error.
-    """
+    """A file where a bucket belongs makes uv refuse it, so that unusable cache is no fallback."""
     root = tmp_path / "studio"
     (root / "cache" / "uv").mkdir(parents = True)
     (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
@@ -265,8 +257,7 @@ def test_a_studio_cache_with_an_unusable_bucket_is_not_a_fallback(tmp_path):
 
 @requires_pwsh
 def test_the_launch_does_not_repoint_into_a_rejected_studio_cache(tmp_path):
-    """Selection already preferred the warm cache here; the repoint used to hand the backend
-    the Studio cache regardless, because it only asked about the root."""
+    """Selection prefers the warm cache; repoint must not hand over a rejected Studio cache."""
     root = tmp_path / "studio"
     (root / "cache" / "uv").mkdir(parents = True)
     (root / "cache" / "uv" / "archive-v0").write_text("not a directory")
@@ -286,8 +277,7 @@ def test_an_intact_studio_cache_is_still_the_ordinary_answer(tmp_path):
 
 @requires_pwsh
 def test_a_marker_naming_a_deleted_cache_is_no_more_evidence_than_none(tmp_path):
-    """A stale pointer is not a decision, so it gets the same ordering as an absent marker:
-    behind uv's default when that is warm, ahead of it when it is cold."""
+    """A stale marker ranks like no marker: behind a warm uv default, ahead of a cold one."""
     # Fresh root per half: a reused root reads the marker the first half recorded, not a stale one.
     warm_root = tmp_path / "studio-warm"
     _warm(warm_root / "cache" / "uv")
@@ -337,8 +327,7 @@ def test_a_real_bucket_beside_a_lookalike_is_still_warm(tmp_path):
     reason = "root writes through the mode bits",
 )
 def test_a_populated_cache_we_cannot_write_is_refused(tmp_path):
-    """uv renames distributions into the buckets and aborts when it cannot, so selecting one
-    we cannot write fails the install rather than saving a download."""
+    """uv renames into buckets and aborts if it cannot, so an unwritable cache is refused."""
     default = _warm(tmp_path / "uvdefault")
     default.chmod(0o555)
     try:
@@ -392,8 +381,7 @@ def test_a_lost_and_found_does_not_condemn_the_cache(tmp_path):
 
 @requires_pwsh
 def test_an_unknown_bucket_kind_does_not_condemn_the_cache(tmp_path):
-    """Bucket-shaped but not a kind uv creates, so uv never opens it. Refusing the whole cache
-    for it redownloaded what the cache already held."""
+    """Unknown bucket kinds uv never opens must not condemn the cache, forcing a redownload."""
     default = _warm(tmp_path / "uvdefault")
     (default / "unused-v999").mkdir()
     if os.name != "nt":
@@ -422,10 +410,7 @@ def test_a_read_only_managed_python_bucket_still_condemns_the_cache(tmp_path):
 
 @requires_pwsh
 def test_a_differently_cased_bucket_follows_the_filesystem(tmp_path):
-    """Where the directory folds, `Python-V0` IS uv's python-v0 and an unwritable one has to
-    condemn the cache. Where it does not, as on a case-sensitive NTFS directory or the Linux
-    filesystem this runs on, it is a directory uv never opens and must not condemn anything.
-    Measured the same way the selector measures it rather than assumed from the platform."""
+    """An unwritable Python-V0 condemns the cache only where the probe finds case folding."""
     default = _warm(tmp_path / "uvdefault")
     (default / "Python-V0").mkdir()
     folds = (default / "python-v0").exists()
@@ -449,14 +434,8 @@ def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
 
 @requires_pwsh
 def test_an_unmarked_warm_studio_cache_is_kept_when_the_default_is_cold(tmp_path):
-    """An install from before the marker can hold gigabytes of Torch and CUDA in the Studio
-    cache with nothing recording it, and abandoning that costs the downloads again.
-
-    It is the LAST candidate though, behind uv's default: the marker arrived in b66d2a4c8 and
-    the installer's early UV_CACHE_DIR block only in e12963071 the day after, so an install
-    with no marker is old enough that `shared` was reachable, and there the launch repoint
-    leaves backend wheels in the Studio cache while the real bytes sit in the default.
-    """
+    """Unmarked warm Studio cache ranks last behind uv's default: installs predate marker b66d2a4c8
+    and UV_CACHE_DIR block e12963071, so a repoint would leave wheels in the Studio cache."""
     root = tmp_path / "studio"
     studio_cache = _warm(root / "cache" / "uv")
     cold = tmp_path / "colddefault"
@@ -496,9 +475,8 @@ def test_an_unmarked_cold_studio_cache_does_not_block_the_shared_one(tmp_path):
     reason = "root reads through the mode bits",
 )
 def test_a_marker_we_cannot_even_stat_does_not_cost_us_uvs_default(tmp_path):
-    """Test-Path throws inside an ACL-denied directory under ErrorActionPreference = Stop, and
-    the selector wraps the whole candidate loop, so an unreachable marker used to take uv's
-    default down with it -- a first run elevated, a second one not."""
+    """Test-Path throws in an ACL-denied directory under ErrorActionPreference Stop, and the
+    selector's candidate loop wrapped it, so an unreachable marker must not cost uv's default."""
     locked = tmp_path / "locked"
     (locked / "uv").mkdir(parents = True)
     locked.chmod(0o000)
@@ -515,8 +493,7 @@ def test_a_marker_we_cannot_even_stat_does_not_cost_us_uvs_default(tmp_path):
 
 @requires_pwsh
 def test_a_trailing_separator_in_the_marker_is_the_same_directory(tmp_path):
-    """Otherwise it compares unequal to the Studio cache and gets the launch repoint that the
-    studio branch exists to avoid."""
+    """Otherwise it compares unequal to the Studio cache and triggers the avoided repoint."""
     root = tmp_path / "studio"
     studio_cache = _warm(root / "cache" / "uv")
     (root / "cache" / "uv-cache-dir").write_text(f"{studio_cache}{os.sep}\n", encoding = "utf-8")
@@ -532,8 +509,7 @@ def test_a_trailing_separator_in_the_marker_is_the_same_directory(tmp_path):
     reason = "root writes through the mode bits",
 )
 def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
-    """Repointing at a cache uv aborts on hands the autostarted backend a dead cache after an
-    install that succeeded. The shared cache is the one this install actually filled."""
+    """Repointing to a cache uv cannot fill leaves a dead cache; the shared cache is filled."""
     root = tmp_path / "studio"
     root.mkdir()
     default = _warm(tmp_path / "uvdefault")
@@ -555,9 +531,8 @@ def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
     reason = "root writes through the mode bits",
 )
 def test_a_fallback_we_cannot_write_is_not_a_fallback(tmp_path):
-    """The probe refuses a whole cache for one bucket uv may never touch, so a warm cache and an
-    unwritable Studio root can both be on the table. Landing on the Studio root is a certain
-    failure; the refused cache is only a suspect one."""
+    """The probe refuses a whole cache for one bucket uv may never touch; that cache is only
+    suspect, while landing on the unwritable Studio root is a certain failure."""
     default = _warm(tmp_path / "uvdefault")
     (default / "builds-v0").mkdir()
     (default / "builds-v0").chmod(0o555)
@@ -607,14 +582,8 @@ def test_a_writable_studio_cache_still_wins_over_a_refused_one(tmp_path):
     ],
 )
 def test_the_harness_hands_powershell_the_path_it_was_given(value):
-    """A path handed to pwsh must arrive byte-identical.
-
-    json.dumps looked right and was not: a JSON string is double-quoted, and PowerShell does
-    not read `\\` in a double-quoted string as an escape, so every Windows path arrived with
-    DOUBLED separators and every assertion in this file compared a doubled path against a real
-    one. It passed anyway on Linux and macOS, where paths have no backslashes to double, so
-    only a Windows runner could see it. This case is the Windows runner, in one line.
-    """
+    """A path given to pwsh must arrive byte-identical: json.dumps escapes backslashes that
+    PowerShell double-quoted strings keep, doubling separators; only Windows CI sees it."""
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"Write-Output {_ps_literal(value)}"],
         check = True,

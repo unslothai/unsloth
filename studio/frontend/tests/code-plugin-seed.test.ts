@@ -26,11 +26,13 @@ test("the exact path never answers with the throttled approximation of a fence t
   const reference = createCodePlugin({ themes: THEMES });
   const base = Array.from({ length: 120 }, (_, i) => `const value${i} = ${i} * 2;`).join("\n") + "\n";
   assert.ok(base.length > 2000);
-  const longer = `${base}export function tail() {\n  return value1 + value2;\n}\n`;
+  const longer = `${base}${Array.from({ length: 60 }, (_, i) => `export function tail${i}() {\n  return value1 + value2;\n}`).join("\n")}\n`;
   await highlighted(plugin, base);
   const approximate = plugin.highlight(options(longer), () => {});
   const exact = plugin.highlightExact(options(longer));
   const expected = await highlighted(reference, longer);
+  // Let the ordinary path's throttled refresh (250 ms) reach the same body: it must not replace the exact entry.
+  await new Promise((resolve) => setTimeout(resolve, 600));
   assert.ok(approximate && exact);
   assert.notDeepEqual(approximate.tokens, expected.tokens, "the ordinary path still throttles a large growing fence");
   assert.deepEqual(exact.tokens, expected.tokens, "the exact path tokenizes the whole body");

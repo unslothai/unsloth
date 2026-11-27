@@ -10,7 +10,6 @@ import { readSrcAsync } from "./helpers/kit.ts";
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
-// The reported case: 6.8 GB left at 102 B/s rendered "753d 5h left".
 const REPRO_SECONDS = (753 * 24 + 5) * HOUR;
 
 test("sub-hour ETAs keep their seconds and minutes", () => {

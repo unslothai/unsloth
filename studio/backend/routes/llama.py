@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp prebuilt update endpoints -- the single main update item.
-
-GET  /api/llama/update-status  -> is a newer prebuilt available + job state
-GET  /api/llama/update-changelog -> new carried changes since the installed build
-POST /api/llama/update         -> download + atomically swap to the latest
-
-Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
-utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
-
-whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
-llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
-with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
-keep working unchanged. audio.cpp is the third chained phase, offered when the managed runtime is not the release
-this Studio pins, with its own sub-status.
-"""
+"""llama.cpp prebuilt update routes: GET /api/llama/update-status, GET /api/llama/update-changelog,
+POST /api/llama/update; fail open; old top-level fields keep shape so older clients work; whisper
+and audio.cpp chain as phases."""
 
 from __future__ import annotations
 
@@ -176,8 +164,7 @@ _last_llama_update_step = -1
 
 
 def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
-    """One llama_update_progress line per 10% step so a prebuilt update reports
-    progress without a line per poll. Resyncs when a new update starts."""
+    """Log one llama_update_progress line per 10% step, not per poll; resets when a new update starts."""
     global _last_llama_update_step
     if job.state != "running" or job.progress is None:
         return
@@ -250,7 +237,25 @@ class LlamaBackendOption(BaseModel):
         False, description = "True when a prebuilt for this backend installs on this host."
     )
     unavailable_reason: Optional[str] = Field(
-        None, description = "unavailable | no_prebuilt | error, when available is false."
+        None,
+        description = (
+            "unavailable | no_prebuilt | other_release | error | rocm_not_installed | "
+            "rocm_no_access, "
+            "when available is false."
+        ),
+    )
+    unavailable_detail: Optional[str] = Field(
+        None, description = "The resolver's own message for an unavailable backend."
+    )
+    unavailable_hint: Optional[str] = Field(
+        None, description = "What to do so this backend can install, when known."
+    )
+    applies_to_host: bool = Field(
+        True,
+        description = (
+            "False when this host has no GPU the backend runs on (ROCm with no AMD card), "
+            "so the picker leaves it out instead of greying it."
+        ),
     )
     resolved_backend: Optional[str] = Field(
         None, description = "For 'auto', the backend hardware detection picks right now."

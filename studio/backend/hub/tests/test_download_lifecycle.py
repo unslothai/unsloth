@@ -123,12 +123,114 @@ def test_completion_invalidates_inventory_before_publishing_state(monkeypatch):
     assert events == ["invalidate", "complete"]
 
 
+# drain_stderr_excerpt's window: 500 shown + 4 KiB context + 1 byte to see a line boundary.
+WINDOW = 4597
+
+
+def _failed_job_error(stderr):
+    jobs = []
+
+    class _Registry:
+        def cancel_requested(self, _key):
+            return False
+
+        def drop_process(self, _key, _proc):
+            return True
+
+        def get_job_metadata(self, _key):
+            return None
+
+        def set_job(self, _key, *job):
+            jobs.append(job)
+
+    state = download_lifecycle.finalize_worker_exit(
+        _Registry(),
+        "org/model",
+        _Proc(1, stderr.encode()),
+        hf_token = None,
+        label = "Org/Model",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+    )
+    assert state == "error"
+    [(_, error)] = jobs
+    return error
+
+
+FILLER = "Downloading Org/Model\n" + "progress line\n" * 1000
+
+
+def test_worker_error_hides_a_signature_whose_name_the_excerpt_cut_off():
+    signature = "0123456789abcdef" * 4
+    url = (
+        "https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        f"&X-Amz-Signature={signature}&response-content-disposition={'x' * 400}"
+    )
+    stderr = FILLER + f"403 Forbidden for url: {url}"
+    assert stderr[-500:].startswith("ature=" + signature)
+
+    error = _failed_job_error(stderr)
+    assert error.startswith("Downloading Org/Model")
+    assert "[stderr truncated]" in error
+    assert signature not in error
+
+
+def test_worker_error_hides_a_signature_split_by_the_redaction_window():
+    signature = "".join(f"{i:02d}" for i in range(32))
+    trailer = "&x-id=GetObject\nhuggingface_hub.errors.HfHubHTTPError: 403 Forbidden"
+    token = "T" * (WINDOW - 44 - len("&X-Amz-Security-Token=") - len(trailer))
+    stderr = (
+        FILLER
+        + "403 Forbidden for url: https://cas-bridge.xethub.hf.co/xet-bridge-us/abc"
+        + f"?X-Amz-Signature={signature}&X-Amz-Security-Token={token}{trailer}"
+    )
+    assert stderr[-WINDOW:].startswith(signature[20:] + "&")
+
+    error = _failed_job_error(stderr)
+    assert error.endswith("403 Forbidden")
+    assert signature[20:28] not in error
+    assert "TTTT" not in error
+
+
+def test_worker_error_hides_a_credential_whose_header_the_window_cut_off():
+    trailer = "\nrequests.exceptions.HTTPError: 401 Client Error"
+    credential = "".join(f"{i:05d}" for i in range(1000))[: WINDOW - len("sic ") - len(trailer)]
+    stderr = FILLER + f"Authorization: Basic {credential}{trailer}"
+    assert stderr[-WINDOW:].startswith("sic " + credential)
+
+    error = _failed_job_error(stderr)
+    assert error.endswith("401 Client Error")
+    assert credential[-30:] not in error
+
+
+def test_worker_error_keeps_a_complete_last_line_that_fills_the_window():
+    last_line = "RuntimeError: " + "".join(f"{i:05d}" for i in range(1000))[: WINDOW - 1 - 14]
+    stderr = FILLER + last_line
+    assert stderr[-WINDOW:] == "\n" + last_line
+
+    assert _failed_job_error(stderr).endswith(last_line[-500:])
+
+
+def test_worker_error_keeps_a_last_line_longer_than_the_window():
+    last_line = "RuntimeError: missing " + "shard-00001-of-00099.safetensors, " * 200
+    assert _failed_job_error(FILLER + last_line + "\n").endswith(last_line.strip()[-480:])
+    assert _failed_job_error("OSError: " + "x" * 12000).startswith("OSError: xxx")
+
+
+def test_worker_error_hides_a_password_whose_scheme_the_window_cut_off():
+    start = "alice:MirrorPassword42@mirror.example/f?X-Amz-Security-Token="
+    stderr = FILLER + "OSError: 403 for https://" + start + "T" * (WINDOW - len(start) - 1) + "\n"
+    assert stderr[-WINDOW:].startswith(start)
+
+    error = _failed_job_error(stderr)
+    assert "MirrorPassword42" not in error
+    assert "TTTT" not in error
+
+
 def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module the shared Zoo watchdog also imports, so it
-    # would run INLINE and block in Event.wait() before finalize_worker_exit could stop it. Stub the
-    # seam instead.
+    # _ImmediateThread would run the shared Zoo watchdog inline and block; stub the seam.
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
 
@@ -188,9 +290,7 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
 
 
 def test_a_stalled_xet_worker_respawns_over_xet_keeping_its_claim(monkeypatch, tmp_path):
-    """End-to-end through the real reclaim: the recovery worker spawns with use_xet=True, the job
-    keeps the XET transport (so the UI and the .transport marker stay truthful), and the blob
-    metadata survives the re-claim."""
+    """A stalled Xet worker respawns over Xet, keeping the .transport marker and blob metadata."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
 
@@ -320,9 +420,7 @@ def test_an_unspawnable_xet_retry_falls_through_to_http(monkeypatch, tmp_path):
 
 
 def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_path):
-    """That fallthrough is the one path that hands a held stall to an HTTP worker. HTTP completing
-    says nothing about Xet, so clearing the verdict there would lose the only evidence a repeatedly
-    stalling machine ever produces."""
+    """A held Xet stall handed to an HTTP worker stays charged; HTTP completing says nothing about Xet."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
@@ -366,8 +464,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
         transport = download_registry.TRANSPORT_XET,
         watch_name = "model-watch",
     )
-    # Before the verdict: a double whose signature has fallen behind spawn_worker raises TypeError,
-    # which reads as a spawn failure and still records the verdict, staying green.
+    # Stale double signatures raise TypeError that still records a verdict; assert spawn ran.
     assert spawned == [True, False], "the HTTP rung never ran, so the verdict proves nothing"
     assert recorded == [verdict], "a real Xet stall was dropped when HTTP finished the download"
 
@@ -375,8 +472,7 @@ def test_a_verdict_carried_onto_the_http_rung_is_still_charged(monkeypatch, tmp_
 def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
-    # _ImmediateThread mutates the stdlib threading module the shared Zoo watchdog also imports, so stub
-    # the seam instead.
+    # Stub the seam (see above).
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
     register_worker = download_lifecycle.register_worker
     registry = download_registry.DownloadRegistry()
@@ -468,9 +564,7 @@ def test_a_real_xet_transfer_does_clear_the_failure_streak(monkeypatch, tmp_path
 
 
 def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch, tmp_path):
-    """Two same-transport GGUF variants of one repo may run concurrently over one blobs/ dir, and a
-    repo-wide measure credited a cached no-op worker with its sibling's bytes, clearing a legitimate
-    stall streak and flipping an already demoted verdict back to Xet."""
+    """Progress is measured per job: a sibling variant's bytes in the shared blobs/ dir must not count."""
     seen = []
 
     def _fake_completed(
@@ -481,7 +575,7 @@ def test_a_sibling_variants_bytes_do_not_count_as_this_jobs_progress(monkeypatch
         root = None,
     ):
         seen.append(frozenset(blob_hashes))
-        return 1_000  # this variant's own blobs never grow: it was already cached
+        return 1_000
 
     monkeypatch.setattr(download_registry, "completed_blob_bytes", _fake_completed)
     monkeypatch.setattr(
@@ -535,12 +629,7 @@ def _trip_xet_worker(
     xet_attempt = 2,
     retries = None,
 ):
-    """Run a Xet worker whose watchdog trips with *message*; return the health failures recorded.
-
-    *xet_attempt* defaults to the LAST attempt of the default budget, since that is where the Xet
-    phase ends and a held-back verdict is finally reported. Pass 1 to exercise the deferral.
-    *retries* collects ``(retry_transport, xet_attempt, pending_xet_failure)`` for each respawn.
-    """
+    """Run a Xet worker whose watchdog trips with message and return the health failures recorded."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
 
@@ -598,8 +687,7 @@ def _trip_xet_worker(
 
 
 def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_path):
-    """A frozen partial with bytes already flowing is genuinely Xet misbehaving -- charged once the
-    Xet phase is out of attempts."""
+    """Frozen partial with bytes flowing is real Xet fault; charged once Xet attempts run out."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )
@@ -612,9 +700,7 @@ def test_a_data_phase_stall_is_recorded_against_the_machine(monkeypatch, tmp_pat
 
 
 def test_a_first_stall_buys_another_xet_worker_and_records_nothing(monkeypatch, tmp_path):
-    """A wedged Xet transfer usually clears on a fresh process, so the first data-phase stall
-    respawns over XET. Nothing is recorded yet: if the retry succeeds the stall was noise, and
-    charging both attempts would let ONE download hit the two-failure demotion threshold."""
+    """First data-phase stall respawns over Xet unrecorded; one download must not reach demotion alone."""
     retries = _shared_setup_2(monkeypatch)
     verdict = "Download appears stalled (xet transport) -- no progress for 30s"
     assert (
@@ -634,13 +720,11 @@ def test_the_last_xet_stall_falls_back_to_http_and_charges_once(monkeypatch, tmp
         retries = retries,
     )
     assert len(recorded) == 1
-    # The HTTP rung carries no pending verdict: it was just recorded.
     assert retries == [(download_registry.TRANSPORT_HTTP, 2, None)]
 
 
 def test_a_pre_byte_trip_never_buys_another_xet_worker(monkeypatch, tmp_path):
-    """Retrying "did not start" would buy a second full 600s connect window before HTTP ever
-    starts, and that trip is as likely slow metadata as a broken Xet."""
+    """A pre-byte trip never buys a retry: it may be slow metadata, not a broken Xet."""
     retries = _shared_setup_2(monkeypatch)
     _trip_xet_worker(
         monkeypatch,
@@ -698,9 +782,7 @@ def test_a_post_byte_hang_between_files_is_recorded(monkeypatch, tmp_path):
 
 
 def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_path):
-    """A fast child can finalize its blobs while we are still registering the process, so a later
-    baseline shows no growth for a real transfer: the streak is never cleared and two stalls either
-    side of it read as consecutive, demoting Auto for 24h."""
+    """Sample the Xet baseline before spawning, or a fast child's finished blobs hide real growth."""
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     monkeypatch.setattr(download_lifecycle.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(download_lifecycle, "_start_stall_watchdog", lambda *a, **k: None)
@@ -741,9 +823,7 @@ def test_the_xet_baseline_is_sampled_before_the_worker_spawns(monkeypatch, tmp_p
 
 
 def test_a_stall_verdict_racing_a_completed_worker_is_not_recorded(monkeypatch, tmp_path):
-    """The watchdog appends its verdict BEFORE the kill lands, so a worker that completed in that
-    instant would be charged a failure it did not earn, and on the completed path that also skips
-    the success-clearing: two streak steps the wrong way from one race."""
+    """A verdict recorded before the kill lands must not charge a worker that completed in that instant."""
     monkeypatch.setattr(
         download_lifecycle, "_REAL_REGISTER", download_lifecycle.register_worker, raising = False
     )

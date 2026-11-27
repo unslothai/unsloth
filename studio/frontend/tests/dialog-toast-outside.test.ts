@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// radix reports a toast click as outside the dialog, so a modal dialog closed under its action.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -17,7 +15,6 @@ type OutsideEvent = {
   preventDefault: () => void;
 };
 
-// depth-first search for the first element whose stub type matches
 function findByType(node: unknown, type: string): StubElement | null {
   if (Array.isArray(node)) {
     for (const child of node) {
@@ -32,11 +29,11 @@ function findByType(node: unknown, type: string): StubElement | null {
   return findByType((element.props ?? {}).children, type);
 }
 
-function outsideEvent(insideToaster: boolean): OutsideEvent {
+function outsideEvent(ancestor: string | null): OutsideEvent {
   return {
     target: {
       closest: (selector) =>
-        insideToaster && selector === "[data-sonner-toaster]" ? {} : null,
+        ancestor && selector.split(",").some((s) => s.trim() === ancestor) ? {} : null,
     },
     defaultPrevented: false,
     preventDefault() {
@@ -45,7 +42,7 @@ function outsideEvent(insideToaster: boolean): OutsideEvent {
   };
 }
 
-test("an interaction on a toast does not dismiss the dialog under it", () => {
+test("an interaction on a toast or a corner card does not dismiss the dialog under it", () => {
   const { DialogContent } = loadWithStubs<{
     DialogContent: (props: {
       onInteractOutside: (event: OutsideEvent) => void;
@@ -65,8 +62,14 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
       DropdownGlowContext: { Provider: "Provider" },
       dialogDropdownGlow: () => null,
     },
+    "@/lib/surface-registry": {
+      MODAL_SURFACE: "modal",
+      useMergedRefs: () => undefined,
+      useSurfaceRef: () => undefined,
+    },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
+    "@/lib/folder-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
   });
 
@@ -80,17 +83,20 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
     event: OutsideEvent,
   ) => void;
 
-  const onToast = outsideEvent(true);
-  const elsewhere = outsideEvent(false);
+  const onToast = outsideEvent("[data-sonner-toaster]");
+  const onRail = outsideEvent("[data-overlay-rail]");
+  const elsewhere = outsideEvent(null);
   onInteractOutside(onToast);
+  onInteractOutside(onRail);
   onInteractOutside(elsewhere);
 
   assert.equal(onToast.defaultPrevented, true, "a toast click closed the dialog");
+  assert.equal(onRail.defaultPrevented, true, "a Downloads card click closed the dialog");
   assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
-  assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
+  assert.deepEqual(seen, [onToast, onRail, elsewhere], "the caller's handler was dropped");
 });
 
-test("an interaction on a toast does not dismiss the sheet under it", () => {
+test("an interaction on a toast or a corner card does not dismiss the sheet under it", () => {
   const { SheetContent } = loadWithStubs<{
     SheetContent: (props: {
       onInteractOutside: (event: OutsideEvent) => void;
@@ -111,8 +117,14 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     "@/components/ui/dialog": {
       DialogPortalContainerContext: { Provider: "Provider" },
     },
+    "@/lib/surface-registry": {
+      MODAL_SURFACE: "modal",
+      useMergedRefs: () => undefined,
+      useSurfaceRef: () => undefined,
+    },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
+    "@/lib/folder-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
   });
 
@@ -129,12 +141,15 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     event: OutsideEvent,
   ) => void;
 
-  const onToast = outsideEvent(true);
-  const elsewhere = outsideEvent(false);
+  const onToast = outsideEvent("[data-sonner-toaster]");
+  const onRail = outsideEvent("[data-overlay-rail]");
+  const elsewhere = outsideEvent(null);
   onInteractOutside(onToast);
+  onInteractOutside(onRail);
   onInteractOutside(elsewhere);
 
   assert.equal(onToast.defaultPrevented, true, "a toast click closed the sheet");
+  assert.equal(onRail.defaultPrevented, true, "a Downloads card click closed the sheet");
   assert.equal(elsewhere.defaultPrevented, false, "a real outside click must still dismiss");
-  assert.deepEqual(seen, [onToast, elsewhere], "the caller's handler was dropped");
+  assert.deepEqual(seen, [onToast, onRail, elsewhere], "the caller's handler was dropped");
 });

@@ -18,7 +18,7 @@ export function Navbar() {
   if (!isMobile) {
     return (
       <>
-        <header className="pointer-events-none absolute inset-x-0 top-0 z-40 h-[calc(48px*var(--ui-space-scale,1))]">
+        <header className="modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-40 h-[calc(48px*var(--ui-space-scale,1))]">
           {usesNativeMacTitlebar && (
             <div
               data-tauri-drag-region
@@ -28,24 +28,21 @@ export function Navbar() {
           )}
         </header>
 
-        {/* A held-out sidebar brings its own copy of this cluster, in the same
-            place. */}
         {usesNativeMacTitlebar && !pinned && !peeking && (
           <DesktopTitlebarNavigation
             expanded={false}
             onToggleSidebar={togglePinned}
-            className="pointer-events-auto absolute left-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] top-px z-[60]"
+            className="modal-pe-live pointer-events-auto absolute left-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] top-px z-[60]"
           />
         )}
       </>
     );
   }
-  // Desktop windows can land here under Windows text scaling, so sit inside the
-  // custom titlebar band instead of under its z-[70].
+  // Under Windows text scaling, sit inside the custom titlebar band rather than under its z-[70].
   return (
     <header
       className={cn(
-        "absolute top-0 inset-x-0 pointer-events-none",
+        "modal-pe-live absolute top-0 inset-x-0 pointer-events-none",
         usesCustomTitlebar
           ? "z-[80] h-[var(--studio-custom-titlebar-height,34px)]"
           : "z-[45] h-[calc(48px*var(--ui-space-scale,1))]",
@@ -61,7 +58,6 @@ export function Navbar() {
               : "items-start pt-[calc(11px*var(--ui-space-scale,1))] pl-2",
         )}
       >
-        {/* Scales with the header, except in the fixed titlebar band. */}
         <SidebarTrigger
           className={cn(
             "pointer-events-auto",

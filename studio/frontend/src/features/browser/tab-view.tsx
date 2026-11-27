@@ -42,6 +42,7 @@ import {
   setPageDownload,
   useBrowserStore,
 } from "./store";
+import { LineBox } from "@/components/ui/line-box";
 
 type LoadState =
   | { status: "loading" }
@@ -280,13 +281,13 @@ function PageError({
               })}
       </p>
       {message ? (
-        <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
+        <LineBox as="p" className="break-all bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</LineBox>
       ) : null}
       <div className="mt-1 flex gap-2">
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
         </Button>
-        <Button type="button" variant={botCheck ? "default" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
+        <Button type="button" variant={botCheck ? "dark" : "ghost"} size="sm" onClick={() => openExternalLink(url)}>
           {t("browser.openExternal")}
         </Button>
       </div>
@@ -367,7 +368,7 @@ function WebPage({
     updateTab(tab.id, { loading: true });
     // Now, not when the file arrives: a slow download can outlast the agent's run.
     const agentRuleAtStart = agentDownloadRule(tab.id, entry.from ?? url, url);
-    fetchBrowserPage({ url, method, body, errorPage: true }, controller.signal)
+    fetchBrowserPage({ url, method, body, errorPage: true, initiator: entry.from }, controller.signal)
       .then((page) => {
         cachePage(entry, page);
         setState({ status: "ready", page });
@@ -431,6 +432,7 @@ function WebPage({
       base={page.base}
       ownBase={page.ownBase === true}
       anyOrigin={page.anyOrigin === true}
+      siteCookies={page.siteCookies === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

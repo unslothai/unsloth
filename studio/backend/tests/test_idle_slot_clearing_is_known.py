@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether a released slot's KV cells actually come back.
-
-Re-costing a growing tool loop yields its old commitment before asking for a bigger one,
-which is only capacity if llama-server clears the idle slot. Under ``--kv-unified`` it
-clears only with ``--cache-idle-slots``, which requires cache-ram and which
-``--cache-ram 0`` force-disables. Studio emits ``--cache-ram 0`` on Windows under full
-GPU offload (#5692) alongside ``--kv-unified``, so this is a live configuration.
-
-Read off the argv actually spawned, so every emitter is covered by construction.
-"""
+"""Under --kv-unified, idle slots clear only with --cache-idle-slots, which --cache-ram 0 disables."""
 
 from __future__ import annotations
 
@@ -25,8 +16,7 @@ BASE = ["llama-server", "-m", "model.gguf", "--parallel", "4", "--kv-unified"]
 
 class TestTheArgvIsWhatDecides:
     def test_a_modern_binary_clears_by_default(self):
-        """--cache-ram defaults to 8192 MiB and Studio rarely emits the flag, so an
-        absent flag is the common case and means ON."""
+        """An absent --cache-ram flag is the common case, and it means ON since the default is 8192 MiB."""
         assert active(BASE, supports_cache_ram = True) is True
 
     def test_a_binary_without_cache_ram_never_clears(self):

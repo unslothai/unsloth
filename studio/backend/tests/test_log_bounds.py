@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every log family must be bounded, and the two line caps must agree.
-
-The volume guards cap how many lines get written. This one caps what is left on disk
-afterwards, which is a separate failure: a family that writes one file per operation and
-never prunes grows for the life of the install, and nothing in the line budget notices.
-
-``utils.debug_log_sources.FAMILIES`` is the authoritative inventory of what Unsloth writes,
-so it is the list a new family cannot avoid appearing on.
-"""
+"""Each family in debug_log_sources.FAMILIES must prune old files, or its logs grow forever."""
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -30,18 +23,10 @@ _MAIN_RS = _STUDIO / "src-tauri" / "src" / "main.rs"
 _DIAGNOSTICS_RS = _STUDIO / "src-tauri" / "src" / "diagnostics" / "mod.rs"
 _PROCESS_RS = _STUDIO / "src-tauri" / "src" / "process.rs"
 
-# Families that write one file per operation and prune nothing, so the directory grows for
-# the life of the install. Recorded rather than asserted away, and self-expiring: the test
-# below fails once a family here gains retention, which forces the entry out.
-#
-#   llama-server / diffusion-server: one file per model load ATTEMPT. 319 files going back
-#   two months were found on one machine. Retention arrives with #8763.
-# Empty since #8763 gave the two sidecar families keep-newest-N retention. The staleness
-# check below fails on an entry that no longer describes reality, so this list cannot
-# outlive the problem it records.
+# Self-expiring: the test below fails once a listed family gains retention.
 KNOWN_UNBOUNDED_FAMILIES: frozenset[str] = frozenset()
 
-# Families the desktop shell owns. Bounded in Rust (rotation), not by a Python pruner.
+# Bounded in Rust (rotation), not by a Python pruner.
 _DESKTOP_FAMILIES = frozenset(
     {
         "desktop-backend",
@@ -57,7 +42,12 @@ def _python_retention_sources() -> str:
     """Every Python file that could plausibly prune a log directory."""
     backend = Path(_BACKEND_DIR)
     parts = []
-    for relative in ("run.py", "utils/log_retention.py", "core/inference/llama_cpp.py"):
+    for relative in (
+        "run.py",
+        "utils/log_retention.py",
+        "core/inference/llama_cpp.py",
+        "core/inference/lemonade_server.py",
+    ):
         path = backend / relative
         if path.is_file():
             parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
@@ -66,16 +56,15 @@ def _python_retention_sources() -> str:
 
 class TestFamiliesAreBounded:
     def test_every_python_written_family_prunes(self):
-        """A family that never prunes grows without limit.
-
-        Detected from the glob in FAMILIES appearing next to a retention call site, which
-        is deliberately loose: the point is to notice a family that nobody thought about,
-        not to pin how the pruning is spelled.
-        """
+        """A family whose glob never appears beside a retention call site is flagged as unbounded."""
         source = _python_retention_sources()
         unbounded = []
         for family, (_subdir, glob) in debug_log_sources.FAMILIES.items():
-            if family in _DESKTOP_FAMILIES:
+            # Managed engines prune through ManagedEngineLog.open: proved by running it, below.
+            if (
+                family in _DESKTOP_FAMILIES
+                or family in debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES
+            ):
                 continue
             if glob not in source:
                 unbounded.append(f"{family} ({glob})")
@@ -113,6 +102,9 @@ class TestFamiliesAreBounded:
             "server",
             "llama-server",
             "diffusion-server",
+            "lemonade",
+            "sglang",
+            "vllm",
             "desktop-backend",
             "desktop-install",
             "desktop-update",
@@ -127,6 +119,32 @@ class TestFamiliesAreBounded:
             + "\n\nGive each one retention, then add it to the reviewed list here. A "
             "family with no pruning is an install that grows until the disk is full."
         )
+
+
+@pytest.mark.parametrize("engine", sorted(debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES))
+def test_a_managed_engine_log_prunes_its_family_on_open(engine, tmp_path, monkeypatch):
+    """Each managed engine attempt opens one log; opening it keeps the newest DEFAULT_KEEP, the new one included."""
+    from core.inference.managed_engine_log import ManagedEngineLog
+    from utils.log_retention import DEFAULT_KEEP
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    subdirectory, glob = debug_log_sources.MANAGED_ENGINE_LOG_FAMILIES[engine]
+    directory = tmp_path / subdirectory
+    directory.mkdir(parents = True)
+    for i in range(DEFAULT_KEEP + 5):
+        old = directory / glob.replace("*", f"old-{i:03d}")
+        old.write_text("old\n", encoding = "utf-8")
+        os.utime(old, (1_000_000 + i, 1_000_000 + i))
+    log = ManagedEngineLog.open(engine)
+    assert log is not None
+    try:
+        kept = sorted(p.name for p in directory.glob(glob))
+        assert Path(log.path).name in kept
+        assert len(kept) == DEFAULT_KEEP, kept
+        # The oldest go first.
+        assert glob.replace("*", "old-000") not in kept
+    finally:
+        log.close()
 
 
 class TestLineCapsAgree:

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Video generate-progress must not hand one account the successor's job.
-
-The route reads the reservation for its visibility check and then reads the progress.
-``begin_generate`` runs in a worker thread (asyncio.to_thread), so another account can take the
-reservation between those two reads with no await in between: ALICE's clip finished, BOB reserved,
-and ALICE's poll then returns BOB's fresh progress instead of ALICE's terminal record. The Video
-page merges that terminal record to show the saved clip, so the handoff both leaks BOB's job and
-makes ALICE's completed clip vanish until the gallery is refreshed.
-"""
+"""Read progress under the reservation lock, or a handoff hands one account the successor's job."""
 
 from __future__ import annotations
 
@@ -60,13 +52,7 @@ BOB_FRESH = {
 
 
 class HandoffVideoBackend:
-    """ALICE owns the reservation when the route authorizes; BOB reserves right after that read.
-
-    The handoff fires once, immediately after the FIRST read of the reservation, which is the
-    earliest interleaving a worker-thread ``begin_generate`` can produce. ``generate_progress``
-    mirrors the real backend: the reservation and the progress come out of ONE lock, so an
-    ``expected_account`` the caller authorized is rechecked against the owner held right now.
-    """
+    """Reserve for BOB right after ALICE's first read; generate_progress rechecks under one lock."""
 
     def __init__(self, hand_off: bool = True):
         self._hand_off = hand_off
@@ -156,15 +142,7 @@ def test_progress_does_not_follow_a_reservation_that_changed_hands(monkeypatch):
 
 
 def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
-    """Hiding a job must not change the OBJECT the poller gets back.
-
-    ``/video/generate-progress`` declares ``VideoGenerateProgressResponse``, but a
-    returned ``Response`` bypasses that model, so answering the loaded/yours pair here
-    handed callers something with no ``active`` at all. The Video page polls this on a
-    timer and reads ``active`` unconditionally; so did the suite, which is how an
-    unrelated test came to die on ``KeyError: 'active'`` whenever an earlier test left
-    ``routes.video._generation_account`` set.
-    """
+    """A hidden poll must keep the declared response model; a bare Response drops the active key."""
     from models.inference import VideoGenerateProgressResponse
 
     backend = HandoffVideoBackend(hand_off = True)
@@ -175,7 +153,6 @@ def test_a_hidden_poll_still_answers_the_shape_the_route_declares(monkeypatch):
 
     for field in VideoGenerateProgressResponse.model_fields:
         assert field in body, f"hidden poll dropped {field!r} from the declared shape: {body}"
-    # Every declared field is at its idle default, so the shape costs no privacy.
     assert body == {
         **VideoGenerateProgressResponse().model_dump(mode = "json"),
         "loaded": True,

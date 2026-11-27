@@ -1,14 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rail clips at its padding box, so it reserves a gutter around its cards
-// or their shadows are cut off and a cap a few px short slices a card's corners
-// (#9246). The gutter must not be taken out of the cards: the rail sits on the
-// floor and its bottom padding carries them back up to their inset, and its cap
-// grows by both gutters to pay for them.
-//
-// Arithmetic in CSS rather than in JS, since the rail is anchored and not
-// placed, so this reads the source: the node suite has no DOM to compute in.
+// The rail clips at its padding box, so it reserves a shadow gutter that its bottom padding
+// and cap pay for, rather than shrinking the cards.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,7 +11,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 const PROVIDER = readSrc("app/provider.tsx");
 
-/** A `const NAME = <number>;` declaration in the provider. */
 function constant(name: string): number {
   const found = PROVIDER.match(new RegExp(`const ${name} = (\\d+);`));
   assert.ok(found, `${name} is gone from the provider`);
@@ -29,21 +22,18 @@ const GUTTER_TOP = constant("STACK_SHADOW_GUTTER_TOP");
 const GUTTER_LEFT = constant("STACK_SHADOW_GUTTER_LEFT");
 const INSET_RIGHT = constant("STACK_CARD_INSET_RIGHT");
 
-/** Where the cards sit, and the band they may fill, before the gutter. */
 const CARDS_INSET = 16;
 const CARDS_BAND_TRIM = 32;
 
 test("the gutters clear the shadows the rail carries", () => {
-  // The dark-mode shadow is the deepest: 0 8px 28px -6px reaches 22px to a
-  // card's side and 14px above it. Both were short, so the halo ended flat.
+  // Dark-mode shadow 0 8px 28px -6px reaches 22px sideways and 14px above a card.
   assert.ok(GUTTER_BOTTOM >= 16, "the shadow below is clipped");
   assert.ok(GUTTER_TOP >= 14, "the shadow above is clipped");
   assert.ok(GUTTER_LEFT >= 22, "the shadow to the left is clipped");
 });
 
 test("the rail's edge drops by the gutter, so the cards keep their inset", () => {
-  // The rail is in the corner, so its bottom and right padding are the cards'
-  // insets. No gutter there: the clip is the screen edge.
+  // Bottom/right padding are the cards' insets: no gutter there, the screen edge clips.
   const rails = PROVIDER.match(
     /pointer-events-none fixed bottom-(\d+) right-(\d+)/g,
   );
@@ -65,10 +55,7 @@ test("the rail's edge drops by the gutter, so the cards keep their inset", () =>
 });
 
 test("the cap grows by both gutters, so the cards' band is unchanged", () => {
-  // 100dvh less N, N being the band's trim less the gutters added back, so a
-  // bare 100dvh once they cover it. Anything smaller spends the cards' own room,
-  // and a cap past 100dvh puts the scrollport's top off screen. The window
-  // chrome comes off too, since the window controls sit above the rail.
+  // Cap is 100dvh minus trim less gutters (and window chrome); past 100dvh the top goes off screen.
   const caps = PROVIDER.match(
     /max-h-\[(?:calc\()?100dvh(?:_-_(\d+)px\)|-var\(--studio-window-chrome-top,0px\)\))?\]/g,
   );
@@ -84,8 +71,7 @@ test("the cap grows by both gutters, so the cards' band is unchanged", () => {
 });
 
 test("the gutter is applied in px, not a rem utility", () => {
-  // pb-4/pt-2 resolve through --spacing in rem, so at any root but 16px the
-  // padding and the inset above would disagree and the cards would drift.
+  // pb-4/pt-2 are rem-based, so at a non-16px root they would drift from the px insets.
   assert.match(PROVIDER, /paddingTop: STACK_SHADOW_GUTTER_TOP/);
   assert.match(PROVIDER, /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/);
   assert.match(PROVIDER, /paddingLeft: STACK_SHADOW_GUTTER_LEFT/);

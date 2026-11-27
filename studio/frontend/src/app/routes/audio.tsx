@@ -6,11 +6,10 @@ import { validateAudioSearch } from "../../features/audio/route-search.ts";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
-// RootLayout renders AudioPage persistently (so an in-flight generation is not cancelled when leaving the tab); this route only owns the URL + auth gate.
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/audio",
-  staticData: { title: "Audio" },
+  staticData: { titleKey: "shell.navigation.audio" },
   validateSearch: validateAudioSearch,
   beforeLoad: () => requireAuth(),
   component: () => null,

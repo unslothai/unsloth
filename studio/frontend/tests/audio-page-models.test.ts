@@ -7,7 +7,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { allowedPages, pageModels, recommendedPageModels, rowOnPage } =
+const { allowedPages, emptyStateModels, pageModels, recommendedPageModels, rowOnPage } =
   await import("../src/features/audio/page-models.ts");
 const { audioModelsForTask } = await import("../src/features/audio/catalog.ts");
 const { AUDIO_CPP_MODELS, audioCppWorkflowsFor } = await import(
@@ -219,4 +219,25 @@ test("the Audio page builds its picker lists from pageModels and the catalog hoo
     page,
     /\b(speak|clone|edit|convert|separate|music)PageModels\b/,
   );
+});
+
+test("an empty output pane offers GGUF models only, and Speak and Music name theirs", () => {
+  const picks = (page: Parameters<typeof pageModels>[0], isMac = false) =>
+    emptyStateModels(page, SEED, { isMac }).map((row) => row.id.split("/").pop());
+  assert.deepEqual(picks("speak"), [
+    "Kokoro-82M-GGUF",
+    "Chatterbox-Turbo-GGUF",
+    "VibeVoice-1.5B-GGUF",
+  ]);
+  assert.deepEqual(picks("music"), [
+    "ACE-Step1.5-GGUF",
+    "Stable-Audio-3-Small-Music-GGUF",
+  ]);
+  for (const isMac of [false, true]) {
+    for (const page of ["speak", "clone", "edit", "convert", "music", "separate"] as const) {
+      const offered = picks(page, isMac);
+      assert.ok(offered.length > 0 && offered.length <= 3, `${page}: ${offered.join(", ")}`);
+      for (const name of offered) assert.match(String(name), /-GGUF$/, `${page}: ${name}`);
+    }
+  }
 });

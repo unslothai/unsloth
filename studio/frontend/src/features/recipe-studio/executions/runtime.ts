@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withTimeFormat } from "@/lib/time-format";
 import type { JobEvent, JobStatusResponse } from "../api";
 import type {
   RecipeExecutionBatch,
   RecipeExecutionKind,
   RecipeExecutionRecord,
+  RecipeExecutionStatus,
   RecipeSourceProgress,
 } from "../execution-types";
 import {
@@ -18,10 +20,10 @@ const MAX_LOG_LINES = 1500;
 
 function formatEventTime(ts: unknown): string {
   if (typeof ts !== "number" || !Number.isFinite(ts)) {
-    return new Date().toLocaleTimeString();
+    return new Date().toLocaleTimeString(undefined, withTimeFormat());
   }
   const ms = ts > 10_000_000_000 ? ts : ts * 1000;
-  return new Date(ms).toLocaleTimeString();
+  return new Date(ms).toLocaleTimeString(undefined, withTimeFormat());
 }
 
 export function appendExecutionLogLine(lines: string[], nextLine: string): string[] {
@@ -81,6 +83,31 @@ function normalizeSourceProgress(input: unknown): RecipeSourceProgress | null {
   return raw as RecipeSourceProgress;
 }
 
+function terminalFinishedAt(
+  execution: RecipeExecutionRecord,
+  status: JobStatusResponse,
+  mappedStatus: RecipeExecutionStatus,
+): number | null {
+  const terminal =
+    mappedStatus === "completed" ||
+    mappedStatus === "error" ||
+    mappedStatus === "cancelled";
+  if (!terminal) {
+    return null;
+  }
+  const { started_at: started, finished_at: finished } = status;
+  if (
+    typeof started === "number" &&
+    typeof finished === "number" &&
+    Number.isFinite(started) &&
+    finished >= started
+  ) {
+    // Server duration on the browser clock: the two clocks can differ on a remote Studio.
+    return execution.createdAt + Math.round((finished - started) * 1000);
+  }
+  return execution.finishedAt ?? Date.now();
+}
+
 export function applyExecutionStatusSnapshot(
   execution: RecipeExecutionRecord,
   status: JobStatusResponse,
@@ -113,12 +140,7 @@ export function applyExecutionStatusSnapshot(
     model_usage: normalizeObject(status.model_usage),
     artifact_path: status.artifact_path ?? execution.artifact_path,
     error: status.error ?? null,
-    finishedAt:
-      mappedStatus === "completed" ||
-      mappedStatus === "error" ||
-      mappedStatus === "cancelled"
-        ? Date.now()
-        : null,
+    finishedAt: terminalFinishedAt(execution, status, mappedStatus),
   };
 }
 

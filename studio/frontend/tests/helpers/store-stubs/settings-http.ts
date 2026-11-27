@@ -1,25 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A chat-settings endpoint a test can hold open, so it can act while hydration
-// is still in flight. `puts` records what the store wrote back.
-
 export const settingsHttp = {
   settings: {} as Record<string, unknown>,
-  /** Optional one-response-per-GET sequence for stale-read race tests. */
   getResponses: [] as Array<
     Record<string, unknown> | Promise<Record<string, unknown>>
   >,
   gets: 0,
   beforeConditionalApply: null as (() => void) | null,
-  /** Status for the conditional route, so a backend without it can be modelled. */
   conditionalStatus: 200,
   puts: [] as Record<string, unknown>[],
-  /** One-shot failures for ordinary PUT ordering/retry tests. */
   putFailures: [] as Array<{ status: number; detail?: unknown }>,
-  /** Resolve to let a held GET complete. */
   release: null as (() => void) | null,
-  /** Hold an ordinary PUT open, so a write can outlast the flush timeout. */
   putGate: null as Promise<void> | null,
   hold(): void {
     settingsHttp.gate = new Promise<void>((resolve) => {

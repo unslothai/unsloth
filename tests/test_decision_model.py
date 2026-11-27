@@ -6,6 +6,7 @@ import json
 import math
 import sys
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,9 @@ from unsloth.models.decision import (
     _laya,
     _target,
 )
+
+# torch < 2.3 has only the CUDA scaler.
+GRAD_SCALER = getattr(torch.amp, "GradScaler", None) or torch.cuda.amp.GradScaler
 
 laya = _laya()
 # Every word the states, questions and options use, so the toy task below is learnable.
@@ -247,6 +251,35 @@ def test_dataset_skips_bad_rows_and_names_the_most_common_reason(checkpoint):
     assert torch.allclose(batch["target"].sum(-1), torch.ones(3))
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_needs_no_model_and_stops_at_the_first_usable_row(clef):
+    assert FastDecisionModel.rows_problem([], clef) == ""
+    no_gold = {**_row(0), "gold": {}}
+    no_questions = {"state": "only a state"}
+    assert FastDecisionModel.rows_problem([no_questions], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+    assert FastDecisionModel.rows_problem([no_questions, no_questions], clef) == (
+        "row 1 needs state, questions and gold (and 1 more like it)"
+    )
+    assert FastDecisionModel.rows_problem([no_gold], clef).startswith('row 1: "')
+
+    def record(name, question):
+        seen.append(name)
+
+    seen = []
+    assert FastDecisionModel.rows_problem([no_gold, _row(1), no_questions], clef, record) is None
+    assert len(seen) == 1
+
+
+def test_rows_problem_applies_the_callers_validation():
+    def refuse(name, question):
+        raise ValueError("is over the limit")
+
+    problem = FastDecisionModel.rows_problem([_row(0)], False, refuse)
+    assert problem.endswith("is over the limit (and 2 more like it)")
+
+
 def test_holdout_takes_whole_rows_and_never_overshoots():
     items = [{"row": row} for row in range(50) for _ in range(3)]
     train, held = FastDecisionModel.split_holdout(items, 3407)
@@ -327,6 +360,26 @@ def test_head_learning_rate_and_weight_decay(checkpoint, tmp_path, lora):
         for name, group in grouped:
             assert group["lr"] == (8e-4 if name.startswith("encoder.") else head_lr)
             assert group["weight_decay"] == (0.0 if name in no_decay else 0.01)
+
+
+@pytest.mark.skipif(
+    not hasattr(TrainingArguments, "activation_checkpointing"),
+    reason = "transformers < 5.23 reads gradient_checkpointing",
+)
+def test_trainer_checkpoints_the_encoder_not_the_wrapper(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model,
+        args = _args(tmp_path, max_steps = 1, gradient_checkpointing = True),
+        train_dataset = items,
+        processing_class = tokenizer,
+    )
+    assert trainer.args.activation_checkpointing is False
+    assert model.encoder.is_gradient_checkpointing
+    trainer.train()
 
 
 def test_length_grouping_only_with_gradient_accumulation(checkpoint, tmp_path):
@@ -469,6 +522,8 @@ def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
     assert not compiled
     assert _decision_fast._wants_compile(model, 10**6) == next(model.parameters()).is_cuda
     monkeypatch.setattr(_decision_fast, "_on_gpu", lambda model: True)
+    # A GPU host has triton; macOS and Windows CPU runners do not, and would never compile.
+    monkeypatch.setattr(_decision_fast, "_has_triton", lambda: True)
     assert _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS)
     assert not _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS - 1)
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
@@ -563,6 +618,29 @@ def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
         assert not compiled
         assert all(layer._compiled_call_impl is None for layer in layers)
         assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, {"label": "true"})
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
 
 
 def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
@@ -662,9 +740,8 @@ def test_clef_backbone_stays_on_one_device_unless_the_caller_places_it(tmp_path,
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
-    # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
-    # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
-    # tuned to CPU arithmetic, not a GPU defect.
+    # The toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but only after ~100
+    # steps on GPU, so 80 steps is tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
     # Eager too: a compiled encoder draws the same accuracy from a different 45-decision RNG stream.
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")
@@ -886,7 +963,7 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
 
 
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 CLEF_HEAD = {
     "hidden_size": 16,
     "width": 32,
@@ -960,6 +1037,68 @@ def _clef_rows(n):
     return rows
 
 
+def _clef_items_with(tokenizer, rows):
+    report = {"total": 0, "skipped": 0, "reason": None, "truncated": 0}
+    items = decision._clef_items(rows, tokenizer, 4096, None, report, lambda *args: None)
+    return [
+        (item["input_ids"], item["record"].input_ids, item["record"].questions, item["targets"])
+        for item in items
+    ], report
+
+
+def test_clef_items_tokenize_each_repeated_string_once():
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    rows = [{**_row(i), "state": {"ticket": i, "note": "word " * (40 * i)}} for i in range(24)]
+    texts = []
+
+    class Counting:
+        def __call__(self, text, **kwargs):
+            texts.append(text)
+            return tokenizer(text, **kwargs)
+
+    items, report = _clef_items_with(Counting(), rows)
+    # Each row on its own, as encode_record sees a plain tokenizer.
+    plain = [
+        encode_record(tokenizer, {"state": r["state"], "questions": QUESTIONS}, max_length = 4096)
+        for r in rows
+    ]
+    assert [item[1] for item in items] == [record.input_ids for record in plain]
+    assert [item[2] for item in items] == [record.questions for record in plain]
+    assert all(list(item[1]) == item[0] for item in items)
+    assert report["skipped"] == 0
+    # Every distinct string once: the fixed prompt and option texts are shared by every row.
+    assert len(texts) == len(set(texts))
+    assert len(texts) < 2 * len(rows) + 30
+
+
+def test_memo_tokenizer_returns_fresh_lists_and_passes_other_calls_through():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    memo = decision._MemoTokenizer(tokenizer)
+    first = memo("OPTION 1: ", add_special_tokens = False).input_ids
+    first.extend([1, 2, 3])
+    assert (
+        memo("OPTION 1: ", add_special_tokens = False).input_ids
+        == tokenizer("OPTION 1: ", add_special_tokens = False).input_ids
+    )
+    long = "state " * 200
+    assert (
+        memo(long, add_special_tokens = False).input_ids
+        == tokenizer(long, add_special_tokens = False).input_ids
+    )
+    assert long not in memo.cache
+    assert memo("hi").input_ids == tokenizer("hi").input_ids
+    assert (
+        memo(["a", "b"], add_special_tokens = False).input_ids
+        == tokenizer(["a", "b"], add_special_tokens = False).input_ids
+    )
+
+
 def test_clef_encoding_is_token_identical_to_cloudflares():
     from transformers import AutoTokenizer
 
@@ -992,6 +1131,62 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
                 (q.question_id, q.question_type, q.question_span, q.option_spans, q.option_ids)
                 for q in theirs.questions
             ]
+
+
+JSON_TEXT = '{"b": 1, "a": [2, {"d": 3, "c": 4}]}'
+
+
+def test_clef_trains_on_a_json_text_state_as_written(capsys):
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record, render
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    value = json.loads(JSON_TEXT)
+    states = ["plain text", JSON_TEXT, value, render(value)]
+    items, report = _clef_items_with(
+        tokenizer, [{**_row(i), "state": s} for i, s in enumerate(states)]
+    )
+    assert report["skipped"] == 0 and report["json_text_states"] == 1
+    # As Cloudflare's encoding and every server read it: text as written, an object sorted.
+    assert [item[1] for item in items] == [
+        encode_record(tokenizer, {"state": s, "questions": QUESTIONS}, max_length = 4096).input_ids
+        for s in states
+    ]
+    assert "1 of 4 states are JSON text" in capsys.readouterr().out
+    # Read as text a state can stop fitting; it is counted all the same.
+    rows, report = [{**_row(0), "state": JSON_TEXT}], {"total": 0, "skipped": 0}
+    assert decision._clef_items(rows, tokenizer, 50, None, report, lambda *a: None) == []
+    assert report["json_text_states"] == 1
+
+
+def test_predict_reads_a_clef_json_text_state_as_written_and_laya_decodes_it(
+    checkpoint, monkeypatch
+):
+    seen = []
+
+    def clef_decide(model, tokenizer, state, *args, **kwargs):
+        seen.append(state)
+        return {"answers": {}}
+
+    monkeypatch.setattr(decision, "_clef_decide", clef_decide)
+    FastDecisionModel.predict(
+        types.SimpleNamespace(is_clef = True, decision_config = {}), None, JSON_TEXT, QUESTIONS
+    )
+    assert seen == [JSON_TEXT]
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    common = _laya().common
+    build = common.build_sequence
+    spy = lambda tokenizer, state, *args: seen.append(state) or build(tokenizer, state, *args)
+    monkeypatch.setattr(common, "build_sequence", spy)
+    FastDecisionModel.predict(model, tokenizer, JSON_TEXT, QUESTIONS)
+    assert seen[1:] == [json.loads(JSON_TEXT)] * len(QUESTIONS)
+    # Every model's report has the count Unsloth Studio reads.
+    row = {**_row(0), "state": JSON_TEXT}
+    assert FastDecisionModel.build_dataset([row], tokenizer, model)[1]["json_text_states"] == 0
 
 
 @pytest.mark.parametrize(
@@ -1364,6 +1559,11 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
+def test_structured_instructions_train_as_written():
+    question = {"type": "noul", "instructions": {"ask": "これは緊急ですか"}}
+    assert "これは緊急ですか" in _decision_common._internal(question)["ins"]
+
+
 def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
     model, processor = FastDecisionModel.from_pretrained(
         str(clef_checkpoint), max_seq_length = 512, full_finetuning = True
@@ -1412,8 +1612,12 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
         callbacks = [Grads()],
     )
     assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    assert isinstance(trainer.accelerator.scaler, GRAD_SCALER) == (dtype == torch.float16)
     trainer.train()
-    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert grads and all(math.isfinite(loss) for loss, _ in grads)
+    # The scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
+    stepped = [g for _, g in grads if math.isfinite(g)]
+    assert len(stepped) * 2 >= len(grads) and all(g > 0 for g in stepped), grads
     assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
 
 
@@ -1522,6 +1726,65 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
     assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
     assert getattr(args, "mixed_precision", expected) == expected
+
+
+@pytest.mark.parametrize(
+    "case, wants",
+    [
+        ("float32_path", True),
+        ("deepspeed", False),
+        ("fsdp", False),
+        ("cpu", False),
+        ("not_forced", False),
+    ],
+)
+def test_clef_loss_scaler_only_on_the_float32_path(tmp_path, case, wants):
+    device = torch.device("cpu" if case == "cpu" else "cuda")
+    model = types.SimpleNamespace(
+        parameters = lambda: iter([types.SimpleNamespace(device = device)]),
+        _unsloth_forced_float32 = case != "not_forced",
+    )
+    args = _args(tmp_path)
+    if case == "deepspeed":
+        args.deepspeed = {"zero_optimization": {"stage": 2}}
+    if case == "fsdp":
+        args.fsdp = ["full_shard"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # GradScaler warns when this host has no CUDA
+        scaler = decision._clef_loss_scaler(model, args)
+    assert isinstance(scaler, GRAD_SCALER) == wants
+
+
+def test_clef_loss_scaler_on_torch_without_torch_amp_grad_scaler(tmp_path, monkeypatch):
+    monkeypatch.delattr(torch.amp, "GradScaler", raising = False)
+    made = []
+    monkeypatch.setattr(torch.cuda.amp, "GradScaler", lambda: made.append(1) or "legacy")
+    for device, wants in (("cuda", "legacy"), ("xpu", None)):
+        model = types.SimpleNamespace(
+            parameters = lambda device = device: iter(
+                [types.SimpleNamespace(device = torch.device(device))]
+            ),
+            _unsloth_forced_float32 = True,
+        )
+        assert decision._clef_loss_scaler(model, _args(tmp_path)) == wants
+    assert made == [1]
+
+
+def test_clef_loss_scaler_unscales_once_before_clipping():
+    # A prior fp16 Trainer in the process can leave Accelerate on native fp16, which unscales itself.
+    calls = []
+    scaler = types.SimpleNamespace(unscale_ = lambda optimizer: calls.append(("unscale", optimizer)))
+    for native, wants in ((False, [("unscale", "opt"), "clip"]), (True, ["clip"])):
+        calls.clear()
+        accelerator = types.SimpleNamespace(
+            native_amp = native,
+            mixed_precision = "fp16" if native else "no",
+            clip_grad_norm_ = lambda p, m, n = 2: calls.append("clip"),
+        )
+        decision._install_clef_loss_scaler(accelerator, scaler, lambda: "opt")
+        assert accelerator.scaler is scaler
+        accelerator.clip_grad_norm_([], 1.0)
+        assert calls == wants
 
 
 def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):

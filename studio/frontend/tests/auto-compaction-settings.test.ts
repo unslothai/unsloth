@@ -6,7 +6,13 @@ import test from "node:test";
 import ts from "@typescript/typescript6";
 import {
   apiCompactionRequestFields,
+  autoCompactPercentForModel,
+  cloudCompactionTrigger,
   ggufCompactionRequestFields,
+  normalizeAutoCompactPercentByModel,
+  normalizeAutoCompactTokens,
+  parseAutoCompactPercent,
+  parseAutoCompactPercentByModel,
 } from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -51,16 +57,34 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
     { context_overflow: "error" },
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  // SGLang has no exact count to fit against, so only the vLLM engine asks.
-  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
+  assert.match(adapter, /isManagedEngine: state\.loadedEngine !== "auto"/);
   // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
   assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
 });
 
+test("an NPU model compacts like a local GGUF, and /compact reaches it", () => {
+  const options = { isGguf: false, isNpu: true, autoCompactEnabled: true };
+  assert.deepEqual(ggufCompactionRequestFields(options), {
+    context_overflow: "truncate_oldest",
+  });
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
+    { context_overflow: "error" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false, compactNow: true }),
+    { context_overflow: "truncate_oldest", compact_context: true },
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
+  assert.match(adapter, /isNpuForCompaction = isNpuModelId\(params\.checkpoint\)/);
+  assert.match(adapter, /isNpu: isNpuForCompaction/);
+  assert.match(adapter, /isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction/);
+});
+
 test("nothing still offers the removed compaction style", () => {
-  // The row is gone, so its state, its request fields and its strings should be too: a leftover
-  // setter or key is a setting the user cannot reach but the code still carries.
   for (const file of [
     "features/settings/tabs/chat-tab.tsx",
     "features/chat/stores/chat-runtime-store.ts",
@@ -83,13 +107,11 @@ test("nothing still offers the removed compaction style", () => {
 test("the chat adapter sends compaction fields through the shared helper", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /ggufCompactionRequestFields\(/);
-  // Through isServedByLlamaCpp, not a catalog row: /api/models/list can replace the row a
-  // load minted, and the panel that shows these settings asks the same owner.
+  // Via isServedByLlamaCpp, not a catalog row: /api/models/list can replace the loaded row.
   assert.match(adapter, /isGguf: isGgufForCompaction/);
   assert.match(adapter, /loadedIsGguf: runtime\.loadedIsGguf/);
   assert.match(adapter, /isServedByLlamaCpp\(/);
-// One request object for both streams, so a media turn cannot lose these fields; the value is
-  // derived from THIS turn's messages only (durable-gate.ts), not a variable hoisted earlier.
+  // The value must derive from THIS turn's messages only (durable-gate.ts).
   assert.match(adapter, /image_base64: findLatestUserImageBase64\(currentTurnMessages\)/);
 });
 
@@ -106,9 +128,7 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
     "../src/features/model-picker/model-config/per-model-config.ts"
   );
 
-  // An Ollama GGUF: the backend keeps the opaque inventory ref public, so the checkpoint
-  // carries no .gguf suffix, and the load reports no quant. loadedIsGguf is the only
-  // evidence llama.cpp serves it.
+  // An Ollama GGUF has no .gguf suffix and no quant, so loadedIsGguf is the only evidence.
   const resident = {
     params: { checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq" },
     activeGgufVariant: null,
@@ -121,8 +141,6 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
     resident as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
   );
 
-  // Selecting an external provider clears the local residency fields without unloading
-  // the model that the queued turn is still going to be served by.
   const live = {
     ...resident,
     params: { checkpoint: "external::openai::gpt-5" },
@@ -384,4 +402,75 @@ test("provider compaction replay stays on the tool-loop subturn that produced it
     adapter,
     /providerCompactionAfterToolCalls = toolCallParts\.filter\([\s\S]*toolCallPartSurvivesOpenAIReplay\(part\)[\s\S]*\)\.length/,
   );
+});
+
+test("Auto-compact at is a whole percent of the window, typed with or without %", () => {
+  assert.equal(parseAutoCompactPercent(""), null);
+  assert.equal(parseAutoCompactPercent("60"), 60);
+  assert.equal(parseAutoCompactPercent(" 85 % "), 85);
+  for (const bad of ["5", "101", "50.5", "lots", "-20"]) {
+    assert.throws(() => parseAutoCompactPercent(bad), /Auto-compact at/);
+  }
+  assert.equal(normalizeAutoCompactTokens(2_000_000), 1_200_000);
+});
+
+test("a percent becomes that share of whichever window the model has", () => {
+  for (const window of [128_000, 1_000_000]) {
+    assert.deepEqual(
+      apiCompactionRequestFields({
+        autoCompactEnabled: true,
+        contextLength: window,
+        autoCompactPercent: 50,
+      }),
+      {
+        context_overflow: "truncate_oldest",
+        compaction_percent: 50,
+        compaction_threshold: window / 2,
+        compaction_uncapped: true,
+        context_window: window,
+      },
+    );
+  }
+  assert.deepEqual(
+    apiCompactionRequestFields({
+      autoCompactEnabled: true,
+      contextLength: null,
+      autoCompactPercent: 60,
+    }),
+    { context_overflow: "truncate_oldest", compaction_percent: 60 },
+  );
+  assert.equal(
+    cloudCompactionTrigger({
+      providerType: "openrouter",
+      contextLength: 200_000,
+      autoCompactTokens: 30_000,
+      autoCompactPercent: 90,
+    }),
+    180_000,
+  );
+});
+
+test("a model's own percent wins over the connection's", () => {
+  const provider = {
+    autoCompactPercent: 80,
+    autoCompactPercentByModel: { "qwen3:32b": 50 },
+  };
+  assert.equal(autoCompactPercentForModel(provider, "qwen3:32b"), 50);
+  assert.equal(autoCompactPercentForModel(provider, "gpt-oss:20b"), 80);
+  assert.equal(autoCompactPercentForModel({}, "qwen3:32b"), undefined);
+});
+
+test("per-model percent drafts save only listed models and skip blanks", () => {
+  assert.deepEqual(
+    parseAutoCompactPercentByModel({ a: "50%", b: "", gone: "60" }, ["a", "b"]),
+    { a: 50 },
+  );
+  assert.throws(
+    () => parseAutoCompactPercentByModel({ a: "5" }, ["a"]),
+    /^Error: a: Auto-compact at must be/,
+  );
+  assert.deepEqual(normalizeAutoCompactPercentByModel({ a: 50, b: 5, c: "x" }), {
+    a: 50,
+  });
+  assert.equal(normalizeAutoCompactPercentByModel({ b: 5 }), undefined);
 });

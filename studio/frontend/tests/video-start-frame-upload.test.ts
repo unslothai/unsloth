@@ -84,14 +84,22 @@ test("a frame the newly loaded model cannot take is dropped, each on its own", (
   );
 });
 
-test("the 1:4 to 4:1 warning is MiniMax-H3's alone", () => {
-  // A preset family centre-crops any picture onto its nearest preset, so it never refuses one.
+test("the 1:4 to 4:1 warning shows only where a keyframe would pick the canvas", () => {
+  // A preset family centre-crops any picture onto its nearest preset, so it never refuses one; a family whose
+  // keyframes keep the chosen canvas (MiniMax-H3, as the reference workflow) stretches any picture onto it.
   assert.match(
     page,
     /const canvasRefusesAspect = !status\?\.defaults\?\.canvas_from_presets;/,
   );
   assert.match(
     page,
-    /\{canvasKeyframe && !matchedResolution && canvasRefusesAspect && \(/,
+    /\{canvasKeyframe && !matchedResolution && canvasRefusesAspect && autoMatchSource && \(/,
   );
+});
+
+test("a keyframe selects Match source only where it does not keep the canvas", () => {
+  assert.match(page, /const autoMatchSource = keyframeSelectsMatchSource\(status\?\.defaults\);/);
+  assert.match(page, /setMatchSource\(has && autoMatchSource\);/);
+  assert.match(page, /\(\) => requestCanvas\(sourceSized, matchedResolution, videoSize, !autoMatchSource\),/);
+  assert.match(page, /\.\.\.generateCanvas,/);
 });

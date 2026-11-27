@@ -8,6 +8,7 @@ import { authFetch } from "@/features/auth";
 import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
 import { isStudioUrl } from "@/lib/api-base";
+import { urlToBlob } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
 import { Slot } from "radix-ui";
@@ -38,11 +39,8 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
       const { video, src } = source;
       const url = video ? (video.data.startsWith("data:") ? video.data : `data:${video.mimeType};base64,${video.data}`) : src;
       if (!url) return null;
-      return () =>
-        fetch(url).then(async (response) => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return { blob: await response.blob() };
-        });
+      // Not fetch(): connect-src allows no data:, so a packaged or served build refuses it.
+      return () => urlToBlob(url).then((blob) => ({ blob }));
     }
     case "document":
       return !source.hasOriginal && text !== undefined
@@ -66,7 +64,7 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
     void load()
       .then(({ blob, plainText }) => {
         const name = source.name || "attachment";
-        // Extracted text, not the original bytes: name and type it as text, as the viewer saves it.
+        // Extracted text, not the original bytes, so name and type it as text.
         openFileInBrowser({
           blob,
           name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
@@ -78,7 +76,6 @@ function opener(source: AttachmentSource, id: string, load: () => Promise<Opened
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
 }
 
-/** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */
 const OpenerProvider: FC<PropsWithChildren<{ open: () => void }>> = ({ open, children }) => {
   const openRef = useRef(open);
   useLayoutEffect(() => {
@@ -127,12 +124,9 @@ function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
   const local = localLoader(source);
   if (local) return () => local().then(({ blob }) => blob);
   if (src) {
-    // Only Studio's own URLs get the sign-in; an image linked from elsewhere must not receive it.
-    const request = /^(blob|data):/i.test(src)
-      ? () => fetch(src)
-      : isStudioUrl(src)
-        ? () => authFetch(src)
-        : () => fetch(src, { credentials: "omit" });
+    if (/^(blob|data):/i.test(src)) return () => urlToBlob(src);
+    // Only Studio's own URLs get the sign-in; a foreign image must not receive it.
+    const request = isStudioUrl(src) ? () => authFetch(src) : () => fetch(src, { credentials: "omit" });
     return () =>
       request().then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -151,7 +145,6 @@ const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({
   onContextMenu,
   ...rest
 }) => {
-  // Open clicks the chip, so the open-in-browser setting and a missing panel apply.
   const chip = useRef<HTMLElement | null>(null);
   return (
     <FileContextMenu

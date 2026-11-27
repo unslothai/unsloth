@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in achieved TFLOPs and MFU logging with LoRA-aware FLOP counts.
-
-Turn on with `UNSLOTH_LOG_MFU=1` before building the trainer, or call `add_mfu_callback(trainer)`.
-Each training log then gains `train_tflops_per_gpu` and, when the GPU peak is known,
-`train_mfu`. Set `UNSLOTH_PEAK_TFLOPS` to the per GPU dense peak to override the table
-(for example a measured MAMF number).
-
-Model FLOPs per non padding token, summed over every linear layer with n = in * out weights:
-    forward                  2n   every linear, frozen or trainable
-    backward input grads     2n   every linear (gradients flow through frozen weights to LoRA)
-    backward weight grads    2n   only linears whose weight requires grad
-    recompute                2n   every linear except the output head, when checkpointing
-Attention adds 4 * layers * heads * head_dim FLOPs per causal (query, key) pair in the forward
-(QK^T and AV), L * (L + 1) / 2 pairs for a sequence of length L (L * L when every attention
-layer is bidirectional), times 3 for forward plus backward and times 4 with checkpointing. The
-output head is charged only for the last `logits_to_keep` positions when the forward passes it.
-Only the active copy of a PEFT `modules_to_save` wrapper and the active LoRA adapters are
-counted. Experts held as `nn.Linear` in an `experts` ModuleList count top_k / num_experts of
-their weights; experts stored as 3D tensors (transformers 5), sliding windows, convolutions,
-embedding lookups and the vision / audio towers of multimodal models (only the text decoder and
-head are walked) are not counted, and layers shared across depth (ALBERT) are counted once, so
-those models report a lower bound. Only `layer_types` entries that are softmax attention get the
-pair term. Backward input grads are charged to every linear, so layouts whose lowest trainable
-parameter sits above a frozen block (head-only training, linear probing) are overstated by up to
-2n per frozen linear below it. Encoder-decoder models are not reported. A model split over
-several GPUs with `device_map` reports the average per participating GPU.
-"""
+"""Opt-in UNSLOTH_LOG_MFU=1: LoRA-aware TFLOPs and MFU logging; train_hfu counts checkpoint recompute."""
 
 __all__ = [
     "count_linear_flops_per_token",
@@ -39,6 +13,7 @@ __all__ = [
 
 import os
 import re
+import sys
 import time
 
 from collections.abc import Mapping
@@ -46,8 +21,7 @@ from collections.abc import Mapping
 import torch
 from transformers import TrainerCallback
 
-# Dense (no sparsity) 16 bit tensor core TFLOPs per GPU, from the vendor datasheets.
-# Order matters: the first substring found in the device name wins.
+# Dense 16-bit tensor TFLOPs per GPU; the first substring found in the device name wins.
 _PEAK_TFLOPS_16BIT = (
     ("H100 PCIE", 756.0),
     ("H100 NVL", 835.0),
@@ -55,7 +29,19 @@ _PEAK_TFLOPS_16BIT = (
     ("H200 NVL", 835.5),
     ("H200", 989.0),
     ("GH200", 989.0),
+    # Dense is half the sparse figure; GB* first, since B200/B300 match inside GB200/GB300.
+    ("GB300", 2500.0),
+    ("GB200", 2500.0),
+    ("B300", 2250.0),
     ("B200", 2250.0),
+    # Specific editions first; every key needs "PRO", so "RTX 6000 Ada Generation" never matches.
+    ("RTX PRO 6000 BLACKWELL MAX-Q", 438.9),
+    ("RTX PRO 6000 BLACKWELL SERVER", 500.0),
+    ("RTX PRO 6000 BLACKWELL", 503.8),
+    # Unknown (None): the China variant and the laptop part (a smaller GB203) have no figure there.
+    ("RTX 5090 D", None),
+    ("RTX 5090 LAPTOP", None),
+    ("RTX 5090", 209.5),
     ("A100", 312.0),
     ("L40S", 362.05),
     ("L40", 181.05),
@@ -315,14 +301,24 @@ def get_peak_tflops(device = None, dtype = torch.float16):
 def _runs_unsloth_head_window(model):
     get_base_model = getattr(model, "get_base_model", None)
     base = get_base_model() if callable(get_base_model) else model
-    forward = getattr(type(base), "forward", None)
+    # pre_patch's gate keeps the fast forward's __module__ but runs it only on marked modules.
+    llama = sys.modules.get("unsloth.models.llama")
+    running_forward = getattr(llama, "running_forward", None)
+    if running_forward is not None:
+        forward = running_forward(base)
+    else:
+        forward = getattr(type(base), "forward", None)
     return getattr(forward, "__module__", "").startswith("unsloth.")
 
 
 def _gradient_checkpointing_on(model, args):
     if getattr(args, "gradient_checkpointing", False):
         return True
-    if getattr(model, "is_gradient_checkpointing", False) is True:
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
+    if _is_activation_checkpointing(model) is True:
         return True
     return any(getattr(m, "gradient_checkpointing", False) is True for m in model.modules())
 
@@ -371,9 +367,8 @@ def _unsupported_setup(
     args,
     trainer_name = "",
 ):
-    """True where the per-token count does not describe the step, so nothing is reported:
-    diffusion objectives (extra no-grad passes, encoder + canvas, recomputed heads) and
-    single-process DataParallel (the hook runs once per replica, concurrently)."""
+    """True for diffusion and single-process DataParallel steps, where the per-token count misleads,
+    so nothing is reported."""
     model_type = str(getattr(_model_config(model), "model_type", "") or "")
     if "diffusion" in model_type.lower() or "Diffusion" in trainer_name:
         return True
@@ -382,7 +377,8 @@ def _unsupported_setup(
 
 
 class UnslothMFUCallback(TrainerCallback):
-    """Adds `train_tflops_per_gpu` and `train_mfu` to training logs. Prefer `add_mfu_callback`."""
+    """Adds `train_tflops_per_gpu` / `train_mfu` (model FLOPs) and `train_hw_tflops_per_gpu` /
+    `train_hfu` (recompute included) to training logs. Prefer `add_mfu_callback`."""
 
     def __init__(
         self,
@@ -395,6 +391,8 @@ class UnslothMFUCallback(TrainerCallback):
         self._linear_per_token = 0
         self._head_per_token = 0
         self._attention_per_pair = 0
+        self._hw_linear_per_token = 0
+        self._hw_attention_per_pair = 0
         self._bidirectional = False
         self._num_devices = 1
         self._devices = []
@@ -467,11 +465,15 @@ class UnslothMFUCallback(TrainerCallback):
         checkpointing = self.gradient_checkpointing
         if checkpointing is None:
             checkpointing = _gradient_checkpointing_on(model, args)
-        total, _, self._head_per_token = _linear_flops(model, checkpointing)
-        self._linear_per_token = total - self._head_per_token
+        total, breakdown, self._head_per_token = _linear_flops(model, checkpointing)
+        self._hw_linear_per_token = total - self._head_per_token
+        self._linear_per_token = self._hw_linear_per_token - breakdown["recompute"]
         self._bidirectional = _all_attention_bidirectional(model)
         self._unsloth_head_window = _runs_unsloth_head_window(model)
         self._attention_per_pair = (
+            count_attention_flops_per_pair(config, False) if config is not None else 0
+        )
+        self._hw_attention_per_pair = (
             count_attention_flops_per_pair(config, checkpointing) if config is not None else 0
         )
         devices = sorted(
@@ -501,8 +503,7 @@ class UnslothMFUCallback(TrainerCallback):
         elif self._paused and self._last_step_end is not None:
             paused = now - self._last_step_end
             if self._step_end_events:
-                # The step's kernels may still be queued at on_step_end: exclude only the time
-                # after every GPU finished them.
+                # Queued kernels may outlive on_step_end: pause only once every GPU is done.
                 gaps = []
                 for index, start in self._step_end_events:
                     end = torch.cuda.Event(enable_timing = True)
@@ -551,16 +552,15 @@ class UnslothMFUCallback(TrainerCallback):
         self._reset()
         if tokens <= 0 or elapsed <= 0:
             return
-        flops = (
-            tokens * self._linear_per_token
-            + head_tokens * self._head_per_token
-            + pairs * self._attention_per_pair
-        )
-        flops = flops / self._num_devices
-        tflops = flops / elapsed / 1e12
-        extra = {"train_tflops_per_gpu": tflops}
+        head = head_tokens * self._head_per_token
+        flops = tokens * self._linear_per_token + head + pairs * self._attention_per_pair
+        hw_flops = tokens * self._hw_linear_per_token + head + pairs * self._hw_attention_per_pair
+        tflops = flops / self._num_devices / elapsed / 1e12
+        hw_tflops = hw_flops / self._num_devices / elapsed / 1e12
+        extra = {"train_tflops_per_gpu": tflops, "train_hw_tflops_per_gpu": hw_tflops}
         if self.peak_tflops:
             extra["train_mfu"] = tflops / self.peak_tflops
+            extra["train_hfu"] = hw_tflops / self.peak_tflops
         logs.update(extra)
         # Trainer.log appended a copy of logs to log_history before calling the callbacks.
         if state.log_history and state.log_history[-1].get("step") == state.global_step:

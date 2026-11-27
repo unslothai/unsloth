@@ -41,9 +41,19 @@ def test_a100_keeps_the_previous_config_for_larger_vocabs(vocab, monkeypatch):
     assert _route((8, 0), monkeypatch, vocab) == (MAX_FUSED_SIZE, 32)
 
 
+@pytest.mark.parametrize("vocab", [65537, 128256, 151936, 256000, 262144])
+def test_b200_uses_8k_blocks_with_4_warps(vocab, monkeypatch):
+    assert _route((10, 0), monkeypatch, vocab) == (8192, 4)
+
+
+@pytest.mark.parametrize("vocab", [65537, 128256, 151936, 256000, 262144])
+def test_sm120_uses_8k_blocks_with_4_warps(vocab, monkeypatch):
+    assert _route((12, 0), monkeypatch, vocab) == (8192, 4)
+
+
 @pytest.mark.parametrize(
     "capability",
-    [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 0), (10, 3), (12, 0)],
+    [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 3), (12, 1)],
 )
 @pytest.mark.parametrize("vocab", [128256, 262144])
 def test_other_archs_keep_the_previous_config(capability, vocab, monkeypatch):
@@ -126,11 +136,12 @@ def test_launch_uses_the_routed_config(vocab, monkeypatch):
         (256000, 0.0, 0.0625),
     ],
 )
-def test_loss_and_grads_match_across_chunk_widths(vocab, softcap, scale, monkeypatch):
+@pytest.mark.parametrize("config", [(16384, 8), (8192, 4)])
+def test_loss_and_grads_match_across_chunk_widths(vocab, softcap, scale, config, monkeypatch):
     _, loss_old, grad_old = _launch(
         vocab, (MAX_FUSED_SIZE, 32), monkeypatch, softcap = softcap, scale = scale
     )
-    _, loss_new, grad_new = _launch(vocab, (16384, 8), monkeypatch, softcap = softcap, scale = scale)
+    _, loss_new, grad_new = _launch(vocab, config, monkeypatch, softcap = softcap, scale = scale)
     torch.testing.assert_close(loss_new, loss_old, rtol = 1e-5, atol = 1e-5)
     torch.testing.assert_close(grad_new, grad_old, rtol = 2e-2, atol = 2e-3)
 

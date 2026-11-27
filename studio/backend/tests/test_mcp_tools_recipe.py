@@ -34,11 +34,17 @@ PAYLOADS = {
 }
 
 
+def _run(mode, rows):
+    return {"execution_type": mode, "rows": rows, "run_config": {"buffer_size": rows}}
+
+
 @pytest.mark.parametrize("mode", [None, "preview", "full"])
 def test_validate_checks_and_preview_or_full_starts_a_job(monkeypatch, mode):
     args = {"recipe": RECIPE, **({"mode": mode} if mode else {})}
     result, studio = run_tool(monkeypatch, PAYLOADS, "run_recipe", args)
-    started = [{"recipe": RECIPE, "run": {"execution_type": mode}}] if mode else []
+    started = (
+        [{"recipe": RECIPE, "run": _run(mode, 5 if mode == "preview" else 1000)}] if mode else []
+    )
     assert result["structuredContent"] == {
         "mode": mode or "validate",
         "valid": None if mode else False,
@@ -47,6 +53,14 @@ def test_validate_checks_and_preview_or_full_starts_a_job(monkeypatch, mode):
     }
     assert bodies(studio, "/api/data-recipe/jobs") == started
     assert bodies(studio, "/api/data-recipe/validate") == ([] if mode else [{"recipe": RECIPE}])
+
+
+@pytest.mark.parametrize("mode,rows", [("preview", 12), ("full", 50)])
+def test_a_run_generates_the_rows_asked_for(monkeypatch, mode, rows):
+    args = {"recipe": RECIPE, "mode": mode, "rows": rows}
+    result, studio = run_tool(monkeypatch, PAYLOADS, "run_recipe", args)
+    assert result["structuredContent"]["job_id"] == "job-1"
+    assert bodies(studio, "/api/data-recipe/jobs") == [{"recipe": RECIPE, "run": _run(mode, rows)}]
 
 
 def test_a_job_reports_its_dataset_by_name_never_its_path(monkeypatch):

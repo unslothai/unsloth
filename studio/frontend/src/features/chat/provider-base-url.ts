@@ -5,6 +5,14 @@ const SCHEMELESS_HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9.-]+)(:\d+)?([/?#].*)?$/i;
 // Pasted full endpoints: the client appends these itself, so keeping one requests /chat/completions/models.
 const ENDPOINT_SUFFIX =
   /\/(chat\/completions|completions|responses|messages|models)\/*$/i;
+const LOCAL_HOST_NAME =
+  /^(\[.*\]|\d{1,3}(\.\d{1,3}){3}|[^.]+|.+\.(localhost|local|lan|internal|home\.arpa))$/i;
+
+// The API key rides on every request, so a bare public domain (api.openai.com/v1) must not default to cleartext.
+function defaultScheme(host: string, port: string | undefined): string {
+  if (port && port !== ":443") return "http";
+  return LOCAL_HOST_NAME.test(host) ? "http" : "https";
+}
 
 export function normalizeProviderBaseUrl(
   input: string,
@@ -12,8 +20,11 @@ export function normalizeProviderBaseUrl(
 ): string | null {
   let trimmed = input.trim();
   if (!trimmed) return null;
-  if (!trimmed.includes("://") && SCHEMELESS_HOST.test(trimmed)) {
-    trimmed = `http://${trimmed}`;
+  const schemeless = trimmed.includes("://")
+    ? null
+    : SCHEMELESS_HOST.exec(trimmed);
+  if (schemeless) {
+    trimmed = `${defaultScheme(schemeless[1], schemeless[2])}://${trimmed}`;
   }
   let parsed: URL;
   try {

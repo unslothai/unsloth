@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import threading
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +31,7 @@ from utils.llama_cpp_changelog import (
     release_page_url,
     unavailable_reason,
 )
+from utils.prebuilt import freshness_flow as _freshness_flow
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -38,6 +39,7 @@ from utils.prebuilt.llama_backend import (
     marker_backend,
     marker_backend_request,
     normalize_backend,
+    normalize_backend_request,
 )
 from utils.update_status import update_checks_disabled
 
@@ -61,7 +63,6 @@ class _LlamaPhaseError(RuntimeError):
         self.reload_required = reload_required
 
 
-_JOB_IDLE = _flow.JOB_IDLE
 _JOB_RUNNING = _flow.JOB_RUNNING
 _JOB_SUCCESS = _flow.JOB_SUCCESS
 _JOB_ERROR = _flow.JOB_ERROR
@@ -73,7 +74,6 @@ _job: dict = _flow.new_job()
 _ALREADY_RUNNING_MESSAGE = "Another llama.cpp install is already running."
 
 _utcnow = _flow.utcnow
-_is_under = _flow.is_under
 _is_external_link = _flow.is_external_link
 _rocm_install_args = _flow.rocm_install_args
 
@@ -100,8 +100,7 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host.
+# Source-build installs lack UNSLOTH_PREBUILT_INFO.json, so ask the installer if a prebuilt exists.
 _resolve_memo: dict = {}
 
 
@@ -409,9 +408,10 @@ def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
-    status = _llama_only_status(force_refresh = force_refresh)
-    status = _merge_whisper_status(status, force_refresh = force_refresh)
-    status = _merge_audio_status(status, force_refresh = force_refresh)
+    with _freshness_flow.shared_release_fetches():
+        status = _llama_only_status(force_refresh = force_refresh)
+        status = _merge_whisper_status(status, force_refresh = force_refresh)
+        status = _merge_audio_status(status, force_refresh = force_refresh)
     return _settle_whisper_rider(status)
 
 
@@ -610,7 +610,8 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
     """Normalize a resolver payload into the options the picker and the switch planner both read, so both judge a request against the same list."""
     options = []
     for entry in (resolved or {}).get("backends") or []:
-        backend = normalize_backend(entry.get("backend"))
+        # Options must be switchable; actual-only backends (metal, sycl) surface as resolved_backend.
+        backend = normalize_backend_request(entry.get("backend"))
         if backend is None:
             continue
         asset = entry.get("asset")
@@ -619,12 +620,51 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
                 "backend": backend,
                 "available": bool(entry.get("available")),
                 "unavailable_reason": entry.get("reason"),
+                "unavailable_detail": entry.get("detail"),
                 "resolved_backend": normalize_backend(entry.get("resolved_backend")),
                 "release_tag": entry.get("release_tag"),
                 "download_size_bytes": (assets or {}).get(asset) if asset else None,
             }
         )
     return options
+
+
+_BACKEND_GPU_VENDOR = {"cuda": "nvidia", "rocm": "amd"}
+
+
+def _explain_unavailable_options(options: list[dict]) -> None:
+    """Mark which unavailable backends this host's GPUs make worth showing (ROCm on an AMD
+    card, not on an NVIDIA-only one) and, for ROCm, why it cannot install: the resolver only
+    says no bundle matched."""
+    from utils.hardware.amd import rocm_runtime_blocker
+    from utils.llama_cpp_path_settings import host_gpu_vendors
+
+    vendors = None
+    try:
+        vendors = host_gpu_vendors(reachable = False)
+    except Exception as exc:  # pragma: no cover - probe defensive
+        logger.debug("llama backend: GPU vendor probe failed", error = str(exc))
+    for option in options:
+        option["unavailable_hint"] = None
+        if option["available"]:
+            option["applies_to_host"] = True
+            continue
+        backend = option["backend"]
+        if backend in ("auto", "cpu"):
+            applies = True
+        elif backend == "vulkan":
+            applies = bool(vendors)
+        else:
+            applies = vendors is not None and _BACKEND_GPU_VENDOR.get(backend) in vendors
+        option["applies_to_host"] = applies
+        if applies and backend == "rocm":
+            try:
+                blocker = rocm_runtime_blocker()
+            except Exception as exc:  # pragma: no cover - probe defensive
+                logger.debug("llama backend: ROCm blocker probe failed", error = str(exc))
+                blocker = None
+            if blocker is not None:
+                option["unavailable_reason"], option["unavailable_hint"] = blocker
 
 
 def _selection_applied(
@@ -729,6 +769,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
     except Exception as exc:  # pragma: no cover - network defensive
         logger.debug("llama backend: asset size lookup failed", error = str(exc))
     options = _backend_options(resolved, assets)
+    _explain_unavailable_options(options)
     status["options"] = options
     status["selection_applied"] = _selection_applied(
         status["backend_request"], status["backend"], options
@@ -817,7 +858,7 @@ def _run_llama_phase(
         # A Vulkan asset name carries no arch, so the marker is the only record of the gfx an automatic AMD route used. Automatic only: elsewhere the asset has the arch and replaying it would assert ROCm on a host whose AMD GPU is gone. Advisory even then, applied only if this host's own probe finds none.
         if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
-        _flow.stream_installer(
+        runs_on_cpu = _flow.stream_installer(
             cmd,
             env,
             set_progress = set_progress,
@@ -889,7 +930,17 @@ def _run_llama_phase(
             )
         else:
             message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
+        if runs_on_cpu:
+            logger.warning(
+                "llama update: CUDA runtime missing, llama.cpp runs on the CPU", to_tag = new_tag
+            )
+            message += (
+                " The CUDA runtime llama.cpp needs could not be installed, so it will run on the "
+                "CPU. Use Repair installation in Settings in the desktop app, or re-run the "
+                "Unsloth installer."
+            )
         return {
+            "runs_on_cpu": bool(runs_on_cpu),
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,
@@ -957,8 +1008,7 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
-        # must not stay refused once the update is done.
+        # A kept non-GGUF slot stays loaded; its llama backend must not stay refused once the update ends.
         for llama in (backend, *marked):
             if llama is not None:
                 try:
@@ -1232,7 +1282,7 @@ def _whisper_phase_plan(
     migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or re-pair with the new backend for a switch. A switch that installs nothing leaves llama's ggml where it was, so there is nothing to re-pair and a refused switch stays refused instead of becoming a whisper-only job. The exception is what a failed re-pair leaves behind: llama runs first and records the new backend, so a retryable whisper failure ends with llama on the requested backend and dictation still hardlinked to the old runtime, making a retry ``already_selected`` and stranding the user unless they switch away and back. So allow a repair-only job for that one refusal, and only while the pairing is genuinely stale."""
-    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
+    # A migration needs whisper's chained plan; the repair-only branch drops updates.
     if backend_request is None or migration:
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
@@ -1302,6 +1352,10 @@ def _run_claimed_job(phases: list[dict]) -> None:
             )
     finally:
         _operation_lock.release()
+        # The projector precision follows the installed backend.
+        with suppress(Exception):
+            from utils.models.model_config import device_mmproj_precision
+            device_mmproj_precision.cache_clear()
 
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:

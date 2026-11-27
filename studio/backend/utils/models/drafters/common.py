@@ -9,10 +9,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-# model_config imports this module.
 
-
-# model_config imports this module, so the naming helpers are pulled in per call rather than at import; they stay where they are because they are constants and pure functions shared with non-drafter code (gguf_variants, the auto download paths), so the GGUF naming rules keep one home.
+# Imported per call: model_config imports this module.
 def is_published_drafter_filename(
     name: str,
     *,
@@ -33,6 +31,8 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
     if stem.startswith(f"{kind}-"):
         stem = stem[len(kind) + 1 :]
     stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
+    # A previous drafter kept beside its replacement (dspark-<model>-Q8_0_Old.gguf) pairs like the original.
+    stem = re.sub(r"_old$", "", stem)
     if stem.endswith(f"-{kind}"):
         stem = stem[: -(len(kind) + 1)]
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE

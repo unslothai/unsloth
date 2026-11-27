@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The Run preview Hardware row truncates, so a long GPU name used to cut off the
- * VRAM figure appended to it ("AMD Radeon AI PRO R9700 · 31.86 …"). VRAM gets its
- * own row; this pins that it is not folded back into the name.
- */
+/** The Hardware row truncates, so VRAM gets its own row rather than trailing the GPU name. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -32,4 +28,17 @@ test("VRAM has its own rounded row with the exact value on hover", () => {
   const row = metaRow("studio.preview.vram");
   assert.match(row, /Math\.round\(gpu\.memoryTotalGb\)\} GiB/);
   assert.match(row, /title=\{`\$\{gpu\.memoryTotalGb\} GiB`\}/);
+});
+
+test("a multi-GPU host names the extra GPUs and labels VRAM as a total", () => {
+  const hardware = metaRow("studio.preview.hardware");
+  assert.match(hardware, /gpu\.deviceCount > 1/);
+  assert.match(hardware, /"onboarding\.device\.moreGpus"/);
+  assert.match(hardware, /count: gpu\.deviceCount - 1/);
+
+  const vram = metaRow("studio.preview.vram");
+  assert.match(
+    vram,
+    /gpu\.deviceCount > 1\s*\?\s*t\("studio\.preview\.vramTotal"/,
+  );
 });

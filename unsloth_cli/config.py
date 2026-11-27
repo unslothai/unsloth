@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import threading
 from pathlib import Path
 from typing import Literal, Optional, List
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 
@@ -12,8 +12,12 @@ def _lower_str(value):
     return value.strip().lower() if isinstance(value, str) else value
 
 
+def split_target_modules(value) -> list:
+    return [m.strip() for m in str(value or "").split(",") if m.strip()]
+
+
 class DataConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     dataset: Optional[str] = None
     local_dataset: Optional[List[str]] = None
@@ -24,11 +28,12 @@ class DataConfig(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     training_type: Literal["lora", "full"] = "lora"
     max_seq_length: int = 2048
     load_in_4bit: bool = True
+    trust_remote_code: bool = False
     output_dir: Path = Path("./outputs")
     num_epochs: int = 3
     learning_rate: float = 2e-4
@@ -62,7 +67,7 @@ class TrainingConfig(BaseModel):
 
 
 class LoraConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     lora_r: int = 64
     lora_alpha: int = 16
@@ -79,7 +84,7 @@ class LoraConfig(BaseModel):
 
 
 class LoggingConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     enable_wandb: bool = False
     wandb_project: str = "unsloth-training"
@@ -90,7 +95,7 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model_config = ConfigDict(extra = "forbid", validate_assignment = True)
+    model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
     model: Optional[str] = None
     data: DataConfig = Field(default_factory = DataConfig)
@@ -118,17 +123,31 @@ class Config(BaseModel):
                     errors.append(f"  - {flag}: {err.get('msg', 'invalid value')}")
         if errors:
             raise ConfigError("\n".join(["Invalid command line options:", *errors]))
+        # --target-modules beats the config's vision_all_linear unless --vision-all-linear is passed.
+        if (
+            split_target_modules(kwargs.get("target_modules"))
+            and kwargs.get("vision_all_linear") is None
+        ):
+            self.lora.vision_all_linear = False
+
+    def ignored_target_modules(self, use_lora: bool, is_vision: bool) -> list:
+        """The non-default target_modules that vision_all_linear overrides on this run."""
+        if not (use_lora and is_vision and self.lora.vision_all_linear):
+            return []
+        listed = split_target_modules(self.lora.target_modules)
+        default = split_target_modules(LoraConfig.model_fields["target_modules"].default)
+        return [] if listed == default else listed
 
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""
-        if use_lora and is_vision:
-            # Vision models expect a string (e.g. "all-linear"); None uses trainer defaults
+        if (
+            use_lora
+            and is_vision
+            and (self.lora.vision_all_linear or "target_modules" not in self.lora.model_fields_set)
+        ):
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
-            parsed = [
-                m.strip() for m in str(self.lora.target_modules).split(",") if m and m.strip()
-            ]
-            target_modules = parsed or None
+            target_modules = split_target_modules(self.lora.target_modules) or None
 
         return {
             "use_lora": use_lora,
@@ -221,8 +240,25 @@ def _config_error_message(path: Path, error: ValidationError) -> str:
     return "\n".join(lines)
 
 
+_SCHEMA_LOCK = threading.Lock()
+_schemas_built = False
+
+
+def _build_schemas() -> None:
+    """Build the deferred validators once under a lock: concurrent first builds can corrupt them."""
+    global _schemas_built
+    if _schemas_built:
+        return
+    with _SCHEMA_LOCK:
+        if not _schemas_built:
+            for model in (DataConfig, TrainingConfig, LoraConfig, LoggingConfig, Config):
+                model.model_rebuild()
+            _schemas_built = True
+
+
 def load_config(path: Optional[Path]) -> Config:
     """Load config from YAML/JSON file, or return defaults if no path given."""
+    _build_schemas()
     if not path:
         return Config()
 
@@ -243,6 +279,7 @@ def load_config(path: Optional[Path]) -> Config:
         raise ConfigError(f"Could not read config file: {path}\n  - {error}") from None
 
     if path.suffix.lower() in {".yaml", ".yml"}:
+        import yaml
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as error:

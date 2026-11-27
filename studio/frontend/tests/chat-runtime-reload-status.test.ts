@@ -91,8 +91,6 @@ test("stored assistant status remains truthful after reload", () => {
   });
   assert.deepEqual(readIncompleteInfo(interrupted), { reason: "interrupted" });
 
-  // Every reason keeps its own identity, so the Continue bar and the error box
-  // cannot disagree about what happened.
   const length = { custom: { incomplete: { reason: "length" } } };
   assert.deepEqual(restoredAssistantStatus(length), {
     type: "incomplete",
@@ -343,7 +341,6 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
     ],
   );
 
-  // Recovery must match the producer's reason, with length taking precedence.
   const recovered = (lengthLimited: boolean, quoteCut: boolean) =>
     generationRecoveryMetadata({
       current: { generationRunId: "run-1" },
@@ -400,8 +397,6 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
 });
 
 test("recovery persists recovered usage alongside the cursor it advanced", () => {
-  // The usage chunk arrives before the terminal event. A cursor published past it and then
-  // reloaded would resume after it, so the counts have to travel with the cursor.
   const usage = { prompt_tokens: 8, completion_tokens: 12, total_tokens: 20 };
   const timings = { predicted_per_second: 12 };
   const midStream = generationRecoveryMetadata({
@@ -418,7 +413,6 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
   assert.deepEqual(midStream.generationRecoveryUsage, usage);
   assert.deepEqual(midStream.generationRecoveryTimings, timings);
 
-  // A recovery that never saw one must not invent or erase it.
   const withoutUsage = generationRecoveryMetadata({
     current: { generationRunId: "run-1" },
     runId: "run-1",
@@ -429,7 +423,6 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
   });
   assert.equal("generationRecoveryUsage" in withoutUsage, false);
 
-  // Reloading picks the stored counts back up, so settlement still reports them.
   const settled = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
     run: {
@@ -474,4 +467,28 @@ test("recovery persists the replay prefix statistics it has applied", () => {
   });
   assert.equal(metadata.generationFirstChunkAt, 220);
   assert.equal(metadata.generationChunkCount, 6);
+});
+
+test("a recovered connection reply names its connection, a local one stays local", () => {
+  const detailsFor = (requestPayload: Record<string, unknown>) =>
+    recoveredGenerationFinalMetadata({
+      current: {},
+      run: { id: "run-1", requestPayload, createdAt: 100, startedAt: 120, completedAt: 1120 },
+      totalChunks: 1,
+      markers: MARKERS,
+    }).responseDetails as Record<string, unknown>;
+  // The run a phone left behind: the connection's composite id plus its stored routing.
+  const external = detailsFor({
+    model: "external::conn-1::gpt-test",
+    provider_id: "conn-1",
+    provider_type: "openai",
+    external_model: "gpt-test",
+  });
+  assert.equal(external.providerId, "conn-1");
+  assert.equal(external.providerType, "openai");
+  assert.equal(external.responseModelId, "gpt-test");
+  assert.notEqual(external.providerName, "Local model");
+  const local = detailsFor({ model: "unsloth/Qwen3-0.6B-GGUF" });
+  assert.equal(local.providerName, "Local model");
+  assert.equal(local.providerType, "local");
 });

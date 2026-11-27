@@ -98,8 +98,7 @@ class ExportStatusResponse(BaseModel):
         False,
         description = "True while a load / export / cleanup operation is running",
     )
-    # Recovery fields: when a blocking export POST is cut off by a Cloudflare tunnel timeout (524 at
-    # ~100s), the client polls this endpoint to learn the real outcome.
+    # Polled after a Cloudflare 524 cuts off a blocking export POST.
     active_op_kind: Optional[str] = Field(
         None,
         description = "Kind of the currently running op (load_checkpoint / export_* / cleanup)",
@@ -107,6 +106,10 @@ class ExportStatusResponse(BaseModel):
     last_op_seq: int = Field(
         0,
         description = "Monotonic counter of finished ops; client baseline to detect 'my op finished'",
+    )
+    last_op_id: Optional[str] = Field(
+        None,
+        description = "Client-supplied id of the most recently finished op, if any",
     )
     last_op_kind: Optional[str] = Field(
         None,

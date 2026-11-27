@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useLoginMode } from "@/features/auth/account-session";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { useLoginMode } from "@/features/auth/account-session";
 import {
   loadRemoteAccess,
   startRemoteAccess,
@@ -23,24 +23,20 @@ import {
   type RemoteAccessStatus,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
+  remoteAccessErrorMessage,
   remoteAccessPollDelay,
   remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  Copy01Icon,
-  QrCodeIcon,
-  HomeWifiIcon,
-} from "@hugeicons/core-free-icons";
+import { HomeWifiIcon, QrCode01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 
 type RemoteAccessOperation = "start" | "stop" | "auto";
 
@@ -87,48 +83,12 @@ function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   );
 }
 
-function CopyRemoteUrlButton({ url }: { url: string }) {
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<number | null>(null);
-  useEffect(() => {
-    return () => {
-      if (copyTimer.current !== null) {
-        window.clearTimeout(copyTimer.current);
-      }
-    };
-  }, []);
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="outline"
-      className="gap-1.5"
-      onClick={async () => {
-        if (!(await copyToClipboard(url))) {
-          return;
-        }
-        setCopied(true);
-        if (copyTimer.current !== null) {
-          window.clearTimeout(copyTimer.current);
-        }
-        copyTimer.current = window.setTimeout(() => setCopied(false), 1800);
-      }}
-    >
-      <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
-        className="size-3.5"
-      />
-      {copied ? "Copied" : "Copy URL"}
-    </Button>
-  );
-}
-
 function RemoteUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild={true}>
         <Button type="button" size="sm" variant="outline" className="gap-1.5">
-          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          <HugeiconsIcon icon={QrCode01Icon} className="size-3.5" />
           QR
         </Button>
       </DialogTrigger>
@@ -139,7 +99,7 @@ function RemoteUrlQrButton({ url }: { url: string }) {
             Scan to open the remote URL in your phone’s browser.
           </DialogDescription>
         </DialogHeader>
-        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+        <div className="mx-auto mt-2 rounded-lg bg-white p-3">
           <QRCode value={url} size={192} />
         </div>
         <code className="block break-all text-center font-mono text-xs text-muted-foreground">
@@ -173,6 +133,7 @@ function StatusMessage({
 }
 
 function RemoteUrlPanel({ url }: { url: string | null }) {
+  const multi = useLoginMode() === "multi";
   if (!url) {
     return null;
   }
@@ -180,22 +141,23 @@ function RemoteUrlPanel({ url }: { url: string | null }) {
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">Remote URL</span>
-        <div className="flex items-center gap-2">
-          <RemoteUrlQrButton url={url} />
-          <CopyRemoteUrlButton url={url} />
-        </div>
+        <RemoteUrlQrButton url={url} />
       </div>
-      <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-        {url}
-      </code>
+      <UrlPill url={url} />
       <span className="text-xs text-muted-foreground leading-snug">
-        Anyone with this URL and the remote password can sign in.
+        {multi
+          ? "Anyone with this URL reaches the sign-in page, and every account and API key works here. Signing in as the owner gives full control, including running code on this computer through tools."
+          : "Anyone with this URL reaches the sign-in page. Signing in gives full control, including running code on this computer through tools. API keys also work here."}
+      </span>
+      <span className="text-xs text-muted-foreground leading-snug">
+        While remote access is on, MCP servers that run local commands are
+        paused.
       </span>
     </div>
   );
 }
 
-// The desktop owner signs in with a local secret, so this password is for remote browsers only.
+// The desktop owner uses a local secret, so this password is for remote browsers only.
 function RemotePasswordRow({
   status,
   onDone,
@@ -235,8 +197,7 @@ export function RemoteAccessSection() {
     usePlatformStore.setState({ cloudflareUrl: next.url });
   }, []);
 
-  // A password change rotates credentials outside this section's requests;
-  // discard any in-flight poll and re-read so the block resolves at once.
+  // A password change rotates credentials, so drop in-flight polls and re-read.
   const refreshStatus = useCallback(() => {
     mutationEpoch.current += 1;
     setPollEnabled(true);
@@ -320,8 +281,7 @@ export function RemoteAccessSection() {
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
-      // A stop through the tunnel latches polling off when its own origin dies.
-      // Any later action means the user is on a reachable origin, so resume.
+      // A tunnel stop latches polling off; any later action means the origin is reachable.
       setPollEnabled(true);
       setPollRevision((revision) => revision + 1);
     }
@@ -363,11 +323,11 @@ export function RemoteAccessSection() {
   return (
     <section
       data-settings-label="Remote access"
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="overflow-hidden rounded-xl border border-border/70"
     >
-      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+      <div className="flex items-start justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
+          <div className="flex size-8 shrink-0 items-center justify-center icon-disc">
             <HugeiconsIcon
               icon={HomeWifiIcon}
               className="size-4 text-foreground"
@@ -381,7 +341,7 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a secure,
+              Use Unsloth and its APIs from other devices over a secure,
               temporary Cloudflare URL.
             </p>
           </div>
@@ -389,8 +349,9 @@ export function RemoteAccessSection() {
         <Button
           type="button"
           size="sm"
-          variant={stopAction ? "outline" : "default"}
-          className="min-w-20 shrink-0"
+          variant={stopAction ? "outline" : "dark"}
+          // Top edge on the h2's cap top (text-base at leading 1.5; Hellix: 0.372em).
+          className="mt-[calc(var(--text-base)*0.372)] shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
@@ -399,9 +360,10 @@ export function RemoteAccessSection() {
       </div>
 
       <StatusMessage
-        message={blockMessage ?? status?.error}
-        destructive={!blockMessage}
+        message={remoteAccessErrorMessage(status?.error)}
+        destructive={true}
       />
+      <StatusMessage message={blockMessage} />
       <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">
@@ -409,7 +371,7 @@ export function RemoteAccessSection() {
 
         <SettingsRow
           label="Start automatically"
-          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+          description="Create a new remote URL each time Unsloth starts. Stopping now won’t turn this off."
         >
           <Switch
             checked={status?.autoStart ?? false}

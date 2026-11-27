@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: ``get_inference_backend()`` builds exactly one orchestrator, even
-when several threads reach it at once.
-
-The first call is expensive: ``__init__`` runs ``get_default_models()``, which calls
-``hw.get_device()`` and so blocks on the torch warm, ~2.9s on a cold GPU host. That is why
-the first-paint routes call it through ``asyncio.to_thread``.
-
-Off-loop means genuinely parallel, though, and the getter used to be a plain check-then-set
-on a module global. Concurrent first-paint requests all observed ``None`` inside that
-window, each built an orchestrator, and the last assignment won. Orchestrator state is
-per-instance (subprocess handle, ``loading_models``, ``active_model_name``), so a load
-started on a loser became invisible to every later call.
-
-The orchestrator is stubbed here: these exercise the getter's locking, not the constructor.
-"""
+"""Concurrent first calls must build one orchestrator; a losing copy would hide its loads."""
 
 from __future__ import annotations
 
@@ -29,8 +15,7 @@ import core.inference.orchestrator as orch
 
 _ORCHESTRATOR_SRC = Path(orch.__file__)
 
-# Wide enough that every thread is inside the window before the first leaves it, small
-# enough to stay a unit test. The real window is ~2.9s.
+# Wide enough that all threads overlap the window; the real window is ~2.9s.
 _BUILD_SECONDS = 0.20
 _THREADS = 8
 
@@ -68,10 +53,7 @@ def stub_orchestrator(monkeypatch):
 
 
 def test_concurrent_first_calls_build_exactly_one_orchestrator(fresh_singleton, stub_orchestrator):
-    """The regression: N threads entering a cold getter together. Unlocked, every thread
-    observes None inside the construction window and builds its own. Asserts both that one
-    is built and that every caller gets that same one: an orphan handed to any caller is
-    the bug."""
+    """Each thread that sees None would build its own orchestrator, so all must share one instance."""
     handed_out: list[object] = []
     handed_lock = threading.Lock()
     errors: list[BaseException] = []

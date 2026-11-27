@@ -108,8 +108,7 @@ def _stall():
 
 
 def test_a_worker_that_survives_shutdown_is_not_respawned_over(monkeypatch):
-    # The worker outlived terminate/kill: its handle stays, and no second worker is spawned over
-    # one still holding GPU memory (the model-switch guard's rule).
+    # A worker surviving terminate/kill keeps its handle; no respawn while it holds the GPU.
     orchestrator, spawned, _ = _orchestrator(
         monkeypatch, [_restart(), _loaded()], shutdown_results = [False]
     )

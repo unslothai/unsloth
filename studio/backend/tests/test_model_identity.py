@@ -166,7 +166,12 @@ def test_training_worker_forwards_attested_redirect_identity_to_torch_loader():
         assert ast.unparse(actual_repo) == "config.get('actual_model_repo_id')"
 
 
-def test_legacy_adapter_identity_is_repaired_only_in_memory():
+def _known_hub_cache(monkeypatch, root):
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [Path(root)])
+
+
+def test_legacy_adapter_identity_is_repaired_only_in_memory(monkeypatch):
+    _known_hub_cache(monkeypatch, "/home/user/.cache/huggingface/hub")
     model_config = SimpleNamespace(_name_or_path = "/outputs/run/checkpoint-100")
     adapter_config = SimpleNamespace(
         base_model_name_or_path = _SNAPSHOT,
@@ -185,6 +190,42 @@ def test_legacy_adapter_identity_is_repaired_only_in_memory():
         "base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct",
         "r": 16,
     }
+
+
+def test_snapshot_named_folder_outside_the_hub_cache_is_not_given_a_repo_identity(
+    monkeypatch, tmp_path
+):
+    hub = tmp_path / "hub"
+    cached = hub / "models--org--private" / "snapshots" / "1"
+    lookalike = tmp_path / "workspace" / "models--org--private" / "snapshots" / "1"
+    linked = tmp_path / "workspace" / "models--org--other" / "snapshots" / "1"
+    for folder in (cached, lookalike, linked.parent):
+        folder.mkdir(parents = True)
+    linked.symlink_to(cached, target_is_directory = True)
+    _known_hub_cache(monkeypatch, hub)
+
+    def restore(path):
+        config = SimpleNamespace(_name_or_path = str(path))
+        restored = restore_hf_cache_repo_identity(SimpleNamespace(config = config), str(path))
+        return restored, config._name_or_path
+
+    assert restore(cached) == ("org/private", "org/private")
+    # The export merge reads its base from the restored id, so only a real cache path may name one.
+    assert restore(lookalike) == (None, str(lookalike))
+    assert restore(linked) == (None, str(linked))
+
+
+def test_folder_name_that_decodes_to_a_host_path_is_not_a_repo_id(monkeypatch, tmp_path):
+    _known_hub_cache(monkeypatch, tmp_path)
+    for name in ("models----srv--outputs--run", "models--..", "models--outputs--run--1"):
+        snapshot = str(tmp_path / name / "snapshots" / "1")
+        config = SimpleNamespace(_name_or_path = snapshot)
+        model = SimpleNamespace(config = config)
+        decoded = name[len("models--") :].replace("--", "/")
+
+        assert restore_hf_cache_repo_identity(model, snapshot) is None
+        assert restore_hf_cache_repo_identity(model, snapshot, expected_repo_id = decoded) is None
+        assert config._name_or_path == snapshot
 
 
 def test_repo_mismatch_leaves_pinned_training_metadata_unchanged():

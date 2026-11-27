@@ -5,19 +5,24 @@ import { reportDownloadsActive } from "@/lib/downloads-activity";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import {
+  NpuDownloadCancelled,
   NpuDownloadError,
+  type NpuDownloadPhase,
   type NpuModel,
+  cancelNpuModelDownload,
   downloadNpuModel,
   followNpuModelDownload,
   listNpuDownloads,
   listNpuModels,
 } from "./api";
+import { npuDisplayNameOf } from "./display-name";
 
 interface NpuCatalogState {
   models: NpuModel[] | null;
   listError: string | null;
   progress: Record<string, number | null>;
   reconnecting: Record<string, true>;
+  phases: Record<string, NpuDownloadPhase>;
 }
 
 // Outside the picker, which unmounts on close, so a pull's progress outlives it.
@@ -26,6 +31,7 @@ export const useNpuCatalogStore = create<NpuCatalogState>(() => ({
   listError: null,
   progress: {},
   reconnecting: {},
+  phases: {},
 }));
 
 useNpuCatalogStore.subscribe((state) =>
@@ -75,12 +81,35 @@ function setProgress(id: string, percent: number | null): void {
   );
 }
 
+function setPhase(id: string, phase: NpuDownloadPhase | undefined): void {
+  useNpuCatalogStore.setState((state) => {
+    if (state.phases[id] === phase) return state;
+    const phases = { ...state.phases };
+    if (phase) {
+      phases[id] = phase;
+    } else {
+      delete phases[id];
+    }
+    return { phases };
+  });
+}
+
+export async function cancelNpuDownload(id: string): Promise<void> {
+  try {
+    await cancelNpuModelDownload(id);
+  } catch (error) {
+    toast.error(`Could not cancel ${id}`, {
+      description: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 const following = new Map<string, Promise<boolean>>();
-// Reconnect delay = RECONNECT_DELAY_MS x (1 + stalled reconnects in a row), capped at MAX_BACKOFF.
+// Delay = RECONNECT_DELAY_MS x (1 + consecutive stalled reconnects), capped at MAX_BACKOFF.
 const RECONNECT_DELAY_MS = 1000;
 const MAX_BACKOFF = 5;
 
-/** The running pull, null if none, undefined if the backend could not be asked. */
+/** null if none, undefined if the backend could not be asked. */
 async function runningPull(
   id: string,
 ): Promise<{ percent: number | null } | null | undefined> {
@@ -99,10 +128,6 @@ function listedDownloaded(id: string): boolean {
   );
 }
 
-/**
- * One stream per model; `follow` joins a running pull instead of starting one. A broken stream is
- * followed again while the backend lists the pull. Resolves true once the model is downloaded.
- */
 export function followNpuDownload(
   id: string,
   {
@@ -117,7 +142,7 @@ export function followNpuDownload(
   const run = async (): Promise<boolean> => {
     let joined = follow;
     let completed = false;
-    // A followed stream replays every earlier event, so only a higher percent is progress.
+    // A followed stream replays earlier events, so only a higher percent is progress.
     let best = percent ?? -1;
     const advance = (next: number | null | undefined): boolean => {
       if (next == null || next <= best) return false;
@@ -128,11 +153,20 @@ export function followNpuDownload(
     let streamed = false;
     const onProgress = (event: { event: string; percent?: number }) => {
       setReconnecting(id, false);
+      // A followed stream replays in order, so the last event read names the phase.
+      setPhase(
+        id,
+        event.event === "verifying" || event.event === "finishing"
+          ? event.event
+          : undefined,
+      );
       completed ||= event.event === "complete";
       if (advance(event.percent)) streamed = true;
     };
     const fail = (description: string): false => {
-      toast.error(`Could not download ${id}`, { description });
+      const name =
+        npuDisplayNameOf(useNpuCatalogStore.getState().models, id) ?? id;
+      toast.error(`Could not download ${name}`, { description });
       return false;
     };
     let stalledReconnects = 0;
@@ -146,9 +180,8 @@ export function followNpuDownload(
           onProgress,
         );
         await refreshNpuModels();
-        // A followed pull can end, either way, before its stream opens; the list says how.
+        // A followed pull can end before its stream opens; the list says how.
         if (completed || listedDownloaded(id)) return true;
-        // One this page lost contact with failed unseen; one joined on mount may predate it.
         if (reconnected) fail("The download ended without finishing.");
         return false;
       } catch (error) {
@@ -173,6 +206,9 @@ export function followNpuDownload(
           }
         }
         await refreshNpuModels();
+        // A cancel that lands while finishing can still leave the model registered: the list
+        // shows it, but the caller asked for nothing to happen (no model switch).
+        if (error instanceof NpuDownloadCancelled) return false;
         if (listedDownloaded(id)) return true;
         return fail(error instanceof Error ? error.message : String(error));
       }
@@ -184,9 +220,11 @@ export function followNpuDownload(
     useNpuCatalogStore.setState((state) => {
       const progress = { ...state.progress };
       const reconnecting = { ...state.reconnecting };
+      const phases = { ...state.phases };
       delete progress[id];
       delete reconnecting[id];
-      return { progress, reconnecting };
+      delete phases[id];
+      return { progress, reconnecting, phases };
     });
   });
   following.set(id, job);

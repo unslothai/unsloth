@@ -19,12 +19,29 @@ def test_xpu_is_admitted(monkeypatch, quant_method):
     _utils.verify_fp8_support_if_applicable(_config(quant_method))
 
 
-@pytest.mark.parametrize("device_type", ["hip", "mps", "npu", "cpu"])
-@pytest.mark.parametrize("quant_method", ["fp8", "fbgemm_fp8"])
-def test_other_devices_are_still_refused(monkeypatch, device_type, quant_method):
+@pytest.mark.parametrize("device_type", ["mps", "npu", "cpu"])
+@pytest.mark.parametrize(
+    "quant_method, backends", [("fp8", "CUDA, ROCm and XPU"), ("fbgemm_fp8", "CUDA and XPU")]
+)
+def test_other_devices_are_still_refused(monkeypatch, device_type, quant_method, backends):
     monkeypatch.setattr(_utils, "DEVICE_TYPE", device_type)
-    with pytest.raises(ValueError, match = "FP8 quantization is only supported on"):
+    with pytest.raises(ValueError, match = f"FP8 quantization is only supported on {backends} GPUs"):
         _utils.verify_fp8_support_if_applicable(_config(quant_method))
+
+
+def test_rocm_loads_fine_grained_fp8_but_not_through_vllm(monkeypatch):
+    monkeypatch.setattr(_utils, "DEVICE_TYPE", "hip")
+    _utils.verify_fp8_support_if_applicable(_config("fp8"))
+    with pytest.raises(ValueError, match = "fast_inference = False"):
+        _utils.verify_fp8_support_if_applicable(_config("fp8"), fast_inference = True)
+
+
+def test_rocm_refuses_fbgemm_fp8(monkeypatch):
+    monkeypatch.setattr(_utils, "DEVICE_TYPE", "hip")
+    with pytest.raises(
+        ValueError, match = "FBGEMM FP8 quantization is only supported on CUDA and XPU GPUs"
+    ):
+        _utils.verify_fp8_support_if_applicable(_config("fbgemm_fp8"))
 
 
 @pytest.mark.parametrize("device_type", ["xpu", "hip", "mps", "cpu"])
@@ -85,11 +102,11 @@ def test_fbgemm_fp8_rule_is_unchanged_by_the_fallback(monkeypatch, capability):
         _utils.verify_fp8_support_if_applicable(_config("fbgemm_fp8"))
 
 
-@pytest.mark.parametrize("device_type", ["hip", "mps", "cpu"])
+@pytest.mark.parametrize("device_type", ["mps", "cpu"])
 def test_fallback_does_not_widen_other_devices(monkeypatch, device_type):
     monkeypatch.setattr(_utils, "DEVICE_TYPE", device_type)
     monkeypatch.setattr(_utils, "_fp8_checkpoint_dequantizes_below_sm89", lambda: True)
-    with pytest.raises(ValueError, match = "only supported on CUDA and XPU"):
+    with pytest.raises(ValueError, match = "only supported on CUDA, ROCm and XPU"):
         _utils.verify_fp8_support_if_applicable(_config("fp8"))
 
 

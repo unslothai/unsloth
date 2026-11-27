@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -97,7 +97,7 @@ type LinkedFile = Pick<BrowserDownload, "site" | "temporary"> & { agentRule: (fi
 export function saveLinkedFile(url: string, name: string, file: LinkedFile, askFirst = false): void {
   const temporary = file.temporary ?? useChatRuntimeStore.getState().incognito;
   const save = () =>
-    fetchBrowserPage({ url }, new AbortController().signal).then(
+    fetchBrowserPage({ url, initiator: file.site }, new AbortController().signal).then(
       (page) => saveBrowserDownload({ ...linkDownload(page, url, name), site: file.site, temporary, agentRule: file.agentRule(page.url) }),
       (error: unknown) => void toast.error(error instanceof Error ? error.message : String(error)),
     );

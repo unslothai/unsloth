@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 
-# "*" is a reserved character in a Windows filename, so only POSIX can hold one.
 _STAR_IN_NAME_IS_LEGAL = os.name != "nt"
 
 
@@ -71,8 +70,6 @@ def _hub_doubles(calls, seen):
             repo_type = None,
         ):
             calls.append("repo_exists")
-            # Default True: the interesting case is an existing repo, and a test that wants
-            # a fresh one says so.
             return seen.get("repo_exists", True)
 
         def file_exists(
@@ -170,6 +167,49 @@ def _push_gguf(
             **overrides,
         },
     )
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_lora_gguf_hub_export_rejects_missing_artifact(tmp_path, monkeypatch, reused):
+    _install_export_backend_stubs(monkeypatch)
+    module = _load_module("export_lora_gguf_missing", "core/export/export.py", monkeypatch)
+    calls, seen = [], {}
+    _patch_hub(monkeypatch, module, calls, seen)
+    monkeypatch.setattr(module, "_IS_MLX", False)
+    monkeypatch.setattr(module, "_export_runtime_available", lambda: True)
+    saves = []
+
+    class _Model:
+        peft_config = {}
+
+        def save_pretrained_gguf(self, directory, tokenizer, save_method, **kwargs):
+            saves.append(directory)
+            output = Path(directory)
+            output.mkdir(parents = True, exist_ok = True)
+            (output / "adapter_model.safetensors").write_bytes(b"adapter")
+            if reused and len(saves) == 1:
+                (output / "model-lora-q8_0.gguf").write_bytes(b"GGUF")
+
+    backend = _export_backend(module, _Model)
+    backend.is_peft = True
+    save_dir = tmp_path / "export"
+    if reused:
+        save_dir.mkdir()
+        (save_dir / "unrelated.txt").write_text("keep")
+        os.utime(save_dir / "unrelated.txt", (1000, 1000))
+
+    ok, message, _path = backend.export_lora_adapter(
+        str(save_dir),
+        gguf = True,
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+    )
+
+    assert not ok
+    assert "conversion reported success but wrote no" in message
+    assert len(saves) == (2 if reused else 1)
+    assert calls == []
 
 
 def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_path, monkeypatch):
@@ -751,7 +791,7 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            # write_bytes, not write_text: text mode turns "\n" into "\r\n" on Windows.
+            # write_bytes: text mode turns "\n" into "\r\n" on Windows
             (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
 
         def push_to_hub_gguf(self, *args, **kwargs):

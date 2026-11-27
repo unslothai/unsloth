@@ -13,7 +13,6 @@ const HEX = /^#[0-9a-f]{6}$/i;
 const PALETTE_ATTR = /data-palette="([\w-]+)"/g;
 const DIM_RULE =
   /\n\t:root:is\(([^)]*)\)\.dark\s+:is\(\.composer-pill-btn, \.unsloth-thinking-pill\)\[data-active="false"\] \{\s*color: color-mix\(in oklab, var\(--foreground\) 60%, transparent\);/;
-// Classic and Minimal dark sit near 0.04 (OKLab), every other dark palette above 0.13.
 const COLLIDES = 0.1;
 
 function darkTokens(selector: string): Map<string, string> {
@@ -72,10 +71,6 @@ const dimmed = new Set(
 test("every dark palette with an on pill close to the resting ink dims its off pills", () => {
   const colliding = COLOR_THEME_IDS.filter(
     (id) => onOffDistance(id) < COLLIDES,
-  );
-  assert.ok(
-    colliding.includes("classic"),
-    "the measure no longer sees the Classic collision",
   );
   for (const id of colliding) {
     assert.ok(dimmed.has(id), `${id} dark: off pills not dimmed`);

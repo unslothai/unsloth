@@ -9,7 +9,12 @@ import {
 } from "@/components/gallery-item-menu";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { Button } from "@/components/ui/button";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,12 +24,13 @@ import { PillTabs } from "@/features/model-picker/components/model-selector/pill
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Copy01Icon,
   DiceFaces03Icon,
   FloppyDiskIcon,
   SparklesIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
+import { PauseIcon, StopIcon } from "@/lib/media-control-icons";
+import { PlayIcon } from "lucide-react";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
@@ -36,7 +42,10 @@ import {
   MOSS_TTS_DEFAULT_SECONDS,
   MOSS_TTS_FRAMES_PER_SECOND,
 } from "../audio-page-policy";
-import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
+import {
+  SPEECH_TEXT_EXAMPLES,
+  TTS_MAX_TOKENS,
+} from "../audio-workspace-constants";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import {
   ClipCard,
@@ -45,6 +54,20 @@ import {
   PendingClipCard,
 } from "../components/clip-card";
 import { Field } from "../components/field";
+import {
+  CLIPS_LIST,
+  CLIP_ROW,
+  CLIP_ROW_DURATION,
+  CLIP_ROW_ICON,
+  CLIP_ROW_MENU,
+  CLIP_ROW_PIN,
+  CLIP_ROW_SELECT,
+  CLIP_ROW_TILE,
+  ClipsCard,
+  ClipsDeleteAll,
+  ClipsCardEmpty,
+} from "../components/clips-card";
+import { PromptExamples } from "../components/prompt-examples";
 import { MusicSendToMenuItems } from "../components/music-send-to";
 import {
   VariationChips,
@@ -54,8 +77,9 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
+import { useRowPreview } from "../hooks/use-row-preview";
 import { historyRows, variationSiblings } from "../music/variation-groups";
-import type { AudioWorkflowId } from "../workflows";
+import { type AudioWorkflowId, audioWorkflowTab, clipWorkflow } from "../workflows";
 
 export interface GenerateAction {
   label: string;
@@ -85,6 +109,78 @@ export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
         </span>
       ))}
     </>
+  );
+}
+
+export const AUDIO_ACTION_BUTTON =
+  "relative z-10 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100";
+export const AUDIO_GO_BUTTON =
+  "h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85";
+export const AUDIO_STOP_BUTTON = "text-ui-13 hover:bg-muted dark:hover:bg-muted";
+export const AUDIO_NOTE_SLOT = "min-h-[1lh] text-ui-12 leading-normal";
+
+/** Under Generate: why it is off, then the fixes. One alternative sits inline; several share a menu. */
+export function BlockerNote({
+  id,
+  blocker,
+}: {
+  id: string;
+  blocker: GenerateBlocker;
+}) {
+  const [first, ...rest] = blocker.actions ?? [];
+  if (!first) {
+    return (
+      <p id={id} className="text-center text-ui-11p5 leading-normal text-muted-foreground">
+        {blocker.reason}
+      </p>
+    );
+  }
+  const link =
+    "h-auto p-0 text-ui-11p5 font-normal text-muted-foreground underline underline-offset-2 decoration-foreground/25 hover:text-foreground";
+  return (
+    <div
+      id={id}
+      className="grid justify-items-center gap-0.5 text-center text-ui-11p5 leading-normal text-muted-foreground"
+    >
+      <span>{blocker.reason}</span>
+      <span className="flex flex-wrap items-center justify-center gap-x-1.5">
+        <Button type="button" variant="link" className={link} onClick={first.onClick}>
+          {first.label}
+        </Button>
+        {rest.length === 1 ? (
+          <>
+            <span>or</span>
+            <Button
+              type="button"
+              variant="link"
+              className={link}
+              onClick={rest[0].onClick}
+            >
+              {rest[0].label}
+            </Button>
+          </>
+        ) : rest.length > 1 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <Button
+                type="button"
+                variant="link"
+                className={link}
+              >
+                or another option
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center">
+              {rest.map((action) => (
+                <DropdownMenuItem key={action.label} onSelect={action.onClick}>
+                  {action.label.charAt(0).toUpperCase() + action.label.slice(1)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -157,45 +253,6 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {/* Field inlined: its label needs a form control to point
-          at, and PillTabs is a tablist with its own name. */}
-      <div className="grid gap-1.5">
-        <span className="text-ui-13 font-medium text-foreground">
-          Load model into
-        </span>
-        <PillTabs
-          ariaLabel="Load model into"
-          value={audioDevice === "cpu" ? "cpu" : "auto"}
-          disabled={busy !== null}
-          onValueChange={(value) => {
-            const next = value === "cpu" ? "cpu" : "auto";
-            if (next === audioDevice) return;
-            // MiniMax needs CUDA; the backend refusal cannot save an already-ejected model.
-            if (next === "cpu" && status?.audio_type === "minimax_music3") {
-              toast.info(
-                "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
-              );
-              return;
-            }
-            setAudioDeviceState(next);
-            if (ttsLoaded) handleEject();
-          }}
-          fit={true}
-          className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
-          tabs={[
-            { value: "auto", label: "GPU when available" },
-            { value: "cpu", label: "CPU RAM" },
-          ]}
-        />
-        {/* Phrased as what the next load will do, not as the resident
-            model's state: a model loaded by another tab or client can
-            be on the other device, and status does not report it. */}
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
-          {audioDevice === "cpu"
-            ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
-            : "New loads use the GPU when there is one, and the CPU otherwise."}
-        </p>
-      </div>
       {inputs ?? (
         <Field
           label={musicGeneration ? "Lyrics" : "Text"}
@@ -203,7 +260,7 @@ export function TtsRailFields({
           hint={
             musicGeneration
               ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
+              : undefined
           }
         >
           <Textarea
@@ -218,21 +275,76 @@ export function TtsRailFields({
             }
             className="min-h-28"
           />
+          {musicGeneration ? null : (
+            <PromptExamples
+              label="Example sentences"
+              examples={SPEECH_TEXT_EXAMPLES}
+              empty={!prompt.trim()}
+              onPick={setPrompt}
+              disabled={busy === "generating"}
+            />
+          )}
         </Field>
       )}
       {toolPanels}
-      {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
-        <AdvancedDisclosure
-          open={advancedOpen}
-          onOpenChange={setAdvancedOpen}
-          description={
-            musicGeneration
-              ? "Generation length and model options. Changes apply to the next audio clip."
-              : samplingControls
-                ? "Generation sampling. Changes apply to the next audio clip."
-                : "Model options. Changes apply to the next audio clip."
-          }
-        >
+      {/* Always shown: where the model loads is an advanced choice on every audio page. */}
+      <AdvancedDisclosure
+        flush={true}
+        classNames={{
+          root: "gap-1 pb-0",
+          body: "gap-5",
+          description: "text-ui-12 leading-normal",
+        }}
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        description={
+          musicGeneration
+            ? "Generation length and model options. Changes apply to the next audio clip."
+            : samplingControls
+              ? "Generation sampling. Changes apply to the next audio clip."
+              : audioOptionSpecs.length > 0
+                ? "Model options. Changes apply to the next audio clip."
+                : "Where the model loads. Changes apply to the next load."
+        }
+      >
+        {/* Fields keep the rail's own spacing; the shared disclosure packs its children tighter. */}
+        <div className="flex flex-col gap-6">
+          {/* Field inlined: its label needs a form control, and PillTabs is a tablist. */}
+          <div className="grid gap-2">
+            <span className="text-ui-13 font-medium text-foreground">
+              Load model into
+            </span>
+            <PillTabs
+              ariaLabel="Load model into"
+              value={audioDevice === "cpu" ? "cpu" : "auto"}
+              disabled={busy !== null}
+              onValueChange={(value) => {
+                const next = value === "cpu" ? "cpu" : "auto";
+                if (next === audioDevice) return;
+                // MiniMax needs CUDA; the backend refusal cannot save an already-ejected model.
+                if (next === "cpu" && status?.audio_type === "minimax_music3") {
+                  toast.info(
+                    "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
+                  );
+                  return;
+                }
+                setAudioDeviceState(next);
+                if (ttsLoaded) handleEject();
+              }}
+              fit={true}
+              className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
+              tabs={[
+                { value: "auto", label: "GPU when available" },
+                { value: "cpu", label: "CPU RAM" },
+              ]}
+            />
+            {/* Phrased as the next load: another client may have loaded the model on the other device. */}
+            <p className="text-ui-12 leading-normal text-muted-foreground">
+              {audioDevice === "cpu"
+                ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
+                : "New loads use the GPU when there is one, and the CPU otherwise."}
+            </p>
+          </div>
           {!musicGeneration && samplingControls ? (
             <ParamSlider
               label="Temperature"
@@ -301,8 +413,8 @@ export function TtsRailFields({
               ) : null}
             </>
           ) : null}
-        </AdvancedDisclosure>
-      ) : null}
+        </div>
+      </AdvancedDisclosure>
     </>
   );
 }
@@ -342,7 +454,7 @@ export function TtsFooter({
     loadNote?: string | null;
   }) {
   return (
-    <div className="flex w-full max-w-sm flex-col gap-2">
+    <div className="flex w-full flex-col gap-2.5">
       {busy === "generating" && generationPresentation ? (
         <>
           <output
@@ -365,17 +477,16 @@ export function TtsFooter({
         </>
       ) : null}
       {loadNote && !generationPresentation ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-12 leading-normal text-muted-foreground">
           {loadNote}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center justify-center gap-2">
+      <div className="flex items-center justify-center gap-2">
         {secondaryAction}
         <Button
           className={cn(
-            "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
-            // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
-            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+            AUDIO_ACTION_BUTTON,
+            generationPresentation ? AUDIO_STOP_BUTTON : AUDIO_GO_BUTTON,
           )}
           onClick={
             generationPresentation?.canStop
@@ -391,7 +502,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation ? "outline" : "default"}
+          variant={generationPresentation ? "outline" : "primary"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -413,35 +524,40 @@ export function TtsFooter({
           )}
         </Button>
       </div>
-      {blocker && !generationPresentation ? (
-        <p
-          id="audio-generate-blocker"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {blocker.reason}
-          <GenerateActions actions={blocker.actions} />
-        </p>
-      ) : error && !generationPresentation ? (
-        <p
-          role="alert"
-          className="text-center text-ui-11p5 leading-snug text-destructive"
-        >
-          {error.reason}
-          <GenerateActions actions={error.actions} />
-        </p>
-      ) : null}
+      <div className={AUDIO_NOTE_SLOT}>
+        {blocker && !generationPresentation ? (
+          <BlockerNote id="audio-generate-blocker" blocker={blocker} />
+        ) : error && !generationPresentation ? (
+          <p
+            role="alert"
+            className="text-center text-ui-11p5 leading-snug text-destructive"
+          >
+            {error.reason}
+            <GenerateActions actions={error.actions} />
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }
 
-function ClipBadge({ text }: { text: string | null | undefined }) {
-  if (!text) return null;
+function HistoryRowMeta({
+  model,
+  time,
+  badge,
+}: {
+  model: string;
+  time: string;
+  badge: string | null | undefined;
+}) {
+  const extra = badge && badge !== model ? badge : null;
+  // Only model · time shows; anything extra (Clone's reference clip) is in the tooltip.
   return (
     <span
-      title={text}
-      className="max-w-[40%] shrink-0 truncate rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+      className="truncate text-ui-11p5 text-muted-foreground"
+      title={extra ?? undefined}
     >
-      {text}
+      {model} · {time}
     </span>
   );
 }
@@ -450,12 +566,14 @@ export function TtsOutput({
   clips,
   selectedClip,
   selectedClipSrc,
+  retryClipSrc,
   srcById,
   peaksById,
   handleDownloadClip,
   handleDeleteClip,
   fallbackClip,
   handleDownloadFallbackClip,
+  emptyTitle,
   emptyText,
   emptyActions,
   handleClearGallery,
@@ -482,10 +600,12 @@ export function TtsOutput({
   selectedPlayer,
   useAgainLabel = "Use text again",
   showCopyText = true,
+  workflow,
 }: Pick<
   AudioGallery,
   | "srcById"
   | "peaksById"
+  | "retryClipSrc"
   | "handleDownloadClip"
   | "handleDeleteClip"
   | "fallbackClip"
@@ -518,6 +638,7 @@ export function TtsOutput({
       canStop: boolean;
       onStop: () => void;
     } | null;
+    emptyTitle?: string;
     emptyText: string;
     emptyActions?: ReactNode;
     freshClipId: string | null;
@@ -528,15 +649,13 @@ export function TtsOutput({
       clip: AudioGalleryClip,
       place: "selected" | "history",
     ) => string | null;
-    /** Replaces the selected clip's waveform, such as Convert's Source/Converted compare. */
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
-      focusRef: ((element: HTMLAudioElement | null) => void) | undefined,
+      focusRef: ((element: HTMLElement | null) => void) | undefined,
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
-    /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -566,6 +685,16 @@ export function TtsOutput({
       return next;
     });
   const siblings = variationSiblings(clips, selectedClip?.id ?? null);
+  const tab = audioWorkflowTab(workflow);
+  // The player is the selected clip's expanded row, so the list below leaves it out.
+  const listRows = historyRows(clips, openGroups).filter(
+    ({ clip, header }) => header || !selectedClip || clip.id !== selectedClip.id,
+  );
+  const rowPreview = useRowPreview(
+    srcById,
+    active,
+    listRows.flatMap(({ clip, header }) => (header ? [] : [clip.id])),
+  );
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
     <GalleryItemMenu
       variant={variant}
@@ -581,14 +710,17 @@ export function TtsOutput({
       leadingItems={
         <>
           <ClipSendToMenu handlers={sendHandlersFor(clip)} />
-          <DropdownMenuItem onClick={() => onSaveVoice(clip)}>
-            <HugeiconsIcon
-              icon={FloppyDiskIcon}
-              strokeWidth={1.75}
-              className="size-icon"
-            />
-            Save as voice…
-          </DropdownMenuItem>
+          {/* A song is not a voice to speak in. */}
+          {clipWorkflow(clip) === "music" ? null : (
+            <DropdownMenuItem onClick={() => onSaveVoice(clip)}>
+              <HugeiconsIcon
+                icon={FloppyDiskIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Save as voice…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem onClick={() => onUseTextAgain(clip)}>
             <HugeiconsIcon
               icon={SparklesIcon}
@@ -629,19 +761,45 @@ export function TtsOutput({
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </output>
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
+      <ClipsCard
+        label={clips.length > 0 ? "Clips" : tab.heading}
+        title="Clips"
+        bare={clips.length === 0 && !pending && !selectedClip && !fallbackClip}
+        count={clips.length}
+        countMore={hasMore}
+        action={
+          clips.length > 0 ? (
+            <ClipsDeleteAll noun="clips" active={active} onConfirm={handleClearGallery} />
+          ) : null
+        }
+      >
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <div className="flex w-full flex-col gap-2">
-            <VariationChips
-              siblings={siblings}
-              selectedId={selectedClip.id}
-              onSelect={selectClip}
-            />
+          <div
+            className="flex w-full shrink-0 flex-col gap-2"
+            onErrorCapture={(event) => {
+              // Only this clip's link: source players and a previous selection's late errors are not ours to retry.
+              const media = event.target;
+              if (
+                selectedClipSrc &&
+                media instanceof HTMLMediaElement &&
+                media.getAttribute("src") === selectedClipSrc
+              ) {
+                retryClipSrc(selectedClip, selectedClipSrc);
+              }
+            }}
+          >
             <ClipCard
               // Keyed per clip: a reused player kept the old clip's position.
               key={selectedClip.id}
+              variations={
+                <VariationChips
+                  siblings={siblings}
+                  selectedId={selectedClip.id}
+                  onSelect={selectClip}
+                />
+              }
               title={selectedClip.prompt}
               model={selectedClip.model}
               createdAt={selectedClip.created_at}
@@ -653,7 +811,7 @@ export function TtsOutput({
                   ? () => handleDownloadClip(selectedClip)
                   : null
               }
-              menu={clipMenu(selectedClip, "row")}
+              menu={clipMenu(selectedClip, "toolbar")}
               player={
                 customPlayer ??
                 (renderPlayer && selectedClipSrc
@@ -684,29 +842,17 @@ export function TtsOutput({
             }
           />
         ) : (
-          <div className="grid justify-items-center gap-3">
-            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
-            {emptyActions}
-          </div>
+          <ClipsCardEmpty
+            icon={tab.icon}
+            title={emptyTitle}
+            text={emptyText}
+            actions={emptyActions}
+          />
         )}
-      </div>
-      {clips.length > 0 ? (
-        <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="text-ui-11p5 font-medium text-muted-foreground">
-              History
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void handleClearGallery()}
-            >
-              Clear all
-            </Button>
-          </div>
+      {listRows.length > 0 ? (
           <div
             {...historyReorder.stripProps}
-            className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto py-1"
+            className={CLIPS_LIST}
             onScroll={(event) => {
               const el = event.currentTarget;
               if (
@@ -717,7 +863,7 @@ export function TtsOutput({
               }
             }}
           >
-            {historyRows(clips, openGroups).map(({ clip, header, nested }) =>
+            {listRows.map(({ clip, header, nested }) =>
               header ? (
                 <VariationGroupRow
                   key={`group:${header.groupId}`}
@@ -732,8 +878,8 @@ export function TtsOutput({
                   key={clip.id}
                   {...historyReorder.tileProps(clip.id)}
                   className={cn(
-                    "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
-                    clip.id === selectedId && "bg-muted",
+                    CLIP_ROW,
+                    clip.id === selectedId && "bg-wash-3 hover:bg-wash-3",
                     historyReorder.draggingId === clip.id && "opacity-40",
                     nested && "ml-4",
                   )}
@@ -743,40 +889,80 @@ export function TtsOutput({
                   )}
                   <button
                     type="button"
+                    title={rowPreview.playingId === clip.id ? "Pause" : "Play here"}
+                    aria-label={
+                      rowPreview.playingId === clip.id
+                        ? `Pause ${clip.prompt}`
+                        : `Play ${clip.prompt}`
+                    }
+                    onClick={() => void rowPreview.toggle(clip.id)}
+                    className={cn(
+                      CLIP_ROW_TILE,
+                      "group/play relative transition-colors hover:bg-wash-8 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    )}
+                  >
+                    {rowPreview.playingId === clip.id ? (
+                      <HugeiconsIcon
+                        icon={PauseIcon}
+                        className="size-4 text-foreground"
+                      />
+                    ) : (
+                      <>
+                        <HugeiconsIcon
+                          icon={AiSpeechIcon}
+                          strokeWidth={1.75}
+                          className={cn(
+                            CLIP_ROW_ICON,
+                            "transition-opacity group-hover:opacity-0 group-focus-visible/play:opacity-0 pointer-coarse:opacity-0",
+                            clip.id === selectedId && "text-foreground",
+                          )}
+                        />
+                        <PlayIcon className="absolute ml-0.5 size-4 fill-current opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible/play:opacity-100 pointer-coarse:opacity-100" />
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => selectClip(clip.id)}
                     aria-current={clip.id === selectedId ? "true" : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+                    className={CLIP_ROW_SELECT}
                   >
-                    <HugeiconsIcon
-                      icon={AiSpeechIcon}
-                      className="size-3.5 shrink-0 text-muted-foreground"
-                    />
-                    <span className="min-w-0 flex-1 truncate">
-                      {clip.prompt}
+                    <span className="grid min-w-0 flex-1 gap-0.5">
+                      <span
+                        title={clip.prompt}
+                        className={cn(
+                          "truncate text-ui-13",
+                          clip.id === selectedId && "font-medium",
+                        )}
+                      >
+                        {clip.prompt}
+                      </span>
+                      <HistoryRowMeta
+                        model={audioModelLabel(clip.model)}
+                        time={formatRelativeShort(clip.created_at)}
+                        badge={clipBadge?.(clip, "history")}
+                      />
                     </span>
-                    <ClipBadge text={clipBadge?.(clip, "history")} />
-                    <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
-                      {audioModelLabel(clip.model)} ·{" "}
-                      {formatRelativeShort(clip.created_at)}
-                    </span>
-                    <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                    <span className={CLIP_ROW_DURATION}>
                       {formatClipDuration(clip.duration_s)}
                     </span>
                   </button>
                   {clip.pinned && (
                     <GalleryPinBadge
                       noun="clip"
-                      className="static shrink-0"
+                      className={CLIP_ROW_PIN}
                       onUnpin={() => void handleTogglePin(clip.id, false)}
                     />
                   )}
-                  {clipMenu(clip, "row")}
+                  <span className={CLIP_ROW_MENU}>
+                    {clipMenu(clip, "row")}
+                  </span>
                 </div>
               ),
             )}
           </div>
-        </div>
       ) : null}
+      </ClipsCard>
     </>
   );
 }

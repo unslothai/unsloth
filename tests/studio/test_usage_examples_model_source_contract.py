@@ -42,18 +42,23 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
-    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
-    assert "if (!snippets) return;" in src
-    assert "{snippets ? (" in src
-    assert 't("settings.apiKeys.usageNoModel")' in src
+    # No servable model: the snippet shows a placeholder (#14914); the picker note says why.
+    assert 'const MODEL_PLACEHOLDER = "YOUR_MODEL";' in src
+    assert "buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os)" in src
+    assert len(re.findall(r"\bbuildSnippets\(", src)) == 2, "one definition, one call site"
+    note = src.find('t("settings.apiKeys.usageNoModel")')
+    assert note != -1
+    gate = src.rfind("{model ? null : (", 0, note)
+    assert (
+        gate != -1 and note - gate < 200
+    ), "the no-model note must render exactly when the example shows the placeholder"
 
     en = EN_TS.read_text(encoding = "utf-8")
     assert "usageNoModel:" in en
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # Without these deps a finished load kept the first fetch's name; the store keeps a
-    # checkpoint across idle unloads, so it cannot gate on having none.
+    # Missing deps keep the first fetch's name; checkpoints survive idle unloads, so no gating.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "}, [checkpoint, ggufVariant]);" in hook
@@ -69,7 +74,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # The store keeps a checkpoint across idle unloads and deletions, so it must be in the catalog.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
-    assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
+    assert 'catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];' in hook
+    assert ") ?? sameBase[0];" in hook
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 
@@ -146,11 +152,17 @@ def test_api_monitor_renders_lifecycle_rows():
 
 
 def test_auto_switch_section_sits_below_the_monitor_link():
-    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that);
-    # the auto-switch section still follows the monitor link.
+    # Issue 14455 moved the usage examples up under the key form (api-settings-tab.test.ts pins
+    # that) and issue 15467 behind ApiExamplesPanel's tab row; auto-switch follows the monitor link.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<UsageExamples") < tab.index("<MonitorLink />")
-    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
+
+    def at(pattern):
+        match = re.search(pattern, tab)
+        assert match, f"{pattern} not found in {API_KEYS_TAB_TSX.name}"
+        return match.start()
+
+    assert at(r"<(?:UsageExamples|ApiExamplesPanel)\b") < at(r"<MonitorLink\b")
+    assert at(r"<MonitorLink\b") < at(r"<ModelAutoSwitchSection\b")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -172,14 +184,16 @@ def test_monitor_can_unload_the_loaded_model():
     assert "const unloadActiveModel = async" in src
     assert "onUnloadActive={unloadActiveModel}" in src
     assert "onUnloadActive();" in controls
-    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
-    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    # 11223: no unload while loading or unloading; busy= needs both || terms, not exact text.
     busy = re.search(r"const busy = ([^;]+);", controls)
     assert busy, "the load controls no longer compute busy"
     assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
-    assert "onEject={busy ? undefined : handleEject}" in controls
+    # The composer picker's eject goes through the page's guard rather than a prop it can drop.
+    assert re.search(
+        r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
+    )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
-    assert "resolveInferenceCheckpointId(status)" in src
+    assert "servedInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
 
 
@@ -225,7 +239,8 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "!(useTunnel && cloudflareUrl)" in src
     assert 'keylessBase && !apiKey && keylessScope === "inference"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
-    assert "[cloudflareUrl, onSettingsChange]" in section
+    assert "[cloudflareUrl, notify]" in section
+    assert "[onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
     assert "disabled on localhost" in section
     assert "read the files and settings in Unsloth" not in section

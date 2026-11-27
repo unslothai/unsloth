@@ -295,7 +295,7 @@ test("the Images page wires downloads, the stamp setting and import", () => {
   );
   assert.match(page, /onDrop=\{onImportDrop\}/);
   const store = readSrc("features/library/settings-store.ts");
-  assert.match(store, /imageInfoStamp: true,/);
+  assert.match(store, /imageInfoStamp: false,/);
 });
 
 // ComfyUI's default text-to-image graph from its `prompt` chunk, seed wired through a primitive.
@@ -679,6 +679,7 @@ test("a newer recipe loads what this build knows and names what it does not", ()
   assert.equal(newerRecipeSchema(recipe), true);
   // Every key today's recipe writes is known, so a current image reports nothing.
   assert.deepEqual(unknownRecipeKeys(JSON.parse(RECIPE)), []);
+  assert.deepEqual(unknownRecipeKeys({ prompt: "p", generation_seconds: 1.25, generation_count: 2 }), []);
   assert.equal(
     new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS, ...PENDING_RECIPE_KEYS]).size,
     APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length + PENDING_RECIPE_KEYS.length,

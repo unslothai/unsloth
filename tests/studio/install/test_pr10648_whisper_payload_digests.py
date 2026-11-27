@@ -50,8 +50,7 @@ def _install(
     *,
     slim: bool = False,
 ) -> Path:
-    """A whisper install tree plus a marker written by the REAL writer, so the record
-    under test is the one an install actually produces -- not a fixture's idea of it."""
+    """Builds a whisper install with a marker from the real writer, not a fixture's guess."""
     install_dir = tmp_path / "whisper.cpp"
     bin_dir = WHISPER.runtime_bin_dir(install_dir, LINUX)
     bin_dir.mkdir(parents = True)
@@ -133,8 +132,7 @@ def test_the_marker_records_the_server_it_installed(tmp_path, monkeypatch):
 
 
 def test_a_slim_marker_records_the_ggml_libraries_it_hardlinked(tmp_path, monkeypatch):
-    """A slim bundle ships no ggml of its own: those hardlinks ARE most of its bytes on a
-    CUDA or ROCm pairing, and nothing else in the marker describes them."""
+    """Slim bundles hardlink ggml libraries, most of their bytes on CUDA/ROCm; record them."""
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     records = _marker(install_dir)["runtime_files"]
     for name in SLIM_LIBRARIES:
@@ -146,8 +144,7 @@ def test_a_slim_marker_records_the_ggml_libraries_it_hardlinked(tmp_path, monkey
 
 
 def test_the_record_has_the_same_shape_as_the_llama_one(tmp_path, monkeypatch):
-    """The two markers sit side by side in one Unsloth home and are read by the same
-    people; a second spelling of the same fact is how one of them comes to drift."""
+    """Whisper and llama markers share one home and readers, so the record shape must match."""
     install_dir = _install(tmp_path, monkeypatch)
     server = WHISPER.installed_server_path(install_dir, LINUX)
     assert WHISPER._stat_record(server).keys() == LLAMA._stat_record(server).keys()
@@ -156,8 +153,7 @@ def test_the_record_has_the_same_shape_as_the_llama_one(tmp_path, monkeypatch):
 
 
 def test_a_truncated_server_is_rejected(tmp_path, monkeypatch):
-    """A half-written whisper-server passes every shape check; only the recorded size and digest
-    reject it."""
+    """Shape checks pass a half-written server; only the recorded size and digest catch it."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _intact(install_dir) is True and _reuse(install_dir) is True
     server = WHISPER.installed_server_path(install_dir, LINUX)
@@ -187,8 +183,7 @@ def test_whisper_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, mo
 
 
 def test_a_deleted_server_is_rejected(tmp_path, monkeypatch):
-    """A recorded file that vanished is evidence against the install; the shape check
-    caught this one already, and the record must not soften it."""
+    """A vanished recorded file is evidence against the install; the record must not soften it."""
     install_dir = _install(tmp_path, monkeypatch)
     assert _intact(install_dir) is True
     WHISPER.installed_server_path(install_dir, LINUX).unlink()
@@ -223,9 +218,7 @@ def test_a_same_size_flip_in_a_ggml_library_is_deliberately_not_caught(tmp_path,
 
 
 def test_a_marker_whose_record_is_unusable_fails_closed(tmp_path, monkeypatch):
-    """Present but unreadable is not the same as absent. The record is the evidence that
-    replaces starting the binary, so an empty or malformed one proves nothing -- and it
-    cannot have come from the writer, which omits the key rather than writing {}."""
+    """Unusable runtime records fail closed; the writer omits the key, not an empty record."""
     install_dir = _install(tmp_path, monkeypatch)
     for damaged in ({}, [], "runtime", {_server_key(install_dir): "not-a-record"}):
         marker = _marker(install_dir)
@@ -252,8 +245,7 @@ def test_an_unreadable_server_is_rejected_rather_than_skipped(tmp_path, monkeypa
 
 
 def _legacy(install_dir: Path) -> dict:
-    """The marker every existing user has: byte-identical to what this installer writes,
-    minus the key that did not exist when it was written."""
+    """Legacy marker: today's writer output minus runtime_files, which older installs predate."""
     marker = _marker(install_dir)
     marker.pop("runtime_files", None)
     _rewrite_marker(install_dir, marker)
@@ -290,8 +282,7 @@ def test_the_legacy_marker_is_backfilled_once_and_fast_after(tmp_path, monkeypat
 
 
 def test_the_backfill_records_the_live_bytes_of_a_slim_tree(tmp_path, monkeypatch):
-    """A legacy SLIM install: the wiring it hardlinked has to be recorded too, or the
-    backfill would leave the half of the payload that is most of the bytes unprotected."""
+    """Slim backfill must record hardlinked wiring too, or most payload bytes stay unprotected."""
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     _legacy(install_dir)
     WHISPER.settle_kept_install(install_dir)
@@ -306,9 +297,7 @@ def test_the_backfill_records_the_live_bytes_of_a_slim_tree(tmp_path, monkeypatc
 
 
 def test_the_backfill_never_rewrites_a_record_it_did_not_take(tmp_path, monkeypatch):
-    """Added, never corrected. Overwriting a present record with whatever is on disk now
-    would re-bless bytes no run ever hashed -- it would turn the guard into a rubber
-    stamp the first time an update ran over a corrupt tree."""
+    """Backfill only adds missing records: re-blessing bytes no run hashed defeats the guard."""
     install_dir = _install(tmp_path, monkeypatch)
     recorded = _marker(install_dir)["runtime_files"]
     WHISPER.installed_server_path(install_dir, LINUX).write_bytes(b"replaced-behind-our-back")
@@ -411,9 +400,7 @@ def test_an_upgrade_does_not_re_download_and_settles_under_the_lock(tmp_path, mo
 
 
 def test_a_backfill_that_cannot_hash_writes_nothing(tmp_path, monkeypatch):
-    """A scanner holding whisper-server open, or a tree half-owned by root. An empty
-    record is not evidence, and writing one would fail closed on every later update --
-    which is the re-download loop this whole part exists to prevent."""
+    """Unhashable backfill writes nothing: an empty record would fail closed on later updates."""
     install_dir = _install(tmp_path, monkeypatch)
     _legacy(install_dir)
     fired = {"n": 0}
@@ -444,9 +431,7 @@ def test_a_changed_mtime_alone_does_not_reject(tmp_path, monkeypatch):
 
 
 def test_an_unrecorded_file_appearing_beside_the_payload_does_not_reject(tmp_path, monkeypatch):
-    """A user's own notes, an antivirus quarantine stub, a .bak from a support session.
-    A file that appeared since is not evidence against the install; only a RECORDED file
-    that moved is."""
+    """Unrecorded files beside the payload are no evidence; only a moved recorded file is."""
     install_dir = _install(tmp_path, monkeypatch)
     (WHISPER.runtime_bin_dir(install_dir, LINUX) / "notes.txt").write_text("hello")
     assert _intact(install_dir) is True
@@ -529,7 +514,6 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
 
-    # The injection fired: this really is the released module, not the one under test.
     assert result["module_file"].startswith(str(old_dir))
     assert result["core_file"].startswith(str(old_dir))
     assert result["knows_the_key"] is False
@@ -652,8 +636,7 @@ def test_a_gfx_reselection_within_one_release_is_caught(tmp_path, monkeypatch):
 
 
 def test_the_ggml_tree_alone_does_not_catch_it(tmp_path, monkeypatch):
-    """Why a second key was needed: with the runtime id stripped, the same reselection is
-    invisible. This is the pre-fix behaviour, pinned so the guard cannot be quietly dropped."""
+    """Without the runtime id the same reselection is invisible; the ggml tree alone misses it."""
     _paired(monkeypatch, LLAMA_ID_GFX1100)
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     marker = _marker(install_dir)
@@ -672,9 +655,8 @@ def test_an_unchanged_llama_install_still_takes_the_fast_path(tmp_path, monkeypa
 
 
 def test_a_marker_predating_the_key_is_backfilled_not_re_downloaded(tmp_path, monkeypatch):
-    """An older marker cannot say which bundle it was paired against, so a swap that ALREADY
-    happened is unanswerable from it. Reinstalling to find out would re-download the bundle
-    for every existing user; recording the current pairing makes the NEXT swap detectable."""
+    """A marker predating paired_llama_runtime_id cannot say which bundle it paired with;
+    backfilling the current pairing avoids re-downloads and makes the next swap detectable."""
     install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch)
     assert WHISPER.kept_install_needs_settling(install_dir) is True
     assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is True
@@ -687,8 +669,7 @@ def test_a_marker_predating_the_key_is_backfilled_not_re_downloaded(tmp_path, mo
 
 
 def test_a_backfill_with_no_llama_install_to_read_writes_nothing(tmp_path, monkeypatch):
-    """Fails open, not closed: an unreadable llama marker must not stamp None as a pairing,
-    and must not fail setup over a metadata refresh either."""
+    """Unreadable llama marker: fail open, never stamp None as the pairing or fail setup."""
     _paired(monkeypatch, LLAMA_ID_GFX1100)
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     marker = _marker(install_dir)
@@ -702,8 +683,7 @@ def test_a_backfill_with_no_llama_install_to_read_writes_nothing(tmp_path, monke
 
 
 def test_a_recorded_pairing_against_a_vanished_llama_install_is_rejected(tmp_path, monkeypatch):
-    """llama removed entirely, whisper's hardlinks still holding its last bytes: the recorded
-    id no longer matches anything, which is a reinstall rather than a keep."""
+    """A recorded pairing with llama gone matches nothing: reinstall, not keep."""
     _paired(monkeypatch, LLAMA_ID_GFX1100)
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     _paired(monkeypatch, None)
@@ -750,8 +730,7 @@ def test_the_backfill_records_a_pairing_the_wiring_proves(tmp_path, monkeypatch)
 
 
 def test_the_backfill_records_nothing_when_llama_was_swapped_underneath(tmp_path, monkeypatch):
-    """The reported case. llama is replaced with different bytes at a NEW inode, exactly as a
-    directory swap leaves it, while whisper keeps the old ones."""
+    """A swapped llama tree (new bytes, new inode) must not be recorded by the backfill."""
     install_dir, llama_bin = _slim_with_live_llama(tmp_path, monkeypatch)
     for name in SLIM_LIBRARIES:
         (llama_bin / name).unlink()
@@ -769,8 +748,7 @@ def test_the_backfill_records_nothing_when_llama_was_swapped_underneath(tmp_path
 
 
 def test_a_copied_wiring_is_judged_by_its_bytes_not_its_inode(tmp_path, monkeypatch):
-    """_link_or_copy falls back to shutil.copy2 across filesystems, where the inodes differ
-    legitimately. Refusing on the inode alone would deny those installs the fast path forever."""
+    """_link_or_copy falls back to shutil.copy2; inodes differ legitimately, so judge by bytes."""
     install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch, hardlink = False)
     WHISPER.settle_kept_install(install_dir)
     assert _marker(install_dir).get("paired_llama_runtime_id") == LLAMA_ID_GFX1100

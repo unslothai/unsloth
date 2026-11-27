@@ -212,6 +212,5 @@ def test_a_refresh_after_a_form_post_is_a_get(monkeypatch):
 
     opener.open = open_recording
     monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: opener)
-    # Text mode follows refreshes itself; binary mode hands them back to the browser panel.
     tools._fetch_url_raw("https://example.com/form", timeout = 5, post_data = b"q=1")
     assert bodies == [b"q=1", None]

@@ -94,6 +94,8 @@ def test_table_covers_every_accelerate_distributed_type(native):
 
 def test_every_refuse_row_is_refused_at_both_entry_points(native, monkeypatch):
     launch = sys.modules["unsloth.fsdp2_launch"]
+    # CPU-only torch: the generic flag routes vendor devices to accelerate FSDP2, not refused.
+    monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "native")
     rows = [r for r in launch.NATIVE_BACKEND_TABLE if r["action"] == "refuse"]
     assert len(rows) >= 10
     for row in rows:
@@ -108,7 +110,6 @@ def test_every_refuse_row_is_refused_at_both_entry_points(native, monkeypatch):
             if not row.get("args"):  # the launch step sees only the env / installed packages
                 with pytest.raises(RuntimeError, match = re.escape(row["label"])):
                     launch.apply_unsloth_fsdp2_launch_env()
-    # Nothing on: neither entry point refuses.
     assert launch.native_backend_conflicts() == []
     assert launch.apply_unsloth_fsdp2_launch_env() is False
 

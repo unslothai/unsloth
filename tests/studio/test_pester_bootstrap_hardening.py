@@ -9,7 +9,7 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "studio-windows-inference-smoke.yml"
+_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "studio-windows-installer-smoke.yml"
 _GUARD_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pester-guard-ci.yml"
 
 

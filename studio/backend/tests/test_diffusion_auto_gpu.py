@@ -248,3 +248,65 @@ def test_route_pins_its_automatic_decision_for_the_backend(monkeypatch):
         return ordinal, real.get()
 
     assert asyncio.run(load()) == (None, None)
+
+
+def test_automatic_primary_pick_ranks_by_the_budgeted_room(monkeypatch):
+    from utils import vram_budget_settings
+
+    fraction = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: fraction["value"])
+    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 1.0), _dev(1, 192.0, 132.0)])
+    assert dd.resolve_auto_cuda_ordinal() == 1
+    fraction["value"] = 0.5
+    assert dd.resolve_auto_cuda_ordinal() == 0
+    _host(monkeypatch, [0, 1], [_dev(0, 80.0, 0.6), _dev(1, 80.0, 0.5)])
+    assert dd.resolve_auto_cuda_ordinal() is None
+
+
+def test_route_ranks_the_next_load_under_its_own_budget(monkeypatch):
+    from core.inference import diffusion_memory as dm
+    from routes import inference as routes
+    from utils import vram_budget_settings
+
+    fraction = {"value": vram_budget_settings.VRAM_FRACTION_DEFAULT}
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: fraction["value"])
+    monkeypatch.setattr(dm, "_LOAD_BUDGET_FRACTIONS", {})
+    _host(monkeypatch, [0, 1], [_dev(0, 24.0, 1.0), _dev(1, 192.0, 132.0)])
+    monkeypatch.setattr(
+        dd, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible_cached", lambda: True)
+    dm.vram_budget_scope("image", load = True)(lambda: dm.commit_load_budget_fraction("image"))()
+    fraction["value"] = 0.5
+    assert dm.vram_budget_scope("image")(dm._vram_budget_fraction)() == pytest.approx(0.97)
+
+    seen = {}
+
+    @dm.vram_budget_scope("image", load = True)
+    def plan():
+        seen["load"] = dm._vram_budget_fraction()
+
+    def worker():
+        seen["worker"] = dm._vram_budget_fraction()
+
+    async def request():
+        ordinal = await routes._selected_gpu_ordinal(None)
+        fraction["value"] = (
+            0.8  # edited after the ranking: the load still plans with the ranking's value
+        )
+        await asyncio.to_thread(plan)
+        return ordinal
+
+    assert asyncio.run(request()) == 0
+    assert seen == {"load": pytest.approx(0.5)}
+    assert dm._vram_budget_fraction() == pytest.approx(0.97)
+    import threading
+
+    fraction["value"] = 0.5
+    carried = dm.vram_budget_scope("image", load = True)(
+        lambda: (fraction.update(value = 0.8), dm.carry_load_budget(worker))[1]
+    )()
+    thread = threading.Thread(target = carried)
+    thread.start()
+    thread.join()
+    assert seen["worker"] == pytest.approx(0.5)

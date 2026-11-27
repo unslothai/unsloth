@@ -37,9 +37,7 @@ stack_mod = _load_stack_module()
 
 
 def _sh_function_body(source: str, name: str) -> str:
-    """Return a POSIX-shell function body by brace matching (same idea as
-    _extract_sh_function_body in test_rocm_support.py, kept local so this file
-    stands alone)."""
+    """Brace-match a POSIX shell function body; standalone copy of _extract_sh_function_body."""
     needle = f"{name}() {{"
     start = source.find(needle)
     assert start != -1, f"{name}() not found"
@@ -84,8 +82,7 @@ def _ps_block(source: str, header: str, open_ch: str, close_ch: str) -> str:
 
 
 def _strip_sh_comment(line: str) -> str:
-    """Drop a trailing `# ...` comment. Safe here: no table line contains a '#'
-    inside a pattern."""
+    """Drop a trailing comment; safe as no table line has a hash inside a pattern."""
     return line.split("#", 1)[0]
 
 
@@ -151,8 +148,7 @@ class TestGfxIndexFamilyParity:
             assert not wrong, f"{where} maps {wrong} (value, expected)"
 
     def test_rdna2_family_present_everywhere(self):
-        """#7277 added gfx1030-1036 to three files; install.sh followed later.
-        Pin the whole RDNA2 range so the next family lands everywhere at once."""
+        """Pin the RDNA2 range in every table; #7277 added it to three files, install.sh lagged."""
         for where, table in _gfx_family_maps().items():
             for arch in (
                 "gfx1030",
@@ -184,8 +180,7 @@ class TestSupportedWheelArchList:
         )
 
 
-# Copies are first-match-wins: shell case globs (case-sensitive), PowerShell -match (insensitive).
-# Run every copy against the same real names instead of diffing patterns.
+# Copies are first-match-wins; shell globs are case-sensitive, -match is not; test real names.
 def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str]]:
     body = _sh_function_body(source, name)
     rows: list[tuple[list[str], str]] = []
@@ -225,9 +220,7 @@ def _match_sh(rows: list[tuple[list[str], str]], gpu_name: str) -> str | None:
 
 
 def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
-    """Evaluate a PowerShell -match table: first arm whose regex matches wins.
-    -match is case-insensitive; .NET and Python agree on these patterns
-    (alternation plus one negative lookahead)."""
+    """First match wins; -match is case-insensitive; .NET and Python agree on these patterns."""
     for pattern, arch in rows:
         if re.search(pattern, gpu_name, re.IGNORECASE):
             return arch
@@ -291,6 +284,30 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon 880M Graphics": "gfx1150",
     "AMD Radeon 860M Graphics": "gfx1152",
     "AMD Radeon 840M Graphics": "gfx1152",
+    # RDNA 2 by die (pci.ids 73bf / 73df / 73ef / 73ff; LLVM AMDGPUUsage). Windows device packs are per arch.
+    "AMD Radeon RX 6800 XT": "gfx1030",
+    "AMD Radeon RX 6900 XT": "gfx1030",
+    "AMD Radeon RX 6700 XT": "gfx1031",
+    "AMD Radeon RX 6750 XT": "gfx1031",
+    "AMD Radeon RX 6800M": "gfx1031",
+    "AMD Radeon RX 6850M XT": "gfx1031",
+    "AMD Radeon RX 6700S": "gfx1032",
+    "AMD Radeon RX 6800S": "gfx1032",
+    "AMD Radeon RX 6650 XT": "gfx1032",
+    "AMD Radeon RX 6600M": "gfx1032",
+    # One name, two dies: libdrm amdgpu.ids 73DF (Navi 22) vs 73FF (Navi 23).
+    "AMD Radeon RX 6750 GRE 12GB": "gfx1031",
+    "AMD Radeon RX 6750 GRE 10GB": "gfx1032",
+    "AMD Radeon 6550S": "gfx1034",
+    "AMD Radeon Pro V620": "gfx1030",
+    # Navi 33 / 44 / 48 names from libdrm amdgpu.ids (7499, 7590, 7551).
+    "AMD Radeon RX 7400": "gfx1102",
+    "AMD Radeon RX 7300": "gfx1102",
+    "AMD Radeon Pro W7400": "gfx1102",
+    "AMD Radeon RX 9050": "gfx1200",
+    "AMD Radeon AI Pro R9600D": "gfx1201",
+    # amd.com: Zen 5 + RDNA 3.5 with 16 CUs is Strix Point, not Phoenix.
+    "AMD Ryzen Z2 Extreme": "gfx1150",
 }
 
 
@@ -347,11 +364,8 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
-# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
-_SPOOF_DIVERGENCES = {
-    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
-}
+# The spoof fixture maps gfx -> name, an independent witness.
+_SPOOF_DIVERGENCES: dict[str, str] = {}
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
@@ -372,9 +386,7 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name", [name for name, _ in _GPU_NAME_LEAF_CASES])
     def test_all_copies_return_the_same_arch(self, gpu_name):
-        """The drift guard proper: no expected value, just agreement. This is what
-        catches a table edited in one installer and not the other three, and it
-        stays honest even where the shipped gfx id is itself wrong."""
+        """Drift guard, agreement only: a wrong gfx id passes; one table edited alone fails."""
         answers = {where: _resolve(where, rows, gpu_name) for where, rows in _name_tables().items()}
         distinct = set(answers.values())
         assert len(distinct) == 1, f"{gpu_name!r} resolves inconsistently: {answers}"
@@ -382,8 +394,7 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name,expected_leaf", _GPU_NAME_LEAF_CASES)
     def test_every_copy_routes_to_the_right_wheel_index(self, gpu_name, expected_leaf):
-        """What the tables are for. A wrong leaf is the user-visible failure:
-        CPU-only torch, or a wheel built for the wrong ISA."""
+        """A wrong leaf is user-visible: CPU-only torch, or a wheel built for the wrong ISA."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
         for where, rows in _name_tables().items():
             arch = _resolve(where, rows, gpu_name)
@@ -403,9 +414,15 @@ class TestGpuNameArchParity:
                 arch == expected_arch
             ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
 
+    @pytest.mark.parametrize("gpu_name", ["AMD Radeon 680M", "AMD Radeon 660M", "AMD Radeon 610M"])
+    def test_rdna2_igpus_stay_unmapped(self, gpu_name):
+        """RDNA2 iGPUs unmapped: training unmeasured, gfx1033 wrong (studio/ROCM_RDNA2_APU.md)."""
+        for where, rows in _name_tables().items():
+            got = _resolve(where, rows, gpu_name)
+            assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
+
     def test_unknown_name_matches_nothing_anywhere(self):
-        """An unrecognised card must fall through to the CPU path in every copy,
-        never onto a neighbouring arm."""
+        """Unrecognised cards fall to CPU in every copy, never onto a neighbouring arm."""
         for where, rows in _name_tables().items():
             got = _resolve(where, rows, "NVIDIA GeForce RTX 4090")
             assert got is None, f"{where}: RTX 4090 matched {got!r}"
@@ -428,8 +445,7 @@ class TestGpuNameArchParity:
             assert got is None, f"{where}: {gpu_name!r} matched {got!r}"
 
     def test_inferred_arch_always_has_an_index_family(self):
-        """Every arch a name table can produce must be routable to an AMD wheel
-        index, else detection succeeds and the install still lands on CPU torch."""
+        """Each table arch needs an AMD wheel index, else install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
         # RDNA 1 is Windows-only (multi-arch index, #11614); Linux tables must not produce it.
         multiarch = stack_mod._WINDOWS_MULTIARCH_GFX
@@ -452,6 +468,38 @@ class TestGpuNameArchParity:
                 ), f"{where}: {gpu_name!r} matches no arm, so this card gets CPU-only torch"
 
 
+# Windows spells Krackan 2 (gfx1153) as plain alternatives; Linux resolves it partly elsewhere.
+_WINDOWS_KRACKAN_CASES = {
+    "AMD Radeon 820M Graphics": "gfx1153",
+    "AMD Ryzen AI 5 330": "gfx1153",
+    "AMD Ryzen AI 5 PRO 330": "gfx1153",
+    "AMD Krackan Point 2": "gfx1153",
+    "AMD Krackan 2": "gfx1153",
+    "Krackan2": "gfx1153",
+    "KrackanPoint2": "gfx1153",
+    "Krackan Point2": "gfx1153",
+    "KrackanPoint 2": "gfx1153",
+    "AMD Krackan Point": "gfx1152",
+    "AMD Ryzen AI 5 340": "gfx1152",
+    "AMD Radeon 860M Graphics": "gfx1152",
+}
+
+
+class TestWindowsKrackanRows:
+    @pytest.mark.parametrize("gpu_name,expected_arch", sorted(_WINDOWS_KRACKAN_CASES.items()))
+    def test_windows_tables_split_krackan_generations(self, gpu_name, expected_arch):
+        tables = {
+            "install.ps1": _name_table_ps(_INSTALL_PS1),
+            "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
+            "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
+        }
+        for where, rows in tables.items():
+            arch = _match_ps(rows, gpu_name)
+            assert (
+                arch == expected_arch
+            ), f"{where}: {gpu_name!r} -> {arch!r}, expected {expected_arch!r}"
+
+
 class TestSpoofFixtureParity:
     """Spoof fixture is another copy of the mapping; drift makes other ROCm tests use an impossible host."""
 
@@ -461,8 +509,7 @@ class TestSpoofFixtureParity:
         assert all(gfx.startswith("gfx") for gfx in profiles), profiles
 
     def test_spoof_names_resolve_back_to_their_own_arch(self):
-        """Round-trip: feed each spoofed marketing name through the installer
-        tables and the answer must be the gfx the spoof claims to be emulating."""
+        """Spoofed names must resolve through the installer tables back to their own gfx."""
         tables = _name_tables()
         for gfx, gpu_name in sorted(_spoof_profiles().items()):
             if gfx in _SPOOF_DIVERGENCES:
@@ -474,9 +521,7 @@ class TestSpoofFixtureParity:
                 ), f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
 
     def test_divergences_are_real_and_still_diverging(self):
-        """Keeps the exception list from going stale: if the installers are
-        corrected later, this fails and the entry has to be removed rather than
-        quietly suppressing a check that now passes."""
+        """Fails once an installer is fixed, so its exemption must go rather than hide a pass."""
         tables = _name_tables()
         profiles = _spoof_profiles()
         for gfx in _SPOOF_DIVERGENCES:
@@ -541,13 +586,10 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
 
 
 class TestNoUnregisteredArchTable:
-    """The failure this whole file exists for is a copy of the table that nobody
-    knew about. Enumerating the copies by hand is the same manual step that let
-    them drift, so this rediscovers them from the source tree."""
+    """Catches unregistered arch table copies; hand lists drifted, so the tree is scanned."""
 
     def test_scan_still_finds_the_known_copies(self):
-        """Guards the guard: if the heuristic stops matching (patterns reformatted
-        onto multiple lines, say), it would silently find nothing and pass."""
+        """If the scan stops matching (say, multi-line patterns) it silently finds nothing."""
         found = _files_carrying_a_name_arch_table()
         missing = _REGISTERED_TABLE_FILES - set(found)
         assert not missing, f"scan no longer detects known tables in {sorted(missing)}"
@@ -562,8 +604,7 @@ class TestNoUnregisteredArchTable:
         )
 
     def test_cargo_build_output_is_skipped_but_a_plain_target_dir_is_not(self, tmp_path):
-        """The skip is narrow on purpose: `target/` next to a Cargo.toml is build output,
-        `target/` anywhere else is source and a copy hiding there still has to fail."""
+        """Skip target/ only beside Cargo.toml; a target/ elsewhere is source and must fail."""
         table = "\n".join(f"# RX 7{n}00 gfx1100" for n in range(1, 6)) + "\n"
         (tmp_path / "src-tauri" / "target" / "debug").mkdir(parents = True)
         (tmp_path / "src-tauri" / "Cargo.toml").write_text("[package]\n")
@@ -582,9 +623,8 @@ class TestNoUnregisteredArchTable:
 
 
 class TestTorch211PinAllowlistParity:
-    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 / gfx103X-all / gfx110X-all (and rocm7.2) ship the null
-    _grouped_mm kernel below torch 2.11, so all three installers must raise the
-    same floor. A leaf missing from one copy reintroduces the crash there."""
+    """Leaves in _EXPECTED (plus rocm7.2) ship a null _grouped_mm kernel below torch 2.11; all three
+    installers must pin the same floor, or a missing leaf reintroduces the crash."""
 
     _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 

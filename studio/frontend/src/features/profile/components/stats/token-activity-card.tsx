@@ -323,9 +323,7 @@ export function TokenActivityCard({ daily }: { daily: ProfileStatsDay[] }) {
     () => buildActivityColumns(daily, values, columns, mode),
     [daily, values, columns, mode],
   );
-  // The app language, not the browser's: those differ whenever the user picks
-  // a language in Settings, and it has to be a dependency so switching while
-  // the panel is open rebuilds the formatters.
+  // The app language, not the browser's, and a dependency so switching rebuilds formatters.
   const locale = useLocale();
   const summaryTotal = useMemo(
     () => activitySummaryForMode(grid, mode),

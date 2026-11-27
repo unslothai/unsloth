@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Check source wiring because rendering TauriWrapper requires the desktop runtime.
+// Source wiring only: rendering TauriWrapper requires the desktop runtime.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,7 +37,7 @@ test("the titlebar drops the sidebar surface while the update screen is shown", 
   const surface = region(
     PROVIDER,
     "const showSidebarSurface =",
-    "<WindowTitlebar showSidebarSurface={showSidebarSurface} />",
+    "<WindowTitlebar",
   );
   assert.match(surface, /!updateScreenShown/);
 });

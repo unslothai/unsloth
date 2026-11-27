@@ -132,6 +132,8 @@ for (const scope of ["defaults", "chat", "pending chat"] as const) {
 test("unloading does not overwrite a settled chat or its defaults", async (t) => {
   const runtime = await boot(t);
   const store = runtime.useChatRuntimeStore;
+  store.getState().setToolsEnabled(false);
+  store.getState().setCodeToolsEnabled(false);
   store.getState().setActiveThreadId(THREAD);
   store.getState().applyThreadScopedSettings(THREAD, {
     toolsEnabled: true,
@@ -534,11 +536,13 @@ test("Kimi keeps Search off and Thinking on when a chat opens without stored pil
   assert.equal(storage.get("unsloth_chat_tools_enabled"), "true");
 });
 
-test("unloading drops a Search pill the provider lit without a stored preference", async (t) => {
+test("unloading drops a Search pill the provider lit over the stored preference", async (t) => {
   const runtime = await boot(t);
   const store = runtime.useChatRuntimeStore;
+  store.getState().setToolsEnabled(false);
+  store.getState().setCodeToolsEnabled(false);
   store.setState({ toolsEnabled: true, codeToolsEnabled: true });
-  assert.equal(storage.get("unsloth_chat_tools_enabled"), undefined);
+  assert.equal(storage.get("unsloth_chat_tools_enabled"), "false");
   store.getState().clearCheckpoint();
   assert.equal(store.getState().toolsEnabled, false);
   assert.equal(store.getState().codeToolsEnabled, false);
@@ -766,9 +770,26 @@ test("a chat stored before the pill keys has no Search override of its own", asy
   store.getState().setActiveThreadId(THREAD);
   store.getState().applyThreadScopedSettings(THREAD, { permissionMode: "ask" });
   assert.equal(runtime.threadScopedOverride("toolsEnabled"), undefined);
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).toolsEnabled, true);
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).codeToolsEnabled, true);
+  store.getState().setToolsEnabled(false);
+  assert.equal(runtime.threadScopedOverride("toolsEnabled"), false);
+});
+
+test("a fresh profile starts with Search and Code on, and a stored choice wins", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  assert.equal(storage.get("unsloth_chat_tools_enabled"), undefined);
+  assert.equal(storage.get("unsloth_chat_code_tools_enabled"), undefined);
+  assert.deepEqual(runtime.resolveToolsEnabledOnLoad(true), {
+    toolsEnabled: true,
+    codeToolsEnabled: true,
+    deepResearchEnabled: false,
+  });
+  store.getState().setToolsEnabled(false);
+  store.getState().setCodeToolsEnabled(false);
   assert.equal(runtime.resolveToolsEnabledOnLoad(true).toolsEnabled, false);
-  store.getState().setToolsEnabled(true);
-  assert.equal(runtime.threadScopedOverride("toolsEnabled"), true);
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).codeToolsEnabled, false);
 });
 
 test("a same-model reload keeps the Search and Code pills the model was running with", () => {

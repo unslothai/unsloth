@@ -4,8 +4,9 @@
 export const RAISED_SURFACE =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none";
 
+// library-card: index.css glass hook.
 export const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
+  "library-card shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
 
 // A selected card dims as a whole, picture included: the ring alone vanished against white previews.
 export const SELECTED_TINT =
@@ -21,3 +22,7 @@ const CONTROL_EDGE =
 export const GLASS_SURFACE = `bg-white text-neutral-900 ${CONTROL_EDGE} dark:bg-neutral-700 dark:text-white dark:ring-0`;
 
 export const GLASS_CONTROL = `${GLASS_SURFACE} hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-600 dark:hover:text-white`;
+
+/** Fits the fullest card: tile, two-line title, two-line footer. */
+export const CARD_MIN_HEIGHT =
+  "calc(var(--spacing) * 26 + 2.75 * var(--text-ui-13) + 3 * var(--text-ui-11p5))";

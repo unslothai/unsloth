@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Qwen3-30B-A3B-Instruct-2507
-# Based on Qwen3_MoE.py
 # Also applies to: Qwen/Qwen3-30B-A3B-Instruct-2507, unsloth/Qwen3-30B-A3B-Instruct-2507-bnb-4bit
-# MoE model - includes gate_up_proj for MoE layers
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 1

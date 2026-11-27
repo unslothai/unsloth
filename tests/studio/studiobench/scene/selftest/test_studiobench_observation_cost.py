@@ -157,8 +157,7 @@ def test_a_clickable_control_reports_the_click_path():
 
 
 def test_a_substituted_navigation_is_reported_as_a_navigation_not_as_a_click():
-    """The whole defect in one assertion: the old function returned `True` here and the caller had
-    no way to learn that a completely different operation had been performed."""
+    """The old function returned True, hiding that a navigation replaced the click."""
     page = _Page(False)
     got = A._click_or_navigate(_ctx(page), "button", "http://x/")
     assert got.ok is True
@@ -228,15 +227,13 @@ def test_it_waits_for_a_generating_reply_instead_of_reporting_no_menu():
 
 
 def test_a_reply_that_never_lands_is_reported_honestly_rather_than_waited_on_forever():
-    """The wait is bounded by the slot's own budget: a reply that never finishes must not swallow
-    the rest of the film."""
+    """Waits capped by the slot budget; a reply that never lands must not swallow the film."""
     page = _RunningPage(runs_for = 10_000)
     assert A._wait_for_the_reply_to_land(_running_ctx(page, budget_ms = 200)) is False
 
 
 def test_an_idle_thread_is_not_waited_on_at_all():
-    """No stream, no wait: the action must not add latency to the common case, and a wait that
-    always fires would change what every other reading is taken against."""
+    """No stream, no wait: an always-firing wait would add latency and change other readings."""
     page = _RunningPage(runs_for = 0)
     assert A._wait_for_the_reply_to_land(_running_ctx(page)) is True
     assert page.waits == 0

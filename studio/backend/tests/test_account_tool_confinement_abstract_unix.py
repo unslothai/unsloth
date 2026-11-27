@@ -32,8 +32,8 @@ _live = pytest.mark.skipif(
 
 _CONNECT = (
     "import socket, sys\n"
-    "s = socket.socket(socket.AF_UNIX)\n"
     "try:\n"
+    "    s = socket.socket(socket.AF_UNIX)\n"
     "    s.connect(sys.argv[1].replace('@', chr(0), 1)); print('CONNECTED')\n"
     "except OSError as e:\n"
     "    print('refused', e.errno)\n"

@@ -6,7 +6,6 @@ import type {
   TransformersUpgradePhase,
 } from "../types";
 
-/** Which ways out the consent dialog offers, besides Cancel. */
 export interface UpgradeDialogActions {
   /** A released version, or transformers main, can be installed. */
   installable: boolean;
@@ -14,8 +13,6 @@ export interface UpgradeDialogActions {
   fromMain: boolean;
   /** Only transformers main ships the architecture and its version is unknown. */
   devOnly: boolean;
-  /** Offer "Continue with custom code": the model's own modeling code loads it on the
-   *  transformers already installed, so the caller's trust_remote_code gate is a way out. */
   customCode: boolean;
 }
 
@@ -32,31 +29,47 @@ export function upgradeInstallVersion(
   return null;
 }
 
-/** Decide the dialog's actions from the check that raised it.
- *
- * The custom-code fallback used to appear only with nothing to install, or after an
- * install failed. It reads as a courtesy but is a correctness rule: the fallback loads
- * on the CURRENT transformers, the only path that still loads bnb 4-bit, since
- * installing activates the 16-bit sidecar. Hiding it behind Install leaves a QLoRA run
- * no way to start at its own precision. Whenever the fallback exists, it is offered. */
+/**
+ * A PyPI release installs without the dialog (the server scans it first and answers
+ * requires_consent when the scan is not clean). transformers main always asks, and so does a
+ * model with its own code, where the dialog is a real choice: that code is the only 4-bit path.
+ */
+export function canAutoInstallUpgrade(
+  upgrade: TransformersUpgradeInfo | null | undefined,
+  trustRemoteCodeFallback: boolean,
+): boolean {
+  return (
+    !trustRemoteCodeFallback &&
+    Boolean(upgrade?.supported_in_pypi && upgrade?.pypi_version)
+  );
+}
+
+/**
+ * Derives the dialog actions from the check that raised it; the custom-code fallback is always
+ * offered when it exists, as the only path loading bnb 4-bit (installing activates the 16-bit
+ * sidecar).
+ */
 export function upgradeDialogActions({
   upgrade,
   phase,
   trustRemoteCodeFallback,
+  installBlocked = false,
 }: {
   upgrade: TransformersUpgradeInfo | null;
   phase: TransformersUpgradePhase;
   trustRemoteCodeFallback: boolean;
+  /** The package scan flagged the release: no install action at all. */
+  installBlocked?: boolean;
 }): UpgradeDialogActions {
   const fromPypi = Boolean(upgrade?.supported_in_pypi && upgrade?.pypi_version);
   const fromMain =
     !fromPypi && Boolean(upgrade?.supported_in_main && upgrade?.main_version);
-  const installable = fromPypi || fromMain;
+  const installable = !installBlocked && (fromPypi || fromMain);
   return {
     installable,
     fromMain,
-    devOnly: !installable && Boolean(upgrade?.supported_in_main),
-    // Never mid-install: the install is running and this button would abandon it.
+    devOnly: !installable && !installBlocked && Boolean(upgrade?.supported_in_main),
+    // Never mid-install: this button would abandon it.
     customCode: trustRemoteCodeFallback && phase !== "installing",
   };
 }

@@ -60,14 +60,25 @@ export function closestDurationIndex(
   return bestIndex;
 }
 
-/**
- * A stored recipe owns the first status seed. Later model changes apply their own defaults, unless
- * the user claimed the form after the pick that is being confirmed: their choice is the newer one.
- */
+/** A stored recipe owns the first seed; later model defaults apply unless the user claimed
+ *  the form after the pick. */
 export function shouldApplyModelDefaults(
   alreadySeeded: boolean,
   storedRecipe: boolean,
   supersededByUser = false,
 ): boolean {
   return !supersededByUser && (alreadySeeded || !storedRecipe);
+}
+
+/** What hydration loads into the form. Without working-recipe restore only a named preset loads,
+ *  so a store holding just Default leaves the form as a fresh page would. */
+export function hydratedParams<Params>(
+  currentParams: Params,
+  active: { name: string; params: Params },
+  restoreWorkingParams: boolean,
+): Params | null {
+  if (restoreWorkingParams) {
+    return currentParams;
+  }
+  return active.name === DEFAULT_PRESET_NAME ? null : active.params;
 }

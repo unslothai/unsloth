@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -187,14 +189,15 @@ export function CategoryDialog({
                   }
                 }}
               />
-              <Button type="button" size="sm" onClick={handleAddCondition}>
+              <Button variant="secondary" type="button" size="sm" onClick={handleAddCondition}>
+                <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
                 Add rule
               </Button>
             </div>
             {Object.entries(conditional).map(([condition, params]) => (
               <div
                 key={condition}
-                className="space-y-3 rounded-2xl border border-border/60 p-3"
+                className="space-y-3 rounded-lg border border-border/60 p-3"
               >
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-semibold text-foreground">{condition}</p>

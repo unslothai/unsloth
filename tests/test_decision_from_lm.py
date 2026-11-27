@@ -16,7 +16,7 @@ from unsloth.models import decision
 from unsloth.models.decision_from_lm import default_head_config
 
 TINY_QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
-TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink"
 HEAD = {
     "hidden_size": None,
     "width": 32,
