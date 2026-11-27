@@ -159,11 +159,11 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   const live: Array<[string, RegExp]> = [
     ["components/tauri/window-titlebar.tsx", /"modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-\[70\]/],
     ["components/tauri/startup-screen.tsx", /"pointer-events-auto modal-pe-live fixed inset-0 z-\[9999\]"/],
-    ["components/ui/sonner.tsx", /toast: "cn-toast modal-pe-live pointer-events-auto"/],
+    ["components/ui/sonner.tsx", /toast: "cn-toast modal-pe-live pointer-events-auto glass-card"/],
     ["components/ui/combobox.tsx", /"isolate z-\[120\] modal-pe-live pointer-events-auto"/],
     ["features/interface-zoom/components/interface-zoom.tsx", /"modal-pe-live interface-zoom-position pointer-events-auto/],
     ["app/provider.tsx", /data-tauri-drag-region=\{true\}[\s\S]{0,80}"pointer-events-auto modal-pe-live /],
-    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-fab pointer-events-auto modal-pe-live"/],
+    ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-fab pointer-events-auto modal-pe-live glass-card"/],
     ["features/hub/download-manager/download-manager-panel.tsx", /"hub-download-panel pointer-events-auto modal-pe-live /],
   ];
   for (const [file, re] of live) assert.match(readSrc(file), re, file);
