@@ -54,7 +54,10 @@ def _driver_cuda_version() -> Optional[tuple[int, int]]:
     try:
         from utils.hardware import gpu_query
         from utils.hardware.nvidia import _nvidia_smi_executable
+        from utils.native_path_leases import child_env_without_native_path_secret
+        from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
+        # Same launch as nvidia.py's queries: no console window on Windows, no native-path secret.
         result = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable()],
             capture_output = True,
@@ -62,6 +65,8 @@ def _driver_cuda_version() -> Optional[tuple[int, int]]:
             encoding = "utf-8",
             errors = "replace",
             timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **windows_hidden_subprocess_kwargs(),
         )
         match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout or "")
         return (int(match.group(1)), int(match.group(2))) if match else None

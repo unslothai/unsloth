@@ -51,10 +51,23 @@ def test_the_driver_header_is_parsed_as_install_ps1_reads_it(monkeypatch):
     from utils.hardware import gpu_query
 
     header = "| NVIDIA-SMI 576.88   Driver Version: 576.88   CUDA Version: 12.9     |"
-    monkeypatch.setattr(gpu_query, "run_nvidia_smi", lambda *a, **k: SimpleNamespace(stdout = header))
+    seen = {}
+
+    def fake(argv, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(stdout = header)
+
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", fake)
+    from utils import subprocess_compat
+
+    monkeypatch.setattr(
+        subprocess_compat, "windows_hidden_subprocess_kwargs", lambda: {"creationflags": 0x08000000}
+    )
     wr._driver_cuda_version.cache_clear()
     try:
         assert wr._driver_cuda_version() == (12, 9)
+        # Launched like nvidia.py's queries: no console window on Windows.
+        assert seen.get("creationflags") == 0x08000000 and "env" in seen
     finally:
         wr._driver_cuda_version.cache_clear()
 
