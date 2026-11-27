@@ -423,6 +423,26 @@ class TestPreLaunch:
         backend._n_kv_heads_by_layer = [8, 4, 0, 0]
         assert backend._windows_host_commit_refusal(_cmd("-ngl", "2"), _CARD, {}, **kwargs)
 
+    def test_recurrent_state_follows_its_own_layers(self, windows):
+        # Jamba-like [0, 8, 0, 0], -ngl 2: the attention layer (all growing KV) is on the CPU, but only one
+        # of the three recurrent layers is.
+        backend = _backend(model_gb = 20, kv_gb = 16)
+        backend._n_layers, backend._n_kv_heads_by_layer = 4, [0, 8, 0, 0]
+        backend._kv_layer_weights = lambda *a, **k: []
+        backend._rollback_state_bytes = lambda n_parallel = 1: 12 * _GB  # 4 GB per recurrent layer
+        kwargs = dict(avail_mib = 96 * _MIB)
+        cmd = _cmd("-ngl", "2")
+        # Host: 4 GB attention KV + 4 GB of recurrent state = 8 GB, not the whole 16.
+        assert (
+            backend._windows_host_commit_refusal(
+                cmd, _CARD, {}, commit_headroom_mib = 11 * _MIB, **kwargs
+            )
+            is None
+        )
+        assert backend._windows_host_commit_refusal(
+            cmd, _CARD, {}, commit_headroom_mib = 9 * _MIB, **kwargs
+        )
+
     def test_model_that_fits_the_card_is_never_refused(self, windows):
         assert (
             _backend(model_gb = 20)._windows_host_commit_refusal(

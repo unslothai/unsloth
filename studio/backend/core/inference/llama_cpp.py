@@ -17178,7 +17178,26 @@ class LlamaCppBackend:
                     kv = int(kv * k_frac + kv_v * (1 - k_frac))
                 # Per-slot weights only map onto layers when slots and physical layers agree.
                 if 0 < kv_on_host < 1 and n_layers and n_phys == n_layers:
-                    kv_on_host = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
+                    cpu_layers = min(n_layers, max(0, round(kv_on_host * n_layers)))
+                    # Hybrid models: the estimate holds fixed recurrent state beside the growing
+                    # attention KV; each lives on its own layers, so price each by its CPU share.
+                    try:
+                        recurrent = int(self._rollback_state_bytes(n_parallel) or 0)
+                    except Exception:  # noqa: BLE001 -- not a recurrent hybrid
+                        recurrent = 0
+                    heads = getattr(self, "_n_kv_heads_by_layer", None)
+                    if (
+                        0 < recurrent < kv
+                        and isinstance(heads, (list, tuple))
+                        and len(heads) == n_layers
+                    ):
+                        no_attn = [not int(h or 0) for h in heads]
+                        rec_share = sum(no_attn[:cpu_layers]) / max(1, sum(no_attn))
+                        attn_share = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
+                        private += int((kv - recurrent) * attn_share + recurrent * rec_share)
+                        kv_on_host = 0.0
+                    else:
+                        kv_on_host = self._windows_host_kv_share(kv_on_host, n_layers, n_ctx, shape)
                 private += int(kv * kv_on_host)
             if private <= 0:
                 return None
