@@ -916,3 +916,15 @@ test("an older save answering last keeps a newer lost save's uncertainty", async
   await first.answer();
   assert.equal(s.db.getCachedRecipe("r1"), null);
 });
+
+test("an upload a pending save still writes is not cleaned when a later save fails first", async () => {
+  const s = setup();
+  await s.edit({ columns: ["a"], ui: { unstructured_upload_uid: "u1" } });
+  await s.fireDebounce();
+  await s.edit({ columns: ["a"] });
+  s.uploads.pending.push("u1");
+  await s.fire("pagehide");
+  await s.server.release("lifo");
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 409]);
+  assert.ok(!s.uploads.removed.includes("u1"));
+});

@@ -315,6 +315,7 @@ export function useRecipePersistence({
     failed: null as string | null,
     seq: 0,
     applied: 0,
+    outstanding: 0,
   });
   const inFlight = useRef<{ signature: string; done: Promise<void> } | null>(
     null,
@@ -336,6 +337,7 @@ export function useRecipePersistence({
     ): Promise<void> => {
       const { recipeId: id, onPersistRecipe: persist } = latest.current;
       const seq = ++savedRef.current.seq;
+      savedRef.current.outstanding += 1;
       setSaveLoading(true);
       const done: Promise<void> = persist({ id, name, payload, keepalive, recover })
         .then(
@@ -369,10 +371,9 @@ export function useRecipePersistence({
           },
         )
         .finally(() => {
-          if (inFlight.current?.done === done) {
-            inFlight.current = null;
-            setSaveLoading(false);
-          }
+          if (inFlight.current?.done === done) inFlight.current = null;
+          // Idle (and so free to clean uploads) only once every overlapping save has settled.
+          if (--savedRef.current.outstanding === 0) setSaveLoading(false);
         });
       inFlight.current = { signature, done };
       return done;
