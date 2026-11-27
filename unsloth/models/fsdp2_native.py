@@ -3218,7 +3218,10 @@ def _ga_mode(model = None):
       accumulators held across micro-batches, the leanest and the slowest;
     "auto" (default) = "defer" for the fit layout (its units already stay gathered from forward to
       backward, so keeping them gathered adds no peak memory); "each" for the sharded full fine-tune
-      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip"."""
+      ("skip" would hold every whole fp32 gradient on every rank, ~100 GiB for 27B); else "skip", except
+      that units whose own parameters are mostly trainable (the root holding trainable embed_tokens /
+      lm_head, ~4 GiB of whole fp32 gradients for a Llama-8B vocab) still reduce-scatter every
+      micro-batch. An explicit "skip" skips every unit."""
     mode = os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() or "auto"
     if mode in ("skip", "defer", "each"):
         return mode
@@ -3240,6 +3243,31 @@ def _mostly_trainable(model):
     return trainable > frozen
 
 
+def _mostly_trainable_units(model):
+    """FSDP units of `model` whose own parameters (not those of nested units) are mostly trainable."""
+    FSDPModule = _fsdp_module_class()
+    if FSDPModule is None:
+        return []
+    found = []
+    for unit in (m for m in model.modules() if isinstance(m, FSDPModule)):
+        nested = set()  # parameters owned by this unit's descendant units
+        for child in unit.modules():
+            if child is not unit and isinstance(child, FSDPModule):
+                nested.update(id(p) for p in child.parameters())
+        trainable = frozen = 0
+        for p in unit.parameters():
+            if id(p) in nested:
+                continue
+            if p.requires_grad and _floating(p):
+                trainable += p.numel()
+            else:
+                frozen += p.numel()
+        # modules_to_save keeps a frozen original next to each trainable copy: half and half.
+        if trainable and trainable * 2 >= frozen:
+            found.append(unit)
+    return found
+
+
 @contextlib.contextmanager
 def _no_grad_sync(model):
     mode = _ga_mode(model)
@@ -3248,6 +3276,17 @@ def _no_grad_sync(model):
         return
     defer = mode == "defer" and hasattr(model, "set_reshard_after_backward")
     model.set_requires_gradient_sync(False)
+    if mode == "skip" and os.environ.get("UNSLOTH_FSDP2_GA_SYNC", "auto").strip().lower() in (
+        "",
+        "auto",
+    ):
+        # Skipping a mostly trainable unit holds its whole fp32 gradient on every rank between
+        # micro-batches; reduce-scattering it each time keeps only the 1 / world shard (same sum).
+        for unit in _mostly_trainable_units(model):
+            try:
+                unit.set_requires_gradient_sync(True, recurse = False)
+            except TypeError:  # no per-unit switch on this torch: skip it like the rest
+                break
     if defer:
         model.set_reshard_after_backward(False)
         if hasattr(model, "set_is_last_backward"):
