@@ -29,6 +29,6 @@ export const cleanupExport = record("cleanupExport");
 export const cancelExport = record("cancelExport");
 export const getExportStatus = record("getExportStatus");
 
-export function isRecoverableTransportError() {
-  return false;
+export function isRecoverableTransportError(error) {
+  return error?.message === "Cloudflare 524";
 }

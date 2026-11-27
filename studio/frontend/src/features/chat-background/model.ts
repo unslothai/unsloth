@@ -79,6 +79,7 @@ export const LENS_HOSTS = [
 	".glass-float-surface",
 	'[data-sonner-toast][data-styled="true"]',
 	".toast-surface",
+	".glass-card",
 	'[data-auth-wallpaper] > [data-slot="card"]',
 	".tooltip-compact",
 	".tooltip-rich",

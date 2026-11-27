@@ -46,9 +46,7 @@ _RELEASE_TAG_PATTERN = re.compile(r"^v\d+(?:\.\d+)+")
 
 # CommonMark needs a space, tab or line end after the hashes: a non-breaking space is text, and a bare `##` is an empty heading that still ends the section above.
 _HEADING_PATTERN = re.compile(r"^ {0,3}(?P<hashes>#{1,6})(?:[ \t]+(?P<title>.*?))?[ \t]*$")
-# A heading may close with its own run of hashes, which is not part of the title.
 _CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t])#+[ \t]*$")
-# Inline markup the title carries but the words do not.
 _TITLE_MARKUP = re.compile(r"[`*_~]|\[|\]\([^)]*\)|<[^>]*>")
 _FULL_CHANGELOG_LINE = re.compile(r"^ {0,3}\*{0,2}full changelog\*{0,2}\s*:", re.IGNORECASE)
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
@@ -60,12 +58,10 @@ _RAW_BLOCKS = (
     (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
     (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
     (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-    # A declaration needs an uppercase letter, so `<!note` stays ordinary text.
     (re.compile(r"^ {0,3}<![A-Z]"), re.compile(r">")),
 )
 # Type 6 runs to the next blank line, so `<details>` holds Markdown only after one. Open and close tags both start a block.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
-# Blocks that break into an open paragraph, closing it rather than continuing it.
 _INTERRUPTS = re.compile(
     r"^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$)"
 )
@@ -317,7 +313,6 @@ def scan_blocks(text: str):
         if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
         elif in_html_block:
-            # A blank line is the only thing that ends a type 6 block.
             in_html_block = line.strip() != ""
             visible = ""
         elif (fence := _FENCE_PATTERN.match(fence_line)) and not in_comment:
@@ -330,7 +325,6 @@ def scan_blocks(text: str):
         elif open_fence:
             visible = ""
         else:
-            # A block already open owns this line, so it is content.
             hidden = in_comment or in_raw_html is not None
             # A comment is an HTML block too, so it opens inside an item as a fence does: the opener is read past a marker on the same line.
             block_open = (
@@ -363,7 +357,6 @@ def scan_blocks(text: str):
                     visible = ""
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
-        # `1.0` over a line of dashes is the same heading written setext style.
         setext = (
             after_paragraph
             and match is None
@@ -471,7 +464,6 @@ def _normalise_title(title: str) -> str:
     """A heading title as its words, for comparison against the known ones."""
     title = _CLOSING_SEQUENCE.sub("", title)
     title = _TITLE_MARKUP.sub("", title)
-    # A curly apostrophe is the same word as a straight one.
     title = title.replace("’", "'")
     return " ".join(title.split()).strip(" :.").lower()
 

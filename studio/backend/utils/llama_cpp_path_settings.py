@@ -109,8 +109,7 @@ _HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from thi
 
 
 def binary_gpu_backends(binary: Path | str) -> Optional[set[str]]:
-    """GPU backend libraries beside the binary; empty for a split build with only CPU
-    libraries, None when the layout says nothing (a static build or a wrapper)."""
+    """GPU libs beside the binary; empty if only CPU libs, None for a static build or wrapper."""
     try:
         names = [p.name for p in Path(binary).resolve().parent.iterdir() if p.is_file()]
     except OSError:

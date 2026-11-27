@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_is_retired, account_key
 from utils.account_context import account_thread
+import collections
 import logging
 import threading
+import time
 import uuid
 
 from core.rag import account_db as rag_db
@@ -61,22 +63,37 @@ class _Job:
         }
 
 
+# Chunks, not num_chunks, which archived conversation turns leave at 0.
+_STALE_SQL = (
+    "SELECT id, scope, embedding_model FROM documents d WHERE status='completed' "
+    "AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id=d.id) AND NOT EXISTS "
+    "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+    "AND (d.linked_folder_id IS NULL OR EXISTS "
+    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id))"
+)
+# Full scans cost a row per document: at most one this often, else only the next document is re-read.
+_RESCAN_SECONDS = 1.0
+
+
 def _stale_documents(conn, identity: str) -> list[dict]:
     """Completed documents with chunks whose vectors another embedder wrote, newest first."""
-    # Chunks, not num_chunks, which archived conversation turns leave at 0.
     rows = conn.execute(
-        "SELECT id, scope, embedding_model FROM documents d WHERE status='completed' "
-        "AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id=d.id) AND NOT EXISTS "
-        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-        "AND (d.linked_folder_id IS NULL OR EXISTS "
-        "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-        "ORDER BY d.scope LIKE 'convarchive#_%' ESCAPE '#', d.created_at DESC, d.rowid DESC"
+        _STALE_SQL + " ORDER BY d.scope LIKE 'convarchive#_%' ESCAPE '#', d.created_at DESC, "
+        "d.rowid DESC"
     ).fetchall()
     return [
         dict(r)
         for r in rows
         if not config.embedding_identity_matches(r["embedding_model"], identity)
     ]
+
+
+def _stale_document(conn, document_id: str, identity: str) -> dict | None:
+    """The one document as _stale_documents would list it, or None once it is not stale."""
+    row = conn.execute(_STALE_SQL + " AND d.id=?", (document_id,)).fetchone()
+    if row is None or config.embedding_identity_matches(row["embedding_model"], identity):
+        return None
+    return dict(row)
 
 
 def stale_counts() -> dict:
@@ -91,12 +108,15 @@ def stale_counts() -> dict:
     return {"documents": len(rows) - archived, "archived": archived}
 
 
-def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
+def _reembed_document(job: _Job, doc: dict, model: str, vec_rowids: dict) -> bool:
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
             "SELECT id, text FROM chunks WHERE document_id=? ORDER BY chunk_index", (doc["id"],)
         ).fetchall()
+        # One partition scan per scope and job, not per document: vec0 does not index chunk_id.
+        if doc["scope"] not in vec_rowids:
+            vec_rowids[doc["scope"]] = store.vec_rowids_by_document(conn, doc["scope"])
     finally:
         conn.close()
     # Per document: an ST failure can hand the model to llama-server, whose tokenizer and limit differ.
@@ -123,6 +143,7 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
             vectors,
             identity,
             model,
+            vec_rowids[doc["scope"]],
         )
     finally:
         conn.close()
@@ -146,6 +167,14 @@ def _run(job: _Job) -> None:
     failed: set[tuple[str, str]] = set()
     refused: set[tuple[str, str | None, str]] = set()
     failures = 0
+
+    def pending(d: dict, identity: str) -> bool:
+        failed_before = (d["id"], identity) in failed
+        return not failed_before and (d["id"], d["embedding_model"], identity) not in refused
+
+    queue: collections.deque = collections.deque()
+    scanned_for, scanned_at = None, 0.0
+    vec_rowids: dict[str, dict[str, list[int]]] = {}
     try:
         while True:
             if job.stop.is_set() or account_is_retired():
@@ -156,24 +185,32 @@ def _run(job: _Job) -> None:
                 raise _Stopped
             conn = rag_db.get_connection()
             try:
-                pending = [
-                    d
-                    for d in _stale_documents(conn, identity)
-                    if (d["id"], identity) not in failed
-                    and (d["id"], d["embedding_model"], identity) not in refused
-                ]
+                doc = None
+                if identity == scanned_for and time.monotonic() - scanned_at < _RESCAN_SECONDS:
+                    while queue and doc is None:
+                        doc = _stale_document(conn, queue[0], identity)
+                        if doc is None or not pending(doc, identity):
+                            doc = None
+                            queue.popleft()
+                if doc is None:
+                    # Also once the snapshot runs out: documents that went stale meanwhile follow.
+                    stale = [d for d in _stale_documents(conn, identity) if pending(d, identity)]
+                    queue = collections.deque(d["id"] for d in stale)
+                    scanned_for, scanned_at = identity, time.monotonic()
+                    doc = stale[0] if stale else None
+                else:
+                    stale = [doc]
             finally:
                 conn.close()
-            if job.identity is not None and not _upgraded_from_llama(pending, job.identity):
+            if job.identity is not None and not _upgraded_from_llama(stale, job.identity):
                 raise _Stopped
-            job.remaining = len(pending)
-            if not pending:
+            job.remaining = len(queue)
+            if doc is None:
                 job.status = "completed"
                 return
-            doc = pending[0]
             job.current = 0.0
             try:
-                if not _reembed_document(job, doc, model):
+                if not _reembed_document(job, doc, model, vec_rowids):
                     refused.add((doc["id"], doc["embedding_model"], identity))
                 failures = 0
             except _Stopped:

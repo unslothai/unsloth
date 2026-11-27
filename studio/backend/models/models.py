@@ -126,6 +126,9 @@ class ModelDetails(BaseModel):
     model_size_bytes: Optional[int] = Field(
         None, description = "Total size of model weight files in bytes"
     )
+    bnb_4bit: bool = Field(
+        False, description = "Whether the checkpoint the worker loads is bitsandbytes 4-bit"
+    )
 
 
 class LoRAInfo(BaseModel):

@@ -407,6 +407,14 @@ def train(
         raise typer.Exit(code = 1)
 
     is_vision = trainer.is_vlm
+    ignored = cfg.ignored_target_modules(use_lora, is_vision)
+    if ignored:
+        typer.echo(
+            f"Warning: vision_all_linear is on, so target_modules "
+            f"({', '.join(ignored)}) is ignored; set vision_all_linear: false or pass "
+            f"--no-vision-all-linear to train only those modules.",
+            err = True,
+        )
 
     if not trainer.prepare_model_for_training(**cfg.model_kwargs(use_lora, is_vision)):
         typer.echo("Model preparation failed", err = True)

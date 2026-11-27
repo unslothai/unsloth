@@ -68,9 +68,8 @@ def axis_weights(
     margin: int = MARGIN_LATENTS,
     ramp: int = RAMP_LATENTS,
 ) -> list:
-    """Per-tile fp32 blend weights along one axis, summing to 1 at every pixel: 0 within ``margin`` latents of a
-    shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
-    margin under 8 keeps the sum positive."""
+    """Per-tile fp32 blend weights along one axis, summing to 1 per pixel: 0 within margin latents
+    of an edge, linear over ramp; with overlap >= 16, margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
     build = float64_device(device)
     pos = (torch.arange(size, dtype = torch.float64, device = build) + 0.5) / scale
@@ -112,9 +111,8 @@ DECODE_MIB_PER_LATENT_BY_CLASS = {
     "AutoencoderKLFlux2": (0.17, 0.09),
 }
 DECODE_MIB_PER_LATENT_BY_RATIO = {8: (0.27, 0.18), 16: (1.7, 0.43), 32: (1.3, 1.3)}
-# Strip decode 16-bit peak = slope MiB per latent + four strip buffers; bounds measured tiles 48-256 (L4, A100, T4).
-# AutoencoderKL (FLUX.1 / SDXL decoders, same largest pass per latent as FLUX.2's): 929 / 3233 MiB at 128 / 256
-# latents (G4, L4); a decoder with a larger largest pass per latent scales the slope (diffusion_vae_strips).
+# Strip decode 16-bit peak = slope MiB per latent + four strip buffers (measured 48-256);
+# AutoencoderKL matches FLUX.2's largest pass; a larger one scales the slope (diffusion_vae_strips).
 DECODE_STRIPS_MIB_PER_LATENT_BY_CLASS = {"AutoencoderKLFlux2": 0.048, "AutoencoderKL": 0.048}
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
@@ -240,9 +238,8 @@ def choose_tiles(
     overlap: int = OVERLAP_LATENTS,
     stock_tile: int = 0,
 ) -> tuple[int, int]:
-    """Tile (height, width) in latents within ``max_area`` (at least the floor tile). Stock tiles under the floor:
-    fewest decoded latents. Stock tile == floor (AutoencoderKL, FLUX.2 edge sliver): fewest calls, then largest
-    tile, never decoding more latents per side than stock (1600 px: two 120-latent tiles, not 128 + 104 + 8)."""
+    """Tile in latents within max_area, at least the floor; stock under the floor: fewest decoded
+    latents; stock == floor: fewest calls, then largest tile, never more per side than stock."""
     floor = (min(tile, height), min(tile, width))
     if max_area is None or max_area <= floor[0] * floor[1]:
         max_area = floor[0] * floor[1]
@@ -432,8 +429,7 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         return cap
     try:
         _, tile, _ = _geometry(vae)
-        # Stock tile == floor: grow only into device-free memory; decoding out of the allocator cache stalled on
-        # flushes (FLUX.1 1600 px, 8 GB tier: 0.21 s vs stock 0.08).
+        # Stock == floor: grow only into free VRAM; allocator-cache decodes stall on flushes.
         stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
         large_stock = stock_tile >= tile > TILE_LATENTS
         free = _free_mib(vae, z, cached = not large_stock)
@@ -611,8 +607,7 @@ def stock_tiles(vae: Any) -> Optional[tuple[int, int]]:
 
 
 def stock_layout_ok(stock: tuple[int, int], height: int, width: int) -> bool:
-    """Whether every stock tile is >= 32 latents and every overlap >= 16. diffusers starts a tile every ``tile -
-    overlap`` latents until the canvas ends, so the last tile can be a sliver (8 latents on a 200-latent side)."""
+    """Whether stock tile >= 32 latents, overlap >= 16; diffusers' last tile can be a sliver."""
     tile, overlap = stock
     if tile < TILE_LATENTS or overlap < OVERLAP_LATENTS:
         return False

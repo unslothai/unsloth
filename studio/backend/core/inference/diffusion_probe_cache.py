@@ -26,6 +26,8 @@ _PROBE_SOURCES = (
     "diffusion_transformer_quant.py",
     "diffusion_torchao_patches.py",
     "diffusion_native_quant.py",
+    # The fp8 probe passes or fails on the unit-scale fallback this installs (no row-wise kernel on Windows builds).
+    "diffusion_fp8_unit_scale.py",
 )
 
 _LOCK = threading.Lock()
@@ -115,9 +117,8 @@ def _ordinal(card: str) -> Optional[int]:
 
 
 def _nvidia_driver() -> Optional[str]:
-    """The NVIDIA driver build, without a CUDA context: the kernel module's version (Linux), else the loaded user-mode
-    driver library's name, size and mtime (WSL, containers without the proc file, Windows), plus the CUDA version
-    the driver supports. None when no build identity can be read."""
+    """Driver build (no CUDA context): kernel module version (Linux), else user-mode driver
+    library's name, size, mtime (WSL/Windows), plus the supported CUDA version; None if unknown."""
     import ctypes
 
     parts = []

@@ -66,7 +66,6 @@ test("the page wires both controls to the shown size", async () => {
   const page = await readFile(new URL("../src/features/video/video-page.tsx", import.meta.url), "utf8");
   assert.match(page, /value=\{trainedSizeValue\(videoSize, sizeLimits, sourceSized\)\}/);
   assert.doesNotMatch(page, /<Select\s+value=""\s+onValueChange=\{\(v\) => \{\s+const preset = resolutionPresets/);
-  // every size the page sets picks its ratio through the trained-size rule
   assert.equal((page.match(/matchAspect\(size\[0\], size\[1\]\)/g) ?? []).length, 0);
   assert.equal((page.match(/videoSizeAspect\([^)]*sizeLimits, ASPECT_RATIOS\)/g) ?? []).length, 4);
 });

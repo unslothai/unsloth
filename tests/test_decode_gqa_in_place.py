@@ -421,7 +421,7 @@ def test_grouped_decode_auto_follows_the_card_rule(monkeypatch):
 @pytest.mark.parametrize(
     "name, rule",
     [
-        ("Tesla T4", (8192, 1024, 256)),
+        ("Tesla T4", (256, 256, 256)),
         ("NVIDIA L4", (None, 2048, 1024)),
         ("NVIDIA A100-SXM4-40GB", (None, 16384, 8192)),
         ("NVIDIA A100 80GB PCIe", (None, 16384, 8192)),
@@ -434,6 +434,25 @@ def test_grouped_decode_rule_matches_whole_card_names(monkeypatch, name, rule):
     monkeypatch.setattr(llama, "_grouped_decode_rules", {})
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: name)
     assert llama._grouped_decode_rule(torch.device("cuda", 0)) == rule
+
+
+def test_t4_one_prompt_grpo_batches_take_the_grouped_route(monkeypatch):
+    # GRPO rollouts of one prompt group are equal-length rows (no mask): SDPA GQA was 1.1x - 4x slower.
+    monkeypatch.setattr(llama, "GROUPED_DECODE", "auto")
+    monkeypatch.setattr(llama, "_grouped_decode_rules", {})
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "Tesla T4")
+    cuda = torch.device("cuda", 0)
+    gate = llama._grouped_decode_batched
+    assert gate(4, 1100, False, False, cuda)  # 4 rows of a 1024-token prompt
+    assert (
+        gate(2, 128, False, False, cuda)
+        and gate(2, 128, False, True, cuda)
+        and gate(2, 128, True, True, cuda)
+    )
+    assert not gate(2, 127, False, False, cuda)  # below the smallest cache measured
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None: "NVIDIA A100-SXM4-40GB")
+    monkeypatch.setattr(llama, "_grouped_decode_rules", {})
+    assert not gate(16, 4096, False, False, cuda)  # unmasked keeps SDPA GQA on an A100
 
 
 @pytest.mark.parametrize("fullgraph", [False, True], ids = ["default", "fullgraph"])

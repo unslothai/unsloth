@@ -79,9 +79,7 @@ _RAGGED_SWA_FIELDS = {
 
 @pytest.fixture
 def ragged_swa_gguf(tmp_path):
-    """Gemma-class: the sliding-window layers carry a narrower V, padded to the model-wide
-    maximum when flash attention is off, so even an f16 cache moves with the state. A
-    quantized cache cannot serve here, because a quantized V forces flash attention on."""
+    """Narrow SWA V pads to max without flash attention, so f16 moves; quantized V forces it."""
     fields = {"general.architecture": "gemma3"}
     fields.update({f"gemma3.{k}": v for k, v in _RAGGED_SWA_FIELDS.items()})
     path = tmp_path / "ragged-swa.gguf"
@@ -157,8 +155,7 @@ def test_the_measured_llama_cpp_reservations_are_reproduced(qwen3_shaped_gguf):
 
 
 def test_an_f16_cache_is_unchanged_by_the_flash_attn_rule(qwen3_shaped_gguf):
-    """The fix must not move the f16 path: flash attention stays on llama.cpp auto-detection, so the
-    padded-V arm still applies and these figures hold."""
+    """f16 path unchanged: flash attention stays on llama.cpp auto-detection; padded-V applies."""
     mib = 1024 * 1024
     assert _kv_bytes(qwen3_shaped_gguf, 4096, "f16") / mib == pytest.approx(448.0)
     assert _kv_bytes(qwen3_shaped_gguf, 32768, "f16") / mib == pytest.approx(3584.0)

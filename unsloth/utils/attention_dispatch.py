@@ -63,16 +63,20 @@ def _compiling():
 
 
 def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
-    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    """One tiny attention forward + backward; True iff both xformers kernels actually run here.
+    A build can ship the forward kernel for a card but not the backward one, which would pass a
+    forward-only probe and then fail on the first training step."""
     try:
-        # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
-        # float16, so pick the dtype the device supports.
+        # Pre-Ampere (sm < 80) has no bfloat16 attention kernel but runs xformers in float16.
         if supports_bf16 is None:
             supports_bf16 = SUPPORTS_BFLOAT16
         dtype = torch.bfloat16 if supports_bf16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
-        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
-        xformers_attention(q, q, q, attn_bias = attn_bias)
+        # The lazy per-device probe can run during generation, so force autograd on here.
+        with torch.inference_mode(False), torch.enable_grad():
+            q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype, requires_grad = True)
+            attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+            out = xformers_attention(q, q, q, attn_bias = attn_bias)
+            out.backward(torch.ones_like(out))
         # Launches are async, so synchronize or a deferred kernel failure escapes this probe.
         torch.cuda.synchronize(device)
         return True
@@ -90,7 +94,7 @@ def _xformers_disabled_for_capability(
     fa3_enabled = _xformers_fa3_enabled,
 ) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
+    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward + backward to decide.
     # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
     # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
     if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
@@ -284,8 +288,7 @@ def _cudnn_length_bucketed_sdpa(
     is_causal = False,
     **kwargs,
 ):
-    # Always pad by 1..bucket rows and slice: a zero pad specialises under dynamo (a recompile when the
-    # length becomes a bucket multiple), so an exact multiple carries one spare bucket instead.
+    # Pad 1..bucket rows, never 0 (dynamo specialises it); exact multiples get a spare bucket.
     q_len = Q.shape[-2]
     pad = _CUDNN_LENGTH_BUCKET - q_len % _CUDNN_LENGTH_BUCKET
     Q, K, V = (F.pad(x, (0, 0, 0, pad)) for x in (Q, K, V))
@@ -445,8 +448,7 @@ def decode_scaled_dot_product_attention(query, key, value, *args, **kwargs):
             )
         )  # fmt: skip
     ):
-        # Only the caller's own non-cuDNN backends (sdpa_kernel([MATH]) stays math); a cuDNN-only
-        # policy is left as is.
+        # Caller's non-cuDNN backends are kept (MATH stays math); cuDNN-only is left as is.
         backends = _CUDNN_FREE_BACKENDS[_cudnn_free_index()]
         if backends is not None:
             with _sdpa_kernel(backends):
@@ -471,8 +473,7 @@ decode_scaled_dot_product_attention.__doc__ = (
 ) + decode_scaled_dot_product_attention.__doc__
 
 
-# Mixed-generation hosts only (e.g. sm_86 + sm_75): the backend is re-checked against Q's device, since a
-# device-0 verdict is wrong for layers a device_map places on another card.
+# Mixed-generation hosts: re-check per Q's device; device 0's verdict is wrong for other cards.
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
 # Read at import so a traced call only indexes a tuple.
 _XFORMERS_FP32_UNSUPPORTED_BY_INDEX = tuple(c[0] >= 10 for c in _visible_capabilities())
@@ -874,8 +875,7 @@ def _sdpa_gqa_choices(
     causal = is_causal and not has_mask
 
     def probe(key, **kwargs):
-        # Each on its own: torch raises when no enabled backend fits, and a GQA call nothing
-        # takes must still learn whether the expanded call would run.
+        # Probe separately: torch raises if no backend fits; GQA then needs the expanded probe.
         try:
             with torch.set_grad_enabled(needs_grad):
                 return int(
@@ -1189,8 +1189,7 @@ SDPA = "sdpa"
 XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
-# flash-attn 2 varlen backward indexes dq_accum with int32: at 2**31 elements it faults and poisons
-# the CUDA context. Forward-only never allocates it.
+# flash-attn 2 varlen backward: int32 dq_accum at 2**31 elements poisons CUDA; forward safe.
 _INT32_ELEMENTS = 2**31
 _VARLEN_INT32_GUARD_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
@@ -1764,8 +1763,7 @@ def _run_attention_as(traced, config, context, Q, K, V):
 
 
 def _auto_saves_attention(config, context) -> bool:
-    # Automatic mode (unsloth_zoo decides the GPU and the memory budget): only long, unpacked SDPA
-    # calls, where the saved recompute was measured faster; a plain shape check otherwise, no graph break.
+    # Auto (unsloth_zoo): only long unpacked SDPA calls, measured faster; else no graph break.
     return (
         context.q_len >= _SAVE_ATTENTION_MIN_SEQ
         and config.backend == SDPA
@@ -1801,17 +1799,15 @@ def _saved_attention_frames_possible() -> bool:
 
 
 def _may_cross_into_saved_attention() -> bool:
-    # Eager code, Unsloth's own blocks and a compile that may graph break all cross compiler.disable,
-    # so both checkpoint passes route alike even when only one is traced (zoo matches replay calls by
-    # position). Only a compile where a graph break is fatal stays in the graph.
+    # Eager code, Unsloth blocks, breakable compiles cross compiler.disable so both checkpoint
+    # passes route alike (zoo matches replays by position); only fatal-break compiles stay in graph.
     if not torch.compiler.is_compiling() or _in_unsloth_compiled_region():
         return True
     return not _graph_break_is_fatal()
 
 
 def _in_unsloth_compiled_region() -> bool:
-    # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
-    # is inlined into a user's torch.compile, which may be fullgraph=True.
+    # Own compile: fullgraph=False; unset if inlined in user's compile (may be fullgraph=True).
     flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
     return bool(flag) and bool(flag[0])
 
@@ -1842,8 +1838,7 @@ def _explicit_saves_attention() -> bool:
         sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
     )
     if skip_slot is None:
-        # An older zoo: ROCm keeps nothing, so no pass can consume another call's entry; other builds
-        # route every call as before.
+        # Old zoo (no skip slot): ROCm keeps nothing to consume; other builds route as before.
         return not _ROCM_SDPA_GUARD
     if not _saved_attention_active():
         return False
@@ -1880,9 +1875,9 @@ def _load_saved_attention():
         saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
+    register = getattr(sa, "register_rocm_saved_attention_selector", None)
     # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
     if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
-        register = getattr(sa, "register_rocm_saved_attention_selector", None)
         if _ROCM_SDPA_GUARD and register is not None:
             register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
@@ -1893,6 +1888,9 @@ def _load_saved_attention():
         return None, None
     if min_seq is None:
         return None, None
+    # Auto mode on ROCm also needs the selector: zoo keeps calls only where its SDPA kernel is kept.
+    if _ROCM_SDPA_GUARD and register is not None:
+        register(_select_rocm_saved_sdpa)
     return saved_attention_call, min_seq
 
 
@@ -1906,8 +1904,7 @@ _saved_attention_active = getattr(
 def _run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
-    # PrefixGrouper shared-prefix attention (GRPO dedup): Q/K/V here are [bsz, H, T, D] while the kernel
-    # takes and returns [1, T, H, D], matching the other backends.
+    # PrefixGrouper: kernel in/out [1, T, H, D] like other backends; Q/K/V are [bsz, H, T, D].
     if context.prefix_seg_info is not None:
         flex_shared_prefix_attention = _flex_shared_prefix_attention
         if flex_shared_prefix_attention is None:
@@ -1959,8 +1956,7 @@ def _run_attention(
 
     # Both varlen backends hit the flash-attn 2 backward kernel, so guard both.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
-        # LoRA q/k/v yield a grad-requiring Q from frozen inputs; checkpointing's first forward runs under
-        # no_grad, so tensors alone would pick a different backend per pass.
+        # Checkpoint's no_grad pass and LoRA's grad-requiring Q would pick different backends.
         will_backward = context.requires_grad or (
             torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
         )
@@ -2233,8 +2229,7 @@ def _run_attention(
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
-            # The queries are the last q_len of the context's kv_seq_len filled keys. K can have more
-            # columns than that (a preallocated cache), so K's last q_len columns are not their positions.
+            # Queries are the last q_len filled keys; K may have spare preallocated columns.
             filled = context.kv_seq_len
             q_offset_local = (
                 filled - q_len_local
@@ -2283,8 +2278,7 @@ def _run_attention(
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
                     if context.is_causal:
-                        # Causal: the row attends to its own key only. Every key would let a left pad
-                        # query, whose logits predict the first real token, read that token and later ones.
+                        # Causal: own key only, so left-pad queries cannot read real tokens.
                         if local_mask.shape[-2] != q_len_local:
                             local_mask = local_mask.expand(
                                 *local_mask.shape[:-2], q_len_local, local_mask.shape[-1]

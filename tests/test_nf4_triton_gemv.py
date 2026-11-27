@@ -179,11 +179,22 @@ def _linear4bit(
     return proj.to("cuda")
 
 
+def _close_to_batch_1(got, one, dtype):
+    # A few fp32 roundings apart; cancellation can magnify them in small outputs, so bound by the row's largest.
+    diff = (got.float() - one.float()).abs()
+    return (
+        diff.max() <= 2 * torch.finfo(dtype).eps * one.float().abs().max()
+        and (diff > 0).float().mean() < 0.01
+    )
+
+
 @pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
-@pytest.mark.parametrize("bsz", [2, 3, 8])
-@pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192)], ids = str)
-def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
-    """Strided out, as fast_swiglu_inference passes up[:, :, :hd]."""
+# 2 to 4 rows share one program per tile; 5, 6, 8 and 10 run groups of 1, 3, 4 and 2 rows.
+@pytest.mark.parametrize("bsz", [2, 3, 4, 5, 6, 8, 10])
+@pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192), (4097, 576)], ids = str)
+def test_rows_kernel_matches_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
+    """Strided out, as fast_swiglu_inference passes up[:, :, :hd]. Same sums as batch 1, but fp fusion can contract a
+    multi-row binary differently: on B200 a few outputs moved (bytes 1000x192, words 4097x576)."""
     from unsloth.kernels.nf4_gemv import gemv_nf4_rows
 
     q, s = _quant(*shape, torch.bfloat16, nested = nested)
@@ -192,7 +203,8 @@ def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
     wide = torch.zeros(bsz, 1, shape[0] + 64, dtype = torch.bfloat16, device = "cuda")
     gemv_nf4_rows(X, *a[:-1], wide[:, :, : shape[0]])
     for i in range(bsz):
-        assert torch.equal(wide[i, :, : shape[0]], gemv_nf4(X[i : i + 1].contiguous(), *a)[0]), i
+        one = gemv_nf4(X[i : i + 1].contiguous(), *a)[0]
+        assert _close_to_batch_1(wide[i, :, : shape[0]], one, torch.bfloat16), i
     assert not wide[:, :, shape[0] :].any()
 
 
@@ -519,11 +531,13 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         "list_state2",
     ],
 )
-def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
+def test_a_bnb_handoff_at_4_rows_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
     utils = _utils_with_kernels()
     _bnb_gemm_utils()
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
     monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
+    # The handoff T4 had before the GEMV shared its tiles across rows; the routing it implies is still tested.
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM_BY_ARCH", {(7, 5): 4})
     monkeypatch.setattr(utils, "_GEMV_MAX_ROWS", 4)
     if case == "env_override":
         monkeypatch.setenv("UNSLOTH_GEMV_MAX_ROWS", "4")

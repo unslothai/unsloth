@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Only desktop launches on AMD hosts copy allowlisted ROCm vars that are absent here from the login
-shell; every other launch reads no shell"""
+"""AMD desktop launches copy absent allowlisted ROCm vars from the login shell; others do not."""
 
 from __future__ import annotations
 
@@ -49,6 +48,8 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "GPU_DEVICE_ORDINAL",
     # DXG_DETECTION: main.py sets it for WSL, a host that set it by hand wins.
     "HSA_ENABLE_SDMA",
+    # Windows PAL: main.py defaults it to 1; a shell value (including 0) wins.
+    "PAL_DISABLE_SDMA",
     "HSA_ENABLE_DXG_DETECTION",
     "HSA_XNACK",
     "HSA_FORCE_FINE_GRAIN_PCIE",

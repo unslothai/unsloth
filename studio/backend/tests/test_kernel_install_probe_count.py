@@ -18,7 +18,6 @@ if str(_BACKEND) not in sys.path:
 
 from utils import kernel_install  # noqa: E402
 
-# Where each check's extension lives in a fake site: (relative path, source).
 _PRESENT = {
     "xformers": [
         ("xformers/__init__.py", ""),

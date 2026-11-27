@@ -352,7 +352,10 @@ test("a server pin never strips options: its native route falls back to diffuser
 
 test("a background load that fails reseeds the Engine select, like a refused start", () => {
   const source = readSrc("features/images/images-page.tsx");
-  assert.match(source, /if \(p\.phase === "error"\) \{[\s\S]{0,1200}setEngineSeed\(""\);[\s\S]{0,200}void refreshStatus\(\);\s*return;/);
+  assert.match(
+    source,
+    /if \(p\.phase === "error"\) \{[\s\S]{0,1200}setEngineSeed\(""\);[\s\S]{0,300}void refreshStatus\(\)\.finally\(\(\) => setFailedLoadReseed\(\(n\) => n \+ 1\)\);\s*return;/,
+  );
 });
 
 test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {

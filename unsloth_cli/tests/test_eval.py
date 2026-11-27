@@ -145,6 +145,39 @@ def test_local_dataset_scores_literal_answers_and_formats_fewshot(
     assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
+def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    data.write_text("item code,label,id\n001,007,1\n010,042,2\n011,NA,3\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "item code", "label", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    first, _, last = task.test_docs()
+    assert task.doc_to_text(first) == "001"
+    assert task.doc_to_target(first) == "007"
+    assert task.process_results(first, ["007"])["exact_match"] == 1.0
+    assert task.process_results(first, ["7"])["exact_match"] == 0.0
+    assert task.doc_to_target(last) == "NA"
+    assert first["id"] == 1
+
+
+def test_csv_missing_values_across_reader_chunks(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    # Datasets reads 10,000 rows at a time. The first chunk establishes an integer id.
+    data.write_text("question,answer,id\n" + "001,NA,1\n" * 10_000 + ",,NA\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    docs = task.test_docs()
+    assert len(docs) == 10_001
+    assert docs[0] == {"question": "001", "answer": "NA", "id": 1}
+    assert docs[-1] == {"question": None, "answer": None, "id": None}
+    assert task.process_results(docs[-1], [""])["exact_match"] == 0.0
+
+
 def _score_generation(tmp_path, rows, generation):
     tasks = pytest.importorskip("lm_eval.tasks")
     from lm_eval.api.instance import Instance
@@ -173,6 +206,9 @@ def _score_generation(tmp_path, rows, generation):
         ("red\nblue\n", "red\nblue", 1.0),
         (["blue\nred\n"], "blue\nred", 1.0),
         ("    return 2", "return 2", 0.0),
+        ("    return 2", "    return 2", 1.0),
+        ("    return 2", "  return 2", 0.0),
+        ("\n    return 2", "\n    return 2", 1.0),
         ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
         (["red\nblue", "blue\nred"], "blue\nred", 1.0),
         (["2", "two\nlines"], "2\nBecause 1+1 is 2.", 1.0),
@@ -305,7 +341,7 @@ def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
     )
     spec = _read_dataset_task(generated / "suite_2.yaml")
     assert spec["task"] == "suite_2"
-    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert spec["dataset_kwargs"]["data_files"] == str(data.resolve())
 
 
 @pytest.mark.parametrize("dataset_first", [True, False])
@@ -324,7 +360,7 @@ def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_fi
     for name, path in zip(["qa_3", "qa_4"], data):
         spec = _read_dataset_task(tmp_path / "tmp" / "generated" / f"{name}.yaml")
         assert spec["task"] == name
-        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+        assert spec["dataset_kwargs"]["data_files"] == str(path.resolve())
 
 
 @pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])
@@ -1207,7 +1243,7 @@ def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, c
     ],
 )
 def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, ok):
-    # vLLM applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
+    # vLLM before 0.32 applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
     result = _run(
         str(_rank_adapter(tmp_path, **config)),
         "--tasks",
@@ -1224,6 +1260,61 @@ def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, 
         assert result.exit_code == 2, result.output
         assert "rank_pattern / alpha_pattern" in result.output and "--backend hf" in result.output
         assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "vllm_version, ok",
+    [
+        ("0.31.1", False),
+        ("0.32.0rc0", True),
+        ("0.32.0", True),
+        ("0.34.0", True),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_vllm_backend_scores_per_module_lora_scale_on_vllm_that_applies_it(
+    vllm_env, tmp_path, monkeypatch, vllm_version, ok
+):
+    def fake_version(name):
+        if name != "vllm":
+            return "0.4.13"
+        if vllm_version is None:
+            raise evalmod.PackageNotFoundError(name)
+        # dist-info without a Version field: importlib.metadata.version returns None
+        return vllm_version or None
+
+    monkeypatch.setattr(evalmod, "version", fake_version)
+    adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, rank_pattern = {"v_proj": 64})
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model_args"]["lora_local_path"] == str(adapter.resolve())
+        assert vllm_env["model_args"]["max_lora_rank"] == 64
+    else:
+        assert result.exit_code == 2, result.output
+        assert "0.32" in result.output and "model" not in vllm_env
+
+
+@pytest.mark.parametrize("vllm_version, expected", [("0.31.0", None), ("0.32.0", 64)])
+def test_vllm_backend_sizes_max_lora_rank_to_every_rank_pattern_on_vllm_that_validates_it(
+    vllm_env, tmp_path, monkeypatch, vllm_version, expected
+):
+    # gate_proj is not adapted, but vLLM 0.32+ still checks its rank against max_lora_rank
+    monkeypatch.setattr(
+        evalmod, "version", lambda name: vllm_version if name == "vllm" else "0.4.13"
+    )
+    adapter = _rank_adapter(
+        tmp_path,
+        r = 8,
+        lora_alpha = 16,
+        target_modules = ["q_proj", "v_proj"],
+        rank_pattern = {"gate_proj": 64},
+        alpha_pattern = {"gate_proj": 128},
+    )
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
 
 
 def _write_lora_header(

@@ -77,7 +77,6 @@ def effective_ml_warmup_features(features: Iterable[str]) -> frozenset[str]:
 
 
 def get_startup_ml_warmup_features() -> frozenset[str]:
-    """Resolve the launch's feature selection, respecting the broad disable flag."""
     if ml_warmup_disabled_by_env():
         return frozenset()
     return effective_ml_warmup_features(get_ml_warmup_features())

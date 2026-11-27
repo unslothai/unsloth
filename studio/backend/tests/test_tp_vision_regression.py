@@ -68,8 +68,7 @@ _GB = 1024**3
 
 
 def _load_inference_routes_module():
-    """Load routes/inference.py directly, bypassing routes/__init__.py (which imports
-    every router, dragging in unrelated deps like python-multipart) (Codex #6659)."""
+    """Loads routes/inference.py to skip routes/__init__.py's router deps (Codex #6659)."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
     spec = importlib.util.spec_from_file_location(
         "tp_vision_regression_inference_routes", route_path
@@ -117,13 +116,14 @@ _ALLOWED_TP_DROP_GUARDS = {
     "tensor_parallel and self._tensor_split_aborts(binary, model_identifier, _planned_cache_pair)",
     # Capability: pre-b9455 llama.cpp refused quantized KV under tensor split; binary-wide.
     "tensor_parallel and self._tensor_quant_kv_unsupported_binary(binary, _planned_cache_pair)",
+    # Capability: llama.cpp has no --split-mode tensor for this architecture on this build.
+    "tensor_parallel and _tp_arch_refused",
     # Capacity: >= 2 GPUs clearing the reserve; gated on plan_tp so manual mode skips it.
     "plan_tp and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
     # Manual mode, Auto layers: --fit is incompatible with a tensor split.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
-    # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
     "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
     # Manual mode, zero layers: tensor mode under the CPU-only mask aborts the server.
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
@@ -133,8 +133,7 @@ _ALLOWED_TP_DROP_GUARDS = {
 
 
 def test_tensor_parallel_drop_sites_match_allowlist():
-    """The set of reasons a requested TP can be dropped is fixed and reviewed: a new
-    drop site fails this set-equality until consciously allowlisted (would catch #6416)."""
+    """A new drop site fails this set-equality until allowlisted; it would catch #6416."""
     found = set(_tensor_parallel_false_drop_guards())
     assert found == _ALLOWED_TP_DROP_GUARDS, (
         "tensor_parallel drop sites changed.\n"
@@ -199,8 +198,7 @@ def test_tensor_split_skip_documents_layer_split_fallback():
 
 
 def test_tensor_split_abort_recorded_early_on_first_spawn():
-    """Recorded on the first spawn showing the marker, before the flash-attn-off
-    retry (which can't run tensor so drops the marker) -- else it loops (oobabooga, #6659)."""
+    """Record on first spawn; flash-attn-off retry drops the marker, else it loops (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("LlamaCppBackend._record_tensor_split_abort(")
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
@@ -240,7 +238,6 @@ def test_recorded_tensor_abort_is_per_model():
         assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is False
         LlamaCppBackend._record_tensor_split_abort(b, "model-a")
         assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is True
-        # a different model on the same binary is unaffected
         assert LlamaCppBackend._tensor_split_aborts(b, "model-b") is False
     finally:
         LlamaCppBackend._tensor_split_abort_keys.discard(
@@ -277,8 +274,7 @@ def test_select_gpus_uses_multiple_gpus_when_model_does_not_fit():
 
 
 def test_select_gpus_min_gpus_excludes_unusable_gpu():
-    """min_gpus caps to usable cards: 2 free + 1 nearly-full -> 2-GPU split, not
-    forcing the full card (OOM) or tripping --fit (#6659)."""
+    """min_gpus caps to usable cards; a nearly-full GPU is skipped rather than OOM (#6659)."""
     gpus = [(0, 180000), (1, 180000), (2, 500)]  # GPU 2 is nearly full
     total = {0: 180000, 1: 180000, 2: 180000}
     gi, _ = LlamaCppBackend._select_gpus(
@@ -373,7 +369,6 @@ def test_compute_buffer_downgrade_preserves_multi_gpu_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     gate = src.find("plan_tp and len(tp_gpus) < 2")
     assert gate != -1
-    # Bound to exactly this block: from its gate to the next (budget) downgrade.
     nxt = src.find("_tp_weight_budget_mib <= _tp_required_mib", gate)
     assert nxt != -1
     block = src[gate:nxt]
@@ -418,8 +413,7 @@ def test_layer_fallback_retry_preserves_multi_gpu_intent():
 
 
 def test_auto_context_layer_loops_capped_to_usable_gpus():
-    """The auto-context loops bypass _select_gpus, so they apply its cap: a card
-    counts only if usable VRAM clears the per-device layer overhead (#6659)."""
+    """Auto-context loops skip _select_gpus; cap _layer_min_gpus to usable cards (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert (
         "range(max(1, _layer_min_gpus), len(ranked) + 1)" not in src
@@ -487,8 +481,7 @@ def test_same_model_guard_checks_path_and_variant():
 
 
 def test_diffusion_load_clears_preserved_tensor_flag():
-    """The diffusion early-return path (skips the command builder) clears the
-    preserved-fallback flag, so a prior tensor fallback doesn't churn it (#6659)."""
+    """The diffusion early return must still clear the preserved-fallback flag (#6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     diff = src.find("if self._is_diffusion:")
     assert diff != -1
@@ -529,7 +522,6 @@ def test_should_record_tensor_split_abort_decision():
     """Only marker AND (signal crash OR Windows abort) records; an or/and typo must fail here."""
     f = LlamaCppBackend._should_record_tensor_split_abort
     marker = "ggml-backend-meta.cpp:541: GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_0) failed"
-    # marker + a hard crash records, across every platform's abort encoding
     assert f(-6, marker) is True  # POSIX SIGABRT
     assert f(-11, marker) is True  # POSIX SIGSEGV
     assert f(3, marker) is True  # Windows CRT abort() exit (not a signal)
@@ -673,8 +665,7 @@ def test_route_dedupe_ignores_swa_full_for_diffusion(monkeypatch):
 
 
 def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
-    """Tensor intent can be dropped via extras too: an explicit --split-mode layer
-    matches the stored fallback extras but must still reload (reviewer.py P1, #6659)."""
+    """Explicit --split-mode layer in extras drops tensor intent, so it must reload (#6659)."""
     from models.inference import LoadRequest
 
     req = LoadRequest(model_path = "owner/repo", llama_extra_args = ["--split-mode", "layer"])

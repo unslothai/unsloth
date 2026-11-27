@@ -121,6 +121,11 @@ _REFUSED_LOAD_FLAGS = (
     # Refused again at Trainer init ("tp / pp x precision"); here before any shard is read.
     ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
 )
+# Expert parallel (UNSLOTH_EP_SIZE): 8-bit weights and fp8 training have no ep cell in the capability registry.
+_REFUSED_EP_LOAD_FLAGS = (
+    ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
+    ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
+)
 _REFUSED_PIPELINE_LOAD_FLAGS = (
     ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("qat_scheme", "QAT (qat_scheme)"),
@@ -163,15 +168,35 @@ def tensor_parallel_env_load(fn):
         if layout is None and not _DEPTH["load"]:
             from .ep_native import ep_env_size
             if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
-                from .ep_native import ep_env_load
+                from .ep_native import (
+                    ep_env_load,
+                    ep_refuse_fast_inference,
+                    ep_refuse_per_expert_lists,
+                )
+
+                from .tp_native import refuse_hf_distributed_kwargs
 
                 values = _bound(fn, args, kwargs)
-                four_bit = _four_bit(values, fn) and not _is_adapter(values)
+                ep_refuse_fast_inference(values)
+                refused = [what_ for key, what_ in _REFUSED_EP_LOAD_FLAGS if values.get(key)]
+                if refused:
+                    raise NotImplementedError(
+                        f"Unsloth: UNSLOTH_EP_SIZE={ep_env_size()} (expert parallel) does not support "
+                        + "; ".join(refused)
+                        + ". Unset UNSLOTH_EP_SIZE (or ep in UNSLOTH_PARALLEL) to run this script with DDP "
+                        "or UNSLOTH_FSDP2=1."
+                    )
+                # Every branch, the whole adapter / QAT load included: apply_expert_parallel shards it later.
+                refuse_hf_distributed_kwargs(values, "expert parallel", "apply_expert_parallel")
+                sharded = not _is_adapter(values) and values.get("qat_scheme") is None
                 _DEPTH["load"] += 1
                 try:
-                    return ep_env_load(fn, args, kwargs, four_bit)
+                    loaded = ep_env_load(fn, args, kwargs, sharded)
                 finally:
                     _DEPTH["load"] -= 1
+                # Refuse now, not at get_peft_model: a load_in_4bit gpt-oss has per-expert Linear4bit lists.
+                ep_refuse_per_expert_lists(loaded[0] if isinstance(loaded, tuple) else loaded)
+                return loaded
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
@@ -221,8 +246,14 @@ def tensor_parallel_env_load(fn):
                     out = fn(*args, **kwargs)
                 else:
                     from .pp_load import _pipeline_loading
+                    from .pp_native import PPConfig
+
+                    v = getattr(layout, "stages_per_rank", None)
                     with _pipeline_loading(
-                        lambda: layout.pp_mesh, layout.schedule, None, auto = True
+                        lambda: layout.pp_mesh,
+                        layout.schedule,
+                        None if v is None else PPConfig(stages_per_rank = v),
+                        auto = True,
                     ):
                         out = fn(*args, **kwargs)
             finally:
@@ -400,7 +431,7 @@ def _levels(model):
 def parallel_env_requested():
     return any(
         str(os.environ.get(name, "")).strip() not in ("", "1")
-        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     )
 
 

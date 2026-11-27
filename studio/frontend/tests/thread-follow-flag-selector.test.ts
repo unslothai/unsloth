@@ -41,7 +41,6 @@ test("the hook flips the flag on the viewport, never on the portal host", () => 
   assert.match(HOOK, /el\.toggleAttribute\("data-aui-following", on\)/);
   assert.doesNotMatch(HOOK, /markerElRef|markerRef/);
   assert.doesNotMatch(THREAD, /markerRef/);
-  // Every write goes through the one setter, teardown included.
   const writes = [...HOOK.matchAll(/data-aui-following/g)].length;
   assert.equal(writes, 1, "only the setter may name the flag");
   assert.match(HOOK, /setFollowing\(true\);/);

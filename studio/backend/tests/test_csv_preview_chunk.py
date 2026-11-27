@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A local CSV preview parses only the preview rows, and shows exactly what the default 10k-row chunk showed."""
+"""A local CSV preview parses only the preview rows, and shows exactly what the default 10k-row chunk showed;
+its total is the file's exact record count, or None where the full load would fail."""
 
 from __future__ import annotations
 
@@ -31,6 +32,15 @@ def _preview(path: Path):
     return local._load_local_preview_slice(
         dataset_path = path, train_split = "train", preview_size = PREVIEW
     )
+
+
+def _full_load_rows(path: Path):
+    """Rows the training load reads (pandas, the CSV builder's parser); None where it raises."""
+    import pandas as pd
+    try:
+        return len(pd.read_csv(path, keep_default_na = False, na_values = [""])) or None
+    except Exception:
+        return None
 
 
 def _default_chunk_preview(path: Path):
@@ -73,7 +83,8 @@ def test_csv_preview_parses_only_the_preview_rows(tmp_path, parsed_tables, load_
 
     assert [call.get("chunksize") for call in load_calls] == [PREVIEW]
     assert parsed_tables == [PREVIEW]
-    assert len(preview) == PREVIEW and total is None
+    # The count is a separate bounded pandas scan, so the preview still parsed only PREVIEW rows.
+    assert len(preview) == PREVIEW and total == 500
 
 
 CASES = {
@@ -102,12 +113,12 @@ def test_csv_preview_matches_the_default_chunk(tmp_path, name):
     path = tmp_path / f"{name}.csv"
     path.write_bytes(CASES[name].encode("utf-8"))
 
-    expected, expected_total = _default_chunk_preview(path)
+    expected, _ = _default_chunk_preview(path)
     preview, total = _preview(path)
 
     assert preview.features == expected.features
     assert preview.to_list() == expected.to_list()
-    assert total == expected_total
+    assert total == _full_load_rows(path)
 
 
 @pytest.mark.parametrize("line", [4, 50, 9_999])

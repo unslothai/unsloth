@@ -34,7 +34,6 @@ def lowering_untouched():
     table = dict(getattr(lowering, "_maybe_layout_constraints", {}))  # absent on torch 2.4
     stock = lowering.sdpa_constraint
     yield lowering
-    # The override path must not have installed the wrapper.
     assert lowering.sdpa_constraint is stock
     assert dict(getattr(lowering, "_maybe_layout_constraints", {})) == table
 
@@ -57,7 +56,6 @@ def test_override_tags_the_cache_key(monkeypatch, lowering_untouched, keeps):
     assert M._sdpa_alignment_without_guard() is False  # every guard kept, nothing patched
     tagged = "user-tag," + M._EFFICIENT_BACKWARD_CACHE_TAG
     assert torch.compiler.config.cache_key_tag == (tagged if keeps else "user-tag")
-    # Idempotent across repeated installs.
     M._sdpa_alignment_without_guard()
     assert torch.compiler.config.cache_key_tag == (tagged if keeps else "user-tag")
     assert os.environ["UNSLOTH_BLOCK_SDPA_ALIGN_GUARD"] == "1"

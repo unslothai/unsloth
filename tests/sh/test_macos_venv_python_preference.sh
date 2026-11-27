@@ -71,8 +71,7 @@ fi
 
 echo "=== Unsloth installer stream ==="
 
-# install.rs treats [TAURI:ERROR_OUTPUT] as failure until [TAURI:ERROR_CLEAR], so a
-# recovered fallback must emit the clear.
+# [TAURI:ERROR_OUTPUT] fails until [TAURI:ERROR_CLEAR]; recovered fallbacks must emit it.
 _STREAM=$(mktemp)
 {
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'

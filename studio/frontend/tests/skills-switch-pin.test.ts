@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 // The module opens a channel to other tabs when it can; an open one keeps the test process alive.
@@ -65,6 +66,7 @@ function harness(initial: Skill[]) {
         },
       },
       "@/features/auth/session": { AUTH_SESSION_CLEARED_EVENT: "cleared" },
+      "@/lib/format-fastapi-error": formatFastApiError,
       react: { useEffect: () => undefined, useSyncExternalStore: () => null },
       "../stores/skills-switch-store": {
         useSkillsSwitchStore: {

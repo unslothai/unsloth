@@ -27,13 +27,6 @@ export function loadedAudioKind(audioType: string | null | undefined): string {
   return audioType ?? "audio";
 }
 
-export function deviceSizeBytes(label: string): number {
-  const match = label.trim().match(/^(\d+(?:\.\d+)?)\s*(MB|GB)$/i);
-  if (!match) return 0;
-  const value = Number(match[1]);
-  return value * (match[2].toUpperCase() === "GB" ? 1024 ** 3 : 1024 ** 2);
-}
-
 export type CreateMode = "speak" | "transcribe";
 export type RemoteCodeApproval = {
   trustRemoteCode: true;

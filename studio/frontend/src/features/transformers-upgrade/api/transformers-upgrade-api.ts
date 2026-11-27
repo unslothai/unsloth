@@ -26,8 +26,7 @@ interface TransformersUpgradeCheckResponse {
   install_breaks_exact_resume?: boolean;
 }
 
-/** Pre-load half of the consent gate for callers without chat's `/validate`. The token rides
- * in the body; `options` pins the snapshot (and resume run) to answer about. */
+/** Pre-load consent gate for callers without chat's /validate; options pin the snapshot. */
 export async function checkTransformersUpgrade(
   modelName: string,
   hfToken?: string | null,

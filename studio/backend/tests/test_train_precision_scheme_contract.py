@@ -12,7 +12,7 @@ from typing import get_args
 import pytest
 
 import core.training.diffusion_train_common as common
-from core.inference.diffusion_lora import _DIFFUSERS_LORA_BLOCKED_QUANT
+from core.inference.diffusion_lora import _DIFFUSERS_LORA_BAKED_QUANT
 from core.inference.diffusion_precision import TE_QUANT_MODES, TE_QUANT_NVFP4
 from core.training.diffusion_train_common import DiffusionLoraConfig, train_precision_modes
 from models.inference import DiffusionLoadRequest, VideoLoadRequest
@@ -85,8 +85,8 @@ def test_nvfp4_is_a_real_inference_scheme_and_not_a_training_one():
     assert TE_QUANT_NVFP4 in TE_QUANT_MODES
     assert "nvfp4" in _literal_names(DiffusionLoadRequest, "transformer_quant")
     assert "nvfp4" in _literal_names(DiffusionLoadRequest, "text_encoder_quant")
-    # It is also the scheme the diffusers LoRA path refuses to attach to, so it is genuinely live.
-    assert "nvfp4" in _DIFFUSERS_LORA_BLOCKED_QUANT
+    # It is also a scheme the diffusers LoRA path bakes adapters into at load, so it is genuinely live.
+    assert "nvfp4" in _DIFFUSERS_LORA_BAKED_QUANT
     assert "nvfp4" in _INFERENCE_ONLY
     assert "nvfp4" not in _TRAIN_PRECISIONS
 
@@ -115,8 +115,7 @@ def test_train_precision_modes_never_offers_an_inference_only_scheme(
 
 
 def test_the_advertisable_vocabulary_is_exactly_the_schema_vocabulary(monkeypatch):
-    """Across every GPU the probe can meet, the modes it emits are exactly the request
-    Literal -- no more (a 422 the UI could hit) and no fewer (a dead schema member)."""
+    """Advertised modes must equal the request Literal: extras 422, missing ones are dead."""
     assert _every_advertisable_mode(monkeypatch) == _TRAIN_PRECISIONS
 
 
@@ -211,8 +210,7 @@ _M_EQUALS = re.compile(r"""m === ["'`]([^"'`]+)["'`]""")
 
 
 def _strip_comments(block: str) -> str:
-    """Line and block comments removed, so a scheme merely NAMED in prose is not read as an
-    offered option (and, the other way round, so a commented-out arm cannot mask a real one)."""
+    """Strips comments so prose naming a scheme or a commented-out arm is not read as offered."""
     return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", block, flags = re.S))
 
 
@@ -235,8 +233,7 @@ def test_the_precision_selector_names_only_training_precisions():
 
 
 def test_the_precision_selector_fallback_is_a_subset_of_what_the_backend_can_report(monkeypatch):
-    """With no /diffusion/info report the panel falls back to a hardcoded array. It must stay
-    inside what the backend could actually have said, or the first paint offers a dead option."""
+    """No-report fallback modes must be backend-reportable, or the panel offers a dead option."""
     returns = re.findall(r"return\s*\[([^\]]*)\]", _strip_comments(_precision_memo_block()))
     fallback = _STRING_LITERAL.findall(returns[-1])
     assert len(fallback) >= 2, f"failed to parse the fallback array: {returns[-1]!r}"

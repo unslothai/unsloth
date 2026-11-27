@@ -5,8 +5,7 @@ import type { ThreadRecord } from "../types";
 
 const claimed = new Set<string>();
 
-/** assistant-ui titles only threads it created ("new"); a fork opens as "regular", so an untitled
- *  chat's fork, left "New Chat" by the backend, would never be named. True once per fork per page. */
+/** Once per untitled fork per page; forks open as "regular", so assistant-ui never names them. */
 export function claimUntitledForkTitle(
   record:
     | Pick<ThreadRecord, "id" | "title" | "forkedFromThreadId">

@@ -320,6 +320,18 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     return latents, batch_time_ids
 
 
+def _sdxl_noisy_and_velocity(noise_scheduler, latents, noise, timesteps, v_prediction: bool):
+    """fp32 ``add_noise``/``get_velocity``: in bf16 ``1 - alphas_cumprod[t]`` rounds to 0 at t<=1 (diffusers #15300)."""
+    dtype = latents.dtype
+    latents32 = latents.float()
+    noise32 = noise.float()
+    noisy = noise_scheduler.add_noise(latents32, noise32, timesteps).to(dtype)
+    velocity = None
+    if v_prediction:
+        velocity = noise_scheduler.get_velocity(latents32, noise32, timesteps).to(dtype)
+    return noisy, velocity
+
+
 def _mps_available() -> bool:
     import torch
     try:
@@ -402,8 +414,7 @@ def run_diffusion_lora_training(
             train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
             num_epochs = 0,
         )
-        # Validate a resume request against this run's identity BEFORE the multi-GB base model load, so a
-        # mismatch fails in seconds instead of after the download.
+        # Check resume identity before the multi-GB base load so a mismatch fails in seconds.
         identity = identity_for_config(cfg, dataset_pairs = pairs)
         if cfg.resume_from_checkpoint:
             preflight_resume(
@@ -457,8 +468,7 @@ def run_diffusion_lora_training(
         for m in (unet, vae, *text_encoders):
             m.requires_grad_(False)
         vae.to(device, dtype = torch.float32)
-        # ROCm: the VAE's single-head attention (head dim 512) takes the routed exact path inference uses; Windows
-        # ROCm's fused kernels return garbage there, which would encode every training latent wrong.
+        # Windows ROCm fused kernels garble VAE attention at head dim 512; use the exact path.
         from core.inference.diffusion_vae_attn_chunked import install as _route_vae_attention
 
         _route_vae_attention(vae)
@@ -599,8 +609,7 @@ def run_diffusion_lora_training(
         # Env override and over-budget fallback disable the cache; the paths draw crops from different RNGs.
         identity = with_cache_mode(identity, latent_cache is not None)
 
-        # Each image once per cycle so short runs see all; bucketed batches draw from one bucket to
-        # stack.
+        # Each image once a cycle (short runs see all); bucketed batches stack from one bucket.
         index_sampler = (
             PermutationBatchSampler(len(pairs), rng)
             if canvases is None
@@ -615,8 +624,7 @@ def run_diffusion_lora_training(
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
-        # Restore a previous run's state BEFORE the loop, so resumed is the last completed step and the loop
-        # picks up at resumed + 1; a mismatch raises out to the adapter.
+        # Restore before the loop so it picks up at resumed + 1; a mismatch raises an error.
         rng_streams = {"loop": rng, "variant": variant_rng}
         restored = restore_resume_state(
             cfg,
@@ -667,8 +675,7 @@ def run_diffusion_lora_training(
                 sampler = index_sampler,
                 rng_streams = rng_streams,
                 progress = {"running_loss": running_loss, "grad_scaler": scaler.state_dict()},
-                # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
-                # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
+                # Keep discard_existing False: a periodic save would delete the source bundles.
                 discard_existing = False,
                 # A branched resume must not prune the higher-numbered checkpoints it did not write.
                 preexisting = preexisting_checkpoints,
@@ -832,7 +839,13 @@ def run_diffusion_lora_training(
                 timesteps = torch.randint(
                     0, noise_scheduler.config.num_train_timesteps, (bsz,), device = device
                 ).long()
-                noisy = noise_scheduler.add_noise(latents, noise, timesteps)
+                noisy, velocity = _sdxl_noisy_and_velocity(
+                    noise_scheduler,
+                    latents,
+                    noise,
+                    timesteps,
+                    prediction_type == "v_prediction",
+                )
 
                 if precompute:
                     prompt_embeds = _parts_to_device(
@@ -848,7 +861,7 @@ def run_diffusion_lora_training(
                 added = {"text_embeds": pooled, "time_ids": batch_time_ids}
 
                 if prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
+                    target = velocity
                 else:
                     target = noise
 
@@ -861,7 +874,7 @@ def run_diffusion_lora_training(
                 if loss is OUT_OF_MEMORY:
                     # Drop every device reference to the micro-batch first, so the rerun has a clean step's memory.
                     loss = noisy = timesteps = prompt_embeds = pooled = added = target = None
-                    latents = noise = batch_time_ids = pixel_values = None
+                    latents = noise = velocity = batch_time_ids = pixel_values = None
                     step_acc = None
                     for loss in budget_steps.rerun(_forward_backward):
                         step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
@@ -970,9 +983,8 @@ def run_diffusion_lora_training(
                 # A lower-step partial would be outranked by the earlier run's leftovers.
                 discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
         else:
-            # save_steps writes bundles as the run goes, so without this a discard leaves up to
-            # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
-            # invisible to every scanner, unresumable, with no delete path in the UI.
+            # save_steps writes bundles mid-run; a discard must clear them or up to save_total_limit
+            # optimizer-state copies remain, invisible, unresumable, with no UI delete path.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
             discard_samples(sample_owner)
             try:
@@ -1008,8 +1020,7 @@ def _make_lora_optimizer(
 
 
 def _drain_stop_queue(stop_queue: Any, event_queue: Any) -> Any:
-    """Drain the queue, returning the last stop message (True or a dict with save=False) else False;
-    a vram lend/return message (idle GPU cache) is served between steps, never a stop."""
+    """Last stop message (True or save=False dict) or False; vram lend/return msgs never stop."""
     got: Any = None
     saw = False
     try:
@@ -1038,6 +1049,15 @@ def _serve_vram_request(msg: dict, event_queue: Any) -> None:
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Unexpected exceptions become an error event on the queue, not a silent subprocess crash."""
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    from utils.process_memory_peaks import PeakStampingQueue
+
+    # Progress and terminal events carry this process's memory peaks, as in the LLM worker; the host
+    # RSS covers the process tree, since multi-GPU runs start their other ranks as children.
+    event_queue = PeakStampingQueue(
+        event_queue,
+        event_types = frozenset({"progress", "complete", "error"}),
+        include_children = True,
+    )
 
     def on_event(ev: dict) -> None:
         event_queue.put(ev)

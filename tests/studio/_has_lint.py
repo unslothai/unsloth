@@ -126,12 +126,10 @@ def _scan(selector: str) -> tuple[bool, bool]:
             i = close + 1
             continue
         elif bracket == 0 and c == "(":
-            # any other functional pseudo-class (:nth-child(2n+1), :lang(), :dir()): its argument is
-            # not a selector at this level, so nothing inside it is a combinator
+            # Other functional pseudo-class args are not selectors here, so skip them whole.
             i = _matching(s, i + 1) + 1
             continue
         elif bracket == 0 and (c in ">+~" or c.isspace()):
-            # a combinator: the compound before it ends here
             j = i
             while j < len(s) and (s[j].isspace() or s[j] in ">+~"):
                 j += 1

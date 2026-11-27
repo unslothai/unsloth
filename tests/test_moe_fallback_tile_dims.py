@@ -82,8 +82,7 @@ def _divides(old, n, k):
 
 @pytest.fixture
 def no_smem_fit(ac, monkeypatch):
-    # The dims fit alone: on a card with less shared memory (L4, A10: 101,376 B) the smem fit also steps the
-    # heuristic dX down to 3 stages, which the smem tests below cover.
+    # Disables the smem fit: on L4 / A10 (101,376 B) it would also step dX to 3 stages.
     monkeypatch.setattr(ac, "_device_smem_per_block", lambda *a, **k: None)
 
 

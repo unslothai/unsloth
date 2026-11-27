@@ -2006,7 +2006,7 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: (
+        lambda fam, prec, cfg = None: (
             "This trainer requires a bfloat16-capable GPU (Ampere or newer)."
             if fam != "sdxl"
             else None
@@ -2094,6 +2094,25 @@ def test_complete_event_records_family_and_catalog():
     assert st["family"] == "sdxl"
     assert st["base_model"] == "b"
     assert st["catalog_path"] == "/loras/w.safetensors"
+
+
+def test_status_reports_the_jobs_trigger_for_deploy(_isolated_runs_dir):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "instance_prompt": "a photo in mystyle"})
+    st = _wait_status(svc, "completed")
+    assert st["instance_prompt"] == "a photo in mystyle"
+    record = _wait_record(_isolated_runs_dir, job_id)
+    assert record["instance_prompt"] == st["instance_prompt"]
+
+    svc.start(dict(_CFG))
+    assert _wait_status(svc, "completed")["instance_prompt"] is None
+
+
+def test_status_route_returns_the_trigger(client):
+    client._fake.status_extra = {"instance_prompt": "a photo in mystyle"}
+    assert (
+        client.get("/api/train/diffusion/status").json()["instance_prompt"] == "a photo in mystyle"
+    )
 
 
 def test_status_route_returns_preparation_counts(client):
@@ -2194,7 +2213,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     # Pin the precision preflight so a GPU-less host does not 400 for another reason.
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: None,
+        lambda fam, prec, cfg = None: None,
     )
     monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     r = client.post(

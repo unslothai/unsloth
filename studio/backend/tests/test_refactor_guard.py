@@ -165,8 +165,7 @@ def test_strip_tool_markup_is_pinned_at_both_final_values():
 
 
 def test_an_unrelated_addition_elsewhere_does_not_fail_the_guard():
-    """Additions are not regressions, and a guard that cries on them gets re-snapshotted
-    blind. A dropped symbol still has to fail."""
+    """Additions aren't regressions (or the guard is re-snapshotted blind); a drop must fail."""
     import copy
 
     base = refactor_guard.ast_inventory()

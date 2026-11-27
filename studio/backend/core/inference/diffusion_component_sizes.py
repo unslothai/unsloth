@@ -286,8 +286,7 @@ def _pick_files(
     read_text: Callable[[str], str],
     folder: str = "",
 ) -> list[str]:
-    """Only the loader's PREFERRED index counts (it never falls back to a stale second one); unreadable or
-    naming a missing shard makes the component unknown, never a smaller subset."""
+    """Only the PREFERRED index counts; an unreadable or missing shard makes the size unknown."""
     names = list(names)
     # Loader order: transformers takes unsharded model.safetensors before the index; diffusers the index first.
     unsharded_first = bool(_TRANSFORMERS_FOLDER_RE.match(folder or ""))
@@ -949,8 +948,7 @@ def video_loaded_roles(
     sizes: Optional[ComponentSizes] = None,
     dev: bool = False,
 ) -> tuple[str, ...]:
-    """Every folder this load reads: the required roles plus each optional one the family, Studio (when attached) or
-    the snapshot's manifest loads. A cached snapshot missing any of them is incomplete."""
+    """Every folder this load reads; a cached snapshot missing any of them is incomplete."""
     manifest = sizes.manifest if sizes is not None else None
     roles = list(video_required_roles(fam))
     if _second_expert_loaded(fam, sizes):
@@ -961,8 +959,7 @@ def video_loaded_roles(
 
 
 def video_family_has_no_text_encoder(fam: Any) -> bool:
-    """A family whose bf16 table prices the text encoder at 0.0 has none: its denoiser is its own text model
-    (Cosmos3's omni transformer; the pipeline only tokenizes)."""
+    """A bf16 table pricing the text encoder at 0.0 means its denoiser is its own text model."""
     table = getattr(fam, "bf16_components_gb", None)
     try:
         return table is not None and float(table[1]) == 0.0

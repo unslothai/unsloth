@@ -57,13 +57,9 @@ AUTO_DITS = frozenset(
         "ZImageTransformer2DModel",
     }
 )
-# AUTO_DITS members raced only when their own weights are quantized (an INT8 / FP8 checkpoint): measured against its
-# INT8-ConvRot default only, so a bf16 load (the accuracy reference) keeps its attention.
+# Quantized-only under Auto; measured vs INT8-ConvRot, so a bf16 load keeps its attention.
 AUTO_QUANTIZED_ONLY = frozenset({"MOSSImageTransformer"})
-# AUTO_DITS members the unset switch leaves alone in a two-expert pipeline (a ``transformer_2``): Wan 2.2 A14B on A100
-# (hosted INT8 pair, 832x480x33, 10 steps) ran 10% faster per step with the kernel, but the clip drifts step over step
-# through both experts (latent rel L2 0.20 / 0.39 at the end, LPIPS 0.135 / 0.277 against the kernel off, whose own
-# fresh-process repeat is bit-identical): a different clip, not a near copy. Wan 2.2 5B (one expert) keeps its race.
+# Auto skips two-expert pipelines: Wan 2.2 A14B drifts to another clip; 5B keeps its race.
 AUTO_SINGLE_EXPERT_ONLY = frozenset({"WanTransformer3DModel"})
 
 
@@ -126,15 +122,19 @@ def native_block_modules(dit: Any) -> set:
     named = getattr(dit, "named_modules", None)
     if not blocks or not native_blocks_enabled() or not callable(named):
         return set()
-    return {id(m) for name, m in named() if block_index(name) in blocks}
+    from .diffusion_tp2 import shard_named_modules
+
+    # a tensor-parallel denoiser's blocks live in its per-card shards, named as in the unsplit tree
+    return {
+        id(m) for name, m in (*named(), *shard_named_modules(dit)) if block_index(name) in blocks
+    }
 
 
 # (large, small) token counts of the second race, for a card where the kernel loses at RACE_TOKENS
 LONG_RACE_TOKENS = (16384, 8192)
 # the card race wins at 4096 tokens but not 1024: one more point decides the floor between them
 MID_RACE_TOKENS = 2048
-# no route below this many query or key tokens, forced or not: short calls are dominated by quantiser launches
-# and lose to every incumbent measured (126 tokens: 6x slower)
+# No route below this many query or key tokens, forced or not: short calls are quantiser-bound.
 MIN_TOKENS = 1024
 # eager decisions cached per (route, call signature)
 _DECISION_CACHE_MAX = 512
@@ -303,7 +303,6 @@ def _reason(route: Int8Route, args: tuple, kwargs: dict) -> Optional[str]:
 
 
 def _on_card(x: Any, route: Int8Route) -> bool:
-    """Whether a tensor is on a card the route was checked on."""
     return bool(x.is_cuda) and x.device.index in route.cards
 
 
@@ -475,11 +474,9 @@ def _calls_dispatch(proc: Any) -> bool:
 
 def routable_modules(dit: Any) -> list:
     """The attention modules of a DiT whose processor can take an ``Int8Route``."""
-    modules = getattr(dit, "modules", None)
-    if not callable(modules):
-        return []
     out = []
-    for m in modules():
+    # a tensor-parallel denoiser's attention lives in its per-card shards (their head count is the one raced)
+    for m in _dit_modules(dit, first_card_only = True):
         proc = getattr(m, "processor", None)
         if proc is None or not hasattr(m, "heads") or not hasattr(proc, "_attention_backend"):
             continue
@@ -525,14 +522,22 @@ def _dits(pipe: Any) -> list:
         return []
 
 
+def _dit_modules(dit: Any, first_card_only: bool = False) -> list:
+    """``dit.modules()`` plus a tensor-parallel denoiser's per-card block shards (outside the module tree).
+    ``first_card_only``: one shard per block (both cards' shards share each block's processor)."""
+    modules = getattr(dit, "modules", None)
+    if not callable(modules):
+        return []
+    from .diffusion_tp2 import shard_modules
+
+    return [*modules(), *shard_modules(dit, first_card_only = first_card_only)]
+
+
 def remove(pipe: Any) -> int:
     """Every routed processor back to its incumbent backend. Returns how many were routed."""
     count = 0
     for dit in _dits(pipe):
-        modules = getattr(dit, "modules", None)
-        if not callable(modules):
-            continue
-        for m in modules():
+        for m in _dit_modules(dit):
             proc = getattr(m, "processor", None)
             backend = getattr(proc, "_attention_backend", None)
             if isinstance(backend, Int8Route):
@@ -546,7 +551,7 @@ def routed_count(pipe: Any) -> int:
     return sum(
         1
         for dit in _dits(pipe)
-        for m in (dit.modules() if callable(getattr(dit, "modules", None)) else ())
+        for m in _dit_modules(dit)
         if isinstance(getattr(getattr(m, "processor", None), "_attention_backend", None), Int8Route)
     )
 
@@ -554,7 +559,7 @@ def routed_count(pipe: Any) -> int:
 def status(pipe: Any = None) -> dict:
     routes: dict = {}
     for dit in _dits(pipe) if pipe is not None else ():
-        for m in dit.modules():
+        for m in _dit_modules(dit):
             backend = getattr(getattr(m, "processor", None), "_attention_backend", None)
             if isinstance(backend, Int8Route):
                 key = f"{type(dit).__name__} heads={m.heads} head_dim={backend.head_dim} vs {backend.value} cards={backend.cards} impl={backend.impl}"
@@ -577,9 +582,8 @@ def install(
     speed_unset_only: bool = False,
     policy: Any = None,
 ) -> int:
-    """Routes DiT attention to INT8 where allowed; speed_active=False keeps auto routing off so
-    output stays bit-identical; policy on or off beats the env switch; returns count; never
-    raises"""
+    """Routes DiT attention to INT8 where allowed; speed_active=False keeps auto routing off for
+    bit-identical output; policy on or off beats the env switch; returns count; never raises."""
     try:
         return _install(pipe, target, requested, logger, speed_active, speed_unset_only, policy)
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the processors keep their backend
@@ -620,8 +624,7 @@ def _race_wins(
         _LONG_VERDICTS[key] = stored
         return stored
     won = timed = False
-    # an out-of-memory probe is retried once (after freeing the cache); a second one counts as a loss for this call
-    # only: neither cached for the process nor persisted, so a later load races again
+    # OOM is retried once; a second OOM is a loss for this call only: not cached or persisted.
     for _ in range(2):
         q = k = v = None
         try:
@@ -663,8 +666,7 @@ def long_verdict(
     name: str,
     tokens: Optional[tuple] = None,
 ) -> Optional[int]:
-    """The token count from which the kernel wins at ``LONG_RACE_TOKENS`` (where it lost the card race), or None.
-    ``tokens``: another (large, small) pair (a family's ``FAMILY_RACE_TOKENS``)."""
+    """Crossover token count at LONG_RACE_TOKENS (or a FAMILY_RACE_TOKENS pair), else None."""
     from . import diffusion_int8_attention as I8
 
     large, small = tokens or LONG_RACE_TOKENS
@@ -688,9 +690,7 @@ def mid_verdict(
 
 
 def _secondary_cards(primary: int, dits: Any = ()) -> tuple:
-    """The other CUDA cards of this load's multi-GPU selection (a layer split or a CFG replica places DiT blocks
-    there after the attention pick), or, outside a load (the deferred speed profile re-installs at the 3rd image),
-    the other cards ``dits`` already run on: an armed CFG-parallel replica's card and a layer split's block cards."""
+    """Other CUDA cards of this load (layer split or CFG replica); outside one, where dits run."""
     try:
         from .diffusion_multigpu import current_selection
         selection = current_selection()
@@ -715,6 +715,12 @@ def _denoiser_cards(dits: Any) -> tuple:
             and secondary.index is not None
         ):
             cards[int(secondary.index)] = None
+        # a tensor-parallel denoiser's shards sit outside its module tree: its record names their cards
+        tp = getattr(dit, "__dict__", {}).get("_unsloth_tp2")
+        for name in (tp or {}).get("devices", ()) if isinstance(tp, dict) else ():
+            kind, _, index = str(name).partition(":")
+            if kind == "cuda" and index.isdigit():
+                cards[int(index)] = None
         tensors = getattr(dit, "parameters", None), getattr(dit, "buffers", None)
         for fn in tensors:
             if not callable(fn):

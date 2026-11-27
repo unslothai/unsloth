@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // In Chrome select() focuses a blurred input, so an unguarded deferred select steals focus.
-// Browser coverage: tests/studio/playwright_image_download_cancel_retry.py.
 
 import assert from "node:assert/strict";
 import test from "node:test";

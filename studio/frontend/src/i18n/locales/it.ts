@@ -2332,6 +2332,10 @@ export const it = {
         confirmDescriptionChatOnly:
           "Arresta il server e riesegue il programma di installazione. Questa è un'installazione solo chat, quindi il programma di installazione la porta anche all'installazione completa con PyTorch, diversi gigabyte in totale. Le chat e le impostazioni vengono mantenute. L'operazione può richiedere alcuni minuti.",
         confirmAction: "Ripara ora",
+        recommendedTorch:
+          "Riparazione consigliata: questa installazione ha PyTorch {torch}, precedente al {managedTorch} gestito su cui sono supportate le GPU serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} è precedente al {managedTorch} gestito su cui sono supportate le GPU serie RTX 50, ma questo driver GPU non supporta CUDA 13. Aggiorna prima il driver GPU, poi ripara l'installazione.",
       },
       resetPreferences: {
         sectionTitle: "Zona pericolosa",
@@ -4018,7 +4022,7 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
-    addScheduledTask: "Aggiungi attività pianificata…",
+    addScheduledTask: "Aggiungi attività pianificata",
     compact: "Compatta conversazione",
     compactEmpty: "Ancora niente da compattare",
     compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
@@ -4174,8 +4178,8 @@ export const it = {
       summary: {
         single: "Addestramento su una GPU",
         layerSplit: "Il modello è diviso layer per layer su {count} GPU",
-        ddp: "Il modello entra in una GPU: parallelismo dei dati su {count} GPU",
-        fsdp2: "Il modello è troppo grande per una GPU: suddiviso su {count} GPU",
+        ddp: "Ogni GPU addestra una copia completa: parallelismo dei dati su {count} GPU",
+        fsdp2: "Pesi e stato dell'ottimizzatore suddivisi su {count} GPU",
         tp: "Ogni layer è diviso su {count} GPU",
         pp: "I layer girano come {count} stadi di pipeline, uno per GPU",
         cp: "Ogni sequenza è divisa su {count} GPU",
@@ -4186,7 +4190,7 @@ export const it = {
         noGpu: "Seleziona almeno una GPU.",
         singleNeedsOne: "GPU singola usa esattamente una GPU. Deseleziona le altre.",
         needsTwo: "Questa modalità richiede almeno due GPU.",
-        customSpec: "Inserisci un layout, ad esempio dp=2,tp=2.",
+        customSpec: "Inserisci un layout, ad esempio {example}.",
       },
     },
     preview: {
@@ -4484,6 +4488,8 @@ export const it = {
       unsupportedFileType: "Tipo di file non supportato",
       uploadOneFileType: "Carica un file {types}.",
       datasetUploaded: "Dataset caricato",
+      importPandasJson: "Importa .json come colonne pandas",
+      importSemicolonCsv: "Usa il punto e virgola come delimitatore per .csv",
       evalDatasetUploaded: "Dataset di valutazione caricato",
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:
@@ -4580,6 +4586,12 @@ export const it = {
       epochs: "Epoche",
       useMaxSteps: "Usa gli step massimi",
       useEpochs: "Usa le epoche",
+      stepGuidancePass: "Circa {steps} passi sono un passaggio sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidanceFloor: "Un passaggio sulle tue {rows} righe è di soli {passSteps} passi con un batch effettivo di {batch}, quindi circa {steps} passi (alcuni passaggi) sono un minimo ragionevole.",
+      stepGuidanceCap: "Un passaggio sulle tue {rows} righe è di {passSteps} passi con un batch effettivo di {batch}; {steps} passi addestrano su una parte, spesso sufficiente per una prima esecuzione.",
+      stepGuidanceEpoch: "Un'epoca è di circa {passSteps} passi sulle tue {rows} righe con un batch effettivo di {batch}.",
+      stepGuidancePacking: "Il packing unisce le righe brevi, quindi un passaggio può richiedere meno passi.",
+      useSuggestedSteps: "Usa {steps}",
       maxStepsTooltip:
         "Sovrascrive il numero totale di step dell'ottimizzatore.",
       epochsTooltip: "Numero di passaggi completi sul dataset.",
@@ -5137,6 +5149,7 @@ export const it = {
       showPromptDescription: "Vedi le istruzioni esatte inviate al modello.",
     },
     history: {
+      notSaved: "Non salvata nella cronologia: lo spazio di archiviazione del browser è pieno.",
       title: "Cronologia",
       search: "Cerca nella cronologia",
       empty: "Le tue traduzioni appaiono qui.",
@@ -6102,6 +6115,12 @@ export const it = {
     maximize: "Ingrandisci la finestra",
     restore: "Ripristina la finestra",
     close: "Chiudi la finestra",
+    mediaCodecs: {
+      title: "I video generati potrebbero non essere riprodotti",
+      // {command}: an apt command line, never translated.
+      description: "In questo sistema mancano i decoder video di GStreamer. Installali con: {command}",
+      copy: "Copia comando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Installa il runtime audio",

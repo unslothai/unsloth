@@ -68,8 +68,14 @@ def test_desktop_package_transitions_preserve_legacy_installs() -> None:
     deb = config["bundle"]["linux"]["deb"]
     for field in ("provides", "conflicts", "replaces"):
         assert deb[field] == ["unsloth-studio-desktop"]
-    # Recommends, not Depends: Ubuntu ships it in universe, so a Depends blocks install where that is off.
-    assert deb["recommends"] == ["gstreamer1.0-plugins-bad"]
+    # Recommends, not Depends: Ubuntu ships them in universe, so a Depends blocks install where that is off.
+    # WebKitGTK plays a generated mp4 through the system GStreamer: qtdemux is in plugins-good and the H.264 / AAC
+    # decoders (avdec_h264, avdec_aac) in libav. plugins-bad stays for what it already covered.
+    assert sorted(deb["recommends"]) == [
+        "gstreamer1.0-libav",
+        "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-plugins-good",
+    ]
     assert "depends" not in deb
 
     installer = read(TAURI / "windows/installer.nsi")

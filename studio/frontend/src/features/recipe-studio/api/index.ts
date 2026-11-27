@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import {
-  formatFastApiDetail,
+  formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
@@ -208,16 +208,11 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
   try {
     const parsed = JSON.parse(text) as {
-      detail?: unknown;
-      message?: string;
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    // Use ||, not ??: formatFastApiDetail returns null when it cannot flatten the value.
-    const formatted = formatFastApiDetail(parsed.detail);
+    const formatted = formatApiErrorBody(parsed);
     if (formatted) return formatted;
-    if (typeof parsed.message === "string" && parsed.message)
-      return parsed.message;
     if (typeof parsed.raw_detail === "string" && parsed.raw_detail)
       return parsed.raw_detail;
     return text;

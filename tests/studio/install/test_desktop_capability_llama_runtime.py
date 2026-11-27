@@ -228,8 +228,7 @@ def test_a_quarantined_library_reports_false_with_a_reason(tmp_path):
 
 @NEEDS_VENV
 def test_a_missing_llama_server_reports_binaries_missing(tmp_path):
-    """The payload groups name libraries only, so on Linux and macOS a quarantined
-    llama-server would otherwise read as a complete install."""
+    """Only libraries are named, so on Linux/macOS a quarantined llama-server reads complete."""
     root = tmp_path / "llama.cpp"
     runtime_dir = _complete_tree(root)
     ext = ".exe" if ILP.platform_only_host().is_windows else ""
@@ -256,8 +255,7 @@ def test_the_human_readable_form_still_prints_every_key(tmp_path):
 
 @NEEDS_VENV
 def test_the_probe_stays_off_the_critical_path_budget(tmp_path):
-    """The command runs at every launch under a desktop timeout; the loose half-second bound on
-    import plus call catches a network or GPU probe, not CI jitter."""
+    """Runs at every launch under a timeout; a half-second bound catches probes, not CI jitter."""
     assert VENV_PYTHON is not None
     root = tmp_path / "llama.cpp"
     _complete_tree(root)
@@ -336,8 +334,7 @@ def test_an_unimportable_probe_leaves_the_verdict_null(tmp_path):
 
 
 def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
-    """Read off the source so it holds without the venv: a key added without a matching Option<T> in
-    managed.rs is invisible to the desktop, and a removed key breaks it."""
+    """Reads source so it runs without the venv; each key must be an Option<T> in managed.rs."""
     source = (PACKAGE_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     body = source.split("def desktop_capabilities(", 1)[1]
     body = body.split("if json_output:", 1)[0]
@@ -348,8 +345,7 @@ def test_the_command_emits_exactly_the_pre_pr_keys_plus_the_two_new_ones():
 
 @NEEDS_VENV
 def test_dropping_the_new_keys_yields_the_pre_pr_payload(tmp_path):
-    """Additive, proven by subtraction: without the two new keys the payload is what the pre-PR
-    desktop accepts; neither version constant may move or the CLI reads as stale."""
+    """Neither version constant may move, or the CLI reads as stale; new keys are additive."""
     root = tmp_path / "llama.cpp"
     _complete_tree(root)
     rc, out = _capabilities(root, tmp_path)
@@ -361,8 +357,7 @@ def test_dropping_the_new_keys_yields_the_pre_pr_payload(tmp_path):
 
 
 def test_the_desktop_reads_every_emitted_key_as_optional():
-    """A desktop must survive a pre-PR CLI sending neither new key: serde maps an absent field to
-    None and managed.rs only flags Some(false), so every field must stay an Option."""
+    """A pre-PR CLI omits both keys, serde reads them as None; every field must stay Option."""
     source = MANAGED_RS.read_text(encoding = "utf-8")
     struct_body = source.split("struct DesktopCapability {", 1)[1].split("\n}", 1)[0]
     fields = dict(re.findall(r"^\s+([a-z_]+):\s*(.+),$", struct_body, flags = re.MULTILINE))
@@ -470,8 +465,7 @@ def test_an_inferred_studio_root_is_graded_not_the_legacy_tree(tmp_path, monkeyp
 
 
 def test_a_legacy_install_still_grades_the_legacy_tree(tmp_path, monkeypatch):
-    """The other direction: nothing was inferred, so nothing is exported and the answer is
-    the tree every ordinary install has."""
+    """With nothing inferred or exported, the answer is the tree every ordinary install has."""
     for name in (
         "LLAMA_SERVER_PATH",
         "UNSLOTH_LLAMA_CPP_PATH",
