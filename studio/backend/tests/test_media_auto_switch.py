@@ -2823,3 +2823,32 @@ def test_media_quants_survive_native_root_deduplication(tmp_path, monkeypatch):
         assert pick is not None and Path(pick.model_path).is_relative_to(root)
     bare = mas.resolve_local_media_model(name, task = mas.IMAGE_TASK)
     assert bare is not None and bare.model_path == rows[0].path
+
+
+def test_media_scan_folder_symlink_keeps_its_own_alias(tmp_path, monkeypatch):
+    from hub.services.models import local_inventory
+
+    parent = tmp_path / "links"
+    weights = tmp_path / "weights"
+    checkpoint = weights / "z-image-turbo"
+    parent.mkdir()
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"weights")
+    try:
+        (parent / "alias").symlink_to(checkpoint, target_is_directory = True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    empty = tmp_path / "empty"
+    sources = local_inventory._LocalInventorySources(empty, empty, empty, (), (), (), ())
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: [{"path": str(parent)}, {"path": str(weights)}],
+    )
+    monkeypatch.chdir(tmp_path)
+    folded = []
+    models_route.collect_local_models(tmp_path / "models", folded = folded)
+    assert any(row.display_name == "alias" for row in folded)
+    pick = mas.resolve_local_media_model("alias:Q4_K_M", task = mas.IMAGE_TASK)
+    assert pick is not None
+    assert Path(pick.model_path).resolve() == checkpoint

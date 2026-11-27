@@ -304,3 +304,21 @@ def test_an_entry_that_cannot_be_statted_is_skipped(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "scandir", lambda path = ".": _SortedListing(path, real_scandir, _Entry))
     assert _discovered_ids(tmp_path) == [REPO]
+
+
+def test_unresolvable_secondary_root_does_not_hide_local_models(tmp_path, monkeypatch):
+    active = tmp_path / "active"
+    looping = tmp_path / "default"
+    models = tmp_path / "models"
+    _write(models / "Local-Q4_K_M.gguf")
+    original_resolve = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if path == looping:
+            raise RuntimeError("symlink loop")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    sources = local_inventory._LocalInventorySources(active, active, looping, (), (), (), ())
+    rows = local_inventory._collect_models_from_default_sources(models, sources, [])
+    assert [row.path for row in rows] == [str(models / "Local-Q4_K_M.gguf")]

@@ -277,6 +277,7 @@ def _pull_is_incomplete(info) -> bool:
 @in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
+    from core.inference.local_model_resolver import _is_symlink_alias
     from hub.utils.gguf import local_path_physical_identity
     from routes.models import _local_model_task, collect_local_models
 
@@ -292,6 +293,9 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
                 if row.source == "custom"
             }
             for row in folded:
+                if row.source == "custom" and _is_symlink_alias(row):
+                    folded_copies[id(row)] = row
+                    continue
                 if row.source not in ("lmstudio", "omlx") or not row.model_id:
                     continue
                 path = custom_paths.get((local_path_physical_identity(row.path), row.model_format))

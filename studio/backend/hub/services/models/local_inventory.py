@@ -1281,34 +1281,24 @@ def _collect_models_from_default_sources(
         omlx_dirs,
     ) = sources
     local_models = _scan_source("models directory", _scan_models_dir, models_root)
-    hf_sources = [("HF cache", hf_cache_dir, True)]
-
-    if _safe_is_dir(legacy_hf) and legacy_hf.resolve() != hf_cache_dir.resolve():
-        hf_sources.append(("legacy HF cache", legacy_hf, False))
-
-    if (
-        _safe_is_dir(hf_default)
-        and hf_default.resolve() != hf_cache_dir.resolve()
-        and hf_default.resolve() != legacy_hf.resolve()
+    hf_sources = []
+    seen_hf: set[str] = set()
+    for label, cache_dir, active in (
+        ("HF cache", hf_cache_dir, True),
+        ("legacy HF cache", legacy_hf, False),
+        ("default HF cache", hf_default, False),
+        *(("previous HF cache", path, False) for path in known_hf_caches),
+        *(("oMLX HF cache", path, False) for path in omlx_dirs),
     ):
-        hf_sources.append(("default HF cache", hf_default, False))
-
-    seen_hf = {
-        os.path.normcase(str(path.resolve(strict = False)))
-        for path in (hf_cache_dir, legacy_hf, hf_default)
-    }
-    for previous_cache in known_hf_caches:
-        key = os.path.normcase(str(previous_cache.resolve(strict = False)))
+        try:
+            key = os.path.normcase(str(cache_dir.resolve(strict = False)))
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Skipping %s model folders: %s", label, scrub_paths(exc))
+            continue
         if key in seen_hf:
             continue
         seen_hf.add(key)
-        hf_sources.append(("previous HF cache", previous_cache, False))
-    # oMLX also serves models--* repos kept under its own roots.
-    for omlx_dir in omlx_dirs:
-        key = os.path.normcase(str(omlx_dir.resolve(strict = False)))
-        if key not in seen_hf:
-            seen_hf.add(key)
-            hf_sources.append(("oMLX HF cache", omlx_dir, False))
+        hf_sources.append((label, cache_dir, active))
 
     discovered_sources = []
     custom_sources = []
