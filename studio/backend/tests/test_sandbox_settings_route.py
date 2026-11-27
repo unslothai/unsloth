@@ -597,7 +597,9 @@ def test_a_bad_file_size_save_is_refused(host, posix, memory, file_size, payload
     assert file_size == {} and memory == {}
 
 
-def test_an_environment_file_size_limit_is_shown_and_locked(host, posix, memory, file_size, monkeypatch):
+def test_an_environment_file_size_limit_is_shown_and_locked(
+    host, posix, memory, file_size, monkeypatch
+):
     from utils import sandbox_file_size_limit
 
     monkeypatch.setenv(sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV, "2048")

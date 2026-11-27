@@ -6224,7 +6224,6 @@ def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
 
 def _sandbox_file_size_status() -> Optional[SandboxFileSizeStatus]:
     import sys
-
     if sys.platform == "win32":
         return None
     return SandboxFileSizeStatus(
