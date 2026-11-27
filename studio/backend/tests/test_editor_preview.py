@@ -81,6 +81,26 @@ def test_frame_exchange_sends_input_once_and_keeps_the_newest_frame(app, client)
     assert client.get(endpoint + "/input", headers=headers).json()["orbit_x"] == 0
 
 
+@pytest.mark.parametrize("editor", ["unity", "unreal"])
+def test_viewport_navigation_reaches_the_paired_editor(app, client, editor):
+    session_id, endpoint, headers = pair(client, editor)
+    assert client.get(endpoint + "/input", headers=headers).status_code == 200
+    state = app.state.editor_previews[session_id]
+    state.viewer = True
+
+    image = io.BytesIO()
+    Image.new("RGB", (4, 4), "green").save(image, "PNG")
+    assert client.post(endpoint + "/frame", headers=headers, content=image.getvalue()).status_code == 204
+
+    gesture = {"orbit_x": .1, "orbit_y": -.2, "pan_x": .15, "pan_y": -.1, "zoom": -.12}
+    assert client.post(BASE + "/sessions/" + session_id + "/input", json=gesture).status_code == 204
+    assert client.get(endpoint + "/input", headers=headers).json() == {"active": True, **gesture}
+    assert client.get(endpoint + "/input", headers=headers).json() == {
+        "active": True,
+        **dict.fromkeys(gesture, 0),
+    }
+
+
 def test_denies_a_nonlocal_browser(app):
     with TestClient(app, base_url="http://127.0.0.1:3101", client=("192.0.2.1", 5000)) as client:
         assert client.post(BASE + "/sessions/blender").status_code == 403
