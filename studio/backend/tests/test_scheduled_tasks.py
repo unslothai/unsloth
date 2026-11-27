@@ -3283,7 +3283,7 @@ def test_the_sweep_and_task_delete_leave_the_chat_itself(monkeypatch):
 
 
 @pytest.mark.parametrize("empty_reply", [False, True])
-def test_a_run_keeps_the_trailing_user_text_in_its_final_turn(monkeypatch, empty_reply):
+def test_a_run_keeps_the_trailing_user_text_as_history(monkeypatch, empty_reply):
     messages = [
         ("q1", None, "user", "Draft the schedule.", 10),
         ("a1", "q1", "assistant", "Early draft.", 20),
@@ -3300,13 +3300,36 @@ def test_a_run_keeps_the_trailing_user_text_in_its_final_turn(monkeypatch, empty
     assert [(m.role, m.content) for m in producer.payload.messages[1:]] == [
         ("user", "Draft the schedule."),
         ("assistant", "Early draft."),
-        ("user", "Use Wednesday instead.\n\nScheduled task:\n" + task["prompt"]),
+        ("user", "Use Wednesday instead."),
+        ("assistant", "[No assistant reply was recorded for the preceding message.]"),
+        ("user", task["prompt"]),
     ]
     prompt_id, reply_id = db.message_ids_for_run(run["id"])
     prompt = studio_db.get_chat_message("unanswered", prompt_id)
     assert prompt["parentId"] == ("a2" if empty_reply else "q2")
     assert prompt["content"] == [{"type": "text", "text": task["prompt"]}]
     assert studio_db.get_chat_message("unanswered", reply_id)["parentId"] == prompt_id
+
+
+def test_oversized_unanswered_history_can_be_evicted_without_losing_the_task(monkeypatch):
+    from core.inference.context_window import truncate_oldest_messages
+
+    unanswered = "A pasted transcript. " * 4000
+    _chat_with("long-unanswered", [("q1", None, "user", unanswered, 10)])
+    task = make_task(threadId = "long-unanswered")
+    producer = FakeProducer(completion("Done."))
+
+    generate(monkeypatch, producer, task = task)
+
+    request = producer.payload
+    assert request.context_overflow == "truncate_oldest"
+    messages = [message.model_dump() for message in request.messages]
+    fitted, dropped = truncate_oldest_messages(messages, 0.1)
+    assert dropped == 2
+    assert [(message["role"], message["content"]) for message in fitted] == [
+        ("system", messages[0]["content"]),
+        ("user", task["prompt"]),
+    ]
 
 
 def test_a_run_whose_chat_was_deleted_gets_a_chat_of_its_own(monkeypatch):

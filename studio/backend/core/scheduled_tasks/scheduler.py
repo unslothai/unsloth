@@ -808,24 +808,27 @@ async def generate_answer(
                 raise RunFailed("timeout") from None
             mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
             tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
-            prompt = task["prompt"]
-            has_history = bool(history)
             if history and history[-1]["role"] == "user":
-                # Keep the unanswered text while sending a single final user turn to strict templates.
-                prompt = f'{history.pop()["content"]}\n\nScheduled task:\n{prompt}'
+                # Keep the pending turn evictable and alternate roles for strict chat templates.
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": "[No assistant reply was recorded for the preceding message.]",
+                    }
+                )
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
                         {"role": "system", "content": instructions},
                         *history,
-                        {"role": "user", "content": prompt},
+                        {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
                     # History is budgeted in characters, so a small window must drop turns, not fail.
                     **(
                         {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
-                        if has_history
+                        if history
                         else {}
                     ),
                     **tool_fields,
