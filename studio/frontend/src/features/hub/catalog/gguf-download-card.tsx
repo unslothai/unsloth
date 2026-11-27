@@ -31,6 +31,7 @@ import {
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
+import { refreshSystemMemory } from "@/hooks/use-system";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -902,6 +903,13 @@ export function GgufDownloadCard({
   useEffect(() => {
     setCompletedVariantKeys(new Set<string>());
   }, [repoId]);
+
+  // Hub fit badges read free memory and nothing else here refreshes it; media GGUFs show no verdict.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: repoId is the trigger, not an input.
+  useEffect(() => {
+    if (mediaRuntime) return;
+    void refreshSystemMemory({ maxAgeMs: 10_000 });
+  }, [repoId, mediaRuntime]);
 
   useEffect(() => {
     if (loading || error || refreshError || !variants) return;
