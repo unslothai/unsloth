@@ -51,6 +51,25 @@ test("the original goes after the first mention only, and never twice", () => {
   assert.equal(annotateNames(once, spelled, new Set()), once);
 });
 
+test("a surname alone is matched to its own mention, never inside the full name", () => {
+  const spelled = [
+    { source: "Picard", target: "Пикар" },
+    { source: "Jean-Luc Picard", target: "Жан-Люк Пикар" },
+  ];
+  assert.equal(
+    annotateNames(
+      "Жан-Люк Пикар встретил Пикар. Жан-Люк Пикар ушёл.",
+      spelled,
+      new Set(),
+    ),
+    "Жан-Люк Пикар (Jean-Luc Picard) встретил Пикар (Picard). Жан-Люк Пикар ушёл.",
+  );
+  assert.equal(
+    annotateNames("Жан-Люк Пикар ушёл.", spelled, new Set()),
+    "Жан-Люк Пикар (Jean-Luc Picard) ушёл.",
+  );
+});
+
 test("a spelling inside a longer word is skipped, an attached prefix is not", () => {
   const klopp = [{ source: "Jürgen Klopp", target: "يورغن كلوب" }];
   assert.equal(

@@ -84,21 +84,28 @@ export function annotateNames(
   names: readonly NameSpelling[],
   annotated: Set<string>,
 ): string {
-  let out = text;
-  for (const { source, target } of names) {
-    if (annotated.has(source)) continue;
+  // Longest first, every mention claimed: a surname alone must not match inside its full name.
+  const claimed: Array<[number, number]> = [];
+  const inserts: Array<[number, string]> = [];
+  const byLength = [...names].sort((a, b) => b.target.length - a.target.length);
+  for (const { source, target } of byLength) {
     for (
-      let at = out.indexOf(target);
+      let at = text.indexOf(target);
       at >= 0;
-      at = out.indexOf(target, at + 1)
+      at = text.indexOf(target, at + 1)
     ) {
       const end = at + target.length;
-      if (LETTER.test(out[end] ?? "")) continue;
+      if (LETTER.test(text[end] ?? "")) continue;
+      if (claimed.some(([from, to]) => at < to && end > from)) continue;
+      claimed.push([at, end]);
+      if (annotated.has(source)) continue;
       annotated.add(source);
-      if (!out.slice(end).trimStart().startsWith(`(${source})`))
-        out = `${out.slice(0, end)} (${source})${out.slice(end)}`;
-      break;
+      if (!text.slice(end).trimStart().startsWith(`(${source})`))
+        inserts.push([end, ` (${source})`]);
     }
   }
+  let out = text;
+  for (const [end, note] of inserts.sort((a, b) => b[0] - a[0]))
+    out = out.slice(0, end) + note + out.slice(end);
   return out;
 }
