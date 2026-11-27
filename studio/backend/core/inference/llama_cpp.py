@@ -31891,7 +31891,6 @@ class LlamaCppBackend:
                     and not threads_overridden
                 )
 
-                # A global cap can lower the Windows tuning, which already uses two threads.
                 launch_threads = (
                     min(2, thread_cap or 2) if _drop_full_offload_threads else n_threads
                 )
