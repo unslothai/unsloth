@@ -556,7 +556,7 @@ def decide_small_host(
     dense_denoiser: bool = False,
     force: bool = False,
 ) -> SmallHostDecision:
-    """Whether this pipeline load takes the small-host route. ``force`` engages it as ``SMALL_HOST_ENV=1`` does. Only CUDA loads converting large bf16 components
+    """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
     (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``host_commit_mib`` (Windows)
     also routes a dense load whose commit need does not fit: on Windows commit exhaustion is an access
     violation in native code, not a Python error (#13432, #14513). ``spill_free_mib``: ``spill_capacity_mib``, None = no spill.

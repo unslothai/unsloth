@@ -29,14 +29,10 @@ FP16_CARD_HOSTED_INT8_ENV = "UNSLOTH_FP16_CARD_HOSTED_INT8"
 # klein 8; MOSS-Image against float32, see below). Others keep the at-load build until measured: the hosted codes are
 # not the at-load codes (see the module docstring).
 FP16_CARD_HOSTED_INT8_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein", "moss-image"})
-# fp16-incompatible families AUTO sends to the hosted ConvRot W8A8 build on any host, not only one the dense DiT
-# misses: their float32 alternatives are both slower and further from the float32 reference. MOSS-Image SFT, Colab
-# T4 51 GB host, 1024 px, 10 steps, 4 prompts x 2 seeds, LPIPS vs float32 compute: per-row int8 37.35 s/step,
-# LPIPS 0.029; dense float32 36.01 s/step; hosted ConvRot 14.51 s/step (2.57x), LPIPS 0.023.
+# AUTO takes the hosted build on any host: MOSS-Image SFT on a T4, hosted 14.51 s/step LPIPS 0.023 vs per-row int8
+# 37.35 s/step LPIPS 0.029 and dense float32 36.01 s/step.
 FP16_CARD_HOSTED_INT8_AUTO_FAMILIES = frozenset({"moss-image"})
-# Process host RAM peak (VmHWM) of that AUTO build, MiB: MOSS-Image SFT, Colab T4 51 GB host, 1024 px, 8 renders,
-# encoders on the small-host route (forced, see the MOSS branch of the load): 29707 MiB measured, rounded up. AUTO takes the hosted build only where the available host RAM covers it plus the
-# small-host reserve; a smaller host (12.7 GB T4, Kaggle T4x2) keeps the at-load per-row build it ran before.
+# Measured host RAM peak (VmHWM, MiB, T4 51 GB host); a host below it plus the small-host reserve keeps the per-row build.
 FP16_CARD_HOSTED_INT8_AUTO_HOST_PEAK_MIB: dict[str, int] = {"moss-image": 30000}
 _TAG = "diffusion.fp16_hosted_int8"
 
@@ -219,8 +215,7 @@ def _dense_dit_fits_host(
 
 
 def hosted_auto_host_ram_shortfall(fam: Any) -> Optional[str]:
-    """Why this host is too small for AUTO's measured hosted build of ``fam``, else None (fits, or not a measured
-    family). Unreadable host RAM is a shortfall. Never raises."""
+    """Why this host is too small for AUTO's measured hosted build of ``fam``, else None. Never raises."""
     try:
         name = getattr(fam, "name", None)
         peak = FP16_CARD_HOSTED_INT8_AUTO_HOST_PEAK_MIB.get(name)

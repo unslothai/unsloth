@@ -5153,7 +5153,6 @@ def _denoiser_streams_from_host(state: Any) -> bool:
 
 
 def _note_small_host_hosted_int8(pipe: Any, reason: str, *, picked: bool) -> None:
-    """Record on the pipe's small-host status whether AUTO took the hosted int8 ConvRot build, and why."""
     from .diffusion_small_host import mark
 
     info = dict(small_host_engaged_on(pipe) or {})
@@ -10260,7 +10259,6 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
-                # AUTO's measured hosted build declined only for host RAM: status says so beside the per-row build.
                 hosted_auto_ram_note = (
                     hosted_auto_host_ram_shortfall(fam)
                     if small_host_hosted is None
@@ -11548,8 +11546,7 @@ class DiffusionBackend:
                                     try:
                                         # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
                                         # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
-                                        # AUTO's hosted ConvRot DiT keeps that route even where the rest fits dense:
-                                        # the float32 encoder copy alone would take ~30 GB of host RAM (T4, 51 GB).
+                                        # Forced: the float32 encoder copy alone would take ~30 GB of host RAM.
                                         small_host = self._small_host_decision(
                                             _base_local_dir or fetch_base,
                                             pipe_kwargs,
@@ -15152,7 +15149,7 @@ class DiffusionBackend:
         force: bool = False,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
-        ``force``: engage the route whatever the dense load would need (``SMALL_HOST_ENV=1`` for this load only).
+        ``force``: ``SMALL_HOST_ENV=1`` for this load only.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
         is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())

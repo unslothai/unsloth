@@ -27,10 +27,8 @@ from core.inference.diffusion_families import detect_family  # noqa: E402
 MOSS = "OpenMOSS-Team/MOSS-Image-SFT"
 KREA = "krea/Krea-2-Turbo"
 QWEN21 = "Qwen/Qwen-Image-2.1"
-# MOSS is fp16-incompatible, so a T4 runs it promoted to float32.
 T4_FP32 = types.SimpleNamespace(device = "cuda", dtype = torch.float32, ordinal = 0)
 T4_FP16 = types.SimpleNamespace(device = "cuda", dtype = torch.float16, ordinal = 0)
-# Colab T4 standard (12.7 GB), Kaggle T4x2 (~31 GB) and Colab high-RAM (51 GB) hosts, plus an unbounded one.
 STANDARD = (12976, 11427)
 KAGGLE = (32102, 29800)
 HIGH_RAM = (52223, 50118)
@@ -192,7 +190,6 @@ def test_the_gate_is_the_measured_peak_plus_the_small_host_reserve(host):
 
 
 def test_the_gate_reads_the_small_host_helper(host, monkeypatch):
-    # host_ram_mib is the small-host route's own (cgroup-capped) reading; patched here like a 29 GB cgroup cap
     host.ram["now"] = (29000, 29000)
     assert FH.hosted_auto_host_ram_shortfall(_fam(MOSS, "moss-image")) is not None
 
