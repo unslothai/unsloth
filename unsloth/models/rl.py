@@ -1155,11 +1155,11 @@ def _restore_optimizer_from_host(record):
 
 
 def _wrap_grpo_vllm_lora_rounding(trainer_cls, always = False):
-    """train / evaluate of an RL trainer with use_vllm (GRPO, RLOO, Online DPO; always for AsyncGRPO, which only
+    """train / evaluate / predict of an RL trainer with use_vllm (GRPO, RLOO, Online DPO; always for AsyncGRPO, which only
     samples with vLLM) run under vllm_lora_rounding, so the trainer rounds the LoRA term as the rollout does;
     the previous order comes back afterwards (a later SFT keeps the fused one)."""
     from ..kernels.utils import vllm_lora_rounding
-    for name in ("train", "evaluate"):
+    for name in ("train", "evaluate", "predict"):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
             continue
@@ -6714,20 +6714,22 @@ def patch_trl_async_grpo():
                 _unsloth_reset_stray_compile_cache(self)
             except Exception:
                 pass
-            if hasattr(model, "for_training"):
-                model.for_training(use_gradient_checkpointing = use_gc)
             try:
-                output = original_train(self, *args, **kwargs)
+                if hasattr(model, "for_training"):
+                    model.for_training(use_gradient_checkpointing = use_gc)
+                return original_train(self, *args, **kwargs)
             finally:
-                server = getattr(self, "_unsloth_vllm_server", None)
-                if server is not None:
-                    # The rollout process is gone; drop the requests it left in flight.
-                    server.abort_all()
-            if was_training is False and getattr(self, "_unsloth_tensor_parallel", False):
-                model.eval()
-            elif was_training is False and hasattr(model, "for_inference"):
-                model.for_inference()
-            return output
+                try:
+                    server = getattr(self, "_unsloth_vllm_server", None)
+                    if server is not None:
+                        # The rollout process is gone; drop the requests it left in flight.
+                        server.abort_all()
+                finally:
+                    # Back to inference mode even when train raised, as the model was before.
+                    if was_training is False and getattr(self, "_unsloth_tensor_parallel", False):
+                        model.eval()
+                    elif was_training is False and hasattr(model, "for_inference"):
+                        model.for_inference()
 
         trainer_class.train = train
     try:

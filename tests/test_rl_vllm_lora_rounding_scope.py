@@ -211,14 +211,30 @@ def test_async_grpo_train_rounds_as_vllm_and_enters_training_mode(
     assert fused_state.LORA_FUSED_PASSES is True
 
 
-def test_async_grpo_train_restores_after_failure(fused_state, fake_async):
+@pytest.mark.parametrize("training", [True, False])
+def test_async_grpo_train_restores_after_failure(fused_state, fake_async, training):
     cls, seen, _ = fake_async
     cls.fail = True
-    trainer = _bare(cls, _Model(True), server = _Server())
+    model = _Model(training)
+    trainer = _bare(cls, model, server = _Server())
     aborted = _Server.aborted
     with pytest.raises(ValueError):
         trainer.train()
     assert _Server.aborted == aborted + 1
+    assert model.training is training
+    assert model.calls[1:] == ([] if training else [("for_inference",)])
+    assert fused_state.LORA_FUSED_PASSES is True
+
+
+def test_predict_is_scoped_too(fused_state):
+    class T:
+        use_vllm = True
+
+        def predict(self, *args, **kwargs):
+            return kernel_utils.LORA_FUSED_PASSES
+
+    rl._wrap_grpo_vllm_lora_rounding(T)
+    assert T().predict() is False
     assert fused_state.LORA_FUSED_PASSES is True
 
 
