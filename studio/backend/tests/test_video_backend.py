@@ -7925,7 +7925,7 @@ def _offset_audio_reference_video_data_url():
         video.width, video.height = (128, 64)
         video.pix_fmt = "yuv444p"
         video.time_base = Fraction(1, 1000)
-        audio = out.add_stream("pcm_s16le", rate = 44_100)
+        audio = out.add_stream("pcm_f32le", rate = 44_100)
         audio.layout = "stereo"
         audio.time_base = Fraction(1, 44_100)
         for index in range(4 * 24):
@@ -7939,8 +7939,8 @@ def _offset_audio_reference_video_data_url():
         written = 0
         while written < 3 * 44_100:
             count = min(1024, 3 * 44_100 - written)
-            samples = np.full((1, count * 2), 10_000, dtype = np.int16)
-            frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
+            samples = np.full((1, count * 2), 0.3, dtype = np.float32)
+            frame = av.AudioFrame.from_ndarray(samples, format = "flt", layout = "stereo")
             frame.sample_rate = 44_100
             frame.pts = 6 * 44_100 + written
             frame.time_base = Fraction(1, 44_100)
@@ -8052,7 +8052,7 @@ def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     assert whole_rate == 44_100
     assert whole_audio.shape == (4 * whole_rate, 2)
     assert np.max(np.abs(whole_audio[:whole_rate])) == 0
-    assert np.mean(np.abs(whole_audio[whole_rate:])) > 0.25
+    np.testing.assert_allclose(whole_audio[whole_rate:], 0.3)
 
 
 @pytest.mark.parametrize("duration", [2.0, 15.0])

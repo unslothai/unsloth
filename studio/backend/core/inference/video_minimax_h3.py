@@ -1257,29 +1257,35 @@ def _decode_audio_trim_by_timestamp(
     resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
     copied_any = False
     stopped = False
+    next_sample = None
+    source_time_base = getattr(stream, "time_base", None)
+    samples_per_tick = float(source_time_base) * sample_rate if source_time_base else 0.0
+    timestamp_tolerance = math.ceil(samples_per_tick) if samples_per_tick > 1.0 + 1e-6 else 0
 
     def _take(resampled: Any) -> bool:
-        nonlocal origin, copied_any
+        nonlocal origin, copied_any, next_sample
         timestamp = _frame_timestamp_seconds(resampled)
         if timestamp is None:
             raise _H3MediaTimestampsUnavailable
         if origin is None:
             origin = timestamp
         block = resampled.to_ndarray().reshape(-1, channels)
-        block_start = timestamp - origin
-        block_end = block_start + block.shape[0] / sample_rate
-        if block_start >= end:
+        block_start = int(round((timestamp - origin - start) * sample_rate))
+        # Two source timestamps can round in opposite directions by half a tick each.
+        if next_sample is not None and abs(block_start - next_sample) <= timestamp_tolerance:
+            block_start = next_sample
+        if block_start >= target_count:
             return True
-        destination_start = int(round((block_start - start) * sample_rate))
-        source_start = max(0, -destination_start)
-        destination_start = max(0, destination_start)
+        next_sample = block_start + block.shape[0]
+        source_start = max(0, -block_start)
+        destination_start = max(0, block_start)
         take = min(block.shape[0] - source_start, target_count - destination_start)
         if take > 0:
             output[destination_start : destination_start + take] = block[
                 source_start : source_start + take
             ]
             copied_any = True
-        return block_end >= end
+        return next_sample >= target_count
 
     for frame in container.decode(audio = 0):
         for resampled in resampler.resample(frame):
