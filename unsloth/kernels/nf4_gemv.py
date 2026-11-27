@@ -29,13 +29,15 @@ __all__ = [
 def _row_dot(
     acc, w, X, xk, xmask, a, BLOCK_N: tl.constexpr, NB: tl.constexpr, BLOCKSIZE: tl.constexpr
 ):
+    # BLOCK_N, NB, BLOCKSIZE: the caller's tile shape.
     # One activation row against a dequantized tile: the batch-1 sums, so rows stay bit-identical.
     x = tl.load(X + xk, mask = xmask, other = 0.0).to(tl.float32)
     part = tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
     return acc + tl.sum(part * a, axis = 1)
 
 
-# M_GROUPS is 1 for M <= 4 and stays specialized: unspecialized is 0.5-0.9% slower on T4.
+# M_GROUPS stays specialized: == 1 (every M <= 4) folds the row split (unspecialized 0.5-0.9% slower
+# on T4).
 @triton.jit
 def _gemv_nf4_kernel(
     X,
@@ -48,17 +50,17 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M_GROUPS,
+    M_GROUPS,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
-    M_ROWS: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, from N
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, per weight
+    LUT_MODE: tl.constexpr,  # codebook lookup, from BLOCK_K
+    M_ROWS: tl.constexpr,  # rows per program (1 to 4), unrolled accumulators
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -135,15 +137,15 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M_GROUPS,
+    M_GROUPS,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    M_ROWS: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, 1 here
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    M_ROWS: tl.constexpr,  # rows per program (1 to 4), unrolled accumulators
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
