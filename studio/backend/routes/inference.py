@@ -32344,7 +32344,8 @@ async def _proxy_to_external_provider(
             force = "manual"
         _manual_summary_pending = False
         if force == "overflow":
-            refused = _last_fit if _last_fit is not None else messages
+            # Unfitted rounds send the live conversation; _last_fit is then a stale earlier fit.
+            refused = _last_fit if _fit_active and _last_fit is not None else messages
             refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
