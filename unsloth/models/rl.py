@@ -1154,9 +1154,10 @@ def _restore_optimizer_from_host(record):
         param.grad = restored[id(host)]
 
 
-def _wrap_grpo_vllm_lora_rounding(trainer_cls):
-    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
-    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+def _wrap_grpo_vllm_lora_rounding(trainer_cls, always = False):
+    """train / evaluate of an RL trainer with use_vllm (GRPO, RLOO, Online DPO; always for AsyncGRPO, which only
+    samples with vLLM) run under vllm_lora_rounding, so the trainer rounds the LoRA term as the rollout does;
+    the previous order comes back afterwards (a later SFT keeps the fused one)."""
     from ..kernels.utils import vllm_lora_rounding
     for name in ("train", "evaluate"):
         original = getattr(trainer_cls, name, None)
@@ -1169,7 +1170,11 @@ def _wrap_grpo_vllm_lora_rounding(trainer_cls):
             _original = original,
             **kwargs,
         ):
-            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+            # TRL 0.22's Online DPO keeps the flag only on its args.
+            use_vllm = getattr(self, "use_vllm", None)
+            if use_vllm is None:
+                use_vllm = getattr(getattr(self, "args", None), "use_vllm", False)
+            with vllm_lora_rounding(always or bool(use_vllm)):
                 return _original(self, *args, **kwargs)
 
         functools.update_wrapper(wrapped, original)
@@ -4553,6 +4558,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception as e:
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
+    if trainer_file in ("rloo_trainer", "online_dpo_trainer"):
+        # Both can sample with vLLM (use_vllm) and score those samples with the trainer, as GRPO does.
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
+
     if trainer_file == "grpo_trainer":
         # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
         try:
@@ -6691,15 +6703,39 @@ def patch_trl_async_grpo():
 
         @functools.wraps(original_train)
         def train(self, *args, **kwargs):
+            # As the generated trainers' prepare_for_training_mode: drop a stray pre-train compile cache and
+            # leave inference mode (a for_inference() call before train) with the model's own GC setting.
+            model = getattr(self, "model", None)
+            was_training = getattr(model, "training", None)
+            use_gc = getattr(model, "_unsloth_gradient_checkpointing", None)
+            if not hasattr(model, "_unsloth_gradient_checkpointing"):
+                use_gc = getattr(getattr(self, "args", None), "gradient_checkpointing", True)
             try:
-                return original_train(self, *args, **kwargs)
+                from ._utils import _unsloth_reset_stray_compile_cache
+                _unsloth_reset_stray_compile_cache(self)
+            except Exception:
+                pass
+            if hasattr(model, "for_training"):
+                model.for_training(use_gradient_checkpointing = use_gc)
+            try:
+                output = original_train(self, *args, **kwargs)
             finally:
                 server = getattr(self, "_unsloth_vllm_server", None)
                 if server is not None:
                     # The rollout process is gone; drop the requests it left in flight.
                     server.abort_all()
+            if was_training is False and getattr(self, "_unsloth_tensor_parallel", False):
+                model.eval()
+            elif was_training is False and hasattr(model, "for_inference"):
+                model.for_inference()
+            return output
 
         trainer_class.train = train
+    try:
+        # Every rollout comes from vLLM, so score the LoRA term in its rounding order.
+        _wrap_grpo_vllm_lora_rounding(trainer_class, always = True)
+    except Exception as e:
+        logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for AsyncGRPOTrainer: {e}")
 
     if hasattr(async_module, "AsyncRolloutWorker"):
 
