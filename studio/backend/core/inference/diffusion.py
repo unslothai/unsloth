@@ -246,6 +246,7 @@ from .diffusion_memory import (
     flux3_prompt_tokens,
     estimate_safetensors_dense_mib,
     file_size_mib,
+    safetensors_prefix_mib,
     largest_streamable_companion_mib,
     mps_plan_tight,
     normalize_memory_mode,
@@ -4865,6 +4866,42 @@ def _prequant_bakes_auto_accumulate(source: Any) -> bool:
         return False
 
 
+# Original (LDM) layout of a whole-pipeline single file: denoiser, text encoders, VAE.
+_WHOLE_PIPELINE_PREFIXES = (
+    "model.diffusion_model.",
+    "conditioner.embedders.",
+    "first_stage_model.",
+)
+# MemoryPlan.estimates marker: companion/text-encoder MiB are shares of model_dense_mib, split from the header.
+WHOLE_PIPELINE_SPLIT_KEY = "whole_pipeline_split"
+
+
+def _whole_pipeline_companion_mib(
+    single_file_path: Any, resident_mib: Optional[int]
+) -> Optional[tuple[int, Optional[int]]]:
+    """(companion, text-encoder) MiB of a whole-pipeline file from its header, scaled to ``resident_mib`` so
+    any load-dtype widening applies to every part alike; None for other layouts, active component overrides
+    (priced by the base-cache path) or an unreadable header. Never raises."""
+    if not single_file_path or resident_mib is None or resident_mib <= 0:
+        return None
+    try:
+        from .diffusion_comfy_components import active_component_overrides
+
+        overrides = active_component_overrides()
+        if overrides is not None and overrides.paths:
+            return None
+        unet, te, vae = (
+            safetensors_prefix_mib(single_file_path, prefix) for prefix in _WHOLE_PIPELINE_PREFIXES
+        )
+    except Exception:  # noqa: BLE001 - a size hint, never a refusal
+        return None
+    if not unet or not te:
+        return None
+    scale = resident_mib / float(unet + te + (vae or 0))
+    companion = min(resident_mib, int(round((te + (vae or 0)) * scale)))
+    return companion, min(companion, int(round(te * scale))) or None
+
+
 def _single_file_fp8_upcast(single_file_path: Any, fam: Any) -> bool:
     """Whether a single-file denoiser stores fp8 weights a widened load upcasts (~2x resident). Read from the header
     (the basename only when it is unreadable); SDXL single-file pipelines are already bf16."""
@@ -9372,8 +9409,11 @@ class DiffusionBackend:
         *,
         exclude_transformer: bool,
         load_dtype: Any = None,
+        denoiser_dirs: tuple[str, ...] = ("transformer",),
     ) -> dict[str, int]:
-        """Per-file weight sizes under a local diffusers dir, priced at load_dtype (default variant, safetensors over .bin, cast floats) for dedupe by path."""
+        """Per-file weight sizes under a local diffusers dir, priced at load_dtype (default variant, safetensors over .bin, cast floats) for dedupe by path.
+
+        exclude_transformer drops the denoiser folders in ``denoiser_dirs`` (a U-Net family adds ``unet``)."""
         load_itemsize = _float_load_itemsize(load_dtype)
         sizes: dict[str, int] = {}
         for f in path.rglob("*"):
@@ -9383,7 +9423,7 @@ class DiffusionBackend:
                 rel = f.relative_to(path)
             except ValueError:
                 continue
-            if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
+            if exclude_transformer and rel.parts and rel.parts[0] in denoiser_dirs:
                 continue
             # from_pretrained reads <component>/<file> only: a deeper tree (FLUX.3's variants/fp8r, variants/nvfp4
             # quantised packages) is never loaded and must not be priced.
@@ -9615,12 +9655,14 @@ class DiffusionBackend:
         base: str,
         staged_dir: Optional[str] = None,
         load_dtype: Any = None,
+        denoiser_dirs: tuple[str, ...] = ("transformer",),
     ) -> int:
-        """Companion size excluding transformer/, which the GGUF supplies; walks snapshots, not blobs/."""
+        """Companion size excluding the denoiser folders (transformer/, which the GGUF supplies; a U-Net's unet/);
+        walks snapshots, not blobs/."""
         return DiffusionBackend._union_over_cached_revs(
             base,
             lambda d: DiffusionBackend._local_dir_weight_sizes(
-                d, exclude_transformer = True, load_dtype = load_dtype
+                d, exclude_transformer = True, load_dtype = load_dtype, denoiser_dirs = denoiser_dirs
             ),
             staged_dir,
         )
@@ -14973,8 +15015,10 @@ class DiffusionBackend:
         """Family bf16-resident weight total for the memory refusal; only ever lowers the estimate, and is skipped for GGUF/single-file, non-bf16 and local dirs."""
         try:
             # Companion bytes are double-counted for SDXL-style single files; fine as a hint, not as
-            # a refusal.
+            # a refusal. A header split already prices them inside the file: nothing to undo.
             if kind in ("single_file", "gguf") and getattr(fam, "single_file_is_pipeline", False):
+                if plan.estimates.get(WHOLE_PIPELINE_SPLIT_KEY):
+                    return plan
                 companion = plan.estimates.get("companion_dense_mib")
                 current = plan.estimates.get("model_dense_mib")
                 if companion and current is not None and int(companion) < int(current):
@@ -15431,6 +15475,7 @@ class DiffusionBackend:
             load_dtype = None
         companions_from_cache = False
         supplied_te: tuple[str, ...] = ()
+        whole_pipeline_split: Optional[tuple[int, Optional[int]]] = None
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Dense-quant re-plan: skip the cache scan, which would price the bf16 transformer this replaces.
             companion_mib = companion_override_mib
@@ -15502,7 +15547,19 @@ class DiffusionBackend:
                         table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
                     )
             # Companions sit in subfolders: split them like the GGUF branch, or group offload tiers fail on None.
-            companion = self._companion_cache_bytes(fetch_base or base, base_local_dir, load_dtype)
+            # A U-Net denoiser (SDXL's unet/) is not a companion either; keyword only when needed, so the default
+            # call shape is unchanged.
+            denoiser_attr = getattr(fam, "denoiser_attr", "transformer") or "transformer"
+            companion = self._companion_cache_bytes(
+                fetch_base or base,
+                base_local_dir,
+                load_dtype,
+                **(
+                    {"denoiser_dirs": ("transformer", denoiser_attr)}
+                    if denoiser_attr != "transformer"
+                    else {}
+                ),
+            )
             companion_mib = int(companion // (1024 * 1024)) if companion else None
             text_encoder = self._text_encoder_cache_bytes(
                 fetch_base or base, base_local_dir, load_dtype
@@ -15584,12 +15641,24 @@ class DiffusionBackend:
                 ) or estimate_gguf_resident_mib(file_size_mib(single_file_path))
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
+            # A whole-pipeline file (SDXL) carries its own encoders and VAE: split them out of its header.
+            whole_pipeline_split = (
+                _whole_pipeline_companion_mib(single_file_path, transformer_resident)
+                if kind == "single_file"
+                and companion_override_mib is None
+                and getattr(fam, "single_file_is_pipeline", False)
+                else None
+            )
             # Companions (VAE, text encoders) load near on-disk size: sum the base cache, or LOCAL weights.
             if companion_override_mib is not None:
                 # Dense re-plan: prefetched transformer/ shards share the cache; the estimate avoids double count.
                 companion_mib = companion_override_mib
                 # Text-encoder share of that override, from the same table so the terms agree; None without a split.
                 text_encoder_mib = text_encoder_override_mib
+            elif whole_pipeline_split is not None:
+                # Already inside the file's size: no base-cache scan, whose cached copies would count twice. Dense
+                # encoders are an upper bound on a pre-cast swap, so companions_from_cache stays False.
+                companion_mib, text_encoder_mib = whole_pipeline_split
             else:
                 # Scan the staged repo and its snapshot; a base in the import-time root is invisible to a live scan.
                 companion = self._companion_cache_bytes(
@@ -15615,7 +15684,9 @@ class DiffusionBackend:
                     supplied_te = _active_supplied_text_encoders()
             model_dense_mib = None
             if transformer_resident is not None:
-                model_dense_mib = transformer_resident + (companion_mib or 0)
+                model_dense_mib = transformer_resident + (
+                    0 if whole_pipeline_split is not None else (companion_mib or 0)
+                )
         if companions_from_cache and text_encoder_quant is not None:
             # Supplied encoders are priced above; only the slots they leave to a hosted pre-cast count here.
             precast = self._precast_text_encoder_mib(
@@ -15778,6 +15849,15 @@ class DiffusionBackend:
         elif kind == "single_file" and single_file_path:
             self.__dict__.setdefault("_fp8_storage_picks", {})[str(single_file_path)] = False
             self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = False
+        if whole_pipeline_split is not None:
+            # Tells _resident_sized_plan the companions are a share of model_dense_mib, not a cache add to undo.
+            try:
+                plan = replace(
+                    plan,
+                    estimates = {**(plan.estimates or {}), WHOLE_PIPELINE_SPLIT_KEY: 1},
+                )
+            except Exception:  # noqa: BLE001 - a stand-in plan in tests; the marker is only a sizing hint
+                pass
         return plan
 
     @staticmethod
