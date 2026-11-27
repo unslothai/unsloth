@@ -278,7 +278,7 @@ def test_trigger_fires_only_on_a_predicted_oom(af, monkeypatch):
     tier, message = _decide_with(af, monkeypatch, between)
     assert tier == "in_backward" and "UNSLOTH_AUTO_FIT_OPTIMIZER=0" in message
     tier, message = _decide_with(af, monkeypatch, tight)
-    assert tier == "lomo" and "SGD" in message
+    assert tier == "sgd" and "SGD" in message
     tier, message = _decide_with(af, monkeypatch, plan["lomo"] - 1)
     assert tier is None and "Neither" in message
     # Gradient accumulation: unchanged, with the hint only when it would run out of memory.
@@ -288,8 +288,15 @@ def test_trigger_fires_only_on_a_predicted_oom(af, monkeypatch):
         None,
         None,
     )
-    for blocked in (dict(world_size = 2), dict(fp16 = True), dict(optim = "adamw_torch_layerwise")):
-        assert _decide_with(af, monkeypatch, between, **blocked) == (None, None)
+    for blocked in (
+        dict(world_size = 2),
+        dict(fp16 = True),
+        dict(optim = "adamw_torch_layerwise"),
+        dict(auto_find_batch_size = True),
+        dict(torch_compile = True),
+        dict(enable_jit_checkpoint = True),
+    ):
+        assert _decide_with(af, monkeypatch, between, **blocked) == (None, None), blocked
     # LoRA / frozen models: never automatic.
     monkeypatch.setattr(af, "_full_finetuning", lambda model: False)
     assert _decide_with(af, monkeypatch, between) == (None, None)
@@ -324,14 +331,38 @@ def test_forced_in_backward_refuses_gradient_accumulation(af, sr, monkeypatch, t
     assert "gradient_accumulation_steps > 1" in capsys.readouterr().out
 
 
-def test_forced_lomo_trains_with_lomo(af, sr, monkeypatch, tmp_path):
-    pytest.importorskip("lomo_optim")
-    model = _tiny_model()
-    before = copy.deepcopy(model)
-    trainer = _train(af, sr, model, monkeypatch, "lomo", 0.0, steps = 2, tmp_path = tmp_path)
-    assert type(af._unwrap(trainer.optimizer)).__name__ == "Lomo"
-    assert "lomo" in str(trainer.args.optim).lower() and trainer._unsloth_updates_in_backward
-    assert not _weights_equal(before, model)
+def test_lomo_tier_is_lomos_update(af, sr, monkeypatch, tmp_path):
+    """UNSLOTH_AUTO_FIT_OPTIMIZER=lomo: torch SGD stepped inside backward over the Trainer's groups. Bitwise the
+    standard optim="sgd" step, and lomo-optim's LOMO (optim="lomo") up to bfloat16 rounding of p - lr * g (LOMO
+    adds in float32 and rounds once, torch's bfloat16 add_ rounds its own way), LR schedule included."""
+    lomo = pytest.importorskip("lomo_optim")
+    base = _tiny_model()
+    head = copy.deepcopy(base)
+    trainer = _train(af, sr, head, monkeypatch, "lomo", 0.0, steps = 3, tmp_path = tmp_path)
+    wrapper = trainer._unsloth_in_backward_optimizer
+    assert type(wrapper.optimizer) is torch.optim.SGD and trainer._unsloth_updates_in_backward
+    assert not _weights_equal(base, head)
+    sgd = copy.deepcopy(base)
+    _train(af, sr, sgd, monkeypatch, "0", 0.0, optim = "sgd", steps = 3, tmp_path = tmp_path)
+    assert _weights_equal(sgd, head)
+    reference = copy.deepcopy(base)
+    lomo_trainer = _train(
+        af, sr, reference, monkeypatch, "0", 0.0, optim = "lomo", steps = 3, tmp_path = tmp_path
+    )
+    assert isinstance(af._unwrap(lomo_trainer.optimizer), lomo.Lomo)
+    for (name, x), y in zip(reference.state_dict().items(), head.state_dict().values()):
+        assert torch.allclose(x.float(), y.float(), rtol = 2**-7, atol = 1e-6), name
+
+
+def test_sgd_tier_does_not_load_adamw_moments(af):
+    model = torch.nn.Linear(4, 3)
+    adamw = torch.optim.AdamW(model.parameters(), lr = 1e-2)
+    model(torch.randn(2, 4)).sum().backward()
+    adamw.step()
+    wrapper = af.InBackwardOptimizer(af._sgd_from(adamw))
+    wrapper.load_state_dict(adamw.state_dict())  # resuming an AdamW checkpoint with the SGD tier
+    assert len(wrapper.optimizer.state) == 0
+    assert wrapper.param_groups[0]["lr"] == 1e-2
 
 
 def test_token_budget_and_layer_major_see_the_in_backward_step(af):
@@ -363,8 +394,8 @@ class _ConvNet(torch.nn.Module):
 
 def _adalomo(monkeypatch, model):
     lomo = pytest.importorskip("lomo_optim")
-    if not torch.cuda.is_available():
-        monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
+    # A CPU model: AdaLomo would put its state on the default CUDA device.
+    monkeypatch.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
     return lomo.AdaLomo(model, lr = 1e-3)
 
 
@@ -471,12 +502,30 @@ def test_reentrant_checkpointing_matches_the_standard_step(af):
     assert _weights_equal(standard, head)
 
 
-def test_a_weight_reused_across_checkpointed_blocks_raises(af):
+def test_a_weight_reused_across_checkpointed_blocks_raises_without_the_model(af):
     """Each block's backward would step the shared weight before the earlier block recomputes with it."""
     model = _Blocks(True)
     wrapper = af.InBackwardOptimizer(torch.optim.AdamW(model.parameters(), lr = 1e-2))
     with wrapper.armed(), pytest.raises(RuntimeError, match = "second gradient"):
         model(torch.randn(4, 8)).backward()
+
+
+def test_a_weight_reused_across_checkpointed_blocks_is_stepped_at_the_end(af):
+    """With the model, its module running twice in the forward marks the weight reused (as a looped block or
+    Inkling-2's loop layers): it keeps its gradient until optimizer.step(), so the result is the standard one."""
+    x = torch.randn(4, 8)
+    standard, head = _Blocks(True), _Blocks(True)
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(head.parameters(), lr = 1e-2), model = head)
+    for _ in range(3):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+    assert wrapper.deferred_steps == 3 * 2  # the shared Linear's weight and bias, every step
 
 
 def test_optimizer_enum_names_are_read_by_value(af):
@@ -493,3 +542,23 @@ def test_optimizer_enum_names_are_read_by_value(af):
         _Trainer(optim = OptimizerNames("adamw_torch")), model, usable_bytes = 0
     )
     assert torch_plan["states"] == 2 * by_string["grads"]  # two bfloat16 moments
+
+
+def test_a_new_optimizer_drops_the_previous_in_backward_step(af, sr, monkeypatch, tmp_path):
+    model = _tiny_model()
+    trainer = _train(af, sr, model, monkeypatch, "in_backward", 0.0, steps = 1, tmp_path = tmp_path)
+    old = trainer._unsloth_in_backward_optimizer
+    monkeypatch.setenv("UNSLOTH_AUTO_FIT_OPTIMIZER", "0")
+    trainer.optimizer = None
+    trainer.lr_scheduler = None
+    trainer.create_optimizer()
+    assert "_unsloth_in_backward_optimizer" not in trainer.__dict__
+    assert not getattr(trainer, "_unsloth_updates_in_backward", False)
+    assert old._handles == []  # hooks removed
+    assert type(af._unwrap(trainer.optimizer)) is torch.optim.AdamW
+
+
+def test_an_active_grad_scaler_blocks_both_tiers(af):
+    trainer = _Trainer()
+    trainer.accelerator = type("A", (), {"scaler": object(), "mixed_precision": "no"})()
+    assert "fp16" in af._blocker(trainer, _plan_model(), forced = True)

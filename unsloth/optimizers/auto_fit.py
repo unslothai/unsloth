@@ -11,12 +11,12 @@ optimizers keep their math, state, LR schedule, bfloat16 stochastic rounding and
 max_grad_norm changes: each tensor is clipped on its own (a global norm needs every gradient first). While the
 global norm stays under max_grad_norm the result is bitwise the standard step.
 
-When even that does not fit, LOMO (lomo-optim, plain SGD fused into backward) is used instead, which changes
-the optimizer.
+When even that does not fit, LOMO's update is used instead: plain SGD stepped the same way, with no optimizer
+state. This changes the optimizer.
 
 Engages only with gradient_accumulation_steps = 1 (more micro-batches must keep their gradients), full
-finetuning, one process and no fp16 GradScaler. UNSLOTH_AUTO_FIT_OPTIMIZER = 0 turns it off; = in_backward,
-lomo or adalomo forces a tier where it is eligible.
+finetuning, one process and no fp16 GradScaler. UNSLOTH_AUTO_FIT_OPTIMIZER = 0 turns it off; = in_backward or
+= lomo forces a tier where it is eligible, = adalomo uses lomo-optim's AdaLomo.
 
 Also re-sizes lomo-optim AdaLomo's factored state for parameters with more than two dimensions (depthwise
 convolutions, fused experts), which it sizes as if they were matrices and then fails on the first step.
@@ -112,7 +112,15 @@ def _step_kind(optimizer):
     cls = type(optimizer)
     if cls.__module__.startswith("torch.optim") and cls.__name__ in _TORCH_PER_PARAM:
         return "torch"
+    # transformers' Adafactor (optim="adafactor") factors each weight on its own as well.
+    if cls.__module__.startswith("transformers.") and cls.__name__ == "Adafactor":
+        return "torch"
     return None
+
+
+def _in_backward_pass():
+    graph_task = getattr(torch._C, "_current_graph_task_id", None)
+    return graph_task is not None and graph_task() != -1
 
 
 @contextlib.contextmanager
@@ -156,6 +164,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self,
         optimizer,
         max_grad_norm = 0.0,
+        model = None,
     ):
         kind = _step_kind(optimizer)
         if kind is None:
@@ -171,12 +180,17 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._where_key = None
         self.hook_steps = 0
         self.late_steps = 0
+        self.deferred_steps = 0
+        self._calls = {}
+        self._owners = {}
         groups = list(optimizer.param_groups)
         state = optimizer.state
         # Optimizer.__init__ re-adds the same group dicts through the forwarding properties below.
         super().__init__(groups, optimizer.defaults)
         optimizer.state = state
         self._register_hooks()
+        if model is not None:
+            self._watch_reuse(model)
 
     # Forwarded, so the wrapper and the wrapped optimizer can never disagree (load_state_dict replaces both).
     @property
@@ -200,9 +214,24 @@ class InBackwardOptimizer(torch.optim.Optimizer):
 
     def load_state_dict(self, state_dict):
         self._where = None
+        if isinstance(self.optimizer, torch.optim.SGD) and isinstance(state_dict, dict):
+            # A checkpoint of another optimizer (AdamW): SGD without momentum keeps no state, so do not load
+            # its moments onto the GPU.
+            keep = {"momentum_buffer"}
+            state = {
+                k: {n: v for n, v in s.items() if n in keep}
+                for k, s in (state_dict.get("state") or {}).items()
+            }
+            state_dict = dict(state_dict, state = {k: s for k, s in state.items() if s})
         return self.optimizer.load_state_dict(state_dict)
 
+    def _reset(self):
+        self._done = set()
+        self._norm_sq = {}
+        self._calls = {}
+
     def zero_grad(self, set_to_none = True):
+        self._reset()
         return self.optimizer.zero_grad(set_to_none = set_to_none)
 
     def _register_hooks(self):
@@ -223,6 +252,32 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                 _ACTIVE[id(p)] = self
                 self._handles.append(p.register_post_accumulate_grad_hook(hook))
 
+    def _watch_reuse(self, model):
+        """Count calls of the modules that own each weight during the forward (not the checkpoint recompute in
+        backward). A weight whose modules ran more than once (a looped block, a tied embedding) may receive one
+        gradient per call under reentrant checkpointing, so it is stepped at optimizer.step() instead."""
+        mine = {id(p) for group in self.param_groups for p in group["params"]}
+        ref = weakref.ref(self)
+
+        def count(module, args):
+            opt = ref()
+            if opt is not None and opt._armed and not _in_backward_pass():
+                opt._calls[id(module)] = opt._calls.get(id(module), 0) + 1
+
+        for module in model.modules():
+            owned = [p for p in module.parameters(recurse = False) if id(p) in mine]
+            if not owned:
+                continue
+            for p in owned:
+                self._owners.setdefault(id(p), []).append(id(module))
+            self._handles.append(module.register_forward_pre_hook(count))
+
+    def _reused(self, p):
+        owners = self._owners.get(id(p))
+        if not owners:
+            return False
+        return sum(self._calls.get(m, 0) for m in owners) > 1
+
     def close(self):
         for handle in self._handles:
             handle.remove()
@@ -237,6 +292,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._armed = True
         try:
             yield self
+        except BaseException:
+            # The weights stepped so far stay stepped; the next step starts clean.
+            self._reset()
+            raise
         finally:
             self._armed = previous
 
@@ -250,13 +309,19 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             self._where_key = key
         return self._where.get(id(p))
 
-    def _step_param(self, p):
+    def _step_param(
+        self,
+        p,
+        final = False,
+    ):
         grad = p.grad
         if grad is None:
             return
         where = self._locate(p)
         if where is None:
             return
+        if not final and self._reused(p):
+            return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done:
             raise RuntimeError(
                 "Unsloth: the optimizer steps inside backward (each gradient is used and freed as soon as it "
@@ -307,17 +372,25 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             base.init_state(group, p, gi, pi)
         base.prefetch_state(p)
         base.update_step(group, p, gi, pi)
-        _sync(p)
+        # bitsandbytes' step syncs the device after every weight. Inside backward that would drain the queued
+        # backward kernels once per weight; its kernels run on the current stream, so only paged state (async
+        # page prefetches) needs it.
+        if getattr(base, "is_paged", False):
+            _sync(p)
 
     def flush(self):
-        """Step weights whose gradient reached .grad without a hook (assigned directly)."""
+        """Step the weights left for the end: reused ones, and gradients that reached .grad without a hook."""
         for group in self.optimizer.param_groups:
             for p in list(group["params"]):
-                if p.grad is not None and id(p) not in self._done:
-                    self._step_param(p)
-                    self.late_steps += 1
-                elif p.grad is not None:
-                    self._step_param(p)  # raises: a second gradient after the hook stepped it
+                if p.grad is None:
+                    continue
+                if id(p) not in self._done:
+                    if self._reused(p):
+                        self.deferred_steps += 1
+                    else:
+                        self.late_steps += 1
+                # A weight the hook already stepped raises here: it received a second gradient.
+                self._step_param(p, final = True)
 
     def total_norm(self):
         """L2 norm over every gradient this step saw (before clipping)."""
@@ -335,8 +408,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                 loss = closure()
         self.flush()
         self.hook_steps += len(self._done)
-        self._done = set()
-        self._norm_sq = {}
+        self._reset()
         return loss
 
 
@@ -354,7 +426,8 @@ def _state_bytes(optim_name, optimizer_cls, params, model):
     cls_name = getattr(optimizer_cls, "__name__", "") if optimizer_cls is not None else ""
     label = (name + " " + cls_name).lower()
     if "paged" in label:
-        return 0
+        # Paged state lives in managed memory; bitsandbytes keeps tensors under 1e5 elements on the device.
+        return sum(p.numel() * 8 for p in params if p.numel() < 1e5)
     if "lomo" in label or "sgd" in label or "adafactor" in label:
         return 0
     if "8bit" in label or "8_bit" in label:
@@ -448,11 +521,13 @@ def plan_auto_fit(
     # Measured on Llama-3.2-3B and Qwen3-0.6B / Qwen3-4B full finetuning (adamw_8bit, Unsloth checkpointing):
     # the standard step peaks at gradients + state + about the activations. torch's foreach AdamW (without the
     # bfloat16 one-pass kernel) also holds a moment-sized temporary over the whole tensor list.
-    per_weight = "8bit" in label or "bnb" in label or "paged" in label or _sr_on(params)
+    per_weight = (
+        "8bit" in label or "bnb" in label or "paged" in label or "fused" in label or _sr_on(params)
+    )
     step_temp = 0 if per_weight else states // 2
     # In backward: the weight being stepped's gradient and a tied head gradient still accumulating. The
     # largest weight (the embedding) is stepped last, once activations are freed, so it overlaps them.
-    # LOMO also makes float32 copies of that weight and its gradient.
+    # The SGD tier (LOMO's update) keeps no state but steps a float32 copy of that weight and its gradient.
     live = largest_bytes * 2
     live_lomo = largest_bytes + largest * 8
     seq, batch = _seq_and_batch(trainer, model)
@@ -502,6 +577,19 @@ def _single_process(trainer):
         trainer, "is_fsdp_enabled", False
     ):
         return False
+    if (
+        getattr(trainer, "is_fsdp_xla_enabled", False)
+        or getattr(args, "fsdp", None)
+        or getattr(args, "deepspeed", None)
+    ):
+        return False
+    try:
+        # FSDP / DeepSpeed plugins and Unsloth's native FSDP2, as the fused 8-bit AdamW checks them.
+        from .flat_adamw8bit import _distributed_wrapper
+        if _distributed_wrapper(trainer):
+            return False
+    except Exception:
+        pass
     try:
         from ..models.loader_utils import is_distributed
         if is_distributed():
@@ -524,8 +612,19 @@ def _full_finetuning(model):
         flag = getattr(model, "_unsloth_full_finetuning", None)
         if flag is not None:
             return bool(flag)
-        model = getattr(model, "module", None) or getattr(model, "base_model", None)
+        model = (
+            getattr(model, "module", None)
+            or getattr(model, "_orig_mod", None)
+            or getattr(model, "base_model", None)
+        )
     return False
+
+
+def _scaler_active(trainer):
+    accelerator = getattr(trainer, "accelerator", None)
+    if getattr(accelerator, "scaler", None) is not None:
+        return True
+    return str(getattr(accelerator, "mixed_precision", "") or "").lower() == "fp16"
 
 
 def _blocker(trainer, model, forced):
@@ -535,12 +634,23 @@ def _blocker(trainer, model, forced):
         return "gradient_accumulation_steps > 1 (every micro-batch's gradient must be kept until the step)"
     if not _single_process(trainer):
         return "distributed training (DDP / FSDP / DeepSpeed) reduces gradients after backward"
-    if getattr(args, "fp16", False):
+    if getattr(args, "fp16", False) or _scaler_active(trainer):
         return "fp16 mixed precision (the GradScaler skips whole steps on overflow)"
     if not forced and not _full_finetuning(model):
         return "not full finetuning"
-    if getattr(model, "_unsloth_block_swap", None) is not None:
+    if getattr(args, "auto_find_batch_size", False):
+        return "auto_find_batch_size (a retry after running out of memory would start from partly stepped weights)"
+    if getattr(args, "enable_jit_checkpoint", False):
+        return (
+            "enable_jit_checkpoint (a checkpoint taken mid-step would hold partly stepped weights)"
+        )
+    if getattr(args, "torch_compile", False):
+        return "torch_compile over the whole model (its backward returns every gradient at once)"
+    if any(getattr(m, "_unsloth_block_swap", None) is not None for m in model.modules()):
         return "block swap (offload_layers) keeps the weights in host RAM"
+    devices = {p.device for p in _trainable(model)}
+    if len(devices) > 1:
+        return "the model is split across devices"
     if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0").strip().lower() in (
         "1",
         "true",
@@ -552,7 +662,18 @@ def _blocker(trainer, model, forced):
         return "Q-GaLore"
     optim = _optim_name(args).lower()
     if any(
-        k in optim for k in ("galore", "apollo", "layerwise", "lomo", "schedule_free", "torchao")
+        k in optim
+        for k in (
+            "galore",
+            "apollo",
+            "layerwise",
+            "lomo",
+            "schedule_free",
+            "torchao",
+            "torch_4bit",
+            "torch_8bit",
+            "flash",
+        )
     ):
         return f"optim = {optim}"
     if "_unsloth_token_budget_splits" in getattr(trainer, "__dict__", {}):
@@ -572,8 +693,32 @@ def _lomo_available():
         return False
 
 
+def _builds_model_optimizer(trainer):
+    """True when Trainer.create_optimizer builds the optimizer (so optim = 'adalomo' gets the model). Grouped
+    learning rates (embedding_learning_rate, loraplus_lr_ratio) and custom create_optimizer overrides build
+    parameter groups instead."""
+    args = getattr(trainer, "args", None)
+    if getattr(args, "embedding_learning_rate", None) is not None:
+        return False
+    if getattr(args, "loraplus_lr_ratio", None) is not None:
+        return False
+    if getattr(trainer, "optimizer_cls_and_kwargs", None) is not None:
+        return False
+    method = getattr(type(trainer), "create_optimizer", None)
+    module = getattr(method, "__module__", "") or ""
+    return module.startswith(("transformers.", "trl.")) or getattr(method, "__qualname__", "") == (
+        "UnslothTrainer.create_optimizer"
+    )
+
+
+_SGD_NOTE = (
+    "This changes the optimizer: SGD usually needs a much larger learning_rate than AdamW. Set "
+    f"{_ENV}=0 to turn this off."
+)
+
+
 def _decide(trainer, model, mode):
-    """(tier, message): tier is None, 'in_backward', 'lomo' or 'adalomo'."""
+    """(tier, message): tier is None, 'in_backward', 'sgd' (LOMO's update) or 'adalomo'."""
     forced = mode in _FORCED
     blocker = _blocker(trainer, model, forced)
     args = getattr(trainer, "args", None)
@@ -593,18 +738,19 @@ def _decide(trainer, model, mode):
         return None, f"Unsloth: {_ENV}={mode} ignored: {blocker}."
     if mode == "in_backward":
         return "in_backward", f"Unsloth: the optimizer steps inside backward ({_ENV}=in_backward)."
-    if mode in ("lomo", "adalomo"):
-        if not _lomo_available():
-            return None, f"Unsloth: {_ENV}={mode} needs `pip install lomo-optim`."
-        if getattr(trainer, "optimizer_cls_and_kwargs", None) is not None:
-            return (
-                None,
-                f"Unsloth: {_ENV}={mode} ignored: the trainer was given its own optimizer class.",
-            )
-        return (
-            mode,
-            f"Unsloth: using {mode.upper() if mode == 'lomo' else 'AdaLomo'} ({_ENV}={mode}).",
+    if mode == "lomo":
+        return "sgd", (
+            f"Unsloth: training with LOMO's update, plain SGD stepped inside backward ({_ENV}=lomo). {_SGD_NOTE}"
         )
+    if mode == "adalomo":
+        if not _lomo_available():
+            return None, f"Unsloth: {_ENV}=adalomo needs `pip install lomo-optim`."
+        if not _builds_model_optimizer(trainer):
+            return None, (
+                f"Unsloth: {_ENV}=adalomo ignored: this trainer builds its own parameter groups "
+                "(grouped learning rates or a custom optimizer), which AdaLomo cannot take."
+            )
+        return "adalomo", f"Unsloth: using AdaLomo ({_ENV}=adalomo)."
     plan = plan_auto_fit(trainer, model)
     if plan["usable"] is None or plan["standard"] <= plan["usable"]:
         return None, None
@@ -614,37 +760,26 @@ def _decide(trainer, model, mode):
         f"{_gb(plan['standard'])} needed for gradients ({_gb(plan['grads'])}), {optim} state "
         f"({_gb(plan['states'])}) and activations, {_gb(plan['usable'])} free."
     )
+    clip = (
+        f" max_grad_norm = {args.max_grad_norm} now clips each tensor by its own norm."
+        if (getattr(args, "max_grad_norm", 0) or 0) > 0
+        else ""
+    )
     if plan["in_backward"] <= plan["usable"]:
-        clip = (
-            f" max_grad_norm = {args.max_grad_norm} now clips each tensor by its own norm."
-            if (getattr(args, "max_grad_norm", 0) or 0) > 0
-            else ""
-        )
         return "in_backward", (
             f"{head} So {optim} steps each weight inside backward and frees its gradient at once "
             f"(predicted {_gb(plan['in_backward'])}); the optimizer math is unchanged.{clip} "
             f"Set {_ENV}=0 to turn this off."
         )
     if plan["lomo"] <= plan["usable"]:
-        if not _lomo_available():
-            return None, (
-                f"{head} Even stepping inside backward needs {_gb(plan['in_backward'])} because of the optimizer "
-                f"state. LOMO would fit ({_gb(plan['lomo'])}): `pip install lomo-optim`."
-            )
-        if getattr(trainer, "optimizer_cls_and_kwargs", None) is not None:
-            return (
-                None,
-                f"{head} LOMO would fit, but the trainer was given its own optimizer class.",
-            )
-        return "lomo", (
+        return "sgd", (
             f"{head} Even stepping {optim} inside backward needs {_gb(plan['in_backward'])} for its state, so "
-            f"training uses LOMO (plain SGD fused into backward, no optimizer state, predicted "
-            f"{_gb(plan['lomo'])}). This changes the optimizer: SGD usually needs a much larger learning_rate "
-            f"than AdamW, and max_grad_norm is not applied. Set {_ENV}=0 to turn this off."
+            f"training uses LOMO's update instead: plain SGD stepped inside backward, no optimizer state "
+            f"(predicted {_gb(plan['lomo'])}).{clip} {_SGD_NOTE}"
         )
     return None, (
-        f"{head} Neither stepping inside backward ({_gb(plan['in_backward'])}) nor LOMO ({_gb(plan['lomo'])}) "
-        f"fits; consider LoRA, a shorter max_length or freezing part of the model."
+        f"{head} Neither stepping inside backward ({_gb(plan['in_backward'])}) nor LOMO's update "
+        f"({_gb(plan['lomo'])}) fits; consider LoRA, a shorter max_length or freezing part of the model."
     )
 
 
@@ -722,7 +857,10 @@ def _wrap_clip(trainer):
 def _arm_training_step(trainer, wrapper):
     original = trainer.training_step
     if getattr(original, "_unsloth_in_backward", False):
+        previous = getattr(original, "_unsloth_previous", None)
         original = original.__wrapped__
+    else:
+        previous = trainer.__dict__.get("training_step")  # another instance-level wrapper, or None
     wrapper_ref = weakref.ref(wrapper)
 
     def training_step(*args, **kwargs):
@@ -733,18 +871,56 @@ def _arm_training_step(trainer, wrapper):
             return original(*args, **kwargs)
 
     training_step._unsloth_in_backward = True
+    training_step._unsloth_previous = previous
     training_step.__wrapped__ = original
     trainer.training_step = training_step
 
 
-def _convert(trainer, optimizer, message):
+def _sgd_from(optimizer):
+    """LOMO's update as torch SGD over the same parameter groups (learning rates, weight decay): with no momentum
+    SGD's p -= lr * (g + wd * p) is LOMO's p * (1 - lr * wd) - lr * g."""
+    groups = []
+    for group in optimizer.param_groups:
+        keep = {k: group[k] for k in ("lr", "weight_decay", "initial_lr") if k in group}
+        lr = keep.get("lr", optimizer.defaults.get("lr", 1e-3))
+        keep["lr"] = float(lr) if not torch.is_tensor(lr) else lr
+        groups.append(dict(keep, params = list(group["params"])))
+    return torch.optim.SGD(groups, lr = groups[0]["lr"] if groups else 1e-3, momentum = 0.0)
+
+
+def _drop_previous(trainer):
+    previous = trainer.__dict__.pop("_unsloth_in_backward_optimizer", None)
+    if previous is not None:
+        previous.close()
+    trainer.__dict__.pop(_MARK, None)
+    step = trainer.__dict__.get("training_step")
+    if getattr(step, "_unsloth_in_backward", False):
+        previous = getattr(step, "_unsloth_previous", None)
+        if previous is None:
+            trainer.__dict__.pop("training_step", None)
+        else:
+            trainer.training_step = previous
+
+
+def _convert(
+    trainer,
+    optimizer,
+    message,
+    tier = "in_backward",
+):
     base = _unwrap(optimizer)
-    if isinstance(base, InBackwardOptimizer) or _step_kind(base) is None:
+    if isinstance(base, InBackwardOptimizer):
+        return optimizer
+    if tier == "sgd":
+        base = _sgd_from(base)
+    if _step_kind(base) is None:
         name = type(base).__name__
         print(f"Unsloth: not stepping {name} inside backward: it is not a per-weight optimizer.")
         return optimizer
     max_norm = float(getattr(trainer.args, "max_grad_norm", 0) or 0)
-    wrapper = InBackwardOptimizer(base, max_grad_norm = max_norm)
+    wrapper = InBackwardOptimizer(
+        base, max_grad_norm = max_norm, model = getattr(trainer, "model", None)
+    )
     setattr(trainer, _MARK, True)
     trainer._unsloth_in_backward_optimizer = wrapper
     _wrap_clip(trainer)
@@ -769,19 +945,20 @@ def install_auto_fit_optimizer(trainer):
             result = original(*args, **kwargs)
             fix_adalomo_state(getattr(trainer, "optimizer", None) or result)
             return result
+        _drop_previous(trainer)  # a new optimizer for this trainer (another train() / model_init)
         mode = auto_fit_mode()
         tier, message = (None, None) if mode == "off" else _decide(trainer, model, mode)
-        if tier in ("lomo", "adalomo"):
+        if tier == "adalomo":
             _set_optim(trainer.args, tier)
             setattr(trainer, _MARK, True)
-        if message and tier != "in_backward":
+        if message and tier not in ("in_backward", "sgd"):
             print(message)
         result = original(*args, **kwargs)
         optimizer = getattr(trainer, "optimizer", None) or result
         fix_adalomo_state(optimizer)
-        if tier != "in_backward" or optimizer is None:
+        if tier not in ("in_backward", "sgd") or optimizer is None:
             return result
-        trainer.optimizer = _convert(trainer, optimizer, message)
+        trainer.optimizer = _convert(trainer, optimizer, message, tier)
         return trainer.optimizer
 
     create_optimizer.__wrapped__ = original

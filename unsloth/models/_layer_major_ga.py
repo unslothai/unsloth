@@ -156,6 +156,8 @@ _INSTANCE_OK = (
     "_prepare_dataset",
     "_load_optimizer_and_scheduler",
     "get_train_dataloader",
+    # optimizers/auto_fit.py: builds the optimizer; an in-backward step it engages is refused on its own.
+    "create_optimizer",
 )
 
 
