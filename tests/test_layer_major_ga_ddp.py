@@ -5,6 +5,8 @@
 - gradients at every optimizer step, final LoRA weights and logged losses bitwise equal to plain DDP, and within fp32
   tolerance of one process running each step's global batch; one window and one gradient reduce per step;
 - a dropped reduce makes that comparison fail (the check can fail);
+- decoder layers with a constant DDP-broadcast buffer (as Unsloth's per-layer rotary inv_freq) keep their windows;
+  a forward that writes one makes every rank run the step the standard way;
 - a rank that cannot run a window (memory check, an abort in its forward or in its decoder backward) makes every
   rank run the step the standard way, bitwise equal to plain DDP, with no hang;
 - TRL's SFTTrainer, whose loss parts gather metrics across ranks: weights and logged metrics bitwise, also when one
@@ -119,6 +121,13 @@ def test_a_rank_without_a_window_keeps_every_rank_standard(reports, arm, aborts)
         assert a["bitwise_vs_plain"] and a["close_to_one_process"], (rank, a)
     # Rank 0 could run its window and says why it did not.
     assert reports[0][arm]["other_rank_message"], reports[0][arm]
+
+
+def test_a_forward_that_writes_a_broadcast_buffer_keeps_the_step_standard(reports):
+    for rank, r in reports.items():
+        b = r["buffer_written"]
+        assert b["windows"] == 0 and b["aborts"] == 1 and b["reduces"] == 0, (rank, b)
+        assert b["bitwise_vs_plain"] and b["close_to_one_process"], (rank, b)
 
 
 def test_sft_trainer_metric_gathers_inside_windows(reports):

@@ -92,6 +92,9 @@ def build_model():
         ),
     )
     model.enable_input_require_grads()
+    for layer in model.get_base_model().model.layers:
+        # A constant buffer inside each decoder layer, as Unsloth's per-layer rotary inv_freq: DDP broadcasts it.
+        layer.self_attn.register_buffer("unsloth_inv_freq", torch.arange(4.0), persistent = False)
     return model
 
 
@@ -347,6 +350,21 @@ def main(out_dir, zoo_dir):
         mlp.forward = oom
         return lambda: mlp.__dict__.pop("forward", None)
 
+    def buffer_written(mod, engine, model):
+        # A forward that writes a buffer DDP broadcasts (BatchNorm, dynamic RoPE): standard DDP re-broadcasts it
+        # before the next step's forward, so every rank's commit vote fails and the step runs the standard way.
+        attn = model.get_base_model().model.layers[2].self_attn
+        mlp = model.get_base_model().model.layers[2].mlp
+        real = mlp.forward
+
+        def write(*args, **kwargs):
+            attn.unsloth_inv_freq.add_(0)
+            return real(*args, **kwargs)
+
+        mlp.forward = write
+        return lambda: mlp.__dict__.pop("forward", None)
+
+    buf_r = run("buffer_written", "1", inject = buffer_written)
     unfit_r = run("rank1_unfit", "1", inject = rank1(unfit))
     fwd_r = run("rank1_forward_abort", "1", inject = rank1(forward_abort))
     bwd_r = run("rank1_backward_oom", "1", inject = rank1(backward_oom))
@@ -355,6 +373,7 @@ def main(out_dir, zoo_dir):
         ("plain", plain),
         ("layer_major", lm),
         ("dropped_reduce", dropped),
+        ("buffer_written", buf_r),
         ("rank1_unfit", unfit_r),
         ("rank1_forward_abort", fwd_r),
         ("rank1_backward_oom", bwd_r),

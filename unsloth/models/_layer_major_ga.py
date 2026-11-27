@@ -442,9 +442,6 @@ def _ddp_ineligible(trainer, ddp, layers):
         return "a DDP buffer hook, or a torch DDP without the buffer sync this needs"
     if getattr(ddp.module, "_unsloth_ddp_tower_params", None):
         return "vision / audio towers averaged outside DDP"
-    if getattr(ddp, "broadcast_buffers", False) and any(True for _ in layers.buffers()):
-        # A block swap moves buffers inside decoder layers: their versions cannot tell a forward's update.
-        return "DDP broadcast_buffers with buffers inside the decoder layers"
     return None
 
 
@@ -661,7 +658,7 @@ def _reduce_like_ddp(ddp):
 
 
 def _ddp_buffers(ddp, layers):
-    """The buffers DDP broadcasts before a forward, with their versions (none inside the decoder layers: refused)."""
+    """The buffers DDP broadcasts before a forward, with their versions (block swap moves weights, not buffers)."""
     if not ddp._check_sync_bufs_pre_fwd():
         return []
     return [(b, b._version) for b in ddp.module.buffers()]
