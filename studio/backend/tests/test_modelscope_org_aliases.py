@@ -270,6 +270,7 @@ def test_a_failing_exact_alias_is_reported_as_an_alias_to_fix():
     )
 
 
+@pytest.mark.allow_network
 @pytest.mark.skipif(
     os.environ.get("UNSLOTH_MODELSCOPE_ORG_ALIAS_NETWORK") != "1",
     reason = "set UNSLOTH_MODELSCOPE_ORG_ALIAS_NETWORK=1 to check the org aliases against ModelScope",
