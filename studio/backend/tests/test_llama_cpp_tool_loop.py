@@ -7792,6 +7792,17 @@ def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatc
             "Small whole document",
             "Small whole document",
         ),
+        (
+            "checkpoint",
+            None,
+            True,
+            2,
+            0,
+            False,
+            True,
+            "Small whole document " * 2,
+            "Partial passage",
+        ),
         ("checkpoint", None, False, 0, 0, False, False, "", None),
     ],
 )
@@ -7929,11 +7940,10 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     assert [e["result"] for e in events if e["type"] == "tool_end"] == sent
     truncation = next(e for e in events if e["type"] == "context_truncated")
     assert truncation["fits"] and truncation["dropped_messages"] == 2
+    sent_size = sum(len(str(m.get("content", ""))) for m in payloads[0]["messages"])
     if not audio:
-        # An accepted retry prices the transcript link too; a plain fit leaves it uncounted, as before.
-        assert truncation["prompt_tokens_after"] == sum(
-            len(str(m.get("content", ""))) for m in payloads[0]["messages"]
-        ) - len(link) * (expected_passage != complete)
+        # The fit's count leaves the transcript link out, as before.
+        assert truncation["prompt_tokens_after"] == sent_size - len(link)
     from core.inference.context_window import prompt_budget, retrieval_budget
 
     prompt = truncation["prompt_tokens_after"]
@@ -7941,7 +7951,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     if expected_passage == complete:
         target = prompt_budget(1000, 80)
         ceiling = min(target - int(target * 0.25), truncation["prompt_tokens_before"])
-        recall = min(recall, ceiling - prompt)
+        recall = min(recall, ceiling - sent_size)
     assert recall_budgets[0] == recall
     if isinstance(tool_choice, dict):
         assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]

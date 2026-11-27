@@ -42305,9 +42305,14 @@ class LlamaCppBackend:
                                     )
                                     candidate = base[:at] + refreshed["messages"] + base[at:]
                                     measured = _fit_count_tokens(
-                                        _with_transcript_link(candidate, thread_id),
-                                        safe_tools,
-                                        _reasoning_kw,
+                                        candidate, safe_tools, _reasoning_kw
+                                    )
+                                    # The ceilings bound what is sent, which carries the transcript link the fit leaves uncounted.
+                                    linked = _with_transcript_link(candidate, thread_id)
+                                    sent_tokens = (
+                                        measured
+                                        if linked is candidate
+                                        else _fit_count_tokens(linked, safe_tools, _reasoning_kw)
                                     )
                                     # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
                                     budget = prompt_budget(
@@ -42324,12 +42329,9 @@ class LlamaCppBackend:
                                     )
                                     fitted_tokens = truncation["prompt_tokens_after"]
                                     # Growth stays under the unfitted prompt, which admission already priced.
-                                    if measured <= max(
-                                        fitted_tokens,
-                                        min(
-                                            headroom_line - reserve,
-                                            truncation["prompt_tokens_before"],
-                                        ),
+                                    if measured <= fitted_tokens or sent_tokens <= min(
+                                        headroom_line - reserve,
+                                        truncation["prompt_tokens_before"],
                                     ):
                                         # A larger prompt leaves this fit's recall only the room under both ceilings.
                                         if measured > fitted_tokens:
@@ -42339,7 +42341,7 @@ class LlamaCppBackend:
                                                     headroom_line,
                                                     truncation["prompt_tokens_before"],
                                                 )
-                                                - measured,
+                                                - sent_tokens,
                                             )
                                         _auto = refreshed
                                         conversation = candidate
