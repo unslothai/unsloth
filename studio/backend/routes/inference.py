@@ -4700,12 +4700,16 @@ def _sf_parse_think_markers(
     features: dict,
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    inkling_channel: bool = False,
 ) -> bool:
     """A hybrid template reads enable_thinking before reasoning_effort when both are sent (Kimi-K3)."""
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
         return False
+    # Inkling still reasons at effort none, so its thought is split as at any other effort.
+    if inkling_channel:
+        return True
     style = features.get("reasoning_style")
     resolved: dict = {}
     if style == "reasoning_effort":
@@ -4717,6 +4721,32 @@ def _sf_parse_think_markers(
         resolved["reasoning_effort"] = reasoning_effort
     # No launch default on this backend: an empty dict leaves the template's own.
     return _resolved_kwargs_think(None, resolved)
+
+
+def _sf_thought_ledger(
+    ledger: Optional[dict],
+    snapshot,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Mirror a snapshot's thought spans into an extractor ledger, growing lengths in place; None until spans arrive."""
+    spans = getattr(snapshot, "thought_spans", None)
+    if spans is None:
+        return ledger
+    if ledger is None:
+        ledger = {"split": True}
+    seen = ledger.setdefault("spans", [])
+    for index, (at, length) in enumerate(spans):
+        if index < len(seen):
+            seen[index]["len"] = length
+            continue
+        entry = {"len": length}
+        if at + offset:
+            entry["at"] = at + offset
+            ledger.setdefault("later", []).append(entry)
+        else:
+            ledger.setdefault("wraps", []).append(entry)
+        seen.append(entry)
+    return ledger
 
 
 def _memory_tool_requested(payload) -> bool:
@@ -5224,12 +5254,22 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     return bool(getattr(llama_backend, "reasoning_default", True))
 
 
+def _llama_inkling_channel(llama_backend) -> bool:
+    from core.inference.chat_template_helpers import replays_reasoning_content
+    from core.inference.llama_cpp import _rendered_chat_template
+
+    template = _rendered_chat_template(llama_backend)
+    return isinstance(template, str) and replays_reasoning_content(None, template = template)
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Literal think tags in prose stay text unless the model can reason, so the splitter runs only then."""
     if getattr(llama_backend, "reasoning_always_on", False):
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
+    if _llama_inkling_channel(llama_backend):
+        return True
     # Use the effective template kwargs: effort-dial templates map enable_thinking=False to low.
     args = _anthropic_reasoning_args(payload)
     resolved = (
@@ -35171,19 +35211,21 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_inkling = _llama_inkling_channel(llama_backend)
         _gguf_think_prov: dict = {"wrapped": 0}
-        if _continue_final_message(payload) and getattr(
-            payload.messages[-1], "reasoning_content", None
+        if _gguf_inkling or (
+            _continue_final_message(payload)
+            and getattr(payload.messages[-1], "reasoning_content", None)
         ):
-            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            # The server splits the reasoning out (always, for Inkling): tags that follow are literal.
             _gguf_think_prov["split"] = True
+        _gguf_parse_think = _gguf_inkling or _responses_should_parse_think_markers(
+            payload, llama_backend
+        )
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
-                parse_think_markers = _responses_should_parse_think_markers(
-                    payload,
-                    llama_backend,
-                ),
+                parse_think_markers = _gguf_parse_think,
                 think_provenance = _gguf_think_prov,
             )
 
@@ -36215,9 +36257,7 @@ async def produce_openai_chat_completions(
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
-                    parse_think_markers = _responses_should_parse_think_markers(
-                        payload, llama_backend
-                    ),
+                    parse_think_markers = _gguf_parse_think,
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
@@ -36876,10 +36916,7 @@ async def produce_openai_chat_completions(
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
-                            parse_think_markers = _responses_should_parse_think_markers(
-                                payload,
-                                llama_backend,
-                            ),
+                            parse_think_markers = _gguf_parse_think,
                             think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
@@ -37258,10 +37295,14 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
+        from core.inference.chat_template_helpers import replays_reasoning_content
+
         parse_think = _sf_parse_think_markers(
             features,
             payload.enable_thinking,
             payload.reasoning_effort,
+            inkling_channel = body is not None
+            and replays_reasoning_content(None, template = body, tools = tools),
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -37314,7 +37355,7 @@ async def produce_openai_chat_completions(
 
     _sf_single_block = _response_format_constrains_decoding(payload)
 
-    def _new_sf_reasoning_extractor():
+    def _new_sf_reasoning_extractor(think_provenance = None):
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
@@ -37323,6 +37364,7 @@ async def produce_openai_chat_completions(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
             single_block = _sf_single_block,
+            think_provenance = think_provenance,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -38378,6 +38420,7 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
@@ -38434,6 +38477,10 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    _ledger = _sf_thought_ledger(_sf_thoughts, cumulative, len(_sf_call_prefix))
+                    if _sf_thoughts is None and _ledger is not None and not prev_text:
+                        reasoning_extractor = _new_sf_reasoning_extractor(think_provenance = _ledger)
+                        _sf_thoughts = _ledger
                     if cumulative:
                         cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
@@ -38714,6 +38761,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                _thoughts = _sf_thought_ledger(None, full_text, len(_sf_call_prefix))
                 if full_text:
                     # The prefill alone is no call: an empty or cancelled reply stays empty.
                     full_text = _sf_call_prefix + full_text
@@ -38726,6 +38774,7 @@ async def produce_openai_chat_completions(
                         _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
                     ),
                     single_block = _sf_single_block,
+                    think_provenance = _thoughts,
                 )
                 # Promotes text-form calls; an opt-in single nudge retry handles unparseable tool markup.
                 _msg = {"role": "assistant", "content": _visible_text}
@@ -38796,6 +38845,7 @@ async def produce_openai_chat_completions(
                                     retry_text,
                                     parse_think_markers = _sf_parse_think,
                                     reasoning_prefilled = _sf_reasoning_prefilled,
+                                    think_provenance = _sf_thought_ledger(None, retry_text),
                                 )
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:

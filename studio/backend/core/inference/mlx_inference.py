@@ -41,6 +41,7 @@ from core.inference.chat_template_helpers import (
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
+    with_thought_spans,
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
     neutralize_for_render,
@@ -5301,7 +5302,7 @@ class _RowStream:
         if not delta:
             return []
         self._output += delta
-        return [self._output]
+        return [with_thought_spans(self._output, self._normalizer, self._prefix)]
 
 
 def _messages_with_system_prompt(messages, system_prompt):
@@ -8619,7 +8620,7 @@ class MLXInferenceBackend:
                         released = cut
                         if delta:
                             normalized_output += delta
-                            yield normalized_output
+                            yield with_thought_spans(normalized_output, normalizer, think_prefix)
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
@@ -8690,14 +8691,14 @@ class MLXInferenceBackend:
                 delta = normalizer.feed(sampled[released:cut])
                 if delta:
                     normalized_output += delta
-                    yield normalized_output
+                    yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if normalizer is not None:
             # A sequence ends the turn like a stop token, so a reasoning block it cut inside is closed; only a cancelled turn drains, since more was coming
             cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
                 normalized_output += tail
-                yield normalized_output
+                yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if stopped:
             self._mark_stopped()
 
@@ -9697,6 +9698,7 @@ class MLXInferenceBackend:
                 prompt = prompt,
                 continued = vlm_continued,
                 ended = lambda: stopped,
+                prefix = prefill,
             )
         if stopped:
             self._mark_stopped()

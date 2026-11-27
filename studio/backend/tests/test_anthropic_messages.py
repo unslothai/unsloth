@@ -263,6 +263,17 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
+    # Inkling's thought still arrives at effort none.
+    from routes.inference import _responses_should_parse_think_markers
+
+    inkling = _EffortBackend()
+    inkling.is_loaded = True
+    inkling._chat_template = "<|message_model|><|content_thinking|>{{ r }}<|end_message|>"
+    off = _basic_payload(reasoning_effort = "none")
+    assert _think_parsing_expected(inkling, off) is True
+    # Responses re-reads text the chat route already split, so it keeps the effort rule.
+    assert _responses_should_parse_think_markers(off, inkling) is False
+
     # _coerce_reasoning_effort rewrites 'none' to 0, so 0 reads as off.
     class _NumericEffortBackend(_Backend):
         def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
