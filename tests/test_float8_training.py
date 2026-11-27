@@ -253,6 +253,18 @@ def test_rowwise_probe_failure_points_at_tensorwise(monkeypatch):
     with pytest.raises(RuntimeError, match = "use float8_training = True") as e:
         f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
     assert "tensorwise recipe" in str(e.value)
+    # Outside the measured-faster gate True would be refused by name, so the hint names the config.
+    for cap, hip in (((9, 0), None), ((9, 4), "6.4")):
+        monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, cap = cap: cap)
+        monkeypatch.setattr(torch.version, "hip", hip)
+        with pytest.raises(RuntimeError) as e:
+            f8t._check_hardware(torch.device("cuda", 0), _emulated_config("rowwise"))
+        assert "use float8_training = True" not in str(e.value)
+        assert "Float8LinearConfig.from_recipe_name('tensorwise') as float8_training" in str(
+            e.value
+        )
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
     # A tensorwise failure has nothing to fall back to, so no hint.
     with pytest.raises(RuntimeError) as e:
         f8t._check_hardware(torch.device("cuda", 0), "tensorwise")

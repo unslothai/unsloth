@@ -323,11 +323,15 @@ def _check_hardware(
             torch.version.hip is not None or (major, minor) >= (9, 0)
         ):
             # Some torch builds (e.g. the Windows wheels) ship only the tensorwise _scaled_mm kernel.
-            # Below 9.0 tensorwise is refused above, so the hint is not offered there.
-            hint = (
-                " This torch build has no row-wise fp8 GEMM here; use float8_training = True "
-                "(the tensorwise recipe) instead."
-            )
+            # Below 9.0 tensorwise is refused above, so the hint is not offered there. The named recipe
+            # (True) passes the gate only where it was measured faster; elsewhere point at the config.
+            if torch.version.hip is None and (major, minor) in _MEASURED_FASTER.get(
+                "tensorwise", ()
+            ):
+                fallback = "float8_training = True (the tensorwise recipe)"
+            else:
+                fallback = "torchao.float8.Float8LinearConfig.from_recipe_name('tensorwise') as float8_training"
+            hint = f" This torch build has no row-wise fp8 GEMM here; use {fallback} instead."
         raise RuntimeError(
             f"Unsloth: float8_training ({probe_recipe}) is not supported by torch {torch.__version__} on "
             f"{torch.cuda.get_device_name(device)} ({type(e).__name__}: {str(e)[:200]}).{hint}"
