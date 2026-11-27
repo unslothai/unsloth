@@ -4998,7 +4998,7 @@ def _expert_stack_sources(converters):
             pass
         else:
             continue
-        if any(source.count("*") != 1 for source in sources):
+        if any(source.count("*") != 1 or source.count("*.") != 1 for source in sources):
             continue
         for position, source in enumerate(sources):
             out[source] = (position, len(sources))
@@ -5006,10 +5006,13 @@ def _expert_stack_sources(converters):
 
 
 def _expert_number(pattern, key):
-    """The expert index `*` matches in `key`, or None."""
-    head, tail = pattern.split("*")
-    match = re.search(re.escape(head) + r"(\d+)" + re.escape(tail) + "$", key)
-    return int(match.group(1)) if match else None
+    """The expert index `*` matches in `key`, or None. `pattern` is a regex, as transformers compiles it."""
+    try:
+        regex = re.compile(pattern.replace("*.", r"(?P<_unsloth_expert>\d+)\.") + r"(?!\w)")
+    except re.error:
+        return None
+    match = regex.search(key)
+    return int(match.group("_unsloth_expert")) if match else None
 
 
 def _buffer_skeleton(model):

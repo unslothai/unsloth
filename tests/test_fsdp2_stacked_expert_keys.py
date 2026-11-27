@@ -242,3 +242,51 @@ def test_every_stacked_expert_rows_match_the_full_load(name):
             assert reader.shape(key) == tuple(p.shape), n
             got = reader.rows_to(key, 3, 9, torch.float32, "cpu")
             assert torch.equal(got, p.detach()[3:9]), n
+
+
+def test_expert_index_keeps_the_converter_regex():
+    tp = _tp()
+    assert (
+        tp._expert_number(r"\.experts.*.w1.weight", "model.layers.0.mlp.experts.10.w1.weight") == 10
+    )
+    assert (
+        tp._expert_number(
+            "mlp.experts.*.gate_proj.weight", "model.layers.1.mlp.experts.3.gate_proj.weight"
+        )
+        == 3
+    )
+    assert (
+        tp._expert_number(
+            "mlp.experts.*.up_proj.weight", "model.layers.1.mlp.experts.3.up_proj.weight_scale"
+        )
+        is None
+    )
+    assert (
+        tp._expert_number(
+            "mlp.experts.*.up_proj.weight", "model.layers.1.mlp.shared_experts.up_proj.weight"
+        )
+        is None
+    )
+
+
+def test_multi_lora_sizes_experts_from_the_whole_stack():
+    """inject_multi_lora_experts between sharded loading and shard_model sizes A / B from the whole stack."""
+    import importlib
+    import types
+
+    pytest.importorskip("triton")  # unsloth.kernels.utils
+    _tp()
+    kernels = types.ModuleType("unsloth.kernels")
+    kernels.__path__ = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "unsloth", "kernels")
+    ]
+    sys.modules.setdefault("unsloth.kernels", kernels)
+    ml = importlib.import_module("unsloth.kernels.multi_lora")
+    local = torch.nn.Parameter(torch.zeros(6, 4, 8))
+    assert ml._expert_stack_shape(local) == (6, 4, 8)
+    setattr(
+        local, "_unsloth_fsdp2_preload", {"shape": (12, 4, 8), "rows": (6, 12), "packed": False}
+    )
+    assert ml._expert_stack_shape(local) == (12, 4, 8)
+    local._original_shape = torch.Size((12, 4, 8))
+    assert ml._expert_stack_shape(local) == (12, 4, 8)
