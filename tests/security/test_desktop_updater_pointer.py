@@ -157,13 +157,18 @@ def _release(
     }
 
 
-def _manifest(tag, *, legacy = False):
+def _manifest(
+    tag,
+    *,
+    legacy = False,
+    repository = REPOSITORY,
+):
     base = (
         f"Unsloth-Desktop-{tag.removeprefix('v').replace('.', '_').replace('-', '_')}"
         if legacy
         else "Unsloth-Desktop"
     )
-    prefix = f"https://github.com/{REPOSITORY}/releases/download/{tag}/"
+    prefix = f"https://github.com/{repository}/releases/download/{tag}/"
     return {
         "version": tag,
         "platforms": {
@@ -198,6 +203,7 @@ def _run_step(
     release_tag,
     state_path,
     repair_pointer = "true",
+    repository = REPOSITORY,
 ):
     tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
@@ -219,7 +225,7 @@ def _run_step(
             "FAKE_GH_PYTHON": sys.executable,
             "FAKE_STATE": str(state_path),
             "GITHUB_OUTPUT": str(output),
-            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_REPOSITORY": repository,
             "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary.md"),
             "PATH": f"{fake_bin}:{env['PATH']}",
             "REPAIR_POINTER": repair_pointer,
@@ -252,6 +258,7 @@ def _run(
     manifests = None,
     latest = None,
     race_latest = None,
+    repository = REPOSITORY,
 ):
     """Run the repair step. `latest` defaults to the release being repaired."""
     if manifests is None:
@@ -268,7 +275,11 @@ def _run(
         race_latest = race_latest,
     )
     result, commands, _ = _run_step(
-        tmp_path, _step_run(), release_tag = release_tag, state_path = state_path
+        tmp_path,
+        _step_run(),
+        release_tag = release_tag,
+        state_path = state_path,
+        repository = repository,
     )
     return result, commands
 
@@ -549,6 +560,42 @@ def test_a_manifest_naming_another_release_is_refused(tmp_path):
     )
     assert result.returncode == 1
     assert "names v0.1.52-beta" in result.stderr
+    assert not [line for line in commands if "--method PATCH" in line]
+
+
+def test_a_release_pinned_to_the_old_org_is_restored_after_the_rename(tmp_path):
+    """Releases cut before the org rename pin unslothai/unsloth and must stay restorable."""
+    result, commands = _run(
+        tmp_path,
+        release_tag = "v0.1.54-beta",
+        releases = [
+            _release("v0.1.54-beta", release_id = 54, complete = False),
+            _release("v0.1.53-beta", release_id = 53),
+        ],
+        manifests = {"v0.1.53-beta": _manifest("v0.1.53-beta")},
+        repository = "unsloth/unsloth",
+    )
+    assert result.returncode == 0, result.stderr
+    assert any(
+        line.startswith("gh api --method PATCH repos/unsloth/unsloth/releases/53")
+        for line in commands
+    ), commands
+
+
+def test_a_manifest_pinned_to_the_new_org_is_refused_after_the_rename(tmp_path):
+    """Shipped builds reject unsloth/unsloth asset URLs, so such a manifest must never go live."""
+    result, commands = _run(
+        tmp_path,
+        release_tag = "v0.1.54-beta",
+        releases = [
+            _release("v0.1.54-beta", release_id = 54, complete = False),
+            _release("v0.1.53-beta", release_id = 53),
+        ],
+        manifests = {"v0.1.53-beta": _manifest("v0.1.53-beta", repository = "unsloth/unsloth")},
+        repository = "unsloth/unsloth",
+    )
+    assert result.returncode == 1
+    assert "not pinned to its release" in result.stderr
     assert not [line for line in commands if "--method PATCH" in line]
 
 
