@@ -54,12 +54,18 @@ def auto_fit_mode():
     return "auto"
 
 
+def _optim_name(args):
+    """TrainingArguments.optim as its string value (an OptimizerNames enum prints as `OptimizerNames.ADAMW_BNB`)."""
+    optim = getattr(args, "optim", "") or ""
+    return str(getattr(optim, "value", optim))
+
+
 def updates_in_backward(trainer):
     """True when this trainer's optimizer changes the weights inside every backward (LOMO, AdaLomo, the
     *_layerwise optimizers, or the in-backward tier), so micro-batches cannot be split or regrouped."""
     if getattr(trainer, _MARK, False):
         return True
-    optim = str(getattr(getattr(trainer, "args", None), "optim", "")).lower()
+    optim = _optim_name(getattr(trainer, "args", None)).lower()
     return "lomo" in optim or "layerwise" in optim
 
 
@@ -385,25 +391,28 @@ def _seq_and_batch(trainer, model):
     return int(seq), batch
 
 
-def _reserve(model, seq, batch, extra):
-    try:
-        from unsloth_zoo.block_swap import estimate_training_reserve_bytes
-    except Exception:
-        estimate_training_reserve_bytes = None
+def _activation_bytes(model, seq, batch):
+    """Checkpointed activations + float32 logits rows, as unsloth_zoo.block_swap.estimate_training_reserve_bytes
+    counts them (its margins are added once in plan_auto_fit)."""
     config = getattr(model, "config", None)
-    if estimate_training_reserve_bytes is not None and config is not None:
-        try:
-            return int(
-                estimate_training_reserve_bytes(config, seq, batch_size = batch, extra_bytes = extra)
-            )
-        except Exception:
-            pass
-    text = getattr(config, "text_config", None) or config
-    hidden = int(getattr(text, "hidden_size", 0) or 0)
-    vocab = int(getattr(text, "vocab_size", 0) or 0)
-    tokens = max(1, seq) * max(1, batch)
-    base = tokens * hidden * 48 + min(tokens, 2048) * vocab * 4 + extra
-    return int(base + base / 16 + (256 << 20))
+    try:
+        from unsloth_zoo.block_swap import (
+            _ACTIVATION_BYTES_PER_TOKEN_HIDDEN as per_token,
+            _text_config,
+        )
+        text = _text_config(config)
+    except Exception:
+        per_token = 48
+        text = getattr(config, "text_config", None) or config
+    hidden = int(
+        getattr(text, "hidden_size", None)
+        or getattr(text, "n_embd", None)
+        or getattr(text, "d_model", None)
+        or 0
+    )
+    vocab = int(getattr(text, "vocab_size", None) or 0)
+    tokens = max(1, int(seq)) * max(1, int(batch))
+    return tokens * hidden * int(per_token) + min(tokens, 2048) * vocab * 4
 
 
 def _trainable(model):
@@ -429,24 +438,29 @@ def plan_auto_fit(
     grads = sum(p.numel() * p.element_size() for p in params)
     largest = max((p.numel() for p in params), default = 0)
     largest_bytes = max((p.numel() * p.element_size() for p in params), default = 0)
-    optim_name = str(getattr(args, "optim", "") or "")
+    optim_name = _optim_name(args)
     custom = getattr(trainer, "optimizer_cls_and_kwargs", None)
     if optimizer_cls is None and custom is not None:
         optimizer_cls = custom[0]
         optim_name = ""
     states = _state_bytes(optim_name, optimizer_cls, params, model)
-    # Standard step transients: torch's foreach AdamW holds a parameter-sized temporary per tensor list,
-    # bitsandbytes / the bfloat16 one-pass kernel only per weight.
     label = (optim_name + " " + getattr(optimizer_cls, "__name__", "")).lower()
-    per_weight = "8bit" in label or "bnb" in label or "paged" in label
-    step_temp = largest * 8 if per_weight else grads
-    # In backward: the gradient being stepped, one more still accumulating (a tied embedding's head
-    # gradient lives the whole backward), and a float32 copy of one weight.
-    live = largest_bytes * 2 + largest * 8
+    # Measured on Llama-3.2-3B and Qwen3-0.6B / Qwen3-4B full finetuning (adamw_8bit, Unsloth checkpointing):
+    # the standard step peaks at gradients + state + about the activations. torch's foreach AdamW (without the
+    # bfloat16 one-pass kernel) also holds a moment-sized temporary over the whole tensor list.
+    per_weight = "8bit" in label or "bnb" in label or "paged" in label or _sr_on(params)
+    step_temp = 0 if per_weight else states // 2
+    # In backward: the weight being stepped's gradient and a tied head gradient still accumulating. The
+    # largest weight (the embedding) is stepped last, once activations are freed, so it overlaps them.
+    # LOMO also makes float32 copies of that weight and its gradient.
+    live = largest_bytes * 2
+    live_lomo = largest_bytes + largest * 8
     seq, batch = _seq_and_batch(trainer, model)
-    standard = _reserve(model, seq, batch, grads + states + step_temp)
-    in_backward = _reserve(model, seq, batch, states + live)
-    lomo = _reserve(model, seq, batch, live)
+    activations = _activation_bytes(model, seq, batch)
+    margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
+    standard = grads + states + max(activations, step_temp) + margin
+    in_backward = states + max(activations, live) + margin
+    lomo = max(activations, live_lomo) + margin
     if usable_bytes is None:
         usable_bytes = _usable_bytes(params)
     return dict(
@@ -460,6 +474,12 @@ def plan_auto_fit(
         seq = seq,
         batch = batch,
     )
+
+
+def _sr_on(params):
+    if os.environ.get("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "1").strip().lower() in _OFF:
+        return False
+    return any(p.dtype == torch.bfloat16 for p in params)
 
 
 def _usable_bytes(params):
@@ -530,7 +550,7 @@ def _blocker(trainer, model, forced):
         return "UNSLOTH_OFFLOAD_OPTIMIZER_STATE"
     if getattr(args, "q_galore_config", None) is not None:
         return "Q-GaLore"
-    optim = str(getattr(args, "optim", "")).lower()
+    optim = _optim_name(args).lower()
     if any(
         k in optim for k in ("galore", "apollo", "layerwise", "lomo", "schedule_free", "torchao")
     ):
@@ -588,7 +608,7 @@ def _decide(trainer, model, mode):
     plan = plan_auto_fit(trainer, model)
     if plan["usable"] is None or plan["standard"] <= plan["usable"]:
         return None, None
-    optim = str(getattr(args, "optim", "")) or "the optimizer"
+    optim = _optim_name(args) or "the optimizer"
     head = (
         f"Unsloth: full finetuning of {plan['params'] / 1e9:.2f}B weights is predicted to run out of memory: "
         f"{_gb(plan['standard'])} needed for gradients ({_gb(plan['grads'])}), {optim} state "

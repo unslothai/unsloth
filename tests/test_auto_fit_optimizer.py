@@ -477,3 +477,19 @@ def test_a_weight_reused_across_checkpointed_blocks_raises(af):
     wrapper = af.InBackwardOptimizer(torch.optim.AdamW(model.parameters(), lr = 1e-2))
     with wrapper.armed(), pytest.raises(RuntimeError, match = "second gradient"):
         model(torch.randn(4, 8)).backward()
+
+
+def test_optimizer_enum_names_are_read_by_value(af):
+    """TrainingArguments stores optim as an OptimizerNames enum: `adamw_bnb_8bit` prints as
+    `OptimizerNames.ADAMW_BNB`, which must still be planned as 8-bit state."""
+    from transformers.training_args import OptimizerNames
+
+    model = _plan_model()
+    by_string = af.plan_auto_fit(_Trainer(optim = "adamw_8bit"), model, usable_bytes = 0)
+    for name in ("adamw_bnb_8bit", "adamw_8bit"):
+        plan = af.plan_auto_fit(_Trainer(optim = OptimizerNames(name)), model, usable_bytes = 0)
+        assert plan["states"] == by_string["states"], name
+    torch_plan = af.plan_auto_fit(
+        _Trainer(optim = OptimizerNames("adamw_torch")), model, usable_bytes = 0
+    )
+    assert torch_plan["states"] == 2 * by_string["grads"]  # two bfloat16 moments
