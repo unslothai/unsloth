@@ -1514,6 +1514,10 @@ def push_to_hub_merged(
     private = None,
     **kwargs,
 ) -> None:
+    if save_method != "merged_16bit":
+        raise NotImplementedError(
+            f"Unsloth: decision models are saved merged in 16-bit, not as {save_method!r}."
+        )
     from huggingface_hub import HfApi
 
     api = HfApi(token = token)

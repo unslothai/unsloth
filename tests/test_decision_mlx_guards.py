@@ -304,3 +304,32 @@ def test_a_decision_checkpoint_naming_its_own_model_file_is_refused(
     )
     with pytest.raises(ValueError, match = "repository code"):
         decision_mlx.FastDecisionModel.from_pretrained(str(tmp_path))
+
+
+def test_a_push_refuses_a_bad_save_method_before_creating_the_repo(decision_mlx, monkeypatch):
+    # create_repo is a remote side effect: a save_method the merge then rejects must not
+    # leave an empty repo behind.
+    calls = []
+
+    class FakeApi:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def create_repo(self, repo_id, *args, **kwargs):
+            calls.append(("create_repo", repo_id))
+            return types.SimpleNamespace(repo_id = repo_id)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", FakeApi)
+    model = types.SimpleNamespace(
+        save_pretrained_merged = lambda *args, **kwargs: calls.append(
+            ("save", args[1] if len(args) > 1 else kwargs.get("save_method"))
+        )
+        or (_ for _ in ()).throw(
+            NotImplementedError("saved merged in 16-bit, not as 'merged_4bit'")
+        )
+    )
+    with pytest.raises(NotImplementedError, match = "16-bit"):
+        decision_mlx._decision_push_merged(model, "user/repo", save_method = "merged_4bit")
+    assert calls == []
