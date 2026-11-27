@@ -2667,6 +2667,52 @@ def test_mlx_stop_during_prefill_ends_the_reply_before_the_prompt_is_read(monkey
     assert _delivered(snapshots) == ""
 
 
+def test_mlx_text_reply_reports_prompt_progress_past_the_cached_prefix(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    backend = _byte_level_mlx_backend(monkeypatch, [b"a", b"b", b"c", b"d"])
+    monkeypatch.setattr(
+        backend,
+        "_prepare_prompt_cache",
+        lambda _prompt, _state, **_: (list(range(3000)), None, None, list(range(4000)), 1000),
+    )
+    clock = {"now": 100.0}
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock["now"])
+    asked = []
+
+    def _stream_generate(_model, _tokenizer, **kwargs):
+        asked.append(kwargs)
+        report = kwargs.get("prompt_progress_callback", lambda *_: None)
+        for done in (0, 2048, 3000):
+            report(done, 3000)
+            clock["now"] += 1.0
+        for token in range(4):
+            yield SimpleNamespace(token = token)
+            clock["now"] += 0.125
+
+    sys.modules["mlx_lm"].stream_generate = _stream_generate
+    samples = []
+    backend.generation_progress_sink = samples.append
+    list(backend.generate_chat_response(messages = [{"role": "user", "content": "hi"}]))
+
+    assert [s["prompt_progress"] for s in samples[:3]] == [
+        {"total": 4000, "processed": processed, "cache": 1000, "time_ms": ms}
+        for processed, ms in ((1000, 0.0), (3048, 1000.0), (4000, 2000.0))
+    ]
+    assert "prompt_per_second" not in samples[0]
+    assert samples[1]["prompt_per_second"] == 2048.0
+    # Timed from the first token, one token per 0.125 s; the third lands inside the interval.
+    assert samples[3:] == [
+        {"predicted_n": 2, "predicted_per_second": 8.0},
+        {"predicted_n": 4, "predicted_per_second": 8.0},
+    ]
+
+    backend.generation_progress_sink = None
+    list(backend.generate_chat_response(messages = [{"role": "user", "content": "hi"}]))
+    assert len(samples) == 5
+
+
 @pytest.mark.parametrize(
     "pieces, expected",
     [
@@ -3634,7 +3680,17 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     )
     generate = types.ModuleType("mlx_lm.generate")
     generate.BatchGenerator = lambda *_a, **_k: generator
-    prefill = lambda *_a, **step: steps.append(step) or [1, 5, 5, 2]
+
+    def prefill(
+        *_a,
+        progress = None,
+        **step,
+    ):
+        steps.append(step)
+        if progress is not None:
+            progress(3, 4, 0)
+        return [1, 5, 5, 2]
+
     _zoo_image_prefill(monkeypatch, prefill_image_prompt = prefill)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
@@ -3661,7 +3717,80 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
         ([[2]], [["cache"]], [[1, 5, 5]]),
     ]
     assert session._rows[1].cache_key is None and session._rows[1].prompt_len == 4
+    # Its prompt was prefilled at admission, so the batch's one-token report is not its progress.
+    samples = []
+    session.watch_progress(1, samples.append)
+    generator.next = lambda: ([SimpleNamespace(uid = 2, progress = (1, 1))], [])
+    list(session.step())
+    assert samples == []
+    # Watched before it is admitted, as the worker does, the row reports the prefill it runs at admission.
+    session.watch_progress(2, samples.append)
+    session.admit({"messages": messages, "image": image}, 2)
+    assert [sample["prompt_progress"]["processed"] for sample in samples] == [3]
     session.close()
+
+
+def test_a_watched_batch_row_reports_prefill_past_its_cached_prefix_and_decode(monkeypatch):
+    from core.inference import mlx_inference
+
+    clock = {"now": 10.0}
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: clock["now"])
+    token = lambda n: SimpleNamespace(uid = 1, token = n, finish_reason = None)  # noqa: E731
+    steps = [
+        ([SimpleNamespace(uid = 1, progress = (2048, 3000))], []),
+        # mlx-lm moves a finished prompt to decoding a step before its first token.
+        ([SimpleNamespace(uid = 1, progress = (3000, 3000))], []),
+        ([], [token(5)]),
+        ([], [token(6)]),
+    ]
+
+    def next_step():
+        clock["now"] += 1.0  # each step runs one chunk or token
+        return steps.pop(0)
+
+    generator = SimpleNamespace(
+        insert = lambda *_a, **_k: [1],
+        next = next_step,
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, False
+    backend._batch_prompt_row = lambda _p, _s: (list(range(1000)), list(range(3000)), [], "k", [])
+    backend._plan_text_row = lambda _messages, **_kw: SimpleNamespace(
+        prompt = "P",
+        max_tokens = 8,
+        sampler = None,
+        processors = (),
+        streamed = None,
+        think_prefix = "",
+        stream = SimpleNamespace(feed = lambda **_k: [], stopped = False),
+    )
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    session.admit({"messages": [{"role": "user", "content": "hi"}]}, ("r1", None))
+    samples = []
+    session.watch_progress(("r1", None), samples.append)
+    for _ in range(4):
+        list(session.step())
+    session.close()
+
+    # Timed from the step that ran the first chunk; decode from the first token.
+    assert samples == [
+        {
+            "prompt_progress": {"total": 4000, "processed": 3048, "cache": 1000, "time_ms": 1000.0},
+            "prompt_per_second": 2048.0,
+        },
+        {
+            "prompt_progress": {"total": 4000, "processed": 4000, "cache": 1000, "time_ms": 2000.0},
+            "prompt_per_second": 1500.0,
+        },
+        {"predicted_n": 2, "predicted_per_second": 1.0},
+    ]
 
 
 @pytest.mark.parametrize("limit", [None, 16])
@@ -3778,6 +3907,31 @@ def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(mon
         list(
             backend._generate_session_batch([{"messages": []}] * 2, mlx_inference._TextBatchSession)
         )
+
+
+def test_a_single_vision_reply_reports_mlx_vlm_prefill_chunks_once_they_have_run(monkeypatch):
+    from core.inference import mlx_inference as mi
+
+    clock, scopes, samples = [5.0], [], []
+    monkeypatch.setattr(mi.time, "perf_counter", lambda: clock[0])
+    scope = contextmanager(lambda callback: (yield scopes.append(callback)))
+    monkeypatch.setattr(_batch_engine(monkeypatch), "vlm_prefill_progress", scope, raising = False)
+
+    def run():  # each chunk is reported once it has run
+        for done in (256, 512):
+            clock[0] += 1
+            scopes[-1](done, 1000)
+
+    backend = mi.MLXInferenceBackend()
+    backend.generation_progress_sink = samples.append
+    _drive_vlm_generation(backend, monkeypatch, on_stream = run)
+    assert [s.get("prompt_per_second") for s in samples[:2]] == [None, 256.0]
+    assert samples[1]["prompt_progress"] == {
+        "total": 1000,
+        "processed": 512,
+        "cache": 0,
+        "time_ms": 1000.0,
+    }
 
 
 def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
@@ -9137,7 +9291,7 @@ def _open_vision_session(rows):
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
     session._speculative, session._decodes_ids = None, False
-    session._retires_rows, session._leaving = False, set()
+    session._retires_rows, session._leaving, session._watching = False, set(), {}
     return session
 
 
@@ -9438,7 +9592,8 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     from core.inference import mlx_inference
 
     engine = _batch_engine(monkeypatch)
-    monkeypatch.setattr(engine, "GenerationRequest", SimpleNamespace, raising = False)
+    request = type("R", (SimpleNamespace,), {"__dataclass_fields__": ("prompt_progress",)})
+    monkeypatch.setattr(engine, "GenerationRequest", request, raising = False)
     monkeypatch.setattr(engine, "SamplingParams", dict, raising = False)
     monkeypatch.setattr(engine, "BatchRowRefused", RuntimeError, raising = False)
     monkeypatch.setattr(engine, "row_prompt_cache_unavailable_reason", lambda: None, raising = False)
@@ -9468,10 +9623,24 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session._resumes_rows = mlx_inference._row_prompt_cache_gap() is None
     added = []
     session.stream = SimpleNamespace(add = lambda request: added.append(request) or len(added) - 1)
+    monkeypatch.setattr(mlx_inference.time, "perf_counter", lambda: len(added))
 
     session._retires_rows = True
-    session.admit({}, "text")
+    samples = []
+    session.watch_progress(
+        "text", samples.append
+    )  # before admission: a speculative row prefills in add()
+    session.admit({"generation_progress": True}, "text")
     assert added[0].prompt_cache_state._store is store and len(store) == 2
+    assert session._rows["text"].admitted_at == 1
+    added[0].prompt_progress(2, 5, 3)
+    assert samples[0]["prompt_progress"] | {"time_ms": 0} == {
+        "processed": 5,
+        "total": 8,
+        "cache": 3,
+        "time_ms": 0,
+    }
+    session._rows["text"].live = None
     alone = added[0].prompt_cache_state._alone
     assert alone()
     backend._model = SimpleNamespace(config = SimpleNamespace(image_token_id = 9))
@@ -9479,6 +9648,7 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     session.admit({"images": [object()]}, "image")
     assert list(store._entries) == [("m|img", (1,))] and not store._held and not alone()
     assert added[1].prompt_cache_state._store is store
+    assert not hasattr(added[1], "prompt_progress")
     backend._model.config.use_bidirectional_attention = "vision"
     session.admit({"images": [object()]}, "block")
     assert added[2].prompt_cache_state._store is None and len(store) == 0
@@ -9514,10 +9684,19 @@ def test_a_resident_vision_row_resumes_from_the_snapshot_store_and_reports_it(mo
     backend._kv_quant = {"kv_bits": 4}
     with pytest.raises(mlx_inference.RowRefused):
         session.admit({}, "unquantized")
-    session._resumes_rows = True
+    session._resumes_rows, session._speculative = True, "draft"
     backend._vlm_prompt_cache_store = lambda: None
-    session.admit({"images": [object()]}, "quantized")
-    assert added[5].prompt_cache_state._store is None
+    # A speculative row reports only where unsloth-zoo can report its prefill.
+    for gap in ("old zoo", None):
+        monkeypatch.setattr(
+            engine,
+            "speculative_prompt_progress_unavailable_reason",
+            lambda gap = gap: gap,
+            raising = False,
+        )
+        session.admit({"images": [object()], "generation_progress": True}, gap)
+        assert added[-1].prompt_cache_state._store is None
+        assert hasattr(added[-1], "prompt_progress") == (gap is None)
 
 
 def _batch_engine(monkeypatch):
@@ -11673,7 +11852,7 @@ def test_a_drafted_batch_row_decodes_its_own_clip_and_resumes_no_cache(monkeypat
     session.stream = SimpleNamespace(add = lambda request: added.append(request) or 0)
     session._adapter_state, session._decodes_ids, session._resumes_rows = None, False, True
     session._retires_rows, session._speculative, session._held = False, object(), ExitStack()
-    session._rows, session._by_row = {}, {}
+    session._rows, session._by_row, session._watching = {}, {}, {}
     session.admit({}, 0)
     assert added[0]["videos"] == ["clip.mp4"] and added[0]["fps"] == 2.0
     assert "prompt_cache_state" not in added[0] and released == [True]
