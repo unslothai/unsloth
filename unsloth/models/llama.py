@@ -4925,6 +4925,9 @@ class FastLlamaModel:
             fix_tokenizer = fix_tokenizer,
             revision = tokenizer_revision,
             config = getattr(model, "config", None),
+            # Only for the GGUF's own repo: a separate tokenizer_name has no GGUF to read.
+            gguf_file = kwargs.get("gguf_file") if tokenizer_name == model_name else None,
+            local_files_only = kwargs.get("local_files_only", False),
             **_tokenizer_cache_kwargs,
         )
 
