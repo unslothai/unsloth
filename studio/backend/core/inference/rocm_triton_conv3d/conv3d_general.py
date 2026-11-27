@@ -147,7 +147,6 @@ def _conv3d_general_kernel(
     num_pid_m = tl.cdiv(M_total, BLOCK_M)
     num_pid_n = tl.cdiv(K_out, BLOCK_N)
 
-    # L2 cache swizzle (same super-grouping as the 2D kernels).
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_SIZE_M
@@ -162,7 +161,6 @@ def _conv3d_general_kernel(
     m_mask = offs_m < M_total
     kout_mask = offs_n < K_out
 
-    # Decode offs_m -> (n_idx, o_idx, p_idx, q_idx)
     opq = OD * P * Q
     n_idx = offs_m[:, None] // opq
     rem_opq = offs_m[:, None] % opq
@@ -173,7 +171,6 @@ def _conv3d_general_kernel(
 
     n_valid = n_idx < N
 
-    # Precompute (top-left-front) base input coordinate for each output element.
     base_id = o_idx * stride_d - pad_d
     base_ih = p_idx * stride_h - pad_h
     base_iw = q_idx * stride_w - pad_w
@@ -181,11 +178,9 @@ def _conv3d_general_kernel(
     stride_x_dh = dil_h * stride_x_h
     stride_x_dw = dil_w * stride_x_w
 
-    # Input base pointer for the (t=r=s=0) tap.
     x_base = (
         X + n_idx * stride_x_n + base_id * stride_x_d + base_ih * stride_x_h + base_iw * stride_x_w
     )
-    # Weight base: W[K_out, K_pad]
     w_base = W + offs_n[None, :] * stride_w_kout
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
@@ -193,9 +188,7 @@ def _conv3d_general_kernel(
     trs_stride = T * R * S
     rs_stride = R * S
 
-    # Reduction over the flattened im2col GEMM-K axis (C*T*R*S = K_pad). A single
-    # BLOCK_K step can straddle channel / filter-tap boundaries, so each kred is
-    # decoded below into (c, t, r, s).
+    # A BLOCK_K step can straddle channel / tap boundaries, so each kred is decoded into (c, t, r, s).
     for k0 in range(0, K_pad, BLOCK_K):
         kred = k0 + offs_k
 
@@ -232,7 +225,6 @@ def _conv3d_general_kernel(
 
         acc = tl.dot(x_tile, w_tile, acc = acc)
 
-    # Epilogue: bias + activation + store
     if HAS_BIAS:
         b = tl.load(BIAS + offs_n, mask = offs_n < K_out, other = 0.0).to(tl.float32)
         acc += b[None, :]

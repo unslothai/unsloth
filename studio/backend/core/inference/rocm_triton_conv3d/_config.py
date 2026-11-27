@@ -546,26 +546,22 @@ def _get_conv_config_cached(
     if config_dict is None:
         raise KeyError(f"No conv config '{config_name}' on arch {get_arch()}")
 
-    # Tier 1: optional variant-specific exact-shape pins.
     if shape_key is not None:
         for variant in variants:
             shapes = config_dict.get(f"shapes_{variant}", {})
             if shape_key in shapes:
                 return shapes[shape_key]
 
-    # Tier 2: generic exact-shape pin.
     shapes = config_dict.get("shapes", {})
     if shape_key is not None and shape_key in shapes:
         return shapes[shape_key]
 
-    # Tier 3: M-bucket walk.
     if M is not None and M >= 0:
         for bound in CONV_STANDARD_M_BOUNDS:
             key = f"M_LEQ_{bound}"
             if M <= bound and key in config_dict:
                 return config_dict[key]
 
-    # Tier 4: any fallback.
     if "any" in config_dict:
         return config_dict["any"]
 

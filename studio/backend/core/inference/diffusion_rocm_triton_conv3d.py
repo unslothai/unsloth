@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ROCm gfx11 (RDNA 3 / 3.5): route a video VAE's ``nn.Conv3d`` calls through the Triton direct / H,W-Winograd
-conv3d vendored from ROCm/aiter (``rocm_triton_conv3d``, MIT) instead of MIOpen.
+"""ROCm gfx11: route a video VAE's ``nn.Conv3d`` through the Triton conv3d vendored from ROCm/aiter instead of MIOpen.
 
-Measured on AMD CI Linux gfx1151 (Strix Halo), Wan 2.2 TI2V-5B VAE: a 704x1280x49 decode 51.9 -> 32.3 s (1.61x),
-the cold first decode (MIOpen kernel search) 1004 -> 35 s, PSNR 54.7 dB against MIOpen, 1323 / 1323 conv calls
-routed; through Studio, Wan 832x480x49 wall 66.4 -> 58.2 s. Decode peak memory rose 11.8 -> 18.7 GiB (Winograd
-transform buffers), so every call first checks the card's free memory and stays on MIOpen when it cannot afford the
-workspace.
-
-Per instance, ``Conv3d._conv_forward`` is wrapped, which covers diffusers' ``WanCausalConv3d`` (its forward pads, then
-calls ``Conv3d.forward``) and the plain ``nn.Conv3d`` inside ``LTX2VideoCausalConv3d``. A call stays on the stock
-path (MIOpen) when: tracing under torch.compile, autograd would record it, not a CUDA / HIP tensor, not fp16 / bf16,
-groups != 1, padding_mode != zeros, an index could pass int32 (``fallback_shape``), the workspace does not fit
-(``fallback_memory``), or the kernel failed to compile / launch for that shape before (``fallback_error``; the shape is
-not retried). Out-of-memory and torch._dynamo errors are re-raised.
-
-``UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D``: ``1`` on for any gfx11 card, ``0`` off; unset = on only for
-``DEFAULT_ON_ARCHES``. ``UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D=1`` (the name the measurements used) is an alias for ``1``.
+gfx1151 Wan 2.2 5B VAE decode 1.61x, PSNR 54.7 dB vs MIOpen, but peak memory 11.8 -> 18.7 GiB, so each call checks
+free memory first. ``Conv3d._conv_forward`` is wrapped per instance (covers ``WanCausalConv3d`` and the ``nn.Conv3d``
+in ``LTX2VideoCausalConv3d``); unsupported calls stay on MIOpen, a shape that failed once is not retried, and OOM /
+torch._dynamo errors are re-raised. ``UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D``: 1 on for any gfx11, 0 off, unset = only
+``DEFAULT_ON_ARCHES``; ``UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D=1`` is an alias for 1.
 """
 
 from __future__ import annotations
@@ -30,13 +19,12 @@ from typing import Any, Optional
 ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D"
 LEGACY_ENABLE_ENV = "UNSLOTH_DIFFUSION_ROCM_AITER_CONV3D"
 SELFCHECK_ENV = "UNSLOTH_DIFFUSION_ROCM_TRITON_CONV3D_SELFCHECK"
-# Archs routed with the env unset (AMD CI gfx1151, Linux and Windows: Wan 2.2 5B render VAE 1.56x, wall -13%).
+# Archs / VAE classes routed with the env unset (measured end to end).
 DEFAULT_ON_ARCHES: tuple = ("gfx1151",)
-# VAE classes routed with the env unset (measured end to end); any other VAE needs the env var set to 1.
 DEFAULT_ON_VAES: tuple = ("AutoencoderKLWan",)
 # Archs whose kernel tables were tuned (ROCm/aiter PR #6973); other gfx11 archs borrow them (explicit opt-in only).
 TUNED_ARCHES = ("gfx1151",)
-# Free memory kept back beyond the estimated workspace: the larger of these.
+# Free memory kept back beyond the workspace: the larger of these.
 MEM_MARGIN_BYTES = 512 << 20
 MEM_MARGIN_FRACTION = 0.03
 # mem_get_info is a driver call (~0.2 ms): only calls whose workspace could matter pay it.

@@ -136,7 +136,6 @@ def _conv3d_1x1x1_kernel(
     num_pid_m = tl.cdiv(M_total, BLOCK_M)
     num_pid_n = tl.cdiv(K_out, BLOCK_N)
 
-    # L2 cache swizzle (same super-grouping as the other conv kernels).
     num_pid_in_group = GROUP_SIZE_M * num_pid_n
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_SIZE_M
@@ -151,7 +150,6 @@ def _conv3d_1x1x1_kernel(
     m_mask = offs_m < M_total
     kout_mask = offs_n < K_out
 
-    # Decode (n, o, p, q) from linear index.
     opq = OD * P * Q
     n_idx = offs_m[:, None] // opq
     rem = offs_m[:, None] % opq
@@ -175,7 +173,6 @@ def _conv3d_1x1x1_kernel(
 
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype = tl.float32)
 
-    # Channel-reduction GEMM (GEMM-K axis = C, since T=R=S=1).
     for k0 in range(0, C, BLOCK_K):
         k_offs = k0 + offs_k
         k_mask = k_offs < C

@@ -40,7 +40,6 @@ def _sanitize_constexpr_value(value):
             return str(int(value)).replace("-", "NEG_")
         return str(value).replace("-", "NEG_").replace("+", "POS_").replace(".", "_")
 
-    # for lists, tuples, sets - recursively join each
     if isinstance(value, (list, tuple, set)):
         items = sorted(value, key = str) if isinstance(value, set) else value
         sanitized_items = [_sanitize_constexpr_value(item) for item in items]
@@ -60,9 +59,7 @@ def make_kernel_repr(
     config_keys,
     name_key = None,
 ):
-    # When name_key is set, the base name is taken from the matching constexpr
-    # kwarg at call time (falling back to base_name if missing/empty). Lets a
-    # single shared kernel produce caller-specific names in compiled artifacts.
+    # name_key: base name comes from that constexpr kwarg at call time (base_name if empty).
     def _repr(specialization):
         constants = specialization.constants
 

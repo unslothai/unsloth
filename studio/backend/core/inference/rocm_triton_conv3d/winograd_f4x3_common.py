@@ -225,7 +225,6 @@ def _winograd_f4x3_input_transform(
     d54f = d54.to(tl.float32)
     d55f = d55.to(tl.float32)
 
-    # B^T column transform.
     t00 = 4 * d00f - 5 * d20f + d40f
     t01 = 4 * d01f - 5 * d21f + d41f
     t02 = 4 * d02f - 5 * d22f + d42f
@@ -268,7 +267,6 @@ def _winograd_f4x3_input_transform(
     t54 = 4 * d14f - 5 * d34f + d54f
     t55 = 4 * d15f - 5 * d35f + d55f
 
-    # B row transform.
     v00 = 4 * t00 - 5 * t02 + t04
     v01 = -4 * t01 - 4 * t02 + t03 + t04
     v02 = 4 * t01 - 4 * t02 - t03 + t04
@@ -408,7 +406,6 @@ def _winograd_f4x3_output_transform(
     m54 = tl.load(m_base + 34 * stride_m_alpha, mask = k_mask, other = 0.0)
     m55 = tl.load(m_base + 35 * stride_m_alpha, mask = k_mask, other = 0.0)
 
-    # A^T column transform.
     s00 = m00 + m10 + m20 + m30 + m40
     s10 = m10 - m20 + 2 * m30 - 2 * m40
     s20 = m10 + m20 + 4 * m30 + 4 * m40
@@ -434,7 +431,6 @@ def _winograd_f4x3_output_transform(
     s25 = m15 + m25 + 4 * m35 + 4 * m45
     s35 = m15 - m25 + 8 * m35 - 8 * m45 + m55
 
-    # A row transform.
     y00 = s00 + s01 + s02 + s03 + s04
     y01 = s01 - s02 + 2 * s03 - 2 * s04
     y02 = s01 + s02 + 4 * s03 + 4 * s04

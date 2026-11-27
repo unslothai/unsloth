@@ -220,7 +220,6 @@ def _winograd_hw_f4x3_batched_gemm_kernel(
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, BLOCK_K)
 
-    # Decode output row -> (n, od, tile) to map to input depth per tap.
     tile = offs_m % T_hw
     od = (offs_m // T_hw) % OD
     n = offs_m // (OD * T_hw)

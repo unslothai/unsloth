@@ -63,7 +63,6 @@ from ._utils import (
 
 
 class Route3D(Enum):
-    # Values are the kernel display names used in benchmark output.
     ONE_X_ONE_X_ONE = "_conv3d_1x1x1_kernel"
     WINOGRAD_HW = "_winograd_hw_f4x3_* (3 kernels)"
     WINOGRAD_HW_CBLOCKED = "_winograd_hw_f4x3_cblocked_* (3 kernels)"
@@ -105,18 +104,15 @@ def _select_3x3x3_ncdhw_method(
             return "winograd_hw"
         return "cblocked"
 
-    # Very narrow expanding projections are the only measured region where
-    # padding C to a full dot tile costs more than the general reduction.
+    # Measured: padding C to a dot tile loses only on very narrow expanding projections.
     if C < 16 or (C < 32 and K_out >= 4 * C):
         return "general"
 
-    # These regions are transform- or padded-GEMM-bound. The 8x expansion cap
-    # also avoids a large Winograd output-transform temporary.
+    # Transform/padded-GEMM-bound; the 8x cap also avoids a large Winograd output temporary.
     if C < 160 or K_out < 96 or K_out >= 8 * C or tiles < 98:
         return "cblocked"
 
-    # With one output depth plane, H/W Winograd transforms all three input
-    # planes for one result plane. Require a measured high-reuse channel shape.
+    # OD=1: Winograd transforms 3 input planes per output plane; require a measured high-reuse shape.
     if OD == 1:
         expands_channels = K_out >= 2 * C
         balanced_channels = C >= 320 and K_out >= 320 and tiles >= 220

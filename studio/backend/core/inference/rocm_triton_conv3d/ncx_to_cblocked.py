@@ -45,8 +45,7 @@ def _get_config(
 
 
 def _get_config_3d(shape_key = None, M = None):
-    # Untuned architectures reuse the safe Conv2D fallback tile for the
-    # dimension-independent [C, spatial] transpose.
+    # Untuned archs reuse the safe Conv2D fallback tile for this transpose.
     name = "CONV3D-PREPACK" if has_conv_config("CONV3D-PREPACK") else "CONV-PREPACK"
     return get_conv_config(name, shape_key = shape_key, M = M)
 

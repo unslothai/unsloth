@@ -135,7 +135,6 @@ def _conv3d_3x3x3_ndhwc_kernel(
     m_mask = offs_m < M_total
     kout_mask = offs_n < K_out
 
-    # Decode (n, od, p, q) from linear index.
     opq = OD * P * Q
     n_idx = offs_m[:, None] // opq
     rem = offs_m[:, None] % opq
