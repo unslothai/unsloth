@@ -233,7 +233,6 @@ test("the first visit after a page reload still asks", async () => {
 
 test("a cached bitsandbytes checkpoint defaults to QLoRA on CUDA", async () => {
   const model = "unsloth/Qwen3-8B-unsloth-bnb-4bit";
-  // The actual two Hub shard sizes are smaller than the corresponding 16-bit weights.
   modelSize = 4_975_369_365 + 2_504_973_894;
   bnb4Bit = true;
   useTrainingConfigStore.getState().selectTrainingModel(model, "text", {
