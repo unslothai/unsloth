@@ -27,9 +27,16 @@ __all__ = [
 
 @triton.jit
 def _row_dot(
-    acc, w, X, xk, xmask, a, BLOCK_N: tl.constexpr, NB: tl.constexpr, BLOCKSIZE: tl.constexpr
+    acc,
+    w,
+    X,
+    xk,
+    xmask,
+    a,
+    BLOCK_N: tl.constexpr,  # the caller's tile rows
+    NB: tl.constexpr,  # the caller's quant blocks per tile
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
 ):
-    # BLOCK_N, NB, BLOCKSIZE: the caller's tile shape.
     # One activation row against a dequantized tile: the batch-1 sums, so rows stay bit-identical.
     x = tl.load(X + xk, mask = xmask, other = 0.0).to(tl.float32)
     part = tl.sum(tl.reshape(w * x, (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
