@@ -192,8 +192,10 @@ _DDGS_CONNECT_TIMEOUT_LOCK = threading.Lock()
 _DDGS_PENDING = threading.local()
 
 # Tier 2 runs unless tier 1 found more than Wikipedia; engines in neither tier are never contacted.
+# Yandex leads tier 1: on networks where DuckDuckGo answers 202-empty and Brave rate-limits it is the
+# tier 1 engine that still returns results (#16664).
 _SEARCH_ENGINE_TIERS = (
-    ("wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
+    ("yandex", "wikipedia", "brave", "duckduckgo", "mojeek", "startpage"),
     ("grokipedia", "google", "yahoo"),
 )
 
