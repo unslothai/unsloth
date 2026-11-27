@@ -44949,6 +44949,12 @@ class LlamaCppBackend:
                             ):
                                 assistant_msg = _msg
                                 break
+                    else:
+                        # The result-budget rescue inside _invoke_tool may have replaced this turn.
+                        for _msg in reversed(conversation):
+                            if message_source(_msg) is message_source(assistant_msg):
+                                assistant_msg = _msg
+                                break
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False

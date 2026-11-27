@@ -151,8 +151,9 @@ def test_recalled_history_uses_only_room_left_after_the_live_result(
     assert budgets and (budgets[0] > 0) is (result_size == 40)
 
 
-def test_completed_siblings_stay_compactable_for_the_result_budget_rescue(monkeypatch):
-    backend, _, payloads = make_batch(monkeypatch, 2)
+@pytest.mark.parametrize("batch_size", [2, 3])
+def test_completed_siblings_stay_compactable_for_the_result_budget_rescue(monkeypatch, batch_size):
+    backend, _, payloads = make_batch(monkeypatch, batch_size)
     backend._effective_context_length = 4608
     budgets = []
 
@@ -175,9 +176,10 @@ def test_completed_siblings_stay_compactable_for_the_result_budget_rescue(monkey
             context_overflow = "truncate_oldest",
         )
     )
-    assert len(budgets) == 2
-    assert budgets[1] >= llama_cpp._MIN_USEFUL_RESULT_TOKENS, budgets
+    ids = [f"new-{i}" for i in range(batch_size)]
+    assert len(budgets) == batch_size
+    assert budgets[-1] >= llama_cpp._MIN_USEFUL_RESULT_TOKENS, budgets
     prompt = payloads[-1]["messages"]
     assistant = next(m for m in prompt if m.get("tool_calls"))
-    assert [c["id"] for c in assistant["tool_calls"]] == ["new-0", "new-1"]
-    assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == ["new-0", "new-1"]
+    assert [c["id"] for c in assistant["tool_calls"]] == ids
+    assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == ids
