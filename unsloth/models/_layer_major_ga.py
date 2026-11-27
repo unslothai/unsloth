@@ -537,18 +537,16 @@ def _cuda_devices(model):
 
 
 def _peak_probe_start(model):
-    """auto's measurement step: reset each card's peak counter, keep the allocation the step starts from."""
+    """auto's measurement step: the allocation each card starts it from. The peak counters are left alone (they are
+    process-wide and other code reports them)."""
     if not torch.cuda.is_available():
         return None
-    start = {}
-    for device in _cuda_devices(model):
-        torch.cuda.reset_peak_memory_stats(device)
-        start[device] = torch.cuda.memory_allocated(device)
-    return start
+    return {device: torch.cuda.memory_allocated(device) for device in _cuda_devices(model)}
 
 
 def _peak_probe_end(start):
-    """Bytes the measured standard step allocated above its start, per card (its activations, logits, gradients)."""
+    """Upper bound on what the measured standard step allocated above its start, per card: the process-wide peak
+    since then is at least the step's own (exact when the step set a new peak, larger if an earlier phase did)."""
     if not start:
         return None
     return {

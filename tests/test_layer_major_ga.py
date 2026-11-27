@@ -1118,6 +1118,25 @@ def test_auto_without_stall_stats_runs_after_the_measured_probe(ga, tmp_path, mo
     _same(off, run)
 
 
+def test_peak_probe_leaves_the_process_peak_counters_alone(ga, monkeypatch):
+    """The probe bounds the step's peak by the process-wide peak since its start; it never resets the counters that
+    other code (training summaries, notebooks) reports."""
+    mod, engine = ga
+    card = torch.device("cuda", 0)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(mod, "_cuda_devices", lambda model: [card])
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 100)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device = None: 350)
+
+    def reset(*a, **k):
+        raise AssertionError("peak counters reset")
+
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", reset)
+    start = mod._peak_probe_start(None)
+    assert start == {card: 100}
+    assert mod._peak_probe_end(start) == {card: 250}
+
+
 def test_auto_declines_when_the_inputs_do_not_fit_beside_the_step_peak(ga, monkeypatch):
     """Free VRAM just above the standard step's peak: the held layer inputs pass the 60% rule but not the room left
     beside that peak, so the window is declined instead of running out of memory."""
