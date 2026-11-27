@@ -101,7 +101,6 @@ def test_only_a_changed_embedding_model_moves_the_epoch(rag_conn):
     store.set_document_embedding_model(rag_conn, doc, "llama:m")
     assert epoch() == e0 + 1
     assert store.get_document(rag_conn, doc)["embedding_model"] == "llama:m"
-    # A document stored without an identity gets one, and that counts as a change.
     legacy = store.create_document(rag_conn, scope = scope, filename = "g", sha256 = "i")
     store.set_document_embedding_model(rag_conn, legacy, "st:m")
     assert epoch() == e0 + 2
