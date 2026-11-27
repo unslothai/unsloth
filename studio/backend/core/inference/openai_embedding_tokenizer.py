@@ -8,9 +8,7 @@ import gzip
 import hashlib
 from pathlib import Path
 
-# OpenAI's tiktoken 0.13.0 cl100k_base ranks, gzip-compressed without changing the data.
-# https://github.com/openai/tiktoken/blob/0.13.0/tiktoken_ext/openai_public.py
-# https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken
+# gzip of https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken (tiktoken 0.13.0).
 _VOCABULARY = (
     Path(__file__).resolve().parents[2] / "assets" / "tokenizers" / "cl100k_base.tiktoken.gz"
 )
@@ -38,8 +36,6 @@ def _load_token_bytes() -> dict[int, bytes]:
     return tokens
 
 
-# The endpoint imports this module only for OpenAI token arrays. Python's import lock
-# initializes it once even when several requests arrive together.
 _TOKEN_BYTES = _load_token_bytes()
 
 

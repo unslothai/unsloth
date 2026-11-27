@@ -41354,8 +41354,7 @@ _OPENAI_EMBEDDING_MODELS = frozenset(
 
 
 def _decode_openai_embedding_tokens(body: dict, value: list) -> dict:
-    # Only the two OpenAI token shapes use cl100k_base. A resident llama-server
-    # also accepts mixed prompts and multimodal inputs through the proxy.
+    # Mixed or multimodal inputs pass through: a resident llama-server reads them natively.
     if all(type(token) is int for token in value):
         rows = [value]
     elif all(
