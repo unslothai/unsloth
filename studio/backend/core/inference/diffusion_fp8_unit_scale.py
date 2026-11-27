@@ -400,9 +400,8 @@ def _triton_cards(
     caps: dict,
     logger: Any = None,
 ) -> tuple:
-    """(eager cards, compiled cards, module) for the fused Triton GEMM among the fallback cards in use: measured arches
-    only (sm_89 eager, sm_12x eager + compiled), CUDA (never ROCm), Triton importable, kill switch unset, and each card
-    passing the bf16 self-check now. Cards used later rejoin on the next install, like the accumulator check."""
+    """(eager cards, compiled cards, module) for the fused Triton GEMM: measured arches, CUDA only, kill switch unset,
+    bf16 self-check passed. Cards used later rejoin on the next install."""
     none = (frozenset(), frozenset(), None)
     if not in_use:
         return none
@@ -523,8 +522,7 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
             and a_data.device.index in triton_eager
             and tg.eligible(a_data, a_scale, b_data, b_scale, bias, output_dtype)
         ):
-            # The fused kernel: GEMM + the same fp32 epilogue, one launch, no fp32 [M, N] round trip. Fast accumulate
-            # only (Studio's Auto; the oracle matched it bit for bit): a precise-accumulate request keeps cuBLAS's.
+            # Fast accumulate only (matched bit for bit): a precise-accumulate request keeps cuBLAS's.
             if _traced(a_data):
                 # Traced: only a dtype already self-checked here (no launch can run inside a trace).
                 if a_data.device.index in triton_compiled and tg.verified(

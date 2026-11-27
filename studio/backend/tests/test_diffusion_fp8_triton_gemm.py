@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The fused Triton row-wise fp8 GEMM on cards without the row-wise _scaled_mm (Windows wheels): which calls it takes
-per arch and mode, the kill switch, the compile-cache tag, every fallback to the tensorwise route, the operand gate,
-and (Triton interpreter, CPU) the kernel's numbers against the fp32 dequantised reference."""
+"""Fused Triton row-wise fp8 GEMM: routing per arch / mode, fallbacks, operand gate, interpreter numerics."""
 
 from __future__ import annotations
 
@@ -258,8 +256,7 @@ def test_rocm_never_loads_the_kernel(monkeypatch):
 
 
 def test_rowwise_cards_never_reach_the_kernel(monkeypatch):
-    # Linux (row-wise kernel present): nothing installs on sm_12x, and the sm_89 precise-accumulate install never asks
-    # for the fused kernel, so those cards run byte for byte what they ran before.
+    # Linux (row-wise kernel present): these cards run byte for byte what they ran before.
     seen = []
     monkeypatch.setattr(
         us, "_triton_cards", lambda *a, **k: seen.append(a) or (frozenset(), frozenset(), None)
@@ -443,8 +440,7 @@ def test_kernel_matches_the_reference_under_the_triton_interpreter(tmp_path):
 
 
 def test_triton_op_registers_and_traces_with_fake_tensors():
-    # The compiled route: a triton_op with a real schema (the module's string annotations cannot be inferred from)
-    # whose fake run gives the right shape / dtype, so an AOT trace through torchao's subclass never launches it.
+    # A triton_op with a real schema whose fake run gives the right shape / dtype.
     if not tg.available() or not hasattr(torch.library, "triton_op"):
         pytest.skip("no triton / torch.library.triton_op")
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -498,7 +494,6 @@ def test_traced_call_needs_a_self_checked_dtype(monkeypatch):
 
 
 def test_install_survives_a_failing_kernel_setup(monkeypatch):
-    # Anything going wrong while choosing the fused kernel (here the arch table itself) leaves today's route installed.
     calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
     _Kernel(monkeypatch)
 
@@ -533,8 +528,7 @@ def test_verify_oom_is_no_verdict(monkeypatch):
 
 
 def test_autotune_key_tells_apart_what_triton_does():
-    # A capture may only launch a shape whose autotuner key and JIT specialization were already seen: every tensor
-    # dtype (bias included) and the stride classes are part of it.
+    # A capture launches only an already-seen autotune / specialization key (dtypes and stride classes included).
     a, sa, b, sb, _ = _meta_operands(512, 3072, 3072)
 
     class _A:

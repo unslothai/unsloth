@@ -3,14 +3,8 @@
 
 """Fused Triton row-wise fp8 GEMM for cards whose torch build has no row-wise ``_scaled_mm`` (the Windows wheels).
 
-``diffusion_fp8_unit_scale`` runs those cards as a tensorwise GEMM with an fp32 output and a separate scale epilogue:
-the fp32 ``[M, N]`` round trip costs 25% (eager) / 15% (compiled) of a FLUX.2 Klein step against Linux. This kernel
-does the GEMM with an fp32 accumulator and applies ``acc * a_scale * b_scale + bias`` in its epilogue, rounding once to
-the output dtype: the same fp32 operations in the same order as ``_scale_epilogue``, each pinned to round-to-nearest
-(no FMA contraction, eager or re-emitted by Inductor). Measured per arch: sm_12x within 1% of the Linux row-wise
-CUTLASS kernel, 0.40x-0.85x of the compiled fallback; sm_89 0.47x-0.98x of the eager fallback but up to 1.24x the
-compiled one at 512 rows, so sm_89 takes it in eager only. Imported only on such cards, so a build with the row-wise
-kernel never loads Triton here. ``UNSLOTH_DIFFUSION_FP8_TRITON_GEMM=0`` keeps the tensorwise fallback."""
+Epilogue = ``_scale_epilogue``'s fp32 ops in the same order, each round-to-nearest (no FMA contraction), rounded once
+to the output dtype. sm_89 is eager only (up to 1.24x slower than the compiled fallback). ``=0`` keeps the fallback."""
 
 from __future__ import annotations
 
@@ -66,8 +60,7 @@ if triton is not None:
 if triton is not None:
 
     def _configs() -> list:
-        # Small, fixed set (each config compiles once per card, cached on disk by Triton). Shared memory per stage is
-        # (BLOCK_M + BLOCK_N) * BLOCK_K bytes: the 3-4 stage tiles fit the ~100 KB of sm_89 / sm_12x consumer cards.
+        # Stages sized to fit the ~100 KB shared memory of sm_89 / sm_12x consumer cards.
         return [
             triton.Config(
                 {"BLOCK_M": bm, "BLOCK_N": bn, "BLOCK_K": bk, "GROUP_M": 8},
@@ -90,7 +83,6 @@ if triton is not None:
             params = inspect.signature(triton.autotune).parameters
         except Exception:  # noqa: BLE001
             return {}
-        # Triton >= 3.3 can keep the tuned config on disk across processes.
         return {"cache_results": True} if "cache_results" in params else {}
 
     @triton.jit(do_not_specialize = ["M", "M_BUCKET"])
@@ -120,7 +112,6 @@ if triton is not None:
         BLOCK_K: tl.constexpr,
         GROUP_M: tl.constexpr,
     ):
-        # M_BUCKET is only an autotune key.
         pid = tl.program_id(0)
         num_m = tl.cdiv(M, BLOCK_M)
         num_n = tl.cdiv(N, BLOCK_N)
@@ -244,11 +235,8 @@ def eligible(
             return False
         if bias is not None and bias.device != a.device:
             return False
-        # Static ints only here (eager and Dynamo / AOT traces alike read real sizes on the fallback cards' shapes);
-        # a symbolic size compares through the shape env, which is a guard, not a break.
         if not (m > 0 and n > 0 and k > 0):
             return False
-        # Every offset the kernel forms, strided views included (a row-padded activation, a sliced weight).
         return (
             (m - 1) * a.stride(0) + k <= _MAX_ELEMS
             and (n - 1) * b.stride(1) + k <= _MAX_ELEMS
@@ -345,8 +333,7 @@ def _is_fatal(exc: BaseException) -> bool:
 def eager_gemm(
     a: Any, a_scale: Any, b: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
 ) -> Optional[Any]:
-    """The fused GEMM for an eager call, or None: the caller runs the tensorwise fallback. A shape not yet tuned is
-    never launched inside a CUDA graph capture (autotuning syncs). A launch failure turns the kernel off for the card."""
+    """The fused GEMM for an eager call, or None (tensorwise fallback). A launch failure turns it off for the card."""
     import torch
 
     index = a.device.index
@@ -424,9 +411,8 @@ def traced_gemm(
 
 
 def _check_operands(device: str) -> tuple:
-    """Integer-valued fp8 operands and power-of-two scales: every product, sum and scale step is exact in fp32, so
-    any correct kernel matches the reference bit for bit. Odd M; K and N multiples of 16 (the production
-    specialization, so the checked binaries are the ones a real layer runs) but of no BLOCK_K / BLOCK_N."""
+    """Integer fp8 operands, power-of-two scales: exact in fp32, so a correct kernel matches bit for bit. Odd M; K, N
+    multiples of 16 (the production specialization) but of no BLOCK_K / BLOCK_N."""
     import torch
 
     g = torch.Generator(device = "cpu").manual_seed(0)
@@ -451,10 +437,8 @@ def verified(index: Any, output_dtype: Any) -> bool:
 
 
 def verify(index: int, output_dtype: Any) -> bool:
-    """Self-check on card ``index`` for ``output_dtype``: every shipped config (autotune picks one of them), with and
-    without a bf16 bias, bit for bit against the fp32 dequantised reference rounded once. Cached per card and dtype
-    for the process (a mismatch keeps that dtype on the tensorwise route). An OOM is no verdict: False now, checked
-    again on the next call. Never raises."""
+    """Bit-exact self-check of every config, with and without bias, cached per (card, dtype). OOM is no verdict:
+    False now, retried next call. Never raises."""
     import torch
 
     key = (index, output_dtype)
@@ -475,7 +459,6 @@ def verify(index: int, output_dtype: Any) -> bool:
                         try:
                             got = _launch(_ConfigLaunch(cfg), a, sa, b, sb, bb, output_dtype)
                         except _UNFIT as exc:
-                            # Too big for this card: the autotuner skips the config too.
                             _STATE["unfit"].setdefault(index, []).append(
                                 f"{cfg}: {type(exc).__name__}"
                             )
