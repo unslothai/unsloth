@@ -107,8 +107,10 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
 
   const editedVersion = useRef<number | undefined>(undefined);
   const loadedRecord = loadState.status === "ready" ? loadState.record : null;
+  const loadedRef = useRef(loadedRecord);
   useEffect(() => {
     editedVersion.current = loadedRecord?.updatedAt;
+    if (loadedRecord) loadedRef.current = loadedRecord;
   }, [loadedRecord]);
 
   const inFlightVersion = useRef<number | undefined>(undefined);
@@ -143,6 +145,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
               baseUpdatedAt,
               updatedAt,
               keepalive: input.keepalive,
+              known: loadedRef.current ?? undefined,
             }),
           ),
         ).catch((error: AggregateError) => {
@@ -162,11 +165,12 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         return { id: record.id, updatedAt: record.updatedAt };
       } catch (error) {
         const kept = unansweredVersions.current.filter((v) => v !== updatedAt);
-        unansweredVersions.current =
-          error instanceof RecipeApiError
-            ? // Every base tried was rejected, so none of them is the stored version.
-              kept.filter((v) => !bases.includes(v))
-            : [updatedAt, ...kept].sort((a, b) => b - a).slice(0, 3);
+        if (!(error instanceof RecipeApiError)) {
+          unansweredVersions.current = [updatedAt, ...kept].sort((a, b) => b - a).slice(0, 3);
+        } else if (error.status === 409) {
+          // Every base tried conflicted, so none of them is the stored version.
+          unansweredVersions.current = kept.filter((v) => !bases.includes(v));
+        }
         throw error;
       } finally {
         if (inFlightVersion.current === updatedAt) {

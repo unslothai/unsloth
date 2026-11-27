@@ -111,8 +111,9 @@ export function saveRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
 async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
   const now = input.updatedAt ?? Date.now();
   const id = input.id ?? crypto.randomUUID();
+  // `known` lets an unloading page skip this read, which the browser would cancel.
   const existing = input.id
-    ? (recentRecipeCache.get(input.id) ?? (await getRecipe(input.id)))
+    ? (recentRecipeCache.get(input.id) ?? input.known ?? (await getRecipe(input.id)))
     : undefined;
   const body = JSON.stringify({
     id,

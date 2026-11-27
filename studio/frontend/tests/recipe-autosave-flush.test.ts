@@ -147,9 +147,14 @@ function fakeServer(initial: Stored) {
   const queue: (() => void)[] = [];
   const cancels: ((landed: boolean) => void)[] = [];
   // Applies a PUT now and returns the transport error to deliver later.
+  let gets = 0;
+  let failStatus: number | null = null;
   const lands: (() => { fail: () => void; answer: () => void })[] = [];
   const recipeRequest = (_path: string, init: RequestInit = {}) => {
-    if ((init.method ?? "GET") === "GET") return Promise.resolve({ ...stored });
+    if ((init.method ?? "GET") === "GET") {
+      gets += 1;
+      return Promise.resolve({ ...stored });
+    }
     const put: Put = { body: JSON.parse(String(init.body)), keepalive: init.keepalive };
     puts.push(put);
     return new Promise((resolve, reject) => {
@@ -177,6 +182,12 @@ function fakeServer(initial: Stored) {
         return true;
       };
       queue.push(() => {
+        if (failStatus !== null) {
+          put.outcome = failStatus;
+          reject(new RecipeApiError("Service unavailable", failStatus));
+          failStatus = null;
+          return;
+        }
         const { baseUpdatedAt, ...record } = put.body;
         if (baseUpdatedAt !== undefined && baseUpdatedAt !== stored.updatedAt) {
           put.outcome = 409;
@@ -192,6 +203,12 @@ function fakeServer(initial: Stored) {
   return {
     puts,
     recipeRequest,
+    get gets() {
+      return gets;
+    },
+    failNext(status: number) {
+      failStatus = status;
+    },
     get stored() {
       return stored;
     },
@@ -949,6 +966,34 @@ test("recovery keeps every plausible unanswered version, not just the newest", a
   await s.edit({ columns: ["y"] });
   await s.fireDebounce();
   await s.server.cancelOldest(false);
+  await s.edit({ columns: ["z"] });
+  await s.fire("pagehide");
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["z"] });
+});
+
+test("an unload save after the cache was evicted is sent without reading first", async () => {
+  const s = setup();
+  s.server.otherWindowSaves();
+  await s.edit({ columns: ["mine"] });
+  await s.fireDebounce();
+  await s.server.release();
+  const gets = s.server.gets;
+  await s.edit({ columns: ["again"] });
+  await s.fire("pagehide");
+  assert.equal(s.server.gets, gets);
+  assert.equal(s.server.puts.length, 2);
+});
+
+test("a transient HTTP failure keeps the recovery candidates", async () => {
+  const s = setup();
+  await s.edit({ columns: ["x"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(true);
+  await s.edit({ columns: ["y"] });
+  s.server.failNext(503);
+  await s.hide();
+  await s.server.release();
   await s.edit({ columns: ["z"] });
   await s.fire("pagehide");
   await s.server.release();
