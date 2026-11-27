@@ -45,6 +45,15 @@ def load(zoo_dir):
     return mod, engine
 
 
+def token_budget():
+    spec = importlib.util.spec_from_file_location(
+        "_lmga_token_budget", os.path.join(ROOT, "unsloth", "utils", "token_budget.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class Swap:
     """Stand-in BlockSwap: 6 of 8 layers swapped."""
 
@@ -192,6 +201,9 @@ def train(
         trainer = transformers.Trainer(
             model = model, args = args_for(out_dir), train_dataset = data, data_collator = recording_collate
         )
+    # As Unsloth's trainers do: under DDP UNSLOTH_TOKEN_BALANCE defaults on (an instance-level get_train_dataloader).
+    token_budget().install_token_budget(trainer)
+    assert "get_train_dataloader" in trainer.__dict__
     grads = Grads(model)
     trainer.add_callback(grads)
     undo = inject(mod, engine, model) if inject is not None else None

@@ -148,9 +148,15 @@ def _trainer_ok(trainer):
 
 # Instance-level method wrappers known to run outside every training step, so the window cannot reorder them, as
 # Unsloth's SFT trainer installs them: train (prepare_for_training_mode), _prepare_dataset (the one-shot packing
-# guard, unsloth/trainer.py) and _load_optimizer_and_scheduler (portable resume, unsloth/models/portable_resume.py).
+# guard, unsloth/trainer.py), _load_optimizer_and_scheduler (portable resume, unsloth/models/portable_resume.py) and
+# get_train_dataloader (UNSLOTH_TOKEN_BALANCE, on by default under DDP: it only regroups rows, once per epoch).
 # Any other instance-level override keeps the step standard.
-_INSTANCE_OK = ("train", "_prepare_dataset", "_load_optimizer_and_scheduler")
+_INSTANCE_OK = (
+    "train",
+    "_prepare_dataset",
+    "_load_optimizer_and_scheduler",
+    "get_train_dataloader",
+)
 
 
 def _instance_overrides(trainer):
@@ -478,8 +484,9 @@ def layer_major_ineligible(
     optim = str(getattr(args, "optim", "")).lower()
     if "lomo" in optim or "layerwise" in optim:
         return "this optimizer updates the weights inside every backward"
-    if trainer.__dict__.get("_unsloth_token_budget_installed"):
+    if "_unsloth_token_budget_splits" in trainer.__dict__:
         # Its instance-level training_step splits micro-batches into chunks the window never sees.
+        # UNSLOTH_TOKEN_BALANCE (on by default under DDP) only regroups rows in get_train_dataloader.
         return "UNSLOTH_TOKEN_BUDGET"
     if not _trainer_ok(trainer):
         return f"{type(trainer).__name__} overrides training_step or compute_loss"

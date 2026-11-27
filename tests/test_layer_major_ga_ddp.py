@@ -61,6 +61,9 @@ def reports(tmp_path_factory):
     worker = Path(__file__).with_name("_layer_major_ddp_worker.py")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp), OMP_NUM_THREADS = "1")
     env.pop("UNSLOTH_OFFLOAD_LAYER_MAJOR", None)
+    # Earlier tests' Trainers export ACCELERATE_MIXED_PRECISION; the ranks and the fp32 reference must match.
+    for key in [k for k in env if k.startswith("ACCELERATE_")]:
+        env.pop(key)
     proc = subprocess.run(
         [
             sys.executable,
