@@ -19,7 +19,7 @@ RL_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl_repla
 
 if 'example["pixel_values"]' not in inspect.getsource(_dpo.DataCollatorForPreference):
     pytest.skip(
-        "this TRL's DataCollatorForPreference does not collate pixel_values",
+        reason = "TRL >= 0.29 DataCollatorForPreference does not collate pixel_values; nothing to reuse",
         allow_module_level = True,
     )
 
