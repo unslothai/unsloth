@@ -138,3 +138,43 @@ def test_only_header_mismatch_errors_are_retried():
     assert not mcp_client._is_header_mismatch(
         RuntimeError("header mismatch: missing Mcp-Param-owner")
     )
+
+
+def test_cached_session_retry_recovers_when_the_connect_listing_is_skipped(server, monkeypatch):
+    monkeypatch.setattr(mcp_client, "_speaks_param_headers", lambda client: False)
+    out = _write(server, "e.html", "s=sess1:t=threadD")
+    assert "header=acme" in out, out
+
+
+def test_retry_is_dropped_when_the_server_is_edited_during_the_relist(server, monkeypatch):
+    import fastmcp
+
+    before = _runs(_write(server, "f.html", "s=sess1:t=threadE"))
+    live = {"ok": True}
+    relist = fastmcp.Client.list_tools
+
+    async def edited_while_listing(self, *a, **kw):
+        live["ok"] = False
+        return await relist(self, *a, **kw)
+
+    monkeypatch.setattr(fastmcp.Client, "list_tools", edited_while_listing)
+    args = {"owner": "acme", "path": "g.html", "content": "x"}
+    out = call_tool_sync(
+        server, None, "create_or_update_file", args, timeout = 60.0, config_check = lambda: live["ok"]
+    )
+    assert "updated or removed" in out, out
+    monkeypatch.undo()
+    assert _runs(_write(server, "h.html", "s=sess1:t=threadE")) == before + 1
+
+
+def test_the_resend_post_is_tracked_under_the_same_call():
+    tracker = mcp_client._PostTracker()
+    slot = mcp_client._PostSlot(("tools/call", "create_or_update_file"))
+    tracker.enqueue(slot)
+    tracker._sent("first", slot.key, 1)
+    tracker._closed("first")
+    tracker.rebind(slot)
+    tracker._sent("resend", slot.key, 2)
+    assert slot.token == "resend" and tracker.bound == {2: slot}
+    tracker.settle(slot, abandoned = True)
+    assert tracker.pending() is not None

@@ -222,6 +222,14 @@ class _PostTracker:
             with self.lock:
                 self.waiting.append(slot)
 
+    def rebind(self, slot: _PostSlot) -> None:
+        with self.lock:
+            if self.bound.get(slot.rid) is slot:
+                del self.bound[slot.rid]
+            slot.token = slot.rid = None
+            if slot.key is not None and slot not in self.waiting:
+                self.waiting.append(slot)
+
     def settle(self, slot: _PostSlot, abandoned: bool) -> None:
         with self.lock:
             if slot in self.waiting:
@@ -1049,7 +1057,12 @@ def _speaks_param_headers(client) -> bool:
     return str(getattr(client, "protocol_version", None) or "") >= "2026-07-28"
 
 
-async def _call_tool_with_param_headers(client, name: str, args: dict):
+async def _call_tool_with_param_headers(
+    client,
+    name: str,
+    args: dict,
+    config_check = None,
+):
     """The spec's recovery, as in the mcp and Go SDK clients: on HeaderMismatch re-list tools and resend once."""
     try:
         return await client.call_tool(name, args, raise_on_error = False)
@@ -1058,6 +1071,12 @@ async def _call_tool_with_param_headers(client, name: str, args: dict):
             raise
     logger.info("MCP tool %r rejected for missing Mcp-Param-* headers; re-listing tools", name)
     await client.list_tools()
+    if config_check is not None and not config_check():
+        raise RuntimeError("MCP server was updated or removed during the call")
+    # The resend is a new POST: bind it to this call's slot so a Stop or timeout still counts its reply.
+    call_slot = _CALL_SLOT.get()
+    if call_slot is not None:
+        call_slot[0].rebind(call_slot[1])
     return await client.call_tool(name, args, raise_on_error = False)
 
 
@@ -2377,8 +2396,14 @@ async def _race_tool_call(
     raise _MCPCancelled
 
 
+_CALL_SLOT: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "mcp_call_slot", default = None
+)
+
+
 async def _enqueued(tracker: _PostTracker, slot: _PostSlot, call) -> Any:
     tracker.enqueue(slot)
+    _CALL_SLOT.set((tracker, slot))
     return await call
 
 
@@ -2495,7 +2520,7 @@ def _call_session_tool(
                         slot,
                         dispatch(session.client)
                         if dispatch is not None
-                        else _call_tool_with_param_headers(session.client, name, args),
+                        else _call_tool_with_param_headers(session.client, name, args, _config_ok),
                     ),
                     rem,
                     cancel_event,
@@ -2585,7 +2610,7 @@ def call_tool_sync(
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
             # raise_on_error=False so an is_error result keeps its image content.
-            return await _call_tool_with_param_headers(client, name, args)
+            return await _call_tool_with_param_headers(client, name, args, config_check)
 
     try:
         if is_stdio(url) or (scope and not use_oauth):
@@ -2715,7 +2740,8 @@ def _ui_request_sync(
 def call_tool_structured_sync(
     url: str, headers: Optional[dict], name: str, args: dict, **kw
 ) -> dict:
-    dispatch = lambda client: _call_tool_with_param_headers(client, name, args)  # noqa: E731
+    guard = kw.get("config_check")
+    dispatch = lambda client: _call_tool_with_param_headers(client, name, args, guard)  # noqa: E731
     label = f"MCP tool '{name}'"
     return _structured_result(
         _ui_request_sync(url, headers, label, dispatch, rpc = ("tools/call", name), **kw)
