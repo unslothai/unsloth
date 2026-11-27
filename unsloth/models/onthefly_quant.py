@@ -438,6 +438,8 @@ def _finalize(model, fmt):
         module.__dict__.pop("_unsloth_onthefly_fmt", None)
         module.__class__ = _UnslothNVFP4Linear
         module.forward = _forward.__get__(module)
+        # No compressed-tensors scheme here: PEFT merges / SVD inits decode with Unsloth's own kernels.
+        module.dequantize_ = _dequantize_onthefly_.__get__(module)
         module._unsloth_onthefly_fp4 = True
         module._register_state_dict_hook(_dense_state_dict_hook)
         count += 1
@@ -478,6 +480,21 @@ def _dense_weight(module):
         module.weight_global_scale,
         getattr(module, "_unsloth_nvfp4_dtype", torch.bfloat16),
     )
+
+
+def _dequantize_onthefly_(module):
+    """Turn an on-the-fly FP4 layer into a plain nn.Linear holding the weight it decodes to (PEFT merge_and_unload,
+    PiSSA / OLoRA / LoftQ inits). compressed-tensors' decompressor skips modules without a quantization scheme."""
+    with torch.inference_mode(False), torch.no_grad():
+        W = _dense_weight(module)
+    for name in ("forward", "dequantize_"):
+        module.__dict__.pop(name, None)
+    for key in _PACKED_KEYS + ("input_global_scale",):
+        module._parameters.pop(key, None)
+    module.__class__ = torch.nn.Linear
+    module._unsloth_onthefly_fp4 = False
+    module.weight = torch.nn.Parameter(W, requires_grad = False)
+    return module
 
 
 def _dense_state_dict_hook(module, state_dict, prefix, local_metadata):

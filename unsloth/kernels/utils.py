@@ -2269,6 +2269,8 @@ def matmul_lora(
         and _is_compiling()
         and not _nvfp4_is_transposed_view(W)
         and _NVFP4_TRACED_OPAQUE
+        # NVFP4Linear_matmul has no jvp / vmap rule: torch.func and forward-mode AD keep the dense decode.
+        and not (_functorch_active() or _forward_ad_active())
     ):
         # Traced forward: decode inside the opaque NVFP4 op. A dense weight as a graph intermediate is saved by
         # AOTAutograd for backward in every layer (+2 GB peak at Qwen3-1.7B); the LoRA term is added below.

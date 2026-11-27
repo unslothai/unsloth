@@ -258,6 +258,14 @@ def run_case(
         with torch.no_grad():
             ref16 = base16(input_ids = ids).logits.float()
         report["merged_vs_16bit_base_rel"] = float((got - ref16).norm() / ref16.norm())
+        # PEFT's in-memory merge decodes each packed base layer and folds the delta into it.
+        unloaded = model.merge_and_unload()
+        with torch.no_grad():
+            folded = unloaded(input_ids = ids).logits.float()
+        report["peft_merge_rel"] = float((folded - want).norm() / want.norm())
+        report["peft_merge_packed_left"] = sum(
+            1 for m in unloaded.modules() if "weight_packed" in getattr(m, "_parameters", {})
+        )
     return report
 
 

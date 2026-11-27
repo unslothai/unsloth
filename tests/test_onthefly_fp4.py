@@ -309,6 +309,23 @@ def test_moe_expert_stacks_quantize_at_load_and_save_dense(cpu_hook, tiny_moe, t
         assert torch.equal(reloaded[key], p.dequantize().to(torch.bfloat16)), key
 
 
+def test_dequantize_turns_a_layer_into_its_dense_linear(cpu_hook, tiny_dense):
+    # PEFT merges and SVD-style inits call dequantize_(); compressed-tensors would skip these scheme-less layers.
+    from transformers import AutoModelForCausalLM
+
+    with oq.onthefly_fp4_loading("nvfp4"):
+        model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
+    module = model.model.layers[0].mlp.down_proj
+    want = _decode(module.weight_packed, module.weight_scale, module.weight_global_scale).to(
+        torch.bfloat16
+    )
+    x = torch.randn(3, module.in_features, dtype = torch.bfloat16)
+    module.dequantize_()
+    assert type(module) is torch.nn.Linear and "weight_packed" not in module._parameters
+    assert torch.equal(module.weight, want) and not module.weight.requires_grad
+    torch.testing.assert_close(module(x), x @ want.t())
+
+
 def test_kill_switch_keeps_16_bit(cpu_hook, tiny_dense, monkeypatch):
     from transformers import AutoModelForCausalLM
 
@@ -368,6 +385,7 @@ def test_lora_trains_on_an_onthefly_fp4_base(tiny_dense, tmp_path, api, fmt):
         # merged_16bit folds the adapter into the 16-bit checkpoint weights (as for NF4), not the FP4 ones.
         assert r["merged_vs_16bit_base_rel"] < 2e-2 < r["merged_rel"], r
         assert r["base_save_reload_rel"] < 1e-2, r["base_save_reload_rel"]
+        assert r["peft_merge_packed_left"] == 0 and r["peft_merge_rel"] < 2e-2, r
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "W4A16 kernels need a GPU")
