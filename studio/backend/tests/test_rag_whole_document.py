@@ -1308,7 +1308,12 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
         ("Summarize both attached documents.", True),
         ("Compare the attached documents.", True),
         ("What are these documents about?", True),
+        ("Summarize these documents.", True),
+        ("Can you compare these PDFs?", True),
+        ("Summarize the attachments and list the risks.", True),
         ("What does alpha say about both reports?", False),
+        ("Summarize the documents in the knowledge base.", False),
+        ("Summarize these documents that mention alpha.", False),
     ],
 )
 def test_attachment_overviews_cover_both_files_without_discarding_project_hits(

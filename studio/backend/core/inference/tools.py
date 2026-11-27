@@ -16277,13 +16277,15 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _ATTACHMENT_OVERVIEW = re.compile(
-    r"^\s*(?:please\s+)?(?:summari[sz]e|compare|contrast|review|analy[sz]e)\s+"
-    r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these)? |"
-    r"(?:these |the )?(?P<two>two) |"
-    r"(?:the |these )(?=attached ))(?:attached )?"
+    r"^\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?"
+    r"(?:summari[sz]e|compare|contrast|review|analy[sz]e)\s+"
+    r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these| my)? |"
+    r"(?:these |the |my )?(?P<two>two) |"
+    # A bare "the documents" may mean knowledge-base or project files.
+    r"these |my |the (?=attached |attachments\b))(?:attached )?"
     r"(?:files|docs|documents|attachments|pdfs|reports)\b"
-    r"(?=\s*(?:[.!?]?\s*$|(?:on|about|regarding|in|with respect to)\b))"
-    r"|^\s*what\s+are\s+(?:these|the attached)\s+"
+    r"(?=\s*(?:[.!?]?\s*$|(?:on|about|regarding|in|with respect to|and)\b))"
+    r"|^\s*what\s+are\s+(?:these|my|the attached)\s+"
     r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
     re.IGNORECASE,
 )
@@ -16307,12 +16309,14 @@ def _cover_thread_attachments(
     """Keep one hit per attachment and preserve any project hits."""
     if not thread_docs or not 1 < len(thread_docs) <= top_k:
         return None
-    if _ATTACHMENT_OVERVIEW_EXCLUSION.search(query):
-        return None
-    request = _ATTACHMENT_OVERVIEW.search(query)
-    if not request or (
-        len(thread_docs) != 2
-        and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
+    request = _ATTACHMENT_OVERVIEW.match(query)
+    if (
+        not request
+        or _ATTACHMENT_OVERVIEW_EXCLUSION.search(query)
+        or (
+            len(thread_docs) != 2
+            and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
+        )
     ):
         return None
     if ranked_thread_lead is not None:
