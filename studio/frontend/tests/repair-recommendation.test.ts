@@ -24,7 +24,7 @@ test("an old torch names both torch versions and no xFormers upgrade", () => {
     { reason: "torch_older_than_managed", torch: "2.10.0+cu130", managed_torch: "2.13" },
     t,
   );
-  assert.ok(text?.startsWith("Repair recommended:"), text ?? "null");
+  assert.ok(text != null && text.startsWith("Repair recommended:"), text ?? "null");
   assert.match(text, /PyTorch 2\.10\.0\+cu130, older than the managed 2\.13/);
   // On sm_120 the managed xFormers 0.0.35 is not an upgrade over 0.0.34, so no wording offers it.
   assert.doesNotMatch(text, /xFormers|0\.0\.35/);
