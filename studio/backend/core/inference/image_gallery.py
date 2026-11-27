@@ -129,7 +129,11 @@ def png_compress_level() -> int:
     return level if 0 <= level <= 9 else _DEFAULT_PNG_COMPRESS_LEVEL
 
 
-def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
+def _png_bytes(
+    image: Any,
+    meta: dict[str, Any],
+    threads: Optional[int] = None,
+) -> bytes:
     import io
 
     from PIL.PngImagePlugin import PngInfo
@@ -137,7 +141,9 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
     info = PngInfo()
     info.add_text(_META_KEY, json.dumps(meta))
     info.add_text("parameters", _params_text(meta))
-    data = png_encode.encode(image, pnginfo = info, compress_level = png_compress_level())
+    data = png_encode.encode(
+        image, pnginfo = info, compress_level = png_compress_level(), threads = threads
+    )
     if data is not None:
         return data
     buf = io.BytesIO()
@@ -211,11 +217,13 @@ def save_many(items: Iterable[tuple[Any, dict[str, Any]]]) -> Iterator[dict[str,
         return
     from concurrent.futures import ThreadPoolExecutor
 
+    # The CPUs split across the batch's encodes, so a large image's strip deflate does not oversubscribe.
+    threads = max(1, cpus // workers)
     with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "gallery-png") as pool:
         pending = {}
         for image, meta in items:
             recipe = _recipe(meta)
-            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe))
+            pending[id(image)] = (image, recipe, pool.submit(_png_bytes, image, recipe, threads))
         futures = [entry[2] for entry in pending.values()]
         _ahead.pending = pending
         # The gallery sorts by mtime and back-to-back writes can tie (Windows ~15.6 ms tick): keep each strictly newer.
