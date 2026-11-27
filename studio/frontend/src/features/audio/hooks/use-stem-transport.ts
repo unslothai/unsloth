@@ -3,6 +3,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { clampVolume } from "../components/stem-mixer-state";
+
 const DRIFT_TOLERANCE_S = 0.04;
 const DRIFT_CHECK_MS = 250;
 const CANPLAY_TIMEOUT_MS = 10_000;
@@ -56,12 +58,14 @@ export function applyStemGain(
   element: Pick<HTMLMediaElement, "volume" | "muted">,
   gain: number,
 ): void {
-  const value = Number.isFinite(gain) ? Math.min(1, Math.max(0, gain)) : 1;
+  const value = clampVolume(gain);
   element.muted = value === 0;
   element.volume = value;
 }
 
-export function volumeIsWritable(element: Pick<HTMLMediaElement, "volume">): boolean {
+export function volumeIsWritable(
+  element: Pick<HTMLMediaElement, "volume">,
+): boolean {
   element.volume = 0.5;
   return element.volume === 0.5;
 }
@@ -73,9 +77,8 @@ function elementVolumeWorks(): boolean {
   return volumeWritable;
 }
 
-/** Media elements, not decoded buffers, so memory stays near the blob size. Gains set volume, as a
- *  stem routed into an AudioContext that never starts stays silent; only iOS, which pins volume at 1,
- *  uses gain nodes. */
+/** Media elements, not decoded buffers. Gains set `volume`: a stem routed into an AudioContext that
+ *  never starts plays silent. Only iOS, which pins volume at 1, uses gain nodes. */
 export function useStemTransport({
   sources,
   gains,
@@ -125,7 +128,8 @@ export function useStemTransport({
     const voices: StemVoice[] = srcKey.split("\u0000").map((src, index) => {
       const element = new Audio();
       element.preload = "auto";
-      if (elementVolumeWorks()) applyStemGain(element, gainsRef.current[index] ?? 1);
+      if (elementVolumeWorks())
+        applyStemGain(element, gainsRef.current[index] ?? 1);
       element.src = src;
       return { element, source: null, gain: null };
     });
@@ -199,7 +203,8 @@ export function useStemTransport({
     const values = gainKey.split(",").map(Number);
     for (const [index, voice] of voicesRef.current.entries()) {
       if (context) setGain(voice, values[index] ?? 1, context);
-      else if (elementVolumeWorks()) applyStemGain(voice.element, values[index] ?? 1);
+      else if (elementVolumeWorks())
+        applyStemGain(voice.element, values[index] ?? 1);
     }
   }, [gainKey]);
 

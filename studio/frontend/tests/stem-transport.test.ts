@@ -7,21 +7,23 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { applyStemGain, volumeIsWritable } = await import(
-  "../src/features/audio/hooks/use-stem-transport.ts"
-);
+const { applyStemGain, volumeIsWritable } =
+  await import("../src/features/audio/hooks/use-stem-transport.ts");
 
 test("stems play plain elements, and only iOS builds a Web Audio graph for the gains", () => {
   const hook = readSrc("features/audio/hooks/use-stem-transport.ts");
-  assert.match(hook, /const context = elementVolumeWorks\(\) \? null : ensureGraph\(\);/);
+  assert.match(
+    hook,
+    /const context = elementVolumeWorks\(\) \? null : ensureGraph\(\);/,
+  );
   assert.match(hook, /await context\?\.resume\(\);/);
   assert.match(
     hook,
-    /if \(elementVolumeWorks\(\)\) applyStemGain\(element, gainsRef\.current\[index\] \?\? 1\);\s*element\.src = src;/,
+    /if \(elementVolumeWorks\(\)\)\s*applyStemGain\(element, gainsRef\.current\[index\] \?\? 1\);\s*element\.src = src;/,
   );
   assert.match(
     hook,
-    /if \(context\) setGain\(voice, values\[index\] \?\? 1, context\);\s*else if \(elementVolumeWorks\(\)\) applyStemGain\(voice\.element, values\[index\] \?\? 1\);/,
+    /if \(context\) setGain\(voice, values\[index\] \?\? 1, context\);\s*else if \(elementVolumeWorks\(\)\)\s*applyStemGain\(voice\.element, values\[index\] \?\? 1\);/,
   );
 });
 
