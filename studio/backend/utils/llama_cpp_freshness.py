@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -54,8 +55,14 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
-    """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer)."""
-    return _flow.fetch_latest_release_tag(repo, timeout, log_message = "freshness fetch failed")
+    """Newest published release tag for `repo`, by publish time (see freshness_flow for why this is not GitHub's /releases/latest pointer). The same release object carries the asset sizes latest_release_assets would fetch, so they are kept too: the backend picker opened after a forced update check then needs no second GitHub read."""
+    newest = _flow._newest_published_release_in_pass(
+        repo, timeout, log_message = "freshness fetch failed"
+    )
+    if newest is None:
+        return None
+    _assets_memo[repo] = (time.time(), _flow.release_asset_sizes(newest))
+    return newest["tag_name"]
 
 
 def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
@@ -78,13 +85,19 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
     )
 
 
-def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
+def latest_release_assets(
+    repo: str,
+    *,
+    force_refresh: bool = False,
+    max_age: Optional[float] = None,
+) -> Optional[dict[str, int]]:
+    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches. ``max_age``: see freshness_flow.latest_release_assets."""
     return _flow.latest_release_assets(
         repo,
         force_refresh = force_refresh,
         memo = _assets_memo,
         fetch = lambda r: _fetch_latest_release_assets(r),
+        max_age = max_age,
     )
 
 

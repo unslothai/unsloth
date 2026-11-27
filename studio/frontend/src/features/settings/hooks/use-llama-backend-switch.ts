@@ -22,6 +22,9 @@ import {
 import { backendDisplayName } from "../lib/llama-backend-labels";
 
 const JOB_POLL_MS = 700;
+// Opening the picker accepts a host resolve this recent: the page-load update check has
+// usually just run the same one. Folder changes, the install poll and apply stay fully forced.
+export const OPEN_REUSE_SECONDS = 120;
 
 export function useLlamaBackendSwitch() {
   const t = useT();
@@ -35,27 +38,31 @@ export function useLlamaBackendSwitch() {
   // Updates share this job; completion is ours only for the switch apply() started.
   const ownedJob = useRef<{ startedAt: string | null } | null>(null);
 
-  const refresh = useCallback(async (forceRefresh = false) => {
-    try {
-      const next = await loadLlamaBackendStatus(forceRefresh);
-      if (mounted.current) {
-        setStatus(next);
-        setLoadError(null);
+  const refresh = useCallback(
+    async (forceRefresh = false, maxAgeSeconds?: number) => {
+      try {
+        const next = await loadLlamaBackendStatus(forceRefresh, maxAgeSeconds);
+        if (mounted.current) {
+          setStatus(next);
+          setLoadError(null);
+        }
+        return next;
+      } catch (error) {
+        if (mounted.current) {
+          setLoadError(error instanceof Error ? error.message : String(error));
+        }
+        return null;
       }
-      return next;
-    } catch (error) {
-      if (mounted.current) {
-        setLoadError(error instanceof Error ? error.message : String(error));
-      }
-      return null;
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     mounted.current = true;
-    // Opening the picker rechecks host capability; during an install the poll repeats it.
+    // Opening the picker rechecks host capability (a resolve from the last OPEN_REUSE_SECONDS
+    // counts); during an install the poll repeats it.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh(true);
+    void refresh(true, OPEN_REUSE_SECONDS);
     return () => {
       mounted.current = false;
       if (pollTimer.current) {

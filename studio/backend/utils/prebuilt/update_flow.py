@@ -18,6 +18,7 @@ from typing import Callable, Optional, Sequence
 import structlog
 
 from utils.child_stdio import utf8_child_env
+from utils.prebuilt import single_flight
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
 
 logger = structlog.get_logger(__name__)
@@ -217,13 +218,42 @@ def resolve_prebuilt_for_host(
     extra_args: tuple[str, ...] = (),
     mode: tuple[str, ...] = ("--resolve-prebuilt", "latest"),
     extra_env: Optional[dict[str, str]] = None,
+    max_age: Optional[float] = None,
 ) -> Optional[dict]:
-    """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest`` by default) with ``--output-format json``; return the parsed payload or None. Fail-open: any error -> None so a source build never blocks the app. ``extra_env`` carries what the resolver cannot re-derive: the arch a previous install recorded, which setup forwarded from a probe this subprocess does not have. Part of the cache key, so changing it re-resolves rather than replaying a value found without it."""
+    """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest`` by default) with ``--output-format json``; return the parsed payload or None. Fail-open: any error -> None so a source build never blocks the app. ``extra_env`` carries what the resolver cannot re-derive: the arch a previous install recorded, which setup forwarded from a probe this subprocess does not have. Part of the cache key, so changing it re-resolves rather than replaying a value found without it. ``max_age`` lets a forced call accept an answer resolved at most that many seconds ago (every memoized answer came from a real resolver run); concurrent calls with the same key share one resolver child."""
     now = time.time()
     cache_key = (*mode, *extra_args, *sorted((extra_env or {}).items()))
-    if not force_refresh and memo.get("key") == cache_key:
-        if now - memo.get("at", 0.0) < RESOLVE_TTL_SECONDS:
+    if memo.get("key") == cache_key:
+        age = now - memo.get("at", 0.0)
+        if not force_refresh and age < RESOLVE_TTL_SECONDS:
             return memo.get("value")
+        if force_refresh and max_age is not None and 0 <= age < max_age:
+            return memo.get("value")
+    return single_flight.run(
+        ("resolve", id(memo), cache_key),
+        lambda: _run_resolver(
+            memo = memo,
+            cache_key = cache_key,
+            installer_script = installer_script,
+            log_message = log_message,
+            extra_args = extra_args,
+            mode = mode,
+            extra_env = extra_env,
+        ),
+    )
+
+
+def _run_resolver(
+    *,
+    memo: dict,
+    cache_key: tuple,
+    installer_script: Callable[[], Optional[Path]],
+    log_message: str,
+    extra_args: tuple[str, ...],
+    mode: tuple[str, ...],
+    extra_env: Optional[dict[str, str]],
+) -> Optional[dict]:
+    now = time.time()
     script = installer_script()
     if script is None:
         return None
