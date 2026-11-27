@@ -16155,11 +16155,38 @@ class LlamaCppBackend:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
 
-    @staticmethod
-    def _vulkan_auto_gpu_memory(gpus: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
-        """Prefer discrete devices for automatic Vulkan placement."""
+    def _vulkan_auto_gpu_memory(
+        self,
+        gpus: list[tuple[int, int, int]],
+        model_path: Optional[str],
+        extra_args: Optional[list[str]],
+    ) -> list[tuple[int, int, int]]:
+        """Prefer discrete cards unless the weights overflow them and fit on one backed iGPU."""
         discrete = [gpu for gpu in gpus if gpu[2] > 0]
-        return discrete or gpus
+        if not discrete or len(discrete) == len(gpus) or not model_path:
+            return discrete or gpus
+
+        if _argv_places_by_device_position(
+            extra_args or (), os.environ
+        ) or _expert_spill_places_tensors_on_cpu(extra_args):
+            return discrete
+
+        discrete_bytes = sum(free for _, free, _ in discrete) * 1024**2
+        weights = self._gguf_read_bytes(model_path, lenient = True)
+        if weights <= discrete_bytes:
+            return discrete
+        # A GGUF can contain large lookup tables that stay on the host on a dGPU.
+        host_bytes = _host_pinned_input_bytes(self._gguf_tensor_scan(model_path), lazy_mode = "on")
+        if weights - host_bytes <= discrete_bytes:
+            return discrete
+
+        # Multiple integrated devices can share the same host RAM. Select a single
+        # device using its host-backed budget, then let the planner price KV and scratch.
+        integrated = max((gpu for gpu in gpus if gpu[2] <= 0), key = lambda gpu: gpu[1])
+        backed = self._igpu_backed_usable_mib(integrated[1])
+        if weights <= _vram_usable_mib(backed, 0, _active_vram_fraction()) * 1024**2:
+            return [(integrated[0], backed, 0)]
+        return discrete
 
     @staticmethod
     def _run_vulkan_probe(binary: Optional[str] = None) -> list[dict]:
@@ -27022,7 +27049,11 @@ class LlamaCppBackend:
                         else frozenset()
                     )
                     if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
-                        _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
+                        _gpu_mem = self._vulkan_auto_gpu_memory(
+                            _gpu_mem,
+                            None if tensor_parallel or n_cpu_moe else model_path,
+                            extra_args,
+                        )
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     # Fail-open if none match so a stale UI choice can't strand the load on CPU.
                     if gpu_ids:
@@ -27074,7 +27105,7 @@ class LlamaCppBackend:
                         n_parallel = 1  # allow-slot-clamp: weights spill to host RAM
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         planned_kv_unified = _kv_unified_from_args(extra_args, default = False)
-                    # Auto placement only; Vulkan auto already dropped its iGPUs above.
+                    # Auto placement only; Vulkan already chose its device pool above.
                     if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
                         _unified = self._rocm_unified_memory_gpu_ids()
                         # CUDA ids are ordinals; nvidia-smi rows are PCI indices. Join only
@@ -31273,7 +31304,7 @@ class LlamaCppBackend:
                     gpu_indices, tp_tensor_split = self._picker_ordered_gpu_indices(
                         gpu_ids, gpu_indices, tp_tensor_split
                     )
-                # Auto Vulkan fit prefers discrete GPUs and keeps that pool pinned.
+                # Pin Auto's Vulkan pool so llama.cpp fits on the same devices we priced.
                 elif (
                     is_vulkan_backend
                     and gpu_memory_mode != "manual"
