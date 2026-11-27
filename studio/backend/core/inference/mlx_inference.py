@@ -6018,7 +6018,7 @@ class _VisionBatchSession:
             and "prompt_progress" in getattr(GenerationRequest, "__dataclass_fields__", ())
         ):
             options["prompt_progress"] = functools.partial(self._prefilled, row)
-        # add() decodes the frames, so a row's clip files go when it returns, not when the batch closes.
+        # add() decodes the frames, so the clip files go when it returns.
         clip_files = ExitStack()
         try:
             clips = _batch_clips(clip_files, [plan], backend._processor)[0] if plan.videos else {}
@@ -9712,7 +9712,7 @@ class MLXInferenceBackend:
     def resident_unavailable_reason(self, request):
         if self._model is None:
             return "no model is loaded"
-        # A clip's row that does not fit the open batch is refused on admission, once its frames are decoded.
+        # A clip that does not fit the open batch is refused on admission, once its frames are decoded.
         reason = _request_batch_gap(request) or self._video_batch_gap([request])
         if reason is None and _carries_video(request) and getattr(self, "_kv_cache_window", None):
             # mlx-vlm's batch cache ignores the window, which only a row's own cache keeps.
