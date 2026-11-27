@@ -5306,12 +5306,11 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         )
         plan.update(model = model, projs = projs, experts = experts, remote = remote)
 
-    def nbytes(t):
-        return t.numel() * t.element_size()
+    nbytes = _held_bytes  # a packed stack's companions (scales) count on both sides of every cut
 
     def shard_experts(module):
         cut, delta = _cut_expert_stacks(
-            module, plan["experts"][id(module)], rank, tp, ranks, experts_only, size = nbytes
+            module, plan["experts"][id(module)], rank, tp, ranks, experts_only
         )
         counts["sharded_expert_stacks"] += cut
         return delta

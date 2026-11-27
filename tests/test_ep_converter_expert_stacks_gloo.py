@@ -411,3 +411,128 @@ def test_held_bytes_counts_mxfp4_scales():
     scales = torch.zeros(E, 2 * I, H // 32, dtype = torch.uint8)
     param = zoo.Mxfp4ExpertParam(blocks, mxfp4_scales = scales)
     assert tpn._held_bytes(param) == blocks.numel() + scales.numel()
+
+
+def test_quantizing_load_counts_packed_scales():
+    """The quantize-on-load setter (expert parallel) counts a packed stack's scales in loaded and kept bytes, so
+    a cut never reports less than the rank holds."""
+    zoo = pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    pytest.importorskip("transformers.core_model_loading")
+    import transformers.core_model_loading as loading
+    from transformers import GptOssConfig, GptOssForCausalLM
+    from unsloth_zoo.temporary_patches.mxfp4 import patch_peft_param_wrapper_mxfp4
+
+    patch_peft_param_wrapper_mxfp4()
+    tpn, _ = _modules()
+    config = GptOssConfig(
+        vocab_size = 128,
+        hidden_size = H,
+        intermediate_size = I,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 32,
+        num_local_experts = E,
+        num_experts_per_tok = 2,
+        layer_types = ["full_attention"],
+    )
+    pre = "model.layers.0.mlp.experts"
+    values = {}
+    for stack, (rows, cols) in (("gate_up_proj", (2 * I, H)), ("down_proj", (H, I))):
+        blocks = torch.zeros(E, rows, cols // 32, 16, dtype = torch.uint8)
+        scales = torch.full((E, rows, cols // 32), 127, dtype = torch.uint8)
+        values[f"{pre}.{stack}"] = zoo.Mxfp4ExpertParam(blocks, mxfp4_scales = scales)
+        values[f"{pre}.{stack}_bias"] = torch.nn.Parameter(torch.zeros(E, rows))
+
+    def plain_set(model, target_name, value, *rest, **more):
+        path, _, pname = target_name.rpartition(".")
+        model.get_submodule(path)._parameters[pname] = value
+
+    def original(cls, name, *args, **kwargs):
+        with torch.device("meta"):
+            model = cls(config)
+        for key, value in values.items():
+            loading.set_param_for_module(model, key, value, None, None)
+        return model
+
+    class Mesh:
+        mesh = torch.arange(2)
+
+        def size(self):
+            return 2
+
+        def get_local_rank(self):
+            return 0
+
+    real = loading.set_param_for_module
+    loading.set_param_for_module = plain_set
+    try:
+        state = {"experts_only": True, "models": [], "plan": None}
+        model = tpn._tp_load_quantizing(original, GptOssForCausalLM, "x", (), {}, Mesh(), state)
+    finally:
+        loading.set_param_for_module = real
+    stats = model.__dict__["_unsloth_tp_load_stats"]
+    whole = sum(tpn._held_bytes(v) for v in values.values())
+    held = sum(tpn._held_bytes(p) for p in model.model.layers[0].mlp.experts._parameters.values())
+    assert stats["sharded_expert_stacks"] == 4, stats
+    assert stats["loaded_bytes"] == whole and stats["kept_bytes"] == held == whole // 2, (
+        stats,
+        whole,
+        held,
+    )
+
+
+class _Mesh:
+    mesh = torch.arange(2)
+
+    def size(self):
+        return 2
+
+    def get_local_rank(self):
+        return 0
+
+
+def test_tensor_parallel_cut_uses_tensor_parallel_eligibility(monkeypatch):
+    """The load-time cut asks the same eligibility question apply asks: packed (zoo stacks, swapped LoRA factors)
+    only under expert parallel. Tensor parallel 4-bit loading keeps a block apply_tensor_parallel would refuse."""
+    tpn, _ = _modules()
+    asked = []
+
+    def problem(
+        block,
+        tp,
+        packed = True,
+    ):
+        asked.append(packed)
+        return None if packed else "tensor parallel cannot regather this block"
+
+    monkeypatch.setattr(tpn, "expert_shard_problem", problem)
+    module = torch.nn.Module()
+    module.num_experts = E
+    module.gate_up_proj = torch.nn.Parameter(torch.zeros(E, H, 2 * I))
+    module.down_proj = torch.nn.Parameter(torch.zeros(E, I, H))
+    assert tpn._cut_expert_stacks(module, None, 0, 2, (0, 1), experts_only = False) == (0, 0)
+    assert tuple(module.gate_up_proj.shape)[0] == E and asked == [False]
+    cut, _ = tpn._cut_expert_stacks(module, None, 0, 2, (0, 1), experts_only = True)
+    assert cut == 2 and tuple(module.gate_up_proj.shape)[0] == E // 2 and asked == [False, True]
+
+
+def test_ep_packed_load_runs_under_the_sharded_load_memory_guard(monkeypatch):
+    """transformers' load inside _ep_packed_load materializes synchronously (no async prefetch of every layer's
+    blocks onto the card) and with the rank-sized allocator warmup, as the quantize-on-load path does."""
+    from transformers import PreTrainedModel
+
+    from unsloth_models_loader import load_models_module
+
+    tpn, _ = _modules()
+    fsdp2_load = load_models_module("fsdp2_load")
+    monkeypatch.delenv(fsdp2_load._ASYNC_LOAD_ENV, raising = False)
+    seen = []
+
+    def original(cls, name, *args, **kwargs):
+        seen.append(os.environ.get(fsdp2_load._ASYNC_LOAD_ENV))
+        return torch.nn.Linear(2, 2)
+
+    state = {"models": [], "active": False}
+    tpn._ep_packed_load(original, PreTrainedModel, "x", (), {}, _Mesh(), state)
+    assert seen == ["1"] and fsdp2_load._ASYNC_LOAD_ENV not in os.environ
