@@ -267,6 +267,7 @@ def _utils_save_lora_adapter():
     wanted = {
         "_unsloth_model_parallel_marker",
         "_is_unsloth_tensor_parallel",
+        "_is_unsloth_pipeline_parallel",
         "_is_unsloth_expert_parallel",
         "save_lora_adapter",
     }

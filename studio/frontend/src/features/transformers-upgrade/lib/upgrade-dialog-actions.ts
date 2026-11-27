@@ -30,9 +30,8 @@ export function upgradeInstallVersion(
 }
 
 /**
- * A PyPI release installs without the dialog (the server scans it first and answers
- * requires_consent when the scan is not clean). transformers main always asks, and so does a
- * model with its own code, where the dialog is a real choice: that code is the only 4-bit path.
+ * A PyPI release installs without the dialog unless its scan is not clean (requires_consent);
+ * transformers main and custom-code models always ask, since custom code is the only 4-bit path.
  */
 export function canAutoInstallUpgrade(
   upgrade: TransformersUpgradeInfo | null | undefined,
@@ -45,9 +44,8 @@ export function canAutoInstallUpgrade(
 }
 
 /**
- * Derives the dialog actions from the check that raised it; the custom-code fallback is always
- * offered when it exists, as the only path loading bnb 4-bit (installing activates the 16-bit
- * sidecar).
+ * The custom-code fallback is always offered when it exists, as the only bnb 4-bit path (installing
+ * activates the 16-bit sidecar).
  */
 export function upgradeDialogActions({
   upgrade,

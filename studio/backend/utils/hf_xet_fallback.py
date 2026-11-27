@@ -444,8 +444,7 @@ def _reserve_worker_budget(nbytes: int) -> None:
 
 
 def bind_worker_budget(pid: "Optional[int]") -> None:
-    """Attaches this thread's reservation to pid so it frees when the worker exits; None drops it
-    for a spawn that never produced a process."""
+    """Bind this thread's reservation to pid so it frees on exit; None drops it (spawn failed)."""
     token = getattr(_pending_reservation, "token", None)
     _pending_reservation.token = None
     if token is None:
@@ -819,8 +818,7 @@ def _studio_prepare_for_http(
     *,
     cache_dir: Optional[str] = None,
 ) -> None:
-    """Unsloth's marker-aware cache purge before an HTTP resume, keeping .transport accounting
-    consistent (unlike unsloth_zoo's generic default); a failed purge is logged, not fatal."""
+    """Marker-aware purge before HTTP resume keeps .transport; a failure is logged, not fatal."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
         prepare_cache_for_transport(

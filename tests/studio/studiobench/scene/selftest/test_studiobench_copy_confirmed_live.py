@@ -149,8 +149,7 @@ def test_a_failed_sentinel_write_does_not_re_admit_the_unchanged_clipboard(page)
 
 
 def test_a_real_copy_is_still_measured_when_the_sentinel_could_not_be_written(page):
-    """Control for the fallback: a missing write permission must not kill the action; a real copy is
-    still measured, and the row names the pre-copy value it was confirmed against."""
+    """Unwritable sentinel must not kill the action; real copy measured vs pre-copy value."""
     page.evaluate("async () => await navigator.clipboard.writeText('stale')")
     _refuse_the_sentinel_write(page)
     got = A.select_all_copy(_ctx(page))
@@ -180,8 +179,7 @@ def test_a_refusal_names_the_cause_and_not_just_the_exception_class(page):
 
 
 def test_the_guard_is_on_the_clipboard_and_not_on_the_engine_name():
-    """No engine list to maintain. An engine that starts performing the copy is admitted with no
-    change here, and one that stops is refused with no change here."""
+    """No engine list to maintain: admitted once it starts copying, refused once it stops."""
     import inspect
 
     src = inspect.getsource(A.select_all_copy)

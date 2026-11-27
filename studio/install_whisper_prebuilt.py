@@ -394,8 +394,7 @@ def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
 
 
 def _is_linux_libomp_soname(name: str) -> bool:
-    """LLVM's OpenMP runtime: bundled, so it can go missing. Not host-provided libgomp,
-    and not libomptarget, which a prefix match would sweep up."""
+    """Bundled LLVM libomp only, not host libgomp; a prefix match would sweep up libomptarget."""
     lowered = name.lower()
     return lowered == "libomp.so" or lowered.startswith("libomp.so.")
 
@@ -452,8 +451,7 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # libomp is only needed by the cpu bundle (arm64 Vulkan builds GGML_OPENMP=OFF); re-check if an
-        # arm64 GPU bundle ever builds with OpenMP.
+        # Only cpu needs libomp; arm64 Vulkan builds GGML_OPENMP=OFF; recheck if that changes.
         required_sonames = [
             name
             for name in required_sonames
@@ -485,9 +483,8 @@ def slim_pairing_for_artifact(
 def select_slim_artifact(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> dict[str, Any] | None:
-    """Paired slim artifact for any backend, or None; slim assets skip fat matching; when slim
-    candidates exist but none pair, log the actionable reason: setup then reports the prebuilt
-    unavailable and dictation stays on Transformers STT."""
+    """Paired slim artifact or None; slim assets skip fat matching; unpaired slim candidates are
+    logged, so setup reports prebuilt unavailable and dictation stays on Transformers STT."""
     if backend not in SLIM_ELIGIBLE_BACKENDS:
         return None
     os_token, arch_token = host_platform_tokens(host)
@@ -566,8 +563,7 @@ def _installed_llama_is_ahead(manifest: dict[str, Any], host: HostInfo) -> bool:
 
 def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> str | None:
     """Explains only a valid slim release this runtime cannot pair; missing files, bad manifests,
-    checksum failures and unsupported platforms are excluded and must never count as
-    kept-existing success."""
+    checksum failures and unsupported platforms must never count as kept-existing success."""
     os_token, arch_token = host_platform_tokens(host)
     candidates = [
         artifact
@@ -884,9 +880,8 @@ def link_ggml_runtime(
     *,
     backend: str | None = None,
 ) -> list[str]:
-    """Hardlinks (not symlinks) to the llama ggml libraries keep the paired build alive across an
-    atomic swap of its install dir; copy only where linking is unsupported or crosses devices;
-    re-run on each install or update to track the pairing; returns sorted names."""
+    """Hardlink (not symlink) llama ggml libs so the paired build survives llama's dir swap; copy
+    only if unsupported or cross-device; re-run to track pairing; returns sorted names."""
     sources = _runtime_library_sources(llama_bin_dir, backend)
     if not any(source.name.startswith(("libggml", "ggml")) for source in sources):
         raise PrebuiltFallback(
@@ -1042,9 +1037,7 @@ def _runtime_file_records(
 
 
 def runtime_file_records(install_dir: Path, selection: Any) -> "dict[str, dict[str, Any]]":
-    """Hook for prebuilt_core.write_prebuilt_metadata that records the staged tree; slim bundles
-    pass their wired ggml filenames so the marker describes the hardlinks it claims as well as
-    the server."""
+    """Hook for write_prebuilt_metadata; slim bundles list wired ggml hardlinks in the marker."""
     is_slim = getattr(selection, "install_kind", None) == "slim"
     linked = selection.linked_libraries if is_slim else None
     runtime_dirs = getattr(selection, "linked_runtime_directories", None) if is_slim else None
@@ -1161,17 +1154,14 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
 def existing_install_matches(
     install_dir: Path, host: HostInfo, selection: InstallSelection
 ) -> bool:
-    """A marker match counts as current only if the server is executable (the sidecar refuses
-    non-executable binaries) and slim wired ggml libraries all exist, since a deleted or moved
-    llama dir breaks dictation while update reports up to date."""
+    """Needs an executable server and wired slim ggml libs; a moved llama dir breaks dictation."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     return installed_tree_is_intact(install_dir, host)
 
 
 def kept_install_needs_settling(install_dir: Path) -> bool:
-    """Whether settle_kept_install has anything to write: a marker with no payload
-    record, or a slim marker missing either half of its pairing record."""
+    """Needs settling: marker has no payload record, or a slim marker lacks a pairing half."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return False
@@ -1199,9 +1189,7 @@ def settle_kept_install(install_dir: Path) -> None:
 
 
 def _backfill_runtime_file_records(install_dir: Path) -> None:
-    """Backfills runtime_files on markers from older installs, which would otherwise refetch the
-    release, manifest and checksums on every update; records what is on disk now, never
-    overwrites, never downloads, never raises."""
+    """Backfills runtime_files on old markers from disk; never downloads, overwrites or raises."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("runtime_files"):
         return
@@ -1582,9 +1570,7 @@ def _release_plan_for_host(
         and first_bundle is not None
         and _installed_llama_is_ahead(first_bundle.manifest, host)
     ):
-        # llama.cpp is published before its paired whisper.cpp release. Until that lands, the newest
-        # release pairs with an older llama.cpp and older ones with older still, so a walk finds
-        # nothing and costs a release listing plus two fetches per release on every update.
+        # Newest releases lag llama.cpp, so a walk finds nothing and costs two fetches each.
         assert first_error is not None
         raise first_error
 

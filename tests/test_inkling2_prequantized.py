@@ -148,8 +148,7 @@ def test_merge_refuses_a_prequantized_folder_with_no_known_original(tmp_path):
 
 
 def test_merge_refuses_a_local_folder_named_like_the_prequantized_repo(tmp_path, monkeypatch):
-    # A relative folder spelled as the Hub id is a local checkpoint: its tensors may not be the Hub repo's, so the
-    # public original is not substituted for it.
+    # A local folder named like a Hub id may hold other tensors, so no public original is used.
     from unsloth.models.inkling2 import inkling2_merge_source
 
     (tmp_path / "unsloth").mkdir()
@@ -160,15 +159,13 @@ def test_merge_refuses_a_local_folder_named_like_the_prequantized_repo(tmp_path,
 
 
 def test_merged_export_refuses_to_overwrite_the_prequantized_snapshot(tmp_path, monkeypatch):
-    # Loaded from the Hub pre-quantized repo, merged into the original: the export folder must still not be the
-    # loaded snapshot (it would delete its packed weights and overwrite its config).
+    # Export must not be the loaded snapshot: it would delete packed weights, overwrite config.
     import types
 
     import huggingface_hub
 
     cml = pytest.importorskip("transformers.core_model_loading")
-    # The merged export imports the expert dequantizer transformers 5.24 added with Inkling 2 itself; the
-    # pyproject pin (5.18) and the 5.23 latest leg have core_model_loading but not it.
+    # Needs transformers >= 5.24 (expert dequantizer); pyproject pin 5.18 and 5.23 lack it.
     if not hasattr(cml, "Inkling2LoopDequantizeExperts"):
         pytest.skip("Inkling 2 needs transformers >= 5.24 (no Inkling2LoopDequantizeExperts here)")
     from unsloth.models.inkling2 import save_inkling2_merged_16bit
@@ -188,8 +185,7 @@ def test_merged_export_refuses_to_overwrite_the_prequantized_snapshot(tmp_path, 
 
 
 def test_sharded_fill_refuses_a_converted_buffer_before_reading_any_tensor(tmp_path, monkeypatch):
-    # The pre-quantized fallback retries with transformers' own load: the refusal must come before the first read,
-    # buffers included, or the partial model stays alive through the retry.
+    # Refuse converted buffers before any read, or the partial model lives through the retry.
     import torch
     from safetensors.torch import save_file
 
@@ -218,8 +214,7 @@ def _hub_cache(root, repo_id, files):
 
 @pytest.mark.parametrize("cached", [False, True])
 def test_inkling2_mini_4bit_offline_keeps_the_cached_original(cached, tmp_path, monkeypatch):
-    # Offline, the pre-quantized repo is used only once it is fully cached; otherwise the requested checkpoint
-    # loads with quantize-on-load, as before the remap.
+    # Offline, the pre-quantized repo is used only if fully cached; else quantize-on-load.
     _fake_zoo(monkeypatch, True)
     _hub_cache(tmp_path, MIRROR, ["config.json", "model.safetensors"])
     if cached:
@@ -249,8 +244,7 @@ def _snapshot_dir(
 
 
 def test_merge_maps_a_hub_cache_snapshot_of_the_prequantized_repo(tmp_path, monkeypatch):
-    # A run started from the cached repo (Studio's pinned snapshot) records the snapshot folder, not the repo id. Its
-    # files are the repo's at that revision, so it merges into the original exactly as the repo id does.
+    # A cached snapshot run records its folder, not the repo id, and merges like the repo id.
     from unsloth.models.inkling2 import inkling2_merge_source
 
     monkeypatch.setattr(loader_utils, "_get_new_mapper", _no_remote_mapper)
@@ -267,7 +261,6 @@ def test_merge_still_refuses_snapshots_that_are_not_a_mapped_prequantized_repo(t
     with patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper):
         with pytest.raises(NotImplementedError, match = "needs the original weights"):
             inkling2_merge_source(unknown)
-    # A snapshot of the original checkpoint is read in place, at its revision.
     original = _snapshot_dir(tmp_path, MIRROR, MODELOPT)
     assert inkling2_merge_source(original, "r") == (original, "r")
     # A folder that only looks like a snapshot below its root (a subfolder of one) is a plain local folder.
@@ -326,8 +319,7 @@ def _merge_base_model_name():
 
 
 def test_generic_merge_maps_a_cached_prequantized_snapshot_like_its_repo_id(tmp_path):
-    # Not Inkling-specific: any mapped pre-quantized bitsandbytes repo cached in the hub layout resolves to the same
-    # 16-bit original its repo id does, so the generic merge never reads packed 4-bit tensors.
+    # Generic: cached pre-quantized bnb repos map to their 16-bit original, never packed 4-bit.
     resolve = _merge_base_model_name()
     repo = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
     with patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper):
@@ -341,7 +333,6 @@ def test_generic_merge_maps_a_cached_prequantized_snapshot_like_its_repo_id(tmp_
         # A plain local copy of the pre-quantized repo is not provably the repo: unchanged.
         local = _config_dir(tmp_path, "my_llama_bnb", BNB)
         assert resolve(local, load_in_4bit = False) == get_model_name(local, load_in_4bit = False)
-        # 4-bit lookups are untouched.
         assert resolve(snapshot, load_in_4bit = True) == get_model_name(snapshot, load_in_4bit = True)
 
 

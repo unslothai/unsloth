@@ -3,8 +3,7 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Import folders from here only.
-// 4.4 redrew Folder02 closed, so this one is 4.4's tab over 4.1's open flap.
+// Import folders from here only. Folder02 is 4.4's closed tab over 4.1's open flap.
 export const Folder02Icon: IconSvgElement = [
   [
     "path",

@@ -261,8 +261,7 @@ def test_a_well_used_slab_is_left_alone(monkeypatch):
 
 
 def test_a_rebuild_restores_the_load_reserve_not_just_the_floor(monkeypatch):
-    """A demote after the conditioner share was topped up must give back enough for the load's own reserve (an L4
-    renderer was OOM-killed when only a 2 GiB floor was restored)."""
+    """Demote must restore the load reserve, not just the floor; L4 renderer OOMed without it."""
     from core.inference import diffusion_small_host
 
     monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (53000, 5000))

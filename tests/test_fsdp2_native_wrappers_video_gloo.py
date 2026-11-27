@@ -190,7 +190,6 @@ def _case_bnb_instance(native, tmp):
             res[f"{name}.trainer"] = ""
         except Exception as exc:
             res[f"{name}.trainer"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-    # A Trainer's accelerator (marked) with the sharded model registered.
     fake_accelerator = types.SimpleNamespace(_models = [model])
     setattr(fake_accelerator, native._TRAINER_ACCELERATOR, True)
     try:

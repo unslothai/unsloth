@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { AlertDialog } from "@/components/ui/alert-dialog";
 import { getAuthSessionEpoch } from "@/features/auth";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { formatBytes } from "@/features/hub";
 import { FullAccessConfirmContent } from "@/features/chat/permission-mode-select";
 import { hasChatFullAccess, withChatFullAccess } from "@/features/chat/utils/chat-full-access";
 import {
@@ -197,9 +198,9 @@ export function ToolConfirmationControls({
     <div className="flex flex-wrap items-center gap-2 pt-1">
       {disclosure ? (
         <p className="w-full text-xs text-muted-foreground">
-          Send your attached image ({Math.ceil(disclosure.size_bytes / 1024)}{" "}
-          KB) to {disclosure.server} ({disclosure.tool}) at{" "}
-          {disclosure.destination}? The server may keep it.
+          Send your attached image ({formatBytes(disclosure.size_bytes)}) to{" "}
+          {disclosure.server} ({disclosure.tool}) at {disclosure.destination}?
+          The server may keep it.
         </p>
       ) : null}
       {computer && !disclosure ? (

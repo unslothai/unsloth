@@ -229,7 +229,8 @@ def _tpn():
 
 @contextlib.contextmanager
 def expert_parallel_loading(ep_mesh = None):
-    """16-bit, bitsandbytes 4-bit or block-FP8 loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
+    """16-bit, bitsandbytes 4-bit or block-FP8 loads (transformers 5) keep only this rank's routed expert stacks, and
+    pre-quantized packed NVFP4 / MXFP8 per-expert checkpoints read only this rank's experts; others load whole."""
     tpn = _tpn()
     with tpn._sharded_from_pretrained(
         {
@@ -315,7 +316,8 @@ def _ep_expert_chunk(shard, prior, dense, got_x, row, ic, wc):
 
 
 def _ep_experts_chunked(shard, prior, dense, got_x, row, ic, wc, rows):
-    from torch.utils.checkpoint import checkpoint
+    # torch's own: smart GC's replacement would offload each chunk and drop closed-over expert LoRA grads.
+    checkpoint = _tpn()._torch_checkpoint()
 
     y_got = None
     for start in range(0, row.numel(), rows):
@@ -386,8 +388,7 @@ def _ep_experts(shard, prior, hidden, index, weights):
         y = y_back.new_zeros((tokens, y_back.shape[-1])).index_add(0, token, y_back)
         return y.reshape(*shape[:-1], y.shape[-1])
     if row.numel() == 0:
-        # Nothing routed here: one zero row through the experts keeps their gradients defined (zeros). It is tied
-        # to the received tensors so this rank still runs the exchange's backward that every other rank runs.
+        # Nothing routed: zero row keeps expert grads defined; ranks run the exchange backward.
         xc = got_x.new_zeros((1, x.shape[-1])) + got_x[:0].sum()
         ic = got_index.new_zeros((1, 1))
         wc = got_w.new_zeros((1, 1)) + got_w[:0].sum()
@@ -428,8 +429,7 @@ def _ep_experts_forward(shard, prior):
 
 
 def _localize(shard, ep):
-    """The DTensor shards tp_native made -> plain local parameters (DDP-ignored, any optimizer steps them),
-    each tagged with how to gather it back: (dim, groups, per, E, E_pad)."""
+    """DDP-ignored local params from DTensor shards; each tagged (dim, groups, per, E, E_pad)."""
     tpn = _tpn()
     for owner, name in shard.swaps:
         dt = owner._parameters[name]
@@ -440,7 +440,9 @@ def _localize(shard, ep):
         owner._parameters[name] = local
     shard.swaps = []  # nothing left to swap: the parameters are local
     for p in shard.leaf._parameters.values():
-        if tpn._is_params4bit(p):
+        # Frozen quantized stacks (bitsandbytes 4-bit, zoo's packed NVFP4 / MXFP8 / MXFP4): already this rank's
+        # experts, never in an adapter, never gathered.
+        if tpn._is_params4bit(p) or tpn._is_packed_expert(p):
             p.__dict__.pop("_unsloth_tp_layout", None)
             setattr(p, _EP, ("4bit", shard.experts, ep))
 
@@ -471,10 +473,9 @@ def _split_mesh(mesh):
 
 
 def apply_expert_parallel(model, mesh = None):
-    """Shard every MoE block's routed experts by index over the ep ranks once LoRA is attached. `mesh`: a 1-D ep
-    mesh over every rank, or a 2-D (replicas, "ep") mesh: each group of ep ranks holds all experts once and the
-    groups are replicas (experts' gradients summed over them). Every rank is data parallel. Blocks whose experts
-    cannot be cut exactly stay whole."""
+    """Shard MoE blocks' routed experts by index over the ep ranks once LoRA is attached; mesh is
+    1-D ep over all ranks or 2-D (replicas, ep), whose groups are replicas (expert grads summed);
+    every rank is data parallel; blocks whose experts cannot be cut exactly stay whole."""
     import torch.distributed as dist
 
     tpn = _tpn()
@@ -498,6 +499,7 @@ def apply_expert_parallel(model, mesh = None):
         raise NotImplementedError(
             "Unsloth: expert parallel cannot be combined with tensor parallel / FSDP2."
         )
+    _lists().check_remote_layout(model, ep, rank, ep_mesh.mesh.tolist())
     blocks = tpn.moe_blocks_with_experts(model)
     sharded, kept, listed, fused_lists = [], [], [], []
     for block in blocks:
@@ -521,10 +523,13 @@ def apply_expert_parallel(model, mesh = None):
             kept.append((block, problem))
     for block, problem in kept:
         chain = tpn._experts_chain(block)
-        if chain and any(
-            getattr(p, tpn._EXPERT_PRELOAD, None) is not None
-            for p in chain[-1]._parameters.values()
-        ):
+        if (
+            chain
+            and any(
+                getattr(p, tpn._EXPERT_PRELOAD, None) is not None
+                for p in chain[-1]._parameters.values()
+            )
+        ) or any(_lists().is_remote(p) for p in block.parameters()):
             raise ValueError(
                 f"Unsloth: expert_parallel_loading kept only this rank's experts of "
                 f"{type(block).__name__}, but they cannot be sharded now ({problem}); load in full."
@@ -561,6 +566,7 @@ def apply_expert_parallel(model, mesh = None):
             # DDP averages the other gradients over the world; an expert's is the sum over its ep group's losses
             # (then over the replicas, ep_sync_expert_grads): / world is DDP's average.
             p.register_hook(lambda g, world = world: g / world)
+    tpn._drop_remote_device_map(model, ep, rank)
     for level in _levels(model):
         level.__dict__[_EP] = ep_mesh
         level.__dict__[_EP_REP] = rep_mesh
@@ -592,7 +598,45 @@ def apply_expert_parallel(model, mesh = None):
             + (f", {len(kept)} kept whole" if kept else "")
             + "."
         )
+        hint = _list_exchange_hint(model, len(listed), ep)
+        if hint is not None:
+            print(hint)
     return model
+
+
+# The whole model's parameters within this share of one GPU: data parallel holds it per GPU with room for training.
+_DDP_FIT_FRACTION = 0.6
+
+
+def _device_total_bytes():
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+
+
+def _list_exchange_hint(model, listed, ep):
+    """The rank-0 note when transformers 4.x per-expert ModuleList blocks were sharded and the whole model would fit
+    one GPU: their exchange runs one small all-to-all and matmul per expert from the host (OLMoE on 2x T4: 3.4x
+    slower per step than data parallel), so data parallel or transformers 5's fused experts is faster."""
+    if not listed:
+        return None
+    device = _device_total_bytes()
+    if not device:
+        return None
+    whole = 0
+    for _, p in model.named_parameters():
+        nbytes = p.numel() * p.element_size()
+        whole += (
+            nbytes * ep if getattr(p, _EP, None) is not None else nbytes
+        )  # each rank holds 1 / ep of them
+    if whole > _DDP_FIT_FRACTION * device:
+        return None
+    return (
+        f"Unsloth: {listed} mixture-of-experts blocks are transformers 4.x per-expert modules, whose expert "
+        "parallel exchange is bound by the host (one small exchange and matmul per expert). The whole model "
+        f"({whole / 2**30:.1f} GiB of parameters) fits one GPU ({device / 2**30:.0f} GiB): data parallel (unset "
+        "UNSLOTH_EP_SIZE) is usually faster, as is transformers 5, whose fused experts shard without it."
+    )
 
 
 def _lists():
@@ -701,9 +745,8 @@ def _ep_save_entrypoints(level):
         @functools.wraps(prior_save)
         def save_pretrained(*args, **kwargs):
             if _SAVING or kwargs.get("state_dict") is not None:
-                with _lists().remote_experts_for_save(
-                    level
-                ):  # a gathered state dict keeps every expert
+                # a gathered state dict keeps every expert
+                with _lists().remote_experts_for_save(level), _whole_expert_counts(level):
                     return prior_save(*args, **kwargs)
             if kwargs.get("push_to_hub"):
                 raise NotImplementedError(_EP_PUSH_REFUSAL)
@@ -714,11 +757,10 @@ def _ep_save_entrypoints(level):
             ):
                 raise NotImplementedError(
                     "Unsloth: save_pretrained of the whole model under expert parallel would write only this "
-                    "rank's 4-bit expert stacks. Save the adapter (the PEFT model's save_pretrained or "
+                    "rank's quantized (4-bit or packed) expert stacks. Save the adapter (the PEFT model's save_pretrained or "
                     "trainer.save_model), or save from one process."
                 )
-            # Only global rank 0 writes: only it receives the gathered tensors (the adapter's alone for a PEFT
-            # model), so no rank holds the whole expert set.
+            # Only global rank 0 receives the tensors, so no rank holds the whole expert set.
             state = ep_full_adapter_state_dict(level, dst = 0)
 
             def write():
@@ -726,7 +768,7 @@ def _ep_save_entrypoints(level):
                     return None
                 _SAVING.append(True)
                 try:
-                    with _lists().remote_experts_for_save(level):
+                    with _lists().remote_experts_for_save(level), _whole_expert_counts(level):
                         return prior_save(*args, state_dict = state, **kwargs)
                 finally:
                     _SAVING.pop()
@@ -741,6 +783,26 @@ def _ep_save_entrypoints(level):
             raise NotImplementedError(_EP_PUSH_REFUSAL)
 
         level.push_to_hub = push_to_hub
+
+
+@contextlib.contextmanager
+def _whole_expert_counts(model):
+    """While the writing rank saves the gathered state dict: the experts modules and their PEFT wrappers report
+    the whole expert count (num_experts, LoRA factor sizes) again. unsloth_zoo's save rewrite of swapped expert
+    LoRA factors (Llama 4, Qwen3-VL-MoE) and of the legacy grouped lora_B packing reshapes by num_experts, which
+    the shard set to this rank's count."""
+    restore = []
+    try:
+        for block in _tpn().moe_blocks_with_experts(model):
+            shard = block.__dict__.get("_unsloth_tp_expert_shard")
+            for module, key, value in getattr(shard, "full_attrs", None) or ():
+                if key in module.__dict__:
+                    restore.append((module, key, module.__dict__[key]))
+                    module.__dict__[key] = value
+        yield
+    finally:
+        for module, key, value in reversed(restore):
+            module.__dict__[key] = value
 
 
 _EP_PUSH_REFUSAL = (
@@ -873,12 +935,9 @@ def ep_full_adapter_state_dict(
     adapter = None,
     dst = None,
 ):
-    """Collective over the ep ranks: the model's state dict with its expert tensors gathered to the 1-GPU shape.
-    `adapter` (default: `model` is a PEFT model): only the expert tensors an adapter keeps (the LoRA factors and
-    any trainable stack) are gathered; the frozen base stacks PEFT drops stay this rank's (gathering them would
-    put every expert on every rank). `dst` (a global rank, the one that writes): only it receives the gathered
-    tensors, each moved to the CPU as it arrives (one stack on the GPU at a time); every other rank gets None,
-    and the ranks of other replica groups (they hold the same experts) take no part."""
+    """Collective over ep ranks returning the state dict, experts gathered to the 1-GPU shape; with
+    an adapter only expert tensors are gathered (frozen base stays local, else every rank holds
+    all experts); dst alone gets them on CPU, others None; other replica groups skip it."""
     import torch.distributed as dist
 
     if adapter is None:
@@ -1132,8 +1191,7 @@ _EP_EXPORTS = (
 
 
 def _ep_refuse_exports(level):
-    """Merged / GGUF / torchao exports read every weight in this process, and each rank holds only its experts:
-    refused (also by unsloth/save.py's model parallel export guard)."""
+    """Merged, GGUF and torchao exports read all weights, which no EP rank holds; refused."""
     for attr in _EP_EXPORTS:
         prior = getattr(level, attr, None)
         if callable(prior) and not getattr(prior, "_unsloth_ep_refused", False):
@@ -1174,9 +1232,8 @@ def ep_trainer_setup(trainer):
         evaluation_mode = False,
         **kwargs,
     ):
-        # Expert-only LoRA: every trainable tensor is DDP-ignored (expert shards), and DDP refuses a module
-        # with nothing to reduce. Not wrapped: the expert gradients never went through DDP (ep_backward syncs
-        # the replicas, the hooks average), and placement / autocast / compile still apply.
+        # Expert-only LoRA is not DDP-wrapped (DDP refuses a module with nothing to reduce); expert
+        # grads never go through DDP, but placement, autocast and compile still apply.
         if not evaluation_mode and is_expert_parallel(target) and not _ddp_reduces_any(target):
             evaluation_mode = True
         return prepare_model(target, device_placement, evaluation_mode, **kwargs)

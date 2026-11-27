@@ -185,8 +185,7 @@ def test_bitsandbytes_guard_drops_a_bnb_quantization_config():
 
 
 def test_bitsandbytes_guard_clears_8bit_as_well_as_4bit():
-    """8bit is bitsandbytes too: leaving load_in_8bit set sends the request to
-    Transformers, which builds the bnb quantizer and fails there instead."""
+    """load_in_8bit is bnb too; left set, Transformers builds the bnb quantizer and fails."""
     src = (REPO_ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     guards = [

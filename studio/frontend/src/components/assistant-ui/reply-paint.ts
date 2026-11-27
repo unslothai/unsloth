@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Keep the normal overflow of replies near the user (focus rings, menus and wide math).
-// One observer per scroller also handles side-by-side threads independently.
+// Keep reply overflow near the user; one observer per scroller handles side-by-side threads.
 const observers = new WeakMap<Element, IntersectionObserver>();
 // Width or font changes do not cross the observer margin, so recheck sizes too.
 const resizers = new WeakMap<Element, ResizeObserver>();
@@ -14,8 +13,7 @@ export function observeReplyPaint(reply: HTMLElement) {
   let observer = observers.get(viewport);
   if (!observer) {
     observer = new IntersectionObserver((entries) => {
-      // Read before writing any styles. A wide reply can own the thread's horizontal
-      // scroll range even while it's well above or below the visible conversation.
+      // Before styling: a wide reply can own the thread's horizontal scroll even off screen.
       const distant = entries.map(({ target, boundingClientRect, rootBounds }) =>
         rootBounds !== null &&
         (boundingClientRect.bottom < rootBounds.top || boundingClientRect.top > rootBounds.bottom) &&
@@ -30,8 +28,7 @@ export function observeReplyPaint(reply: HTMLElement) {
   let resizer = resizers.get(viewport);
   if (!resizer && typeof ResizeObserver !== "undefined") {
     resizer = new ResizeObserver((entries) => {
-      // Only a bounded reply can lose an exemption it now needs; unbounded ones wait for the
-      // intersection observer. Read every width before removing any attribute.
+      // Only bounded replies lose exemptions; read every width before removing any attribute.
       const wide = entries.map(({ target }) =>
         target.hasAttribute("data-reply-paint") && target.scrollWidth > target.clientWidth
       );

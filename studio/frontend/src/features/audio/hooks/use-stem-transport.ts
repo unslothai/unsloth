@@ -3,6 +3,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { clampVolume } from "../components/stem-mixer-state";
+
 const DRIFT_TOLERANCE_S = 0.04;
 const DRIFT_CHECK_MS = 250;
 const CANPLAY_TIMEOUT_MS = 10_000;
@@ -52,7 +54,31 @@ function setGain(voice: StemVoice, value: number, context: AudioContext) {
   voice.gain?.gain.setTargetAtTime(value, context.currentTime, 0.015);
 }
 
-/** Media elements through gain nodes, not decoded buffers, so memory stays near the blob size. */
+export function applyStemGain(
+  element: Pick<HTMLMediaElement, "volume" | "muted">,
+  gain: number,
+): void {
+  const value = clampVolume(gain);
+  element.muted = value === 0;
+  element.volume = value;
+}
+
+export function volumeIsWritable(
+  element: Pick<HTMLMediaElement, "volume">,
+): boolean {
+  element.volume = 0.5;
+  return element.volume === 0.5;
+}
+
+let volumeWritable: boolean | undefined;
+
+function elementVolumeWorks(): boolean {
+  volumeWritable ??= volumeIsWritable(new Audio());
+  return volumeWritable;
+}
+
+/** Media elements, not decoded buffers. Gains set `volume`: a stem routed into an AudioContext that
+ *  never starts plays silent. Only iOS, which pins volume at 1, uses gain nodes. */
 export function useStemTransport({
   sources,
   gains,
@@ -99,9 +125,11 @@ export function useStemTransport({
 
   useEffect(() => {
     if (!srcKey) return;
-    const voices: StemVoice[] = srcKey.split("\u0000").map((src) => {
+    const voices: StemVoice[] = srcKey.split("\u0000").map((src, index) => {
       const element = new Audio();
       element.preload = "auto";
+      if (elementVolumeWorks())
+        applyStemGain(element, gainsRef.current[index] ?? 1);
       element.src = src;
       return { element, source: null, gain: null };
     });
@@ -172,10 +200,12 @@ export function useStemTransport({
   const gainKey = gains.join(",");
   useEffect(() => {
     const context = contextRef.current;
-    if (!context) return;
     const values = gainKey.split(",").map(Number);
-    for (const [index, voice] of voicesRef.current.entries())
-      setGain(voice, values[index] ?? 1, context);
+    for (const [index, voice] of voicesRef.current.entries()) {
+      if (context) setGain(voice, values[index] ?? 1, context);
+      else if (elementVolumeWorks())
+        applyStemGain(voice.element, values[index] ?? 1);
+    }
   }, [gainKey]);
 
   const start = useCallback(
@@ -183,14 +213,14 @@ export function useStemTransport({
       const voices = voicesRef.current;
       if (voices.length === 0) return;
       const token = ++startToken.current;
-      const context = ensureGraph();
+      const context = elementVolumeWorks() ? null : ensureGraph();
       for (const voice of voices) voice.element.pause();
       for (const voice of voices) voice.element.currentTime = from;
       updatePosition(from);
       playingRef.current = true;
       setPlaying(true);
       try {
-        await context.resume();
+        await context?.resume();
         await Promise.all(voices.map((voice) => waitForCanPlay(voice.element)));
         if (token !== startToken.current) return;
         await Promise.all(voices.map((voice) => voice.element.play()));

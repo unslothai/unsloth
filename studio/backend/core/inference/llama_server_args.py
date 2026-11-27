@@ -182,7 +182,6 @@ def _is_preset_flag(flag: Optional[str]) -> bool:
 
 
 def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
-    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
     tokens = [str(a) for a in args or ()]
     found: list[tuple[str, str]] = []
     for i, raw in enumerate(tokens):
@@ -196,7 +195,6 @@ def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]
 
 
 def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
-    """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
     return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
 
 
@@ -227,7 +225,6 @@ def windows_command_length(args: list) -> int:
 
 
 def max_extra_args_bytes() -> int:
-    """The size cap for this platform."""
     return MAX_EXTRA_ARGS_BYTES_WINDOWS if sys.platform == "win32" else MAX_EXTRA_ARGS_BYTES
 
 
@@ -268,14 +265,11 @@ def _is_spawnable(token: str) -> bool:
 
 
 def _has_control_characters(token: str) -> bool:
-    """A NUL, or any C0 control other than tab and newline."""
     return any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token)
 
 
 def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
-    """Validate user-supplied llama-server args. Returns a flat list ready to extend the
-    llama-server command; raises ``ValueError`` naming the offending flag on the first managed
-    token."""
+    """Return the args as a flat list, or raise ValueError naming the first managed flag."""
     if not args:
         return []
     out: list[str] = []
@@ -339,7 +333,6 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
                 f"'{value[:32]}' as two separate arguments, not '{token[:64]}'"
             )
         else:
-            # Its own value when attached, otherwise the tokens that follow.
             attached = _value_is_attached(token, flag)
             if pending_two_value > 0:
                 raise ValueError(f"llama-server flag '{two_value_flag}' takes two values")
@@ -388,9 +381,7 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         flag: str,
         source: list = None,
     ) -> bool:
-        """True when the token's value is the NEXT token rather than its own. ``source`` defaults to
-        the input list; the trimming loop passes the list it is shortening, where "the next
-        token" means the one just removed."""
+        """True when the value is the next token; trimming passes the shortened list as source."""
         if _value_is_attached(token, flag):
             return False
         seq = tokens if source is None else source
@@ -471,14 +462,12 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
 
 
 def sorted_managed_flags() -> list[str]:
-    """Every denied flag, sorted, for a UI that wants to explain a rejection before the request is
-    made. The validator stays the authority; this is only a mirror."""
+    """Sorted denied flags for UI hints; the validator stays the authority, this is a mirror."""
     return sorted(_DENYLIST)
 
 
 def is_managed_flag(flag: str) -> bool:
-    """True if ``flag`` is Unsloth-managed. Normalises via ``_flag_name`` so `-np8` / `--parallel=8`
-    classify like the canonical tokens."""
+    """True if flag is Unsloth-managed; _flag_name folds forms like -np8 and --parallel=8."""
     normalised = _flag_name(flag)
     return normalised is not None and normalised in _DENYLIST
 
@@ -568,13 +557,11 @@ _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 # Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
-# Deprecated selectors reset the WHOLE mode (dropping mlock). Negative spellings map to `none`,
-# so no-reserve must veto those too.
+# Deprecated selectors reset the whole mode (drops mlock); no-reserve must veto negatives too.
 _DIO_ON_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio"})
 _DIO_OFF_FLAGS: frozenset[str] = frozenset({"--no-direct-io", "-ndio"})
 _DIO_FLAGS: frozenset[str] = _DIO_ON_FLAGS | _DIO_OFF_FLAGS
 _LOAD_MODE_ALIAS_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
-# Every spelling that asks for a full-model host buffer.
 _RAM_RESERVING_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | _DIO_OFF_FLAGS
 # llama.cpp reads these before argv, so inherited values survive token stripping.
 MEMORY_ENV_VARS: tuple[str, ...] = (
@@ -610,8 +597,7 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
-    """Return the last user-supplied ``-c`` / ``--ctx-size`` value. Mirrors llama.cpp's last-wins
-    parsing for the one numeric knob Unsloth's load-time fit logic needs."""
+    """Last -c / --ctx-size value (llama.cpp last-wins); the knob Unsloth's fit logic needs."""
     if not args:
         return None
 
@@ -658,7 +644,6 @@ def parse_ctx_checkpoints_override(args: Optional[Iterable[str]]) -> Optional[in
 
 
 def resolve_ctx_checkpoints(args: Optional[Iterable[str]], requested: Optional[int]) -> int:
-    """Resolve explicit counts only, with extra arguments taking precedence."""
     override = parse_ctx_checkpoints_override(args)
     return int(override if override is not None else (requested or 0))
 
@@ -714,8 +699,7 @@ def effective_ctx_checkpoints(
 
 
 def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) -> int:
-    """Return the context size load_model treats as requested; the single source of truth for its
-    ctx-override conditional, so tests call it rather than reimplement the logic."""
+    """Requested ctx size load_model uses; tests call this rather than copy its conditional."""
     override = parse_ctx_override(args)
     return override if override is not None else fallback_n_ctx
 
@@ -742,9 +726,7 @@ def _last_flag_value(
     preserve_raw: bool = False,
     validate_value: Optional[Callable[[str], object]] = None,
 ) -> Optional[str]:
-    """Return the last-wins string value among ``flags`` in extras, or None. Handles both
-    ``--flag=value`` and ``--flag value`` forms and raises if a matched flag has no (or an empty)
-    value. Shared by the single-knob last-wins parsers (cache type, split mode)."""
+    """Last-wins string value of flags in extras, or None; raises on a missing or empty value."""
     if not args:
         return None
 
@@ -878,8 +860,7 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
 
 
 def _as_emitted(value: float) -> float:
-    """``value`` as the manual launcher will write it, which is ``f"{x:g}"``: six significant
-    digits, so the text the child parses is not always the number validated here."""
+    """Manual launcher writes {x:g} (six digits), so the child can parse a different number."""
     return float(f"{value:g}")
 
 
@@ -1066,13 +1047,11 @@ def resolve_cache_type_kv(
 
 
 def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins --split-mode or -sm value from extras as a raw mode string (tensor, row,
-    none or layer), or None; mirrors parse_cache_override for multi-GPU split mode."""
+    """Last-wins --split-mode or -sm value from extras: tensor, row, none or layer, or None."""
     return _last_flag_value(args, _SPLIT_MODE_FLAGS)
 
 
 def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
-    """An explicit --split-mode in extras overrides the toggle; tensor-parallel is on only for tensor."""
     override = parse_split_mode_override(args)
     if override is None:
         return fallback_tensor_parallel
@@ -1171,14 +1150,12 @@ def _extra_args_positive_int(
 def extra_args_image_max_tokens(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Return the effective positive ``--image-max-tokens`` value."""
     return _extra_args_positive_int(args, "--image-max-tokens", "LLAMA_ARG_IMAGE_MAX_TOKENS", env)
 
 
 def extra_args_image_min_tokens(
     args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Return the effective positive ``--image-min-tokens`` value."""
     return _extra_args_positive_int(args, "--image-min-tokens", "LLAMA_ARG_IMAGE_MIN_TOKENS", env)
 
 
@@ -1673,16 +1650,14 @@ def scrub_memory_env(env: dict, settings: Optional[tuple[bool, bool]] = None) ->
 
 # Pageable twin of each buffer-allocating mode; upstream sets use_mmap only for mmap modes.
 _PAGEABLE_LOAD_MODE: dict[str, Optional[str]] = {"none": None, "mlock": "mmap+mlock"}
-# Already-mapping modes: stripped only when a LATER reserving selector shadowed their lock,
-# since keeping them would hand the lock back.
+# Mapping modes drop only if a later reserving selector shadowed their lock; else it returns.
 _SHADOWED_LOCK_LOAD_MODE = frozenset({"mmap+mlock"})
 
 
 def _pageable_mode_replacement(
     normalized: str, drop_shadowed_mlock: bool
 ) -> tuple[bool, Optional[str]]:
-    """``(rewrite, replacement)`` for one ``--load-mode`` value, argv or env alike. ``replacement``
-    None removes the selector, leaving llama.cpp's default mapping."""
+    """(rewrite, replacement) per --load-mode value; None means llama.cpp's default mapping."""
     if normalized in _PAGEABLE_LOAD_MODE:
         return True, None if drop_shadowed_mlock else _PAGEABLE_LOAD_MODE[normalized]
     if normalized in _SHADOWED_LOCK_LOAD_MODE:
@@ -1727,9 +1702,8 @@ def force_pageable_load(
     *,
     auto_unmapped: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens.
-
-    ``auto_unmapped``: auto is none on this child, so an unset mode gets ``--load-mode mmap``."""
+    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay
+    dropped, decided by pre-rewrite state; auto_unmapped gives an unset mode --load-mode mmap."""
     tokens = [str(a) for a in (argv or [])]
     if auto_unmapped and load_mode_left_auto(tokens, env):
         return [*tokens, "--load-mode", "mmap"], ["auto, which is none on this GPU"]
@@ -1834,8 +1808,7 @@ def resolve_effective_load_state(
     *,
     auto_unmapped: bool = False,
 ) -> tuple[bool, bool, bool]:
-    """Returns (mlock, reserves_ram, direct_io); every branch sets all three so DirectIO cannot
-    drift; auto_unmapped (iGPU lacking mmap_support) makes auto none (load_tensors), not mmap."""
+    """All three set so DirectIO cannot drift; auto_unmapped (iGPU) makes auto none, not mmap."""
     mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
     if auto and auto_unmapped:
         return False, True, False
@@ -1892,11 +1865,9 @@ def _resolve_load_state(
             i += 1
             continue
         if flag in _MLOCK_FLAGS:
-            # Only the mlock bit matters: mlock and mmap+mlock both replace an earlier DirectIO mode.
             mlock, direct_io, auto = True, False, False
             i += 1
         elif flag in _NO_MMAP_FLAGS:
-            # --no-mmap resets the whole mode, clearing an earlier --mlock.
             mlock = False
             reserves_ram = True
             direct_io = False

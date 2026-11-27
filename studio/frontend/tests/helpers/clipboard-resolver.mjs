@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Adds two rules to bundler-resolver: a stub for the Tauri clipboard plugin, and copying a
-// "?bust=N" query onto every src import so module-level `isTauri` can be re-evaluated.
+// Tauri clipboard stub, and ?bust=N on src imports so module-level isTauri is re-evaluated.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

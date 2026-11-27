@@ -10,8 +10,7 @@ import io
 import os
 import sys
 
-# First, ahead of everything below: no later failure in this file can leave the hook unregistered.
-# The static host check cannot see DNS aliases or redirects; every connect does see the final address.
+# Hook registers before any failure; host checks miss DNS aliases, so connects are checked.
 _METADATA_NAMES = frozenset(
     (
         "metadata",
@@ -436,8 +435,7 @@ class _HostPackagesFinder:
         )
 
 
-# --python hands the install to another interpreter, whose own pip decides. optparse also takes unambiguous
-# abbreviations: the shortest is listed (--pre is its own option; --us, --ro, --pyth are ambiguous in pip).
+# Shortest unambiguous optparse prefixes; --python hands the install to another interpreter.
 _PIP_LOCATION_FLAGS = (
     ("--target", 4),
     ("--prefix", 6),
@@ -504,8 +502,7 @@ def _pip_options():
 
 
 def _cli_locations():
-    # {target|prefix|root|python: value} as pip ends up with it: the last occurrence wins, an empty one included
-    # (pip tests it for truthiness, so --target= after --target vendor chooses nothing).
+    # Last occurrence wins, even empty: pip tests truthiness, so --target= chooses nothing.
     found, argv, command = {}, sys.argv + [""], False
     for at, arg, option in _pip_words():
         if not option:
@@ -761,8 +758,7 @@ def _config_chooses_location(
     encoding = "utf-8" if sys.flags.utf8_mode else locale.getpreferredencoding(False)
 
     def load(files):
-        # One parser per file as pip's Configuration._load_file: a [DEFAULT] applies inside its own file only;
-        # keys normalised as its _normalize_name (lower case, _ -> -, a leading -- dropped).
+        # One parser per file: [DEFAULT] applies in its file only; keys normalised like pip.
         merged = {}
         for path in files:
             parser = configparser.RawConfigParser()
@@ -782,8 +778,7 @@ def _config_chooses_location(
     except (configparser.Error, UnicodeDecodeError):
         return False
 
-    # pip's precedence per option: [global], then [install], then a PIP_* variable (ignored under --isolated);
-    # empty values are skipped, as pip's _get_ordered_configuration_items does.
+    # [global], [install], then PIP_ env vars (ignored under --isolated); empty ones skipped.
     def value(key):
         env = "" if isolated else os.environ.get("PIP_" + key.upper(), "")
         if env.strip() and env != os.environ.get("_UNSLOTH_PIP_PREFIX"):
@@ -796,8 +791,7 @@ def _config_chooses_location(
 
     if any(value(k).strip() for k in ("target", "prefix", "root") if k not in skip):
         return True
-    # python: pip re-runs itself in that interpreter, as --python does, which installs there.
-    # [global] only: that is the main parser's section ([install] python is never read for delegation).
+    # Only [global] python counts: pip re-runs in that interpreter, as --python does.
     if "python" not in skip and full.get("global", {}).get("python", "").strip():
         return True
     items = []
@@ -807,8 +801,7 @@ def _config_chooses_location(
 
 
 def _user_site(items = (), isolated = False):
-    # user and no-user set one option (pip assigns either key's boolean as given); the last non-empty one in
-    # pip's order ([global], [install], then PIP_USER / PIP_NO_USER) wins.
+    # The last non-empty of [global], [install], PIP_USER/PIP_NO_USER sets user and no-user.
     if not isolated:
         items = list(items) + [
             (k[4:].lower().replace("_", "-"), v)
@@ -1168,8 +1161,7 @@ class _SessionPackagesFinder:
         for finder in () if name.partition(".")[0] in _stdlib_names() else self._editable:
             spec = finder.find_spec(name, path, target)
             if spec is not None and spec.loader is not None:
-                # The cwd / script dir and anything else ahead of the session dirs, and for a submodule the
-                # chosen parent's own __path__, still come first.
+                # Earlier entries (cwd, script dir) and a parent's __path__ still come first.
                 first = min(i for i, e in enumerate(sys.path) if e in self._entries)
                 ahead = sys.path[:first]
                 if path is not None:
@@ -1307,8 +1299,7 @@ def _failed_installs():
 _PENDING = ".unsloth-installing-"
 
 
-# Per run, not per pid: bwrap's --unshare-pid makes every tool call PID 2. A run holds an flock on each of its
-# notes until it exits, which any later process sees whatever its pid namespace.
+# Per run, not pid: bwrap --unshare-pid makes each tool call PID 2; flocks span pid namespaces.
 _RUN_ID = "%d-%s" % (os.getpid(), os.urandom(6).hex())
 _held = []
 
@@ -1379,8 +1370,7 @@ def _alive(path):
 
 
 def _killed_installs():
-    # A pip killed mid-wheel (tool timeout, SIGKILL) runs no handler: its pending note, written before the
-    # wheel, names the RECORD mtimes from before; whatever differs now is that wheel's half-written state.
+    # Killed mid-wheel, pip runs no handler; its note's RECORD mtimes show half-written state.
     prefix = os.environ.get("PIP_PREFIX", "")
     found = set()
     try:
@@ -1409,8 +1399,7 @@ def _killed_installs():
             os.remove(path)
         except (OSError, ValueError):
             pass
-    # A dead run's pre-install file lists, whether it died inside a wheel or between two: kept for the next
-    # retirement (lists of untouched distributions only repeat what their RECORD still says).
+    # Dead run's pre-install lists await the next retirement; untouched dists repeat RECORD.
     for name in os.listdir(prefix):
         run = name[len(_SAVED) + 1 :] if name.startswith(_SAVED + "-") else ""
         if (
@@ -1431,8 +1420,7 @@ def _killed_installs():
 
 
 def _finished(entry, dist_info):
-    # pip and uv record INSTALLER in the RECORD they write last; a wheel's own RECORD (copied in
-    # mid-install) never lists it, so an install that died halfway does not count as a replacement.
+    # pip and uv write INSTALLER last; RECORD copied mid-install lacks it, so no replacement.
     record = os.path.join(entry, dist_info, "RECORD")
     try:
         stamp = str(os.stat(record).st_mtime_ns)
@@ -1549,8 +1537,7 @@ def _prune_stale_dist_info():
             # Files another surviving distribution now ships stay too.
             keep |= _claimed(root, set(stale))
             for entry, name in stale:
-                # Also the files only the replaced version had, as pip's uninstall would remove; a failed
-                # same-version rewrite's saved list too, its RECORD no longer names them.
+                # Also old-only files, and failed rewrites' saved lists (RECORD dropped them).
                 old = _recorded_files(entry, name, root) | saved.pop(
                     (os.path.abspath(entry), name), set()
                 )
@@ -1603,8 +1590,7 @@ def _write_saved(saved):
 
 
 def _record_snapshot():
-    # What each chat-local distribution's RECORD lists before this pip run: a same-version reinstall (an
-    # editable over a wheel) rewrites RECORD in place, so the old file list is gone by the time pip exits.
+    # Pre-run RECORD of each chat-local dist: a same-version reinstall rewrites it in place.
     snapshot = {}
     try:
         root = os.path.join(os.path.normcase(os.path.abspath(os.environ["PIP_PREFIX"])), "")
@@ -1692,8 +1678,7 @@ def _track_wheel(entry):
         prefix = os.environ["PIP_PREFIX"]
         pending, held, written = os.path.join(prefix, f"{_PENDING}{_RUN_ID}"), None, False
         try:
-            # Only into an existing prefix: nothing to protect before the first install, and the path remap
-            # would move a write under a missing folder into the CWD.
+            # Only for an existing prefix: a missing one's writes would be remapped to the CWD.
             if before and os.path.isdir(prefix):
                 rows = [f"{os.path.abspath(e)}\t{n}\t{v}\n" for (e, n), v in before.items()]
                 held, written = _write_held(pending, rows), True

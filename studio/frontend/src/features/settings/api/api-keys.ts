@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth/api";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 export interface ApiKey {
   id: number;
@@ -22,10 +23,7 @@ export class ApiKeyActionError extends Error {}
 
 async function actionError(res: Response): Promise<ApiKeyActionError> {
   try {
-    const body = (await res.json()) as { detail?: unknown };
-    return new ApiKeyActionError(
-      typeof body.detail === "string" ? body.detail : "",
-    );
+    return new ApiKeyActionError(formatApiErrorBody(await res.json()) ?? "");
   } catch {
     return new ApiKeyActionError("");
   }

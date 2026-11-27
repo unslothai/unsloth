@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bodies over PREAUTH_BODY_MAX_BYTES need a credential first: FastAPI reads bodies before auth, so
-unauthenticated clients could make the server hold up to the full upload cap per connection."""
+"""Bodies over PREAUTH_BODY_MAX_BYTES need a credential: FastAPI reads bodies pre-auth (DoS)."""
 
 from __future__ import annotations
 
@@ -91,6 +90,5 @@ async def caller_may_send_large_body_async(scope: dict, path: str) -> bool:
     try:
         return await run_in_threadpool(caller_may_send_large_body, scope, path)
     except Exception:
-        # Fail closed: a malformed credential (e.g. a lone surrogate subject) can raise here, and the
-        # route's own auth check would hit the same failure for a real session.
+        # Fail closed: a malformed credential raises here; route auth would fail the same way.
         return False

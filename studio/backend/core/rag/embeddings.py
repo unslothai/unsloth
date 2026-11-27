@@ -61,8 +61,7 @@ def _device() -> str:
     """
     if config.embed_device_preference() != "gpu":
         return "cpu"
-    # Still a table lookup: asking for a GPU on a host without one lands on CPU rather than on a device
-    # string torch cannot open.
+    # Still a table lookup: no GPU on this host maps to cpu, not to a device torch cannot open.
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
@@ -93,8 +92,7 @@ def _load_device() -> str:
     )
 
 
-# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
-# vector comes back NaN; its model card says to use float32 or bfloat16.
+# Lowercased substring match; EmbeddingGemma overflows float16 to NaN; use float32 or bfloat16.
 _FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
 
 
@@ -116,8 +114,7 @@ def _load_dtype(device: str, name: str) -> str:
 
 
 _torchao_stub_done = False
-# Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
-# a preflight probe wait out someone else's download.
+# Own lock: _lock is held across model construction, so a preflight would wait out a download.
 _stub_lock = threading.Lock()
 
 
@@ -175,8 +172,7 @@ def download_required(model_name: str | None = None) -> bool:
 
 
 def _ambient_hf_token() -> str | None:
-    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
-    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    """HF_TOKEN or cached login, so gated repos scan instead of failing open; None if absent."""
     if managed_account():
         return False
     try:
@@ -328,8 +324,7 @@ class _CaptureLoadReport(logging.Filter):
 _LOAD_REPORT_LOGGERS = (
     "transformers.utils.loading_report",
     "transformers.modeling_utils",
-    # An adapter-backed embedding model reports through the PEFT integration's own logger, not a
-    # descendant of either above.
+    # PEFT adapter models log through their own logger, not a descendant of the loggers above.
     "transformers.integrations.peft",
 )
 
@@ -393,9 +388,7 @@ def _one_line(text: str) -> str:
 
 
 def _emit_load_reports(report) -> None:
-    """Re-emit what the filter swallowed, as one record on our own logger: debug for
-    the expected legacy-key notice, warning for anything that could change the
-    embeddings. Drains the list so a retry does not report the same lines twice."""
+    """Re-emit load reports; warn if they could change embeddings, else debug; drains the list."""
     serious = report.is_serious()
     for text in report.reports:
         if serious:
@@ -633,11 +626,9 @@ def _get(model_name: str | None = None):
                 # Load the cached snapshot path, not the repo id, so ST cannot fetch a newer revision.
                 load_target = str(st_source[1])
             if local_only:
-                # ST-specific AND complete: a hybrid repo's cached GGUF, or a transfer that finalized only its first
-                # shard, would otherwise retire the marker.
+                # ST-specific and complete: partial or hybrid repos must not retire the marker.
                 if download_pending and st_source is None:
-                    # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
-                    # still a pending model.
+                    # Defensive: no shared lock, so an eviction in between still means pending.
                     raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
@@ -753,8 +744,7 @@ _ST_COUNT_CACHE_SIZE = 4096
 
 
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload.
-    The count memo is tied to that tokenizer by a weakref: a switch empties it, an unload frees it."""
+    """Read per call under _compute_lock, never cached past an unload; memo is weakref-tied."""
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
@@ -1173,8 +1163,7 @@ def resolved_backend_for_model(model_name: str, token: str | bool | None = None)
 
 
 def _try_make_llama_backend():
-    """A llama-server GGUF embedding backend if its binary is present, else None.
-    Construction is lazy -- no server starts until warm."""
+    """llama-server GGUF backend if its binary exists, else None; no server starts until warm."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     if not LlamaCppBackend._find_llama_server_binary():
@@ -1243,17 +1232,14 @@ def sentence_transformers_fallback_allowed(model_name: str | None = None) -> boo
 
 
 def _current_backend_key() -> str:
-    """The cache key the backend in use should carry right now. Tests that install a
-    stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
+    """Cache key for the active backend; test stubs set _backend_key from it to avoid rebuilds."""
     raw = _raw_backend()
     model = config.effective_embedding_model()
     return _backend_cache_key(raw, _backend_choice(raw, model, _forced_backends.get(model)))
 
 
 def _backend_cache_key(raw: str, key: str) -> str:
-    """Cache key for a built backend. It carries the RESOLVED choice, not just the
-    raw config, so saving a model that needs the other backend rebuilds instead of
-    serving the one already built for the previous model."""
+    """Cache key uses the resolved backend, so a model needing the other one rebuilds."""
     return f"{raw}\x00{key}"
 
 
@@ -1261,8 +1247,7 @@ def _dispose_replaced_backend(old, new = None) -> None:
     if old is None or old is new:
         return
     if isinstance(old, _SentenceTransformersBackend):
-        # Two ST wrappers share the module-level model and the replacement is already warmed, so clearing it
-        # here would discard the model just selected.
+        # ST wrappers share one model; clearing here would drop the warmed replacement's model.
         if not isinstance(new, _SentenceTransformersBackend):
             _release_st_model()
         return
@@ -1382,8 +1367,7 @@ def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
     global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
-        # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
-        # model picks its backend again.
+        # Unload restarts fresh: past runtime fallbacks stop pinning; the saved model re-picks.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None

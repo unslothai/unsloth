@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** One compare run as the page's Generate loop sees it: N runs, each with its own request, reporting its records
- *  back. The page keeps owning progress polling, Stop, the gallery merge and error toasts. */
+/** N runs, each with its own request; the page owns polling, Stop, gallery merge and toasts. */
 
 import type { ControlNetSpecInput, DiffusionGenerateRequest, GalleryImage } from "../api.ts";
 import { HIRES_UPSCALER_LABELS, type HiresRequest } from "../lib/hires-choice.ts";
@@ -43,8 +42,7 @@ export function createCompareRun(
 ): CompareRunState {
   const results: Array<GalleryImage | null> = Array.from({ length: plan.cellCount }, () => null);
   const requests: Array<DiffusionGenerateRequest | null> = Array.from({ length: plan.cellCount }, () => null);
-  // One variation seed per run: the typed one, else drawn up front; "Keep -1 for seeds" with an empty seed box keeps
-  // it random per cell too.
+  // One variation seed per run, typed or drawn; Keep -1 with an empty box keeps cells random.
   const variation =
     options.variationSeed ??
     (options.keepRandomSeeds && options.seedFieldEmpty ? undefined : Math.floor((options.rng ?? Math.random)() * 2 ** 32));
@@ -159,8 +157,7 @@ function hiresFields(hires: HiresRequest | undefined): Array<[string, string | n
   ];
 }
 
-/** The grid's shared recipe for its `parameters` chunk, from the requests the cells were sent with: a field is
- *  written only when every cell ran the same value, so the PNG never claims one cell's setting for the grid. */
+/** A field is written to the grid's PNG recipe only when all sent cells ran the same value. */
 export function gridRecipeFields(
   plan: CompareGridPlan,
   requests: ReadonlyArray<DiffusionGenerateRequest | null | undefined>,
@@ -203,8 +200,7 @@ export function gridRecipeFields(
   return fields.filter(([, value]) => value !== undefined);
 }
 
-/** The grid's active LoRAs as one `LoRAs: id: weight, ...` field at the first cell's weights. Studio ids, Hub ones
- *  included, restore exactly from it; A1111 `<lora:...>` prompt tags would match local adapters only. */
+/** `LoRAs:` field so Studio and Hub ids restore exactly; A1111 tags match local adapters only. */
 export function gridLoraField(
   ctx: Pick<CompareContext, "loraCapable" | "loras">,
   first: DiffusionGenerateRequest | null | undefined,
@@ -222,8 +218,7 @@ export function gridLoraField(
 
 const AXIS_NAMES = ["X", "Y", "Z"] as const;
 
-/** The grid PNG's A1111-style `parameters`: the prompt, the negative prompt when any
- *  cell engages it (the first cell may not), the shared recipe, then the axes. */
+/** `parameters`: prompt, negative prompt if any cell uses it (first may not), recipe, axes. */
 export function gridParameters(
   plan: CompareGridPlan,
   ctx: CompareContext,

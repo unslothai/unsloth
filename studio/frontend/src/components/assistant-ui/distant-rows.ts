@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Marks distant rows for index.css to skip, two frames after render, so remembered heights size
-// them.
+// Marks distant rows for index.css to skip after two frames, so remembered heights size them.
 export const ROW_DISTANT_ATTRIBUTE = "data-row-distant";
 export const ROW_REACH_PX = 1500;
 const GATE_ATTRIBUTE = "data-message-row-containment";
@@ -10,8 +9,7 @@ const ROW_SELECTOR = "[data-role][data-message-id]";
 const NUMBERED_EQUATION = ".eqn-num, .mml-eqn-num";
 
 /**
- * Twice window height exceeds content-visibility margins: 150% in Chromium, no root margin in
- * WebKit.
+ * Twice the window height, beyond content-visibility margins (150% in Chromium, none in WebKit).
  */
 export const rowReachPx = (windowHeight: number): number =>
   Math.max(ROW_REACH_PX, Math.ceil(2 * (Number.isFinite(windowHeight) ? windowHeight : 0)));
@@ -41,9 +39,7 @@ function firstVisibleRow(viewport: Element): { anchor: Element; before: number }
   return { anchor: rows[found], before: rows[found].getBoundingClientRect().top };
 }
 
-/** Toggle rows, keeping the first visible row where the reader left it. A released row lays out at
- *  the current width, which may differ from the remembered one (the column changed while it was
- *  skipped); a newly skipped row should not move, but if it does the reader must not see it either. */
+/** Toggles rows, keeping the first visible row in place; a released row may differ in width. */
 function toggleRows(viewport: Element, changes: Array<[Element, boolean]>) {
   const known = changes.length > 0 ? firstVisibleRow(viewport) : null;
   for (const [row, on] of changes) row.toggleAttribute(ROW_DISTANT_ATTRIBUTE, on);
@@ -60,8 +56,7 @@ function toggleRows(viewport: Element, changes: Array<[Element, boolean]>) {
 const wanted = new WeakMap<Element, boolean>();
 const settling = new WeakMap<Element, Set<Element>>();
 
-/** Skip a row only after it has stayed distant for two frames, so the engine has recorded the
- *  size it was laid out at (a chunk mounted above the reader lays out once, then settles). */
+/** Skip a row only after two distant frames, so the engine records its laid-out size first. */
 function settleLater(viewport: Element, rows: Element[]) {
   let pending = settling.get(viewport);
   const scheduled = pending !== undefined;
@@ -85,9 +80,8 @@ function settleLater(viewport: Element, rows: Element[]) {
 
 function createObserver(viewport: Element, reach: number): IntersectionObserver {
   return new IntersectionObserver((entries) => {
-    // Read before writing. A wide row owns horizontal scroll range, which containment would drop.
-    // Numbered equations count across messages; containment would scope their counter to the row
-    // (the same exemption math-block-marker.ts gives a single block).
+    // Read before writing; wide rows own horizontal scroll that containment drops; equation numbers
+    // span messages, so containment would scope the counter (math-block-marker.ts exempts).
     const distant = entries.map(({ target, boundingClientRect, rootBounds }) =>
       rootBounds !== null &&
       (boundingClientRect.bottom < rootBounds.top || boundingClientRect.top > rootBounds.bottom) &&

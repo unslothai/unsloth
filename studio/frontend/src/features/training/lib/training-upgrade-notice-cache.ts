@@ -3,8 +3,7 @@
 
 import type { TransformersUpgradeCheck } from "@/features/transformers-upgrade";
 
-// Avoids a network round trip per Configure render. Keyed on the sidecar generation because an
-// install invalidates every answer.
+// Avoids a round trip per render; keyed on sidecar generation, since install invalidates all.
 const cache = new Map<string, TransformersUpgradeCheck>();
 
 // Separator no field can contain: a model id, a cache path and a token are all printable.
@@ -29,8 +28,7 @@ export function upgradeNoticeCacheKey(
   ].join(KEY_SEPARATOR);
 }
 
-// Drop superseded generations. A straggler from before an install must not rewind the generation
-// and replace the fresh answer, so superseded reads and writes return null.
+// Old generations return null on read and write, so a straggler cannot rewind the generation.
 function activeCache(sidecarGeneration: number): typeof cache | null {
   if (sidecarGeneration < cachedGeneration) {
     return null;

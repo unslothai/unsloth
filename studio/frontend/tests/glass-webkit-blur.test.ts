@@ -75,7 +75,7 @@ test("WebKitGTK Frosted drops only its grain tile", () => {
   for (const selector of grain.selectors) {
     const target = selector.includes("[data-windows-glass-frame]::before")
       ? "[data-windows-glass-frame]::before"
-      : /(\[data-slot="sidebar-inner"\]|\.wallpaper-preview-composer|\.unsloth-composer-surface)/.exec(selector)?.[1];
+      : /(\[data-slot="sidebar-inner"\]|\.wallpaper-preview-composer|\.unsloth-composer-surface|\.toast-surface)/.exec(selector)?.[1];
     assert.ok(target, `known grain surface: ${selector}`);
     assert.ok(rule.includes(target), `the WebKitGTK rule clears the grain on ${target}`);
   }
@@ -99,7 +99,7 @@ test("WebKitGTK liquid 3D draws its wide inner glows as gradients, not blurred s
     assert.match(rule, /--glass-glow: linear-gradient\(/);
   }
   const glowUses = CSS.match(/background-image: var\(--glass-glow, none\), var\(--glass-sheen\);/g) ?? [];
-  assert.equal(glowUses.length, 3, "composer, menus and dialogs; elsewhere --glass-glow is unset, so the layer is none");
+  assert.equal(glowUses.length, 4, "composer, menus, dialogs and toasts; elsewhere --glass-glow is unset, so the layer is none");
 });
 
 test("WebKit liquid glass drops the sheen, which bands into stripes without dithering", () => {
@@ -107,7 +107,7 @@ test("WebKit liquid glass drops the sheen, which bands into stripes without dith
   assert.match(MATERIAL, /"data-glass-layers",\s*WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,/);
   const rule = ruleAt('html[data-glass^="liquid"][data-glass-layers],');
   assert.ok(
-    rule.includes('html[data-glass^="liquid"][data-glass-layers] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {'),
+    rule.includes('html[data-glass^="liquid"][data-glass-layers] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer, .toast-surface, .glass-card) {'),
     "the composer sets its own sheen, so it is cleared there too",
   );
   assert.match(rule, /--glass-sheen: none;/);
@@ -129,7 +129,7 @@ test("Firefox drops the sheen too, with a selector as specific as the dark sheen
         rule.selectors,
         [
           'html[data-glass^="liquid"][data-glass]',
-          'html[data-glass^="liquid"][data-glass] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer)',
+          'html[data-glass^="liquid"][data-glass] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer, .toast-surface, .glass-card)',
         ],
         "two attributes on html, like html.dark[data-glass=\"liquid-3d\"]",
       );

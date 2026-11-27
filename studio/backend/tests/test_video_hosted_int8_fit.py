@@ -198,7 +198,6 @@ def test_stubbed_torchao_with_only_a_pickle_hosted_keeps_the_dense_shards(monkey
 
 
 def test_stubbed_torchao_seed_check_is_unchanged(monkeypatch):
-    # A torchao seed (not the native read) still needs torchao.
     ok, _ = _verified(monkeypatch, native_hosted = False, torchao = False)
     assert ok is False
 
@@ -351,6 +350,5 @@ def test_windows_gfx1151_dense_is_refused_and_the_hosted_int8_dit_fits():
     hosted = _ltx25_plan(memory, 25.11)
     assert round(dense.estimates["safe_device_budget_mib"] / GIB) == 61
     assert "needs about 73 GB" in unified_memory_shortfall_message(dense, family = "ltx-2.5")
-    # The guard itself is unchanged: the dense DiT is still refused on this device.
     assert unified_memory_shortfall_message(dense, family = "ltx-2.5") is not None
     assert unified_memory_shortfall_message(hosted, family = "ltx-2.5") is None

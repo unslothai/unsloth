@@ -783,3 +783,37 @@ def test_the_pin_covers_every_field_the_request_is_derived_from():
     assert pin != load_identity(turbo, "black-forest-labs/FLUX.1-dev", "z-image")
     assert pin != load_identity(turbo, base, "qwen-image-edit")
     assert load_identity(turbo, None, "z-image") == load_identity(turbo, "", "z-image")
+
+
+class _PreviewingBackend(_FakeBackend):
+    """Takes ``live_preview`` like the diffusers engine, and records whether it would build a previewer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.previews: list = []
+
+    def generate(
+        self,
+        *,
+        live_preview = None,
+        **kwargs,
+    ):
+        from core.inference.diffusion_preview import preview_wanted
+        self.previews.append((live_preview, preview_wanted(live_preview)))
+        return super().generate(**kwargs)
+
+
+def test_headless_requests_never_build_the_live_previewer(monkeypatch):
+    # Nothing polls generate-progress for an API caller: the per-step previewer would be GPU work for no one.
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PREVIEW", raising = False)
+    backend = _PreviewingBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
+    resp = cli.post(
+        "/v1/images/generations",
+        json = {"prompt": "a sloth", "size": "256x256", "response_format": "b64_json"},
+    )
+    assert resp.status_code == 200, resp.json()
+    assert backend.previews == [(False, False)]

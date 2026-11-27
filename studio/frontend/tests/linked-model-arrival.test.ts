@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Any site can send a signed-in tab to /audio?model=<repo> (or /images, /video). A model that arrived
-// with the document itself waits for a click; an in-app pick still loads at once.
+// A link from any site (?model=<repo>) waits for a click; an in-app pick still loads at once.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { register } from "node:module";
@@ -65,8 +64,7 @@ test("Audio, Images and Video ask before a linked model downloads or loads", () 
 });
 
 test("a confirmed linked model replaces the stripped entry instead of stacking one", () => {
-  // The page first replaces the linked URL with one that loads nothing; the confirmed pick puts the link
-  // back in that same entry, so Back does not land on the stripped copy of the page.
+  // A confirmed pick restores the link in the stripped entry, so Back skips the stripped copy.
   for (const file of [
     "features/audio/hooks/use-audio-handoff.ts",
     "features/images/images-page.tsx",

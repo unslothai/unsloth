@@ -3,8 +3,7 @@
 
 """Recipe prompts for agents: each one reads what Unsloth Studio has right now and spells out the tool calls for a whole job."""
 
-# No ``from __future__ import annotations`` here: fastmcp tells agents to send any argument whose
-# annotation is not the ``str`` type itself as a "JSON string", and a postponed annotation is the text "str".
+# No ``from __future__ import annotations``: fastmcp would read the str annotation as non-str.
 
 import asyncio
 from typing import Any, Optional

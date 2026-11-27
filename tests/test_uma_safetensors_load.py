@@ -211,3 +211,81 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     for key, expected in tensors.items():
         with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
             assert torch.equal(f.get_tensor(key).cpu(), expected)
+
+
+class _Handle:
+    def __init__(self):
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _recording_open(calls, reject_backend = False):
+    def real(
+        filename,
+        framework = None,
+        device = "cpu",
+        **kw,
+    ):
+        if reject_backend and "backend" in kw:
+            # what safetensors < 0.8.0 raises
+            raise TypeError("safe_open() got an unexpected keyword argument 'backend'")
+        calls.append(dict(kw, device = device))
+        return _Handle()
+
+    return real
+
+
+@pytest.mark.parametrize(
+    "env, reject, expected",
+    [(None, False, "pread"), ("0", False, None), (None, True, None)],
+)
+def test_cuda_target_opens_on_cpu_with_pread(uma, force_uma, monkeypatch, env, reject, expected):
+    calls = []
+    force_uma(True)
+    if env is not None:
+        monkeypatch.setenv("UNSLOTH_SAFETENSORS_PREAD", env)
+    fake_mu = _install_fake_modeling_utils(monkeypatch, _recording_open(calls, reject))
+    uma.patch_unified_memory_safetensors_load()
+    handle = fake_mu.safe_open("model.safetensors", framework = "pt", device = "cuda")
+    assert calls == [{"device": "cpu", **({"backend": expected} if expected else {})}]
+    # a pread tensor already owns its memory: no clone; an mmap view still is cloned
+    assert handle._private is (expected == "pread")
+
+
+@pytest.mark.parametrize("hip, keep", [("6.4", False), (None, True)])
+def test_cuda_target_keeps_the_clone_on_rocm_or_keep_mmap(uma, force_uma, monkeypatch, hip, keep):
+    calls = []
+    force_uma(True)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    fake_mu = _install_fake_modeling_utils(monkeypatch, _recording_open(calls))
+    uma.patch_unified_memory_safetensors_load()
+    kwargs = {"_unsloth_keep_mmap": True} if keep else {}
+    handle = fake_mu.safe_open("model.safetensors", framework = "pt", device = "cuda", **kwargs)
+    assert "backend" not in calls[0]
+    assert handle._private is False
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a GPU for the host->device move")
+def test_cuda_target_pread_skips_the_clone(uma, force_uma, monkeypatch, tiny_safetensors):
+    if "backend" not in (getattr(safetensors.safe_open, "__text_signature__", None) or ""):
+        pytest.skip("safetensors < 0.8 has no backend keyword")
+    path, tensors = tiny_safetensors
+    force_uma(True)
+    fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
+    uma.patch_unified_memory_safetensors_load()
+
+    def _no_clone(self, *a, **k):
+        raise AssertionError("clone on a pread tensor")
+
+    monkeypatch.setattr(torch.Tensor, "clone", _no_clone)
+    with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
+        for key, expected in tensors.items():
+            got = f.get_tensor(key)
+            assert got.device.type == "cuda"
+            assert torch.equal(got.cpu(), expected)
+            assert torch.equal(f.get_slice(key)[:].cpu(), expected)

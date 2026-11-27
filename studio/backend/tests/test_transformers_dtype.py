@@ -55,8 +55,7 @@ def test_rename_prerelease_uses_dtype(monkeypatch, version):
 
 
 def test_malformed_version_prefers_modern_name(monkeypatch):
-    """A non-PEP440 __version__ raises InvalidVersion; the except branch must
-    swallow it and default to the modern name rather than crash the embedder warm-up."""
+    """Non-PEP440 __version__ raises InvalidVersion; catch it and default to dtype, not crash."""
     _stub_transformers(monkeypatch, "not-a-version")
     assert _has_torch_dtype_kwarg() is False
     assert dtype_kwargs("float16") == {"dtype": "float16"}

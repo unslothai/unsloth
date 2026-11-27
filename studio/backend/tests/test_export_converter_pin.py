@@ -97,9 +97,8 @@ def test_pin_is_scoped_to_the_conversion(monkeypatch):
 
 
 def test_pin_goes_through_the_internal_helper(monkeypatch):
-    """Not a raw os.environ write: unsloth_zoo grants the strict-scan exemption to a
-    pin the USER set, and marking this one internal is what keeps
-    UNSLOTH_CONVERTER_SCAN_STRICT=1 able to refuse a converter Studio downloaded."""
+    """Not a raw os.environ write: unsloth_zoo grants the strict-scan exemption to user-set pins, so
+    an internal mark keeps UNSLOTH_CONVERTER_SCAN_STRICT=1 refusing downloaded converters."""
     mod = _export_mod(monkeypatch)
     llama_cpp, calls = _zoo(monkeypatch)
 
@@ -131,8 +130,7 @@ def test_a_pin_the_user_set_is_untouched(monkeypatch):
 
 
 def test_an_incomplete_install_is_not_pinned(monkeypatch):
-    """An entrypoint with no conversion/ beside it cannot run, and pinning it is what
-    stops the staged resolver from fetching a co-versioned set that can."""
+    """Entrypoints without conversion/ can't run; pinning blocks a co-versioned set that can."""
     mod = _export_mod(monkeypatch)
     _llama_cpp, calls = _zoo(monkeypatch, incomplete = True)
 
@@ -142,8 +140,7 @@ def test_an_incomplete_install_is_not_pinned(monkeypatch):
 
 
 def test_older_zoo_still_gets_a_scoped_pin(monkeypatch):
-    """No internal-pin helper to call, so the variable is scoped by hand. The strict-scan
-    exemption cannot be avoided on those builds, but the leak can."""
+    """Older zoo: scope the env var by hand; the exemption can't be avoided, but the leak can."""
     mod = _export_mod(monkeypatch)
     llama_cpp, _calls = _zoo(monkeypatch, internal_pin = False)
 
@@ -173,8 +170,7 @@ def test_mlx_leaves_the_pinning_to_unsloth_zoo(monkeypatch):
 
 
 def test_mlx_export_does_not_nest_the_pin(monkeypatch):
-    """unsloth_zoo's pin holds a plain threading.Lock for the whole conversion, so nesting it inside
-    save_pretrained_gguf deadlocks a Mac GGUF export."""
+    """The pin's threading.Lock is not reentrant, so nesting it deadlocks a Mac GGUF export."""
     mod = _export_mod(monkeypatch, mlx = True)
     llama_cpp, _calls = _zoo(monkeypatch)
 
@@ -186,8 +182,7 @@ def test_mlx_export_does_not_nest_the_pin(monkeypatch):
 
 
 def test_a_gguf_export_leaves_no_pin_behind(tmp_path, monkeypatch):
-    """Through export_gguf the pin is active during conversion and gone after return, since the
-    worker outlives the export and would leak to later ones."""
+    """Pin is active only during conversion: the worker outlives the export and would leak it."""
     mod = _export_mod(monkeypatch)
     llama_cpp, calls = _zoo(monkeypatch)
     save_dir = tmp_path / "export"

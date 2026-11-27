@@ -91,8 +91,7 @@ def _sharded(device, world_size, q):
     model = _model(device)
     q.prepare_fsdp2_qlora(model)
     mesh = init_device_mesh("cuda", (world_size,))
-    # One rank: a shard is the whole tensor and gathering it aliases it, so keep the shards on the
-    # CPU and every gather allocates on the GPU, as a gather of two GPU shards does.
+    # Single rank: shard = whole tensor, so shards stay on CPU to keep gathers on GPU.
     kwargs = {} if world_size > 1 else {"offload_policy": CPUOffloadPolicy()}
     for layer in model.base_model.model.layers:
         fully_shard(layer, mesh = mesh, **kwargs)
@@ -203,9 +202,8 @@ def _check(results):
         streamed = r0[(method, "streamed")]["peak_above_shards"]
         # The previous placement holds the whole gathered packed base.
         assert head >= total, (method, head, total)
-    # Streaming holds one gathered layer, and merged_4bit one layer's merge temporaries on top (bf16
-    # dequant, fp32 LoRA delta, the requantize copy: a few dozen packed layers' worth, whatever the
-    # depth) next to the adapters, never the base.
+    # Streaming holds one gathered layer; merged_4bit adds merge temporaries (bf16 dequant, fp32
+    # LoRA delta, requantize copy) of a few dozen packed layers at any depth, never the base.
     assert r0[("merged_16bit", "streamed")]["peak_above_shards"] <= 2 * layer, r0
     merged_4bit = r0[("merged_4bit", "streamed")]["peak_above_shards"]
     assert merged_4bit <= 40 * layer + r0["lora_total"], r0

@@ -67,7 +67,6 @@ def test_every_inline_script_parses_as_served(page, tmp_path):
 
 
 def test_the_frame_check_catches_a_name_two_pasted_pieces_both_declare(tmp_path):
-    # The failure this file guards: network code declaring a name the frame's history code already declares.
     node = _node()
     frame = browser_mod._FRAME_HTML
     assert "let route = 0;" in frame

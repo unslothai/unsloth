@@ -229,3 +229,55 @@ def test_trainer_logs_every_n_steps_beside_the_loss(tmp_path):
 def test_unsloth_trainer_init_wires_the_env_flag():
     source = (ROOT / "unsloth" / "trainer.py").read_text(encoding = "utf-8")
     assert "UNSLOTH_LOG_MOE_LOAD" in source and "add_moe_load_callback" in source
+
+
+class _Block(torch.nn.Module):
+    def __init__(self, hidden, experts, top_k):
+        super().__init__()
+        self.gate = torch.nn.Linear(hidden, experts, bias = False)
+        self.experts = torch.nn.ModuleList(torch.nn.Identity() for _ in range(experts))
+        self.top_k = top_k
+
+
+class _RaggedMoE(torch.nn.Module):
+    """Two MoE layers with different expert counts and top-k (no shared [layers, experts] shape)."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.layers = torch.nn.ModuleList([_Block(8, 4, 2), _Block(8, 6, 1)])
+        self.config = None
+
+    def forward(
+        self,
+        hidden,
+        attention_mask = None,
+    ):
+        logits = tuple(layer.gate(hidden) for layer in self.layers)
+        return {"router_logits": logits, "loss": sum(x.sum() for x in logits)}
+
+
+def test_layers_with_different_expert_counts_are_counted_per_layer():
+    model = _RaggedMoE()
+    counter = moe_load.MoERoutingLoad(model)
+    assert counter.attach()
+    hidden = torch.randn(2, 5, 8, generator = torch.Generator().manual_seed(3))
+    counter.start()
+    model(hidden)
+    model(hidden)
+    counter.stop()
+    assert [h.shape[0] for h in counter.hard] == [4, 6]
+    # Each layer routes with its own top-k: 10 tokens x k slots per forward.
+    assert [int(h.sum()) for h in counter.hard] == [2 * 10 * 2, 2 * 10 * 1]
+    for layer, block in enumerate(model.layers):
+        index = block.gate(hidden.reshape(-1, 8)).topk(block.top_k, dim = -1).indices
+        expected = 2 * torch.bincount(index.reshape(-1), minlength = block.gate.out_features)
+        assert torch.equal(counter.hard[layer], expected)
+    stats = counter.stats()
+    assert stats["moe_load_assignments"] == 60 and stats["moe_load_tokens"] == 20
+    assert set(k for k in stats if k.startswith("moe_load_max_mean/")) == {
+        "moe_load_max_mean/layer_0",
+        "moe_load_max_mean/layer_1",
+    }
+    assert all(v == v and v >= 0 for v in stats.values())
+    counter.detach()

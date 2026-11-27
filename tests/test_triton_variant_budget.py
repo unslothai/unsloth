@@ -16,7 +16,6 @@ import unsloth  # noqa: F401  (patches first)
 from unsloth.kernels import rms_layernorm
 from unsloth.kernels.rms_layernorm import fast_rms_layernorm
 
-# Varied lengths: odd, divisible by 16, a single token.
 _SHAPES = ((1, 100), (1, 511), (1, 512), (2, 2048), (4, 333), (3, 1))
 
 

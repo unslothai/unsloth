@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reads a safetensors checkpoint's format and metadata, never its weights; never opens .pt; never
-raises, fails open with None if unknown"""
+"""Reads safetensors format and metadata, never weights or .pt; never raises; None if unknown."""
 
 from __future__ import annotations
 
@@ -256,8 +255,7 @@ def _header_cache_file() -> Optional[Any]:
 
 
 def _header_cache_key(etag: Any, filename: str, size: int) -> Optional[str]:
-    """The file's content digest (the Hub ETag of an LFS / Xet file is its sha256) plus name and size: one answer
-    per content, whatever repo or revision serves it. Read only after this request's own HEAD returned it."""
+    """Content ETag (sha256 for LFS/Xet), name, size; shared across repos; read after HEAD."""
     if not isinstance(etag, str) or not etag.strip('"'):
         return None
     return f"{etag.strip(chr(34))}|{filename.rsplit('/', 1)[-1]}|{int(size)}"

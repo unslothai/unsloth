@@ -18,6 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_grpo_packed_raw_logits_nograd as harness  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def _exact_verified_shape():
+    # These tests re-verify slightly larger batches; trust only the exact verified shape (no 2x growth).
+    # Own MonkeyPatch, so a test's monkeypatch.undo() keeps it.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "1")
+        yield
+
+
 class _OOMOnceModel(harness._Model):
     def __init__(self, error):
         super().__init__(hidden_states = False)

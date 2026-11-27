@@ -1076,6 +1076,63 @@ def test_llama_rollback_keeps_every_old_file_when_the_drain_is_interrupted(tmp_p
         assert name in survivors, f"{name} was lost during an interrupted drain: {survivors}"
 
 
+def _llama_swap_env(tmp_path: Path, *, online: bool = True) -> dict:
+    fetcher = tmp_path / "fetch_llama_prebuilt.py"
+    fetcher.write_text(
+        "import os, sys\n"
+        + ("" if online else "sys.exit('network down')\n")
+        + "os.makedirs(sys.argv[3])\n"
+        "open(os.path.join(sys.argv[3], 'llama-server'), 'w').write('NEW\\n')\n",
+        encoding = "utf-8",
+    )
+    env = dict(os.environ)
+    env["UNSLOTH_LLAMA_CPP_PATH"] = str(tmp_path / "llama.cpp")
+    env["UNSLOTH_LLAMA_FETCHER"] = str(fetcher)
+    return env
+
+
+def _strand_install(tmp_path: Path) -> None:
+    previous = tmp_path / "llama.cpp.old.4242"
+    previous.mkdir()
+    (previous / "llama-server").write_text("OLD\n", encoding = "utf-8")
+    (previous / ".unsloth-studio-owned").touch()
+
+
+def test_llama_update_repairs_an_install_a_killed_run_moved_aside(tmp_path: Path):
+    _strand_install(tmp_path)
+    res = _run(LLAMA_UPDATE, [], _llama_swap_env(tmp_path))
+    assert res.returncode == 0, res.stderr + res.stdout
+    install = tmp_path / "llama.cpp"
+    assert (install / "llama-server").read_text() == "NEW\n"
+    assert (install / ".unsloth-studio-owned").exists()
+    assert not list(tmp_path.glob("llama.cpp.old.*"))
+
+
+def test_llama_update_puts_back_a_moved_aside_install_when_the_fetch_fails(tmp_path: Path):
+    _strand_install(tmp_path)
+    res = _run(LLAMA_UPDATE, [], _llama_swap_env(tmp_path, online = False))
+    assert res.returncode != 0
+    assert (tmp_path / "llama.cpp" / "llama-server").read_text() == "OLD\n"
+    assert not list(tmp_path.glob("llama.cpp.old.*"))
+
+
+def test_llama_update_installs_a_missing_bundle(tmp_path: Path):
+    res = _run(LLAMA_UPDATE, [], _llama_swap_env(tmp_path))
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert (tmp_path / "llama.cpp" / "llama-server").read_text() == "NEW\n"
+    assert not list(tmp_path.glob("llama.cpp.old.*"))
+
+
+def test_llama_update_replaces_a_dangling_install_symlink(tmp_path: Path):
+    (tmp_path / "llama.cpp").symlink_to(tmp_path / "gone")
+    res = _run(LLAMA_UPDATE, [], _llama_swap_env(tmp_path))
+    assert res.returncode == 0, res.stderr + res.stdout
+    install = tmp_path / "llama.cpp"
+    assert not install.is_symlink()
+    assert (install / "llama-server").read_text() == "NEW\n"
+    assert not list(tmp_path.glob("llama.cpp.old.*"))
+
+
 def _fetcher_module():
     """Import the build-time fetcher by path; stdlib-only, with a __main__ guard."""
     import importlib.util

@@ -188,8 +188,7 @@ def _safetensors_top_level_keys(path: str) -> frozenset[str]:
 
 
 def checkpoint_prediction_overrides(path: Optional[str]) -> dict[str, Any]:
-    """Scheduler overrides a single-file checkpoint asks for through its ``v_pred`` / ``ztsnr`` marker
-    tensors (ComfyUI's detection, comfy/supported_models.py SDXL.model_type). Empty when unmarked."""
+    """Scheduler overrides from v_pred / ztsnr markers (ComfyUI's rule); empty when unmarked."""
     if not path or not str(path).lower().endswith(".safetensors"):
         return {}
     try:

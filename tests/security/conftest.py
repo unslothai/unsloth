@@ -79,8 +79,7 @@ def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"
 
 
-# The fixtures embed the May-12 IOC on purpose, so committed archives trip AV on GitHub's zip.
-# _build.py is deterministic, so building at session start reproduces the same bytes.
+# Fixtures embed the IOC on purpose, so committed copies trip AV; _build.py is deterministic.
 _GENERATED_ARCHIVES = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")
 
 

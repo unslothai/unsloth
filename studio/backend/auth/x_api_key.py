@@ -16,8 +16,7 @@ def _authorization_is_empty(value: bytes) -> bool:
 
 
 def bearer_from_x_api_key(headers) -> list | None:
-    """Headers with the key as ``Authorization``, or None to leave them alone. A Bearer always wins, and a
-    non sk-unsloth value (a keyless client's dummy) keeps today's handling."""
+    """x-api-key to Authorization; None if a Bearer is set or the key is not sk-unsloth."""
     keys = []
     authorization = []
     for name, value in headers:

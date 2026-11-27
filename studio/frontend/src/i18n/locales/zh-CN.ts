@@ -2389,6 +2389,10 @@ export const zhCN = {
         confirmDescriptionChatOnly:
           "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
+        recommendedTorch:
+          "建议修复：此安装的 PyTorch {torch} 早于受管理的 {managedTorch}，而 RTX 50 系列 GPU 需要该版本才受支持。",
+        recommendedDriver:
+          "PyTorch {torch} 早于受管理的 {managedTorch}（RTX 50 系列 GPU 需要该版本才受支持），但此 GPU 驱动不支持 CUDA 13。请先更新 GPU 驱动，再修复安装。",
       },
       resetPreferences: {
         sectionTitle: "危险区域",
@@ -4442,6 +4446,12 @@ export const zhCN = {
       epochs: "轮数",
       useMaxSteps: "使用最大步数",
       useEpochs: "使用轮数",
+      stepGuidancePass: "在有效批次 {batch} 下，约 {steps} 步可完整遍历一次你的 {rows} 行数据。",
+      stepGuidanceFloor: "在有效批次 {batch} 下，遍历一次你的 {rows} 行数据只需 {passSteps} 步，因此约 {steps} 步（数次遍历）是合理的下限。",
+      stepGuidanceCap: "在有效批次 {batch} 下，遍历一次你的 {rows} 行数据需要 {passSteps} 步；{steps} 步只训练其中一部分，对首次运行通常已足够。",
+      stepGuidanceEpoch: "在有效批次 {batch} 下，一轮约为遍历你的 {rows} 行数据的 {passSteps} 步。",
+      stepGuidancePacking: "打包会合并较短的行，因此一次遍历可能需要更少的步数。",
+      useSuggestedSteps: "使用 {steps}",
       maxStepsTooltip: "覆盖优化器总步数。",
       epochsTooltip: "完整遍历数据集的次数。",
       contextLength: "上下文",

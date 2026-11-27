@@ -98,7 +98,7 @@ def test_a_prior_export_at_the_intermediate_name_survives(
     prior = f"MyModel.{intermediate}.gguf"
     gguf_directory, files, quantized = _export(tmp_path, monkeypatch, methods, bf16, [prior])
     assert (gguf_directory / prior).read_bytes() == USER_BYTES
-    assert sorted(os.path.basename(o) for _, o in quantized) == sorted(
+    assert sorted(os.path.basename(o).removesuffix(".tmp") for _, o in quantized) == sorted(
         f"MyModel.{m.upper()}.gguf" for m in methods
     )
     # The intermediate itself is still cleaned up, and nothing but the outputs and the prior file is left.

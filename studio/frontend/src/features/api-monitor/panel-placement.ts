@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Places the API monitor panel clear of other floating panels (the Live resource monitor shares
- * the corner). Avoidance, not z-index: both are windows whose controls must stay reachable.
- */
+/** API monitor avoids the Live resource monitor's corner, not z-index: both must stay reachable. */
 
 export interface PanelRect {
   left: number;

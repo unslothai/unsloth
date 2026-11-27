@@ -33,7 +33,6 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from utils.hardware import hardware as _hw  # noqa: E402
 
 
-# (label, vulkan, is_rocm, apple_budget_bytes, memory, tensor_is_viable)
 # tensor_is_viable is the expectation: tensor needs >= 2 devices, else layer-split.
 ACCELERATORS = [
     ("nvidia-multi", False, False, 0, [(0, 20_000, 24_000), (1, 20_000, 24_000)], True),

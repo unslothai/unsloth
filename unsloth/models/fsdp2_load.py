@@ -49,8 +49,7 @@ _PACKED_UNIT = 4
 
 
 def _chunk_rows(rows, world, rank):
-    """Rows [start, stop) of dim-0 chunk `rank` as fully_shard cuts it (torch.chunk: ceil(rows / world) per
-    chunk, so the last ranks may hold fewer rows or none)."""
+    """Rows [start, stop) of rank's torch.chunk piece; last ranks may hold fewer rows or none."""
     size = math.ceil(rows / world) if rows else 0
     start = min(rank * size, rows)
     return start, min(start + size, rows)
@@ -288,9 +287,8 @@ def quantized_load_bytes(index, kwargs):
 
 
 def _keep_chunk(module, p, world, rank, ranks):
-    """This rank's dim-0 chunk of a just-loaded parameter, tagged like a sharded-loaded one, or None (kept
-    whole): a quantized Params4bit (packed [n, 1] bytes, the QuantState whole) or a 16-bit nn.Linear /
-    nn.Embedding weight."""
+    """This rank's dim-0 chunk of a just-loaded param, tagged as sharded, for quantized Params4bit
+    (packed [n, 1] bytes, QuantState whole) or 16-bit Linear/Embedding; else None."""
     if not isinstance(p, torch.Tensor) or p.is_meta or _preload(p) is not None:
         return None
     is4 = any(c.__name__ == "Params4bit" for c in type(p).__mro__)

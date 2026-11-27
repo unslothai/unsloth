@@ -21,6 +21,8 @@ import datetime
 import functools
 import logging
 import os
+import threading
+import time
 
 import torch
 
@@ -99,6 +101,82 @@ def _dist():
 _SAVE_COUNTER = {}
 
 
+# Each rank counts the writer handshakes it has finished (after its last store access for one) under
+# one store key per handshake index. Rank 0 hosts the default TCPStore, so when rank 0 returns from a
+# save and its process exits (or destroys the process group), a rank still between its store reads
+# would hit a closed store. A background thread on rank 0 holds the store and keeps the process
+# alive at exit until every rank has counted rank 0's latest handshake. Every rank of the world takes
+# part in each save, so the indices line up; a rank that never catches up delays rank 0's exit by at
+# most UNSLOTH_FSDP2_SAVE_EXIT_WAIT seconds, and never delays a save.
+_HANDSHAKE_PREFIX = "unsloth_fsdp2_handshake_done_"
+_STORE_GUARD = {
+    "lock": threading.Lock(),
+    "store": None,
+    "count": 0,
+    "deadline": 0.0,
+    "thread": None,
+}
+
+
+def _exit_wait_seconds():
+    try:
+        return max(0.0, float(os.environ.get("UNSLOTH_FSDP2_SAVE_EXIT_WAIT", 300)))
+    except ValueError:
+        return 300.0
+
+
+def _keep_store_for_readers(store, world):
+    delay = 0.002
+    while True:
+        with _STORE_GUARD["lock"]:
+            key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+        try:
+            done = store.add(key, 0) >= world
+        except Exception:
+            done = True  # the store is gone already: nothing left to keep alive
+        with _STORE_GUARD["lock"]:
+            if (
+                _STORE_GUARD["store"] is not store  # the process group was re-initialized
+                or (done and key == _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"]))
+                or time.monotonic() >= _STORE_GUARD["deadline"]
+            ):
+                if _STORE_GUARD["thread"] is threading.current_thread():
+                    _STORE_GUARD["thread"] = None
+                return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.1)
+
+
+def _handshake_done(dist, store):
+    """Every rank, after its last store access of a writer handshake (any outcome)."""
+    with _STORE_GUARD["lock"]:
+        if _STORE_GUARD["store"] is not store:
+            # A new process group: a guard still running for the old store does not cover this one.
+            _STORE_GUARD.update(store = store, count = 0, thread = None)
+        _STORE_GUARD["count"] += 1
+        key = _HANDSHAKE_PREFIX + str(_STORE_GUARD["count"])
+    try:
+        store.add(key, 1)
+        world = dist.get_world_size()
+        if dist.get_rank() != 0 or world < 2:
+            return
+    except Exception:
+        return
+    with _STORE_GUARD["lock"]:
+        _STORE_GUARD["deadline"] = time.monotonic() + _exit_wait_seconds()
+        if _STORE_GUARD["thread"] is not None:
+            return
+        # Not a daemon: interpreter shutdown joins it, so rank 0 outlives every reader.
+        thread = threading.Thread(
+            target = _keep_store_for_readers,
+            args = (store, world),
+            name = "unsloth_fsdp2_store_guard",
+            daemon = False,
+        )
+        _STORE_GUARD["thread"] = thread
+        thread.start()
+
+
 def _save_timeout():
     try:
         return datetime.timedelta(
@@ -126,8 +204,7 @@ def _root_mesh(mesh):
 
 
 def _same_mesh(a, b):
-    """Same device type, dim names and rank layout. DTensor ops may hand back an equal mesh from an earlier
-    init_device_mesh of the same shape (torch caches specs by mesh equality), so identity is not enough."""
+    """Same device type, dim names and ranks; torch caches equal meshes, so compare by value."""
     if a is b:
         return True
     try:
@@ -268,12 +345,18 @@ def _wait_for_writer(
             )
         return
     if writer:
-        store.set(key, "done" if failed is None else "failed:" + _failure_text(failed))
+        try:
+            store.set(key, "done" if failed is None else "failed:" + _failure_text(failed))
+        finally:
+            _handshake_done(dist, store)
         return
-    store.wait([key], _save_timeout())
-    if failed is not None:
-        return  # this rank's own error is already on its way out
-    value = store.get(key)
+    try:
+        store.wait([key], _save_timeout())
+        if failed is not None:
+            return  # this rank's own error is already on its way out
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
     if value != b"done":
         detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
         raise WriterFailed(
@@ -328,20 +411,26 @@ def _writers_in_turn(
                 "Unsloth: the FSDP2 save failed on a rank that writes; see that rank's error."
             )
         return
-    if me in writers:
-        index = writers.index(me)
-        if index:
-            store.wait([keys[index - 1]], _save_timeout())
-        try:
-            action()
-        except BaseException as exc:
-            own = exc
-        store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
-    store.wait(keys, _save_timeout())
-    if own is not None:
-        raise own
-    for r, key in zip(writers, keys):
-        value = store.get(key)
+    values = []
+    try:
+        if me in writers:
+            index = writers.index(me)
+            if index:
+                store.wait([keys[index - 1]], _save_timeout())
+            try:
+                action()
+            except BaseException as exc:
+                own = exc
+            store.set(keys[index], "done" if own is None else "failed:" + _failure_text(own))
+        store.wait(keys, _save_timeout())
+        if own is not None:
+            raise own
+        values = [store.get(key) for key in keys]
+    finally:
+        # Each rank of the world runs this as often (the group is the world or one of the 1-D
+        # sub-meshes that split it), so it counts toward rank 0's store guard like the others.
+        _handshake_done(dist, store)
+    for r, value in zip(writers, values):
         if value != b"done":
             detail = value.decode("utf-8", errors = "replace").removeprefix("failed:")
             raise WriterFailed(
@@ -350,8 +439,7 @@ def _writers_in_turn(
 
 
 def _gather_full(param, DTensor):
-    """All ranks: the full tensor of a sharded parameter. Packed 4-bit bytes travel as uint8, so no
-    float copy kernel can rewrite NaN bit patterns inside them."""
+    """Full tensor on all ranks; packed 4-bit bytes travel as uint8 so NaN patterns survive."""
     local = param.to_local()
     mesh_type = param.device_mesh.device_type
     if local.device.type == "cpu" and mesh_type != "cpu":
@@ -395,8 +483,7 @@ def _quant_state_on_cpu(quant_state, device = "cpu"):
 
 
 def _restage_4bit(weight, device):
-    """The packed Params4bit `weight` on `device`, with its own copy of the QuantState there. Every
-    other attribute is carried over as is, which is what PEFT's 4-bit merge rebuilds the weight from."""
+    """Params4bit weight on device, with QuantState copy; other attributes kept for PEFT merge."""
     from bitsandbytes.nn import Params4bit
 
     moved = torch.Tensor._make_subclass(Params4bit, weight.data.to(device), False)
@@ -877,11 +964,18 @@ def _share_from_writer(
     counter[tag] = counter.get(tag, 0) + 1
     key = f"unsloth_fsdp2_export_r{writer_rank}_{tag}_{counter[tag]}"
     if writer:
-        store.set(key, _store_codec.encode(payload))
+        try:
+            store.set(key, _store_codec.encode(payload))
+        finally:
+            _handshake_done(dist, store)
         return payload
-    store.wait([key], _save_timeout())
     try:
-        return _store_codec.decode(store.get(key))
+        store.wait([key], _save_timeout())
+        value = store.get(key)
+    finally:
+        _handshake_done(dist, store)
+    try:
+        return _store_codec.decode(value)
     except ValueError:
         return (
             ("error", "the writer left an unreadable result in the store")
@@ -1257,9 +1351,8 @@ _BYTE_CHECK_CHUNK = 64 << 20
 
 
 def _equal_bytes(a, b):
-    """torch.equal of two flat uint8 views without a second full copy on either device: on one
-    device they are compared in place, otherwise in bounded slices on the loaded tensor's device (a
-    checkpoint held on the host is never copied onto the accelerator next to the gathered weight)."""
+    """torch.equal of flat uint8 views, no second full copy: in place on one device, else bounded
+    slices on the loaded tensor's device so a host checkpoint never lands on the accelerator."""
     if a.numel() != b.numel():
         return False
     if a.device == b.device:
@@ -1272,12 +1365,9 @@ def _equal_bytes(a, b):
 
 
 def _same_packed_bytes(live, loaded, dist, broadcast):
-    """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
-    rank gathers the live weight (a collective); only a rank holding the loaded data (rank 0 with
-    `broadcast`, every rank otherwise) compares, on the gathered weight's device, so a peer never
-    copies or reads its placeholder (an empty or meta state dict). One collective then agrees the
-    verdict, so every rank raises or keeps loading together: rank 0's broadcast, or a sum of
-    mismatches over the weight's mesh."""
+    """Whether loaded packed 4-bit bytes equal the live weight; all ranks gather it, only ranks
+    holding loaded data compare (rank 0 if broadcast) on the gathered weight's device so
+    placeholders are never read; one collective makes all ranks raise or keep loading together."""
     DTensor = _dtensor_class()
     mesh = None
     if DTensor is not None and isinstance(live, DTensor):
@@ -1286,8 +1376,7 @@ def _same_packed_bytes(live, loaded, dist, broadcast):
     same = False
     error = None
     if not broadcast or dist.get_rank() == 0:
-        # An error here (an OOM, a bad tensor) still reaches the verdict collective below as a
-        # mismatch, so the peers waiting in it fail with this rank instead of hanging.
+        # Errors here count as a mismatch in the verdict, so peers fail instead of hanging.
         try:
             if DTensor is not None and isinstance(loaded, DTensor):
                 loaded = loaded.full_tensor()
@@ -1326,8 +1415,7 @@ def _restore_quant_state(model, state_dict, options):
     if not isinstance(state_dict, dict):
         state_dict = {}
     if broadcast:
-        # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
-        # broadcast_object_list stages on whatever device the group's backend needs.
+        # Object broadcast: CPU tensors cannot use NCCL; objects stage on the backend's device.
         has = [
             any(
                 k == prefix + "weight" or k.startswith(prefix + "weight.")
@@ -1353,8 +1441,7 @@ def _restore_quant_state(model, state_dict, options):
         }
         loads_weight = head[:-1] in state_dict
         if broadcast:
-            # Only rank 0 holds the entries: a peer's own dict is a placeholder (empty, or meta
-            # tensors) it must not copy to the host, as broadcast_object_list replaces it anyway.
+            # Only rank 0 holds entries; peer placeholders are replaced, never copied to host.
             payload = [None]
             if owns:
                 payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
@@ -1362,8 +1449,7 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
-                # match the live ones.
+                # Pre-QuantState checkpoints: live scales apply only if the saved bytes match.
                 same = _same_packed_bytes(
                     module.weight, state_dict.get(head[:-1]) if owns else None, dist, broadcast
                 )
@@ -1503,8 +1589,7 @@ def _in_backward():
 
 
 def model_mesh(model):
-    """The device mesh `model` is sharded over: the one shard_model recorded, else its first DTensor
-    parameter's; None when neither exists (the default world group applies)."""
+    """Mesh shard_model recorded, else first DTensor param's; None means default world group."""
     mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
     if mesh is not None:
         return mesh
@@ -1601,8 +1686,7 @@ def _like_param(p, local):
 
 
 def _fsdp_managed_param_ids(model):
-    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
-    A readable state managing no params (every trainable param ignored) gives an empty set."""
+    """FSDP2 param ids; None if state unreadable (all DTensors count); empty if none managed."""
     ids = set()
     found = False
     for unit in fsdp2_units(model):
@@ -1627,8 +1711,7 @@ def _fsdp_managed_param_ids(model):
 
 
 def _tp_shard_outside(param, mesh, dist):
-    """True when param's mesh meets the dp `mesh` only at this rank, so its local shard is replicated
-    over `mesh`; any other overlap would average different shards."""
+    """True if its mesh meets `mesh` only at this rank; other overlap averages unlike shards."""
     if mesh is None:
         return False
     try:
@@ -1642,7 +1725,11 @@ def _tp_shard_outside(param, mesh, dist):
 
 def _fsdp_grad_sync_deferred(model, cache):
     """True when every FSDP2 param group has set_requires_gradient_sync(False), i.e. a non-final
+    micro-batch, or inside fsdp2_native._no_grad_sync: auto GA re-enables the reduce-scatter of
+    mostly trainable units there, and the whole replicated gradients can still wait for the last
     micro-batch. False when no group is found (sync every backward)."""
+    if model.__dict__.get("_unsloth_ga_no_sync"):
+        return True
     states = cache.get("fsdp_states")
     if states is None:
         states = []

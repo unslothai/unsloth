@@ -52,7 +52,6 @@ def _truncate_middle(text: str, limit: int, tail: int) -> str:
 
 
 def truncate_exception(event_dict: dict) -> dict:
-    """Structlog processor: bound the rendered exception, its message and the event."""
     if _MAX_EXC_CHARS <= 0:
         return event_dict
     text = event_dict.get("exception")
@@ -204,8 +203,7 @@ def _env_is_true(value: str) -> bool:
 
 
 def _verbose_logging_requested() -> bool:
-    """True when `unsloth studio --verbose` asked for every line back. The CLI signals
-    it by zeroing both access-log dedup windows, which is what the workers inherit."""
+    """True under --verbose, which zeroes both access-log dedup windows that workers inherit."""
 
     def _zero(name: str) -> bool:
         raw = (os.environ.get(name) or "").strip()
@@ -220,7 +218,6 @@ def _verbose_logging_requested() -> bool:
 
 
 def verbose_logging_requested() -> bool:
-    """Return whether Studio verbose logging is enabled."""
     return _verbose_logging_requested()
 
 
@@ -392,8 +389,7 @@ class LogConfig:
         env: Optional[str] = None,
         quiet_progress_bars: bool = True,
     ) -> structlog.BoundLogger:
-        """Configure structured logging; pass quiet_progress_bars=False for a process that streams
-        progress."""
+        """Configure logging; pass quiet_progress_bars=False when a process streams progress."""
         log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
         log_level = getattr(logging, log_level_name, logging.INFO)
 
@@ -418,7 +414,6 @@ class LogConfig:
                 filter_sensitive_data,
                 # After redaction: truncating first could leave half a path the redactor misses.
                 _truncate_exception_processor,
-                # Flatten the extra field into the main dict.
                 lambda logger, method_name, event_dict: {
                     "timestamp": event_dict.get("timestamp"),
                     "level": event_dict.get("level"),

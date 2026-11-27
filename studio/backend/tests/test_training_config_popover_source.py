@@ -16,7 +16,6 @@ def _read(rel: str) -> str:
 
 def test_progress_section_prefers_override_over_form_store():
     src = _read("sections/progress-section.tsx")
-    # Fields key on the override's presence, not isHistorical.
     assert "const cfg = configOverride ?? (isHistorical ? undefined : config)" in src
     assert "const cfgEpochs = cfg?.epochs" in src
     assert "isHistorical ? configOverride?.epochs" not in src

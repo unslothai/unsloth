@@ -26,8 +26,7 @@ _HUB_API = (
 
 @pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
-    """The CPU-only video branch sizes the load against host RAM before downloading (video_cpu_host); a 16 GB
-    runner would refuse Wan2.2 TI2V 5B there before the offline load this file checks is reached."""
+    """The video_cpu_host check would refuse Wan2.2 TI2V 5B on a 16 GB runner before the load."""
     from core.inference import diffusion_small_host
     monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
 
@@ -96,7 +95,6 @@ CASES = [
 def test_hf_hub_offline_load_asks_the_hub_nothing(monkeypatch, hub_calls, media, repo):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     seen, progress = _run(monkeypatch, media, repo)
-    # The stubbed build ran: the load got that far, and offline.
     assert "stub build" in (progress.get("error") or ""), progress
     assert seen == {"local_files_only": True}
     assert hub_calls == []

@@ -96,6 +96,8 @@ class MoERoutingLoad:
         self.top_k = _positive_int((_text_config(model), ("num_experts_per_tok", "moe_top_k"))) or (
             top_ks[0] if top_ks else None
         )
+        # Per layer top-k when every MoE block declares one (layers may route to different k / expert counts).
+        self.top_ks = [k for _, k in layers] if len(top_ks) == len(layers) else None
         self.active = False
         self.handle = None
         self.reset()
@@ -104,8 +106,10 @@ class MoERoutingLoad:
         return len(self.layers)
 
     def reset(self):
-        self.hard = None  # [layers, experts] int64, routed (token, slot) pairs
-        self.soft = None  # [layers, experts] float32, softmax mass
+        self.hard = None  # [layers, experts] int64 routed (token, slot) pairs; a per layer list if expert counts differ
+        self.soft = (
+            None  # [layers, experts] float32 softmax mass; a per layer list if expert counts differ
+        )
         self.tokens = None  # [layers] int64, counted tokens
         self.forwards = 0
 
@@ -144,17 +148,22 @@ class MoERoutingLoad:
         router_logits,
         attention_mask = None,
     ):
-        top_k = self.top_k
+        top_ks = (
+            self.top_ks
+            if self.top_ks is not None and len(self.top_ks) == len(router_logits)
+            else None
+        )
         hard = []
         soft = []
         tokens = []
-        for logits in router_logits:
+        for layer, logits in enumerate(router_logits):
             logits = logits.detach()
             experts = logits.shape[-1]
             logits = logits.reshape(-1, experts)
             weight = None
             if attention_mask is not None and attention_mask.numel() == logits.shape[0]:
                 weight = (attention_mask.reshape(-1) != 0).to(device = logits.device)
+            top_k = min(top_ks[layer] if top_ks is not None else self.top_k, experts)
             index = logits.topk(top_k, dim = -1).indices
             ones = (
                 torch.ones_like(index)
@@ -174,14 +183,19 @@ class MoERoutingLoad:
                 else weight.sum()
             )
         device = hard[0].device
-        hard = torch.stack([h.to(device) for h in hard])
-        soft = torch.stack([s.to(device) for s in soft])
+        hard = [h.to(device) for h in hard]
+        soft = [x.to(device) for x in soft]
+        if len({h.numel() for h in hard}) == 1:
+            hard, soft = torch.stack(hard), torch.stack(soft)
+        # else kept as per layer lists: layers with different expert counts do not stack into [layers, experts].
         tokens = torch.stack([t.to(device = device, dtype = torch.int64) for t in tokens])
-        if self.hard is None or self.hard.shape != hard.shape:
+        if self.hard is None or [h.shape for h in self.hard] != [h.shape for h in hard]:
             self.hard, self.soft, self.tokens = hard, soft, tokens
         else:
-            self.hard.add_(hard)
-            self.soft.add_(soft)
+            for total, new in zip(self.hard, hard):
+                total.add_(new)
+            for total, new in zip(self.soft, soft):
+                total.add_(new)
             self.tokens.add_(tokens)
         self.forwards += 1
 
@@ -189,20 +203,33 @@ class MoERoutingLoad:
         """Max / mean load per layer and the uncoefficiented aux loss; one host sync."""
         if self.hard is None:
             return {}
-        hard = self.hard.to(torch.float64)
-        soft = self.soft.to(torch.float64)
-        layers, experts = hard.shape
-        hard_ratio = hard.max(dim = -1).values / hard.mean(dim = -1).clamp_min(1e-12)
-        soft_ratio = soft.max(dim = -1).values / soft.mean(dim = -1).clamp_min(1e-12)
+        layers = len(self.hard)
+        hard_layers = [h.to(torch.float64) for h in self.hard]
+        soft_layers = [x.to(torch.float64) for x in self.soft]
+        hard_ratio = torch.stack([h.max() / h.mean().clamp_min(1e-12) for h in hard_layers])
+        soft_ratio = torch.stack([x.max() / x.mean().clamp_min(1e-12) for x in soft_layers])
         total = self.tokens.sum().to(torch.float64).clamp_min(1)
-        aux = experts * (hard.sum(0) * soft.sum(0)).sum() / (total * total)
+        if len({h.numel() for h in hard_layers}) == 1:
+            # The router aux loss over all layers concatenated, as transformers' load_balancing_loss_func.
+            hard, soft = torch.stack(hard_layers), torch.stack(soft_layers)
+            aux = hard.shape[-1] * (hard.sum(0) * soft.sum(0)).sum() / (total * total)
+        else:
+            # Unequal expert counts: no shared expert axis, so the mean of each layer's own aux loss.
+            per_token = self.tokens.to(torch.float64).clamp_min(1)
+            aux = torch.stack(
+                [
+                    h.numel() * (h * x).sum() / (n * n)
+                    for h, x, n in zip(hard_layers, soft_layers, per_token)
+                ]
+            ).mean()
+        assignments = sum(h.sum() for h in hard_layers)
         packed = torch.cat(
             [
                 hard_ratio,
                 soft_ratio,
                 aux.reshape(1),
                 self.tokens[:1].to(torch.float64),
-                hard.sum().reshape(1),
+                assignments.reshape(1),
             ]
         ).tolist()
         hard_ratio, soft_ratio = packed[:layers], packed[layers : 2 * layers]
