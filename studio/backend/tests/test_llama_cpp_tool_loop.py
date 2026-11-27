@@ -7821,9 +7821,25 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
         llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
     )
     recall_budgets = []
+    from core.inference import compaction_transcript
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(compaction_transcript, "path_for", lambda _thread_id: "/chat/transcript.md")
+    link = " Transcript at /chat/transcript.md."
+
+    def link_in_block(messages, _path):
+        system = messages[0]
+        if system["role"] != "system" or system["content"].endswith(link):
+            return messages
+        return [{**system, "content": system["content"] + link}, *messages[1:]]
+
+    monkeypatch.setattr(compaction_transcript, "link_in_block", link_in_block)
 
     def archive_and_recall(conversation, *_a, recall_budget_tokens, **_kw):
         recall_budgets.append(recall_budget_tokens)
+        if _kw["thread_id"]:
+            conversation = compaction_transcript.link_in_block(conversation, "/chat/transcript.md")
         return dict(conversation = conversation, counts = {}, recalled = False)
 
     monkeypatch.setattr(llama_cpp, "_archive_and_recall", archive_and_recall)
@@ -7883,6 +7899,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [
+                {"role": "system", "content": "Be brief."},
                 {"role": "user", "content": "ancient " * (5 if manual else 250)},
                 {"role": "assistant", "content": "Prior answer"},
                 {
@@ -7895,7 +7912,7 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
             context_overflow = "truncate_oldest",
             context_policy = policy,
             compaction_headroom_ratio = 0.25,
-            thread_id = "t1" if policy == "rolling" else None,
+            thread_id = "t1" if policy == "rolling" else "t2",
             max_tokens = 80,
             max_tool_iterations = 2,
             tool_choice = tool_choice,
@@ -7913,9 +7930,10 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     truncation = next(e for e in events if e["type"] == "context_truncated")
     assert truncation["fits"] and truncation["dropped_messages"] == 2
     if not audio:
+        # An accepted retry prices the transcript link too; a plain fit leaves it uncounted, as before.
         assert truncation["prompt_tokens_after"] == sum(
             len(str(m.get("content", ""))) for m in payloads[0]["messages"]
-        )
+        ) - len(link) * (expected_passage != complete)
     from core.inference.context_window import prompt_budget, retrieval_budget
 
     prompt = truncation["prompt_tokens_after"]

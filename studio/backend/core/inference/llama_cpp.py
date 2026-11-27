@@ -1694,6 +1694,17 @@ def _has_unpriced_media(messages: list[dict]) -> bool:
     )
 
 
+def _with_transcript_link(messages: list[dict], thread_id: Optional[str]) -> list[dict]:
+    """The prompt as `_archive_and_recall` will send it, with the transcript link it adds."""
+    from core.inference import compaction_transcript
+    from core.rag import conversation_archive
+
+    if not thread_id or not conversation_archive.enabled():
+        return messages
+    path = compaction_transcript.path_for(thread_id)
+    return compaction_transcript.link_in_block(messages, path) if path else messages
+
+
 def _records_boundary(truncation: dict) -> bool:
     """Not the fits flag: a rescued fit still evicts, and skipping the save compacts silently. Saving is not replaying: sticky logic declines fits-false records."""
     return bool(truncation.get("fits")) or bool(truncation.get("dropped_messages"))
@@ -42294,7 +42305,9 @@ class LlamaCppBackend:
                                     )
                                     candidate = base[:at] + refreshed["messages"] + base[at:]
                                     measured = _fit_count_tokens(
-                                        candidate, safe_tools, _reasoning_kw
+                                        _with_transcript_link(candidate, thread_id),
+                                        safe_tools,
+                                        _reasoning_kw,
                                     )
                                     # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
                                     budget = prompt_budget(
