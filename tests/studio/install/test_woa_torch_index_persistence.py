@@ -3439,6 +3439,7 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
             functions(
                 SETUP_SRC,
                 "Test-WoaWheelTagsParity",
+                "Test-WoaWheelTagsUsableParity",
                 "Test-WoaPairsWithTorchParity",
                 "Get-WoaCudaWheelVersionParity",
             ),
