@@ -1935,6 +1935,7 @@ class CalibratedImageActivation:
     tiled_decode_mib: int
     max_canvas_mib: int
     resident_only: bool = False
+    slack_resident: bool = False
 
     def headroom(self, tiled: bool) -> int:
         return max(
@@ -1973,6 +1974,9 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
 }
 # U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
+# DiTs whose fully resident check takes the residency slack instead of the 15% cut (dense bf16 Z-Image on a 32 GB
+# RTX 5090: resident peak 24860 MiB reserved vs 24818 priced; streaming its encoder was 25% slower per render).
+_CALIBRATED_SLACK_RESIDENT = frozenset({"z-image"})
 # A plain bf16 denoiser keeps the whole-module tier the flat plan would take over the measured resident-transformer
 # tier: Lumina-2's encoder is as large as its DiT, and streaming it per prompt was 1% slower per render (L4, 16 GiB).
 _CALIBRATED_KEEPS_WHOLE_MODULE = frozenset({"lumina-2"})
@@ -2002,6 +2006,7 @@ def calibrated_image_activation(
     return CalibratedImageActivation(
         *(int(v * _ACTIVATION_MARGIN * widen) for v in measured[1 if max_speed else 0]),
         resident_only = str(family or "") in _RESIDENT_ONLY_CALIBRATED,
+        slack_resident = str(family or "") in _CALIBRATED_SLACK_RESIDENT,
     )
 
 
@@ -3266,6 +3271,11 @@ def plan_diffusion_memory(
             ),
             policy = policy,
             stream_transformer = stream_transformer,
+            slack_mib = (
+                _resident_dit_slack_mib(device_memory)
+                if calibrated_activation.slack_resident
+                else None
+            ),
         )
         if faster is not None:
             flat_streamed = policy == OFFLOAD_GROUP and stream_transformer
@@ -3275,6 +3285,8 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+            if reason == _CALIBRATED_SLACK_RESIDENT_REASON:
+                estimates["calibrated_resident_slack_mib"] = _resident_dit_slack_mib(device_memory)
     if calibrated_activation is not None and "calibrated_headroom_mib" not in estimates:
         from .diffusion_multigpu import current_selection
         if current_selection() is not None:
@@ -3394,6 +3406,11 @@ def _multigpu_companion_split(
     )
 
 
+_CALIBRATED_SLACK_RESIDENT_REASON = (
+    "measured activations fit resident within the safe budget less the residency slack"
+)
+
+
 def _calibrated_faster_tier(
     act: CalibratedImageActivation,
     *,
@@ -3405,6 +3422,7 @@ def _calibrated_faster_tier(
     free_mib: Optional[int],
     policy: str,
     stream_transformer: bool,
+    slack_mib: Optional[int] = None,
 ) -> Optional[tuple[str, bool, bool, bool, str]]:
     """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
     A flat all-resident pick whose measured 2048 denoise does not fit is demoted to the fastest tier that does:
@@ -3439,15 +3457,15 @@ def _calibrated_faster_tier(
     if policy == OFFLOAD_NONE:
         flat_rank = 0
     elif policy == OFFLOAD_GROUP and not stream_transformer:
-        flat_rank = 1
+        flat_rank = 2
     elif policy == OFFLOAD_MODEL:
-        flat_rank = 4
-    elif policy == OFFLOAD_GROUP:
         flat_rank = 5
+    elif policy == OFFLOAD_GROUP:
+        flat_rank = 6
     else:
         return None
     model_viable = max(transformer, te, others) <= budget and (
-        flat_rank < 5
+        flat_rank < 6
         or (
             transformer <= room
             and te + act.text_encoder_mib <= free
@@ -3460,6 +3478,15 @@ def _calibrated_faster_tier(
             transformer + te + others + act.headroom(False) + overhead <= int(budget * 0.85)
             and transformer + te + others <= room,
             (OFFLOAD_NONE, False, True, False, "measured activations fit resident with headroom"),
+        ),
+        (
+            # The measured peak already carries its margin and the reserve + base overhead stay charged, so the
+            # residency slack replaces the 15% instead of stacking on it (the encoders would otherwise stream).
+            slack_mib is not None
+            and transformer + te + others + act.headroom(False) + overhead + int(slack_mib)
+            <= budget
+            and transformer + te + others <= room,
+            (OFFLOAD_NONE, False, True, False, _CALIBRATED_SLACK_RESIDENT_REASON),
         ),
         (
             resident_streamed_te
