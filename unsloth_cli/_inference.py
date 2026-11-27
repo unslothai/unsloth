@@ -57,9 +57,8 @@ def _opener(follow_redirects: bool, loopback: bool):
 
 
 def urlopen_no_redirect(request, timeout):
-    """urlopen that errors on any redirect: following a 3xx would send a bearer
-    token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Unsloth's response."""
+    """urlopen errors on redirects: following one would send a bearer token to an unvetted base (or
+    accept its identity proof), letting a port squatter relay a real Unsloth's response."""
     return _opener(False, is_loopback_url(request.full_url)).open(request, timeout = timeout)
 
 
@@ -144,9 +143,8 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
-    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
-    (issue 8865)."""
+    """Pin cache paths as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION resolves
+    against cwd, leaving unsloth_compiled_cache that cache_cleanup misses (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -442,8 +440,7 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
-    MLX and llama-server set finish_reason to length."""
+    """Token limit hit: safetensors sets truncated; MLX/llama-server set finish_reason=length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
@@ -503,8 +500,7 @@ def _image_payload(part) -> Optional[str]:
 
 
 def _local_image_request(messages: list, several: bool):
-    """Studio's local route shape: an image marker where each image stood plus payloads in order; a
-    model that reads one image per conversation gets only the newest turn's image, like the app."""
+    """Image markers and payloads in order; one-image models see only the newest turn's image."""
     owners = []  # (message index, user ordinal, payloads)
     ordinal = 0
     for index, message in enumerate(messages):
@@ -1482,8 +1478,7 @@ class HttpChatBackend:
 
 
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop untyped load options so the server keeps a resident model's settings or applies
-    the model's saved ones."""
+    """Drop untyped load options: a resident model keeps its settings, else saved ones apply."""
     opts = dict(load_opts)
     for name in ("load_in_4bit", "max_seq_length", "tensor_parallel"):
         source = ctx.get_parameter_source(name)

@@ -300,8 +300,7 @@ def _managed_cli_argv(
     *args: str,
     isolated: bool = False,
 ) -> List[str]:
-    """argv that runs the managed `unsloth` CLI through *python*. -X utf8 precedes -I because -I
-    implies -E. *isolated* mirrors Isolation in process.rs; the default inherits."""
+    """-X utf8 precedes -I (implies -E); isolated mirrors process.rs, the default inherits."""
     flags = ["-X", "utf8", "-I"] if isolated else ["-X", "utf8"]
     return [str(python), *flags, "-c", _WINDOWS_CLI_ENTRYPOINT, *args]
 
@@ -570,8 +569,7 @@ def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
 
 
 def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
-    """Whether the installed torch actually resolves through the ``rocm`` meta-package: the generic
-    pytorch.org wheels vendor their own runtime, so after a switch it is orphaned."""
+    """Whether torch resolves via rocm meta-package; generic pytorch.org wheels orphan it."""
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):
             for info in sp.glob("torch-*.dist-info"):
@@ -872,9 +870,7 @@ def _wait_for_server(
 
 
 def _cli_api_key_secret_path(name: str) -> Path:
-    """Identity is the digest, so a shared stem (foo/bar vs foo?bar, cli vs CLI) cannot share a
-    credential; ASCII-only keeps names within NAME_MAX (255 bytes); multibyte names were
-    re-minted every launch (issue 10595)."""
+    """Stems need own keys; ASCII-only fits NAME_MAX; multibyte names re-minted (issue 10595)."""
     safe = "".join(
         ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
     ).strip("_")
@@ -1193,8 +1189,7 @@ _UNATTENDED_PROMPT_SECONDS = 30.0
 
 
 def _prompt_owns_the_terminal() -> bool:
-    """Whether this process may DRIVE the terminal, not merely see one: a backgrounded job passes
-    isatty() but read_masked's tcsetattr SIGTTOUs it and freezes the launch. True on any doubt."""
+    """Can this process drive the terminal? Backgrounded jobs get SIGTTOU; True on any doubt."""
     try:
         return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
     except (AttributeError, OSError, ValueError):
@@ -1330,8 +1325,7 @@ def _cli_update_password(
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
-    """Set the INITIAL admin password before the server binds, and only the first: an override would
-    be an auth bypass; the parent runs it so the secret stays out of child argv."""
+    """Initial admin password only (pre-bind); override = auth bypass; secret stays off argv."""
     if not supplied_password:
         return
     try:
@@ -1464,8 +1458,7 @@ def _validate_inproc_backend_before_strip(
 
 
 def _tunnel_binary_confirmed_unavailable() -> bool:
-    """True only if cloudflared is provably unavailable, so --secure can keep the seeded recovery
-    password. False on ANY uncertainty: a leak outweighs a recoverable lockout."""
+    """True only if cloudflared is provably absent; doubt is False: a leak outweighs lockout."""
     run_py = _find_run_py()
     if run_py is None:
         return False
@@ -1496,8 +1489,7 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
 
 
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
-    """True when the child serving Unsloth is provably THIS install's backend, which suppresses the
-    seeded credential, so the strip can be skipped. False on ANY doubt."""
+    """True only if the child is provably this install's backend; False on any doubt."""
     if in_studio_venv:
         return True
     if child_run_py is None:
@@ -2108,7 +2100,6 @@ def studio_default(
     host = _normalize_wildcard_bind_host(host)
     _require_unambiguous_ephemeral_bind(host, port)
 
-    # --verbose restores the per-request access logs suppressed by default.
     if verbose:
         _enable_verbose_access_logs()
     if disable_dns_pinning:
@@ -3295,8 +3286,7 @@ def _report_unreadable(paths: "list[Path]") -> None:
 def _pid_file_entries(
     unreadable: "list[Path] | None" = None,
 ) -> "list[tuple[int, list[RecordedStart], list[Path]]]":
-    """Per recorded server (pid, create_times, files), grouped by PID so a second SIGTERM cannot
-    hard-kill mid-shutdown; stale files cannot veto a live server."""
+    """Per PID so a second SIGTERM cannot hard-kill; stale files never veto a live server."""
     by_pid: "dict[int, tuple[list[RecordedStart], list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
@@ -3598,8 +3588,7 @@ _PROFILE_PROBE_TIMEOUT_SECONDS = 20.0
 
 
 def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str]:
-    """The caller's profile proxy defaults as JSON, or None. Several hosts MERGE, earlier hosts
-    winning per key. Best effort: a broken profile costs one timeout."""
+    """Caller's profile proxy defaults as JSON or None; earlier hosts win per key; best effort."""
     hosts = [powershell] if isinstance(powershell, str) else list(powershell)
     # ONE budget for the whole probe: two hung profiles must not double the stated cost.
     deadline = time.monotonic() + _PROFILE_PROBE_TIMEOUT_SECONDS
@@ -3672,8 +3661,7 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
 
 @functools.lru_cache(maxsize = 512)
 def _patterns_can_overlap(left: str, right: str) -> bool:
-    """Whether any command name matches BOTH wildcard patterns: two can share matches without
-    matching each other as strings, so the languages are intersected."""
+    """Whether two wildcard patterns overlap; checked by intersecting their languages."""
     if "[" in left or "[" in right:
         return True
 
@@ -3790,9 +3778,8 @@ _UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
-    """uv --no-cache discards its cache and outranks --cache-dir, so recording it aims updates at a
-    nonexistent cache; UV_NO_CACHE is not stripped, so a padded value leaves the uv cache on and
-    this must not stand the selection down."""
+    """uv --no-cache outranks --cache-dir, so recording it aims at a missing cache; UV_NO_CACHE is
+    not stripped, so padded values leave uv cache on and must not stand the selection down."""
     return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
@@ -3831,8 +3818,7 @@ def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
 
 
 def _recorded_install_uv_cache() -> Optional[Path]:
-    """The cache the installer used, as it recorded it. Content cannot tell a Studio cache the
-    installer filled from one holding a single wheel the backend dropped there."""
+    """Recorded install cache; content cannot tell an installer fill from a lone backend wheel."""
     try:
         recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
             encoding = "utf-8-sig", errors = "surrogateescape"
@@ -3850,8 +3836,7 @@ def _recorded_install_uv_cache() -> Optional[Path]:
 
 
 def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
-    """Record the cache this update used, for installs whose installer never did; otherwise they
-    stay on the content fallback, which goes stale once the backend drops a wheel in."""
+    """Record cache for marker-less installs; content fallback goes stale once a wheel lands."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return
     if _uv_no_cache_requested():
@@ -3886,8 +3871,7 @@ def _uv_is_store_name(name: str) -> bool:
 
 
 def _uv_cache_folds_case(cache_dir: Path) -> bool:
-    """Measured on the cache filesystem, not assumed from the platform, exactly as install.sh
-    does it: default APFS folds, ext4 does not, and a Mac can have either mounted."""
+    """Probed like install.sh: APFS folds, ext4 does not, and a Mac can have either mounted."""
     probe = cache_dir / f".unsloth-case-probe.{os.getpid()}-A"
     try:
         probe.mkdir()
@@ -3911,7 +3895,6 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     probes = [cache_dir]
     folds = _uv_cache_folds_case(cache_dir)
     try:
-        # Only the directories uv owns.
         for entry in cache_dir.iterdir():
             if not _uv_is_store_name(entry.name):
                 # On APFS or NTFS `Python-V0` is the same path as `python-v0`.
@@ -3942,8 +3925,7 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
                 pass
         except OSError:
             return False
-    # Only names uv is measured to need writable (root .lock, sdists-v9/.git); rejecting more throws
-    # away the warm cache.
+    # Only .lock and sdists-v9/.git need writable; rejecting more discards the warm cache.
     for target in probes:
         if target == cache_dir:
             names = (".lock",)
@@ -4121,14 +4103,12 @@ class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _build_installer_opener() -> urllib.request.OpenerDirector:
-    """A private opener, so the redirect chain can be checked before it is followed. The installed
-    opener cannot be reused: add_handler assigns handler.parent and would repoint it at this one."""
+    """Private opener for redirect checks; reusing the installed one repoints handler.parent."""
     return urllib.request.build_opener(_InstallerRedirectHandler)
 
 
 def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
-    """Cheap shape check before a fetched installer is executed. Not a trust check: it stops a
-    captive-portal page or an error body from being piped into bash."""
+    """Cheap shape check (not trust) so captive-portal or error pages are not piped into bash."""
     if not body or len(body) < 512:
         return False
     head = body.lstrip()[:256].lower()
@@ -4193,8 +4173,7 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
 
 
 def _installers_on_disk(candidates: Sequence[Path]) -> List[Path]:
-    """Every candidate that exists, not just the first: an unlaunchable candidate must still
-    leave the next one to try before the network is reached."""
+    """All existing candidates, so an unlaunchable one still leaves the next before any fetch."""
     found: List[Path] = []
     for candidate in candidates:
         try:
@@ -4337,8 +4316,7 @@ def setup(
 
 
 def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
-    """Refuse to call an update successful when the tree it produced is damaged: pip treats intact
-    metadata as satisfied, so the update exits 0 and the backend dies at boot."""
+    """Fail on damage: pip sees intact metadata as satisfied, so it exits 0 yet fails at boot."""
     managed_venv = _studio_stage.runtime_root(STUDIO_HOME) / "unsloth_studio"
     if _studio_deps.running_outside_managed_venv((managed_venv,)):
         # This CLI is not in the venv the update wrote, so its file list describes the wrong tree.
@@ -4501,7 +4479,6 @@ def update(
         # Constructed after the idle scan (pinned by test_studio_runtime_gate).
         launcher_transaction = _WindowsLauncherUpdateTransaction()
         if staging:
-            # A staged run writes no launcher.
             launcher_transaction.enabled = False
         with launcher_transaction as launcher_update:
             _run_setup_script(verbose = verbose, repo_root = repo_root)
@@ -4704,8 +4681,7 @@ class _WindowsLauncherUpdateTransaction:
             return False
 
     def _move_launcher_aside(self) -> None:
-        """Frees the canonical launcher path so the installer can publish a replacement (uv deletes
-        third-party scripts and hard-errors when in use); non-fatal, it costs only the upgrade."""
+        """Frees launcher path: uv deletes third-party scripts, hard-errors in use; non-fatal."""
         assert self.launcher is not None and self.stale is not None
         if not self._is_valid_pe(self.launcher):
             return
@@ -4773,8 +4749,7 @@ class _WindowsLauncherUpdateTransaction:
         return self._recovered_cli_health_error()
 
     def _launcher_runs_error(self) -> Optional[str]:
-        """Whether THIS launcher file starts and answers --version. About the file, not the CLI: the
-        only check that catches a PE-shaped but corrupt stub."""
+        """This file alone answers --version; the only check catching a PE-shaped corrupt stub."""
         assert self.launcher is not None
         if not self.launcher.exists():
             return self._LAUNCHER_ABSENT
@@ -4799,8 +4774,7 @@ class _WindowsLauncherUpdateTransaction:
         return None
 
     def _launcher_health_error(self) -> Optional[str]:
-        """Whether the update left a working CLI; asks the signed interpreter on an Application
-        Control denial, else good installs roll back (issue 8490)."""
+        """Signed interpreter on App Control denial; else good installs roll back (issue 8490)."""
         error = self._launcher_runs_error()
         if error is self._POLICY_BLOCKED:
             return self._interpreter_health_error(error)
@@ -5126,8 +5100,7 @@ def desktop_capabilities(
             if health is not None:
                 payload["llama_runtime_ok"], payload["llama_runtime_reason"] = health
         else:
-            # A null that must not be cached: it depends on a selection the desktop does not watch
-            # (managed.rs keys off this reason).
+            # Not cached: depends on an unwatched selection; managed.rs keys off this reason.
             payload["llama_runtime_reason"] = "llama_runtime_not_managed"
     except Exception:
         # Never cache a failed attempt: it shares the damaged tree's fingerprint.

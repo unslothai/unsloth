@@ -958,8 +958,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
         lora_config = json.load(f)
     alpha = float(lora_config.get("lora_alpha") or 0)
 
-    # PEFT saves the "default" adapter at the top of adapter_dir (others go to subfolders), and that is the one the
-    # converter reads, so its live scaling is the one to fold, whichever adapter is active.
+    # Converter reads the default adapter; fold its live scaling even if another is active.
     if "default" in (getattr(model, "peft_config", None) or {}):
         adapter = "default"
     else:
@@ -1002,9 +1001,8 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             else:
                 tensor = tensor.reshape(tensor.shape[0], rank, experts).permute(2, 0, 1)
             tensor = tensor.contiguous()
-            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features, so lora_A reads its last dim. PEFT 0.18
-            # does not: lora_A then reads dim 1 and the delta is A^T @ B^T, which llama.cpp sees as
-            # b = A^T, a = B^T.
+            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features so lora_A reads the last
+            # dim; PEFT 0.18 reads dim 1, giving A^T @ B^T (b = A^T, a = B^T in llama.cpp).
             if kind == "lora_A" and not getattr(module, "_did_swap_in_out_features", False):
                 swapped_roles.append(prefix)
         else:
@@ -1096,8 +1094,7 @@ def _checkpoint_use_reentrant(text_model):
 
 
 def _weights_offloaded(module):
-    """True when accelerate keeps the module's weights elsewhere until its hook runs (CPU / disk offload: the
-    parameter sits on ``meta``) or the hook executes on another device than the parameter's."""
+    """True when accelerate offloads the weights (on meta) or its hook runs on another device."""
     query = getattr(module, "query", None)
     if query is None or query.device.type == "meta":
         return True
@@ -1508,8 +1505,7 @@ def _stage_text_forward(
         # The layers' short convolutions hand out time-major (transposed) outputs; the wire needs dense rows.
         hidden_states, block_states = hidden_states.contiguous(), block_states.contiguous()
         if torch.is_grad_enabled() and not block_states.requires_grad:
-            # Only frozen embeddings in it (a cut before the second block): a leaf, so the next stage's gradient has
-            # somewhere to go.
+            # Frozen-only: detach to a leaf so the next stage's gradient has somewhere to go.
             block_states = block_states.detach().requires_grad_()
         raise stage_output((hidden_states, block_states))
     hidden_states = decoder.final_input(block_states, hidden_states)[0]

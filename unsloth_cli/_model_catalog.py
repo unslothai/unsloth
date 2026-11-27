@@ -151,8 +151,7 @@ def exported_entries() -> List[ModelEntry]:
 
 
 def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
-    """Snapshot a pinned row opens when load_id names one in this repo; a pin beats refs/main, which
-    would resolve to a revision this row never loads."""
+    """Pinned snapshot for load_id; a pin beats refs/main, a revision this row never loads."""
     if not load_id:
         return None
     try:
@@ -167,9 +166,8 @@ def _pinned_snapshot(repo_path: Path, load_id: Optional[str]) -> Optional[Path]:
 
 
 def _reachable_snapshots(repo_path: Path, load_id: Optional[str] = None) -> List[Path]:
-    """Snapshots a load through this row can open: the pinned one if pinned, else refs/main alone,
-    since other revisions' quants are unreachable; commit- or tag-pinned rows with no refs/main
-    describe every snapshot."""
+    """Snapshots this row can open: the pin if pinned, else refs/main since other revisions' quants
+    are unreachable; commit- or tag-pinned rows with no refs/main describe every snapshot."""
     snapshots = repo_path / "snapshots"
     try:
         available = sorted(path for path in snapshots.iterdir() if path.is_dir())
@@ -335,9 +333,8 @@ def _is_loose_gguf_companion(path: str) -> bool:
 
 
 def _gguf_file_as_the_loader_opens_it(path: str) -> str:
-    """Shard 1 for a split family as the loader reads it, not restated: the loader's
-    _GGUF_SPLIT_FILE_RE takes exactly five digits, the scan's _GGUF_SPLIT_RE three or more; a
-    local rule would rewrite model-002-of-003.gguf onto a sibling."""
+    """Shard 1 as the loader reads it: _GGUF_SPLIT_FILE_RE takes exactly five digits, _GGUF_SPLIT_RE
+    three or more; a local rule would rewrite model-002-of-003.gguf onto a sibling."""
     try:
         from utils.models.model_config import _local_gguf_load_path
     except ImportError:
@@ -350,9 +347,8 @@ def _gguf_file_as_the_loader_opens_it(path: str) -> str:
 
 
 def _gguf_load_target(target: str) -> str:
-    """A .gguf row loads its own file, not a folder's best quant across unrelated GGUFs (issue
-    10352); shards collapse to the file the loader opens; a folder takes the largest, often an
-    F16 that risks OOM."""
+    """A .gguf row loads its own file, not a folder's best quant (issue 10352); shards collapse to
+    the file the loader opens; a folder takes the largest, often an F16 that risks OOM."""
     if _is_gguf_file(target):
         return _gguf_file_as_the_loader_opens_it(target)
     return _preferred_complete_gguf(target) or target
@@ -379,9 +375,7 @@ def _preferred_complete_gguf(path: str) -> Optional[str]:
 
 
 def _cached_gguf_load_id(row: dict) -> str:
-    """Concrete local GGUF for a cached row, else the identifier it came with; an active-cache bare
-    repo id reaches detect_gguf_model_remote, whose permanent GatedRepoError returns None without
-    the local-cache fallback, so a downloaded gated GGUF reads as non-GGUF."""
+    """Local GGUF if cached, else the id; a bare id's GatedRepoError skips local fallback."""
     load_id = row.get("load_id") or row["repo_id"]
     resolved = _preferred_complete_gguf(load_id)
     if resolved:
