@@ -395,15 +395,7 @@ function markdownToRecords(
   let idx = 0;
   for (const { role, content } of messages) {
     if (!content.trim()) continue;
-    const normalizedRole = role.trim().toLowerCase();
-    const validRole =
-      normalizedRole === "developer"
-        ? "system"
-        : normalizedRole === "user" ||
-            normalizedRole === "assistant" ||
-            normalizedRole === "system"
-          ? normalizedRole
-          : "user";
+    const validRole = TEXT_ROLES.get(role.trim().toLowerCase()) ?? "user";
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -420,8 +412,8 @@ function markdownToRecords(
   return records;
 }
 
-// Developer turns are system turns, as in the JSONL, ShareGPT and Markdown importers.
-const CSV_ROLES = new Map<string, MessageRecord["role"]>([
+// Markdown and CSV roles; developer maps to system as in the JSONL and ShareGPT importers.
+const TEXT_ROLES = new Map<string, MessageRecord["role"]>([
   ["user", "user"],
   ["assistant", "assistant"],
   ["system", "system"],
@@ -436,7 +428,7 @@ function csvToConversations(csvText: string, basename: string): ParsedConversati
   if (header.map((cell) => cell.trim().toLowerCase()).join(",") !== COMBINED_CSV_HEADER) {
     const threadId = crypto.randomUUID();
     // Row 0 is data only in a headerless file, where it starts with a role.
-    const body = CSV_ROLES.has(header[0]?.trim().toLowerCase() ?? "") ? parsed : rows;
+    const body = TEXT_ROLES.has(header[0]?.trim().toLowerCase() ?? "") ? parsed : rows;
     const messages = csvToRecords(body, threadId, baseTs);
     return messages.length > 0 ? [{ title: basename, threadId, messages }] : [];
   }
@@ -466,7 +458,7 @@ function csvToRecords(rows: string[][], threadId: string, baseTs: number): Messa
     const role = row[0]?.trim().toLowerCase();
     const content = row.slice(1).join(",");
     if (!content.trim()) continue;
-    const validRole = CSV_ROLES.get(role ?? "") ?? "user";
+    const validRole = TEXT_ROLES.get(role ?? "") ?? "user";
     const id = crypto.randomUUID();
     records.push({
       id,
