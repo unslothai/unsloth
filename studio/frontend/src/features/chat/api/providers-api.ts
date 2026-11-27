@@ -9,7 +9,7 @@ import type { CustomReasoningConfig } from "../custom-reasoning";
 import type { ProviderCompactionMode } from "../utils/auto-compaction";
 
 
-export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
+export type ProviderAuthKind = "api_key" | "chatgpt_oauth" | "github_oauth";
 export type ProviderAuthStatus =
   | "disconnected"
   | "connected"
@@ -573,4 +573,35 @@ export async function disconnectCodexOAuth(providerId: string): Promise<void> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }
+}
+
+
+export interface GitHubCopilotFlow {
+  flow_id: string;
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+}
+
+export async function startGitHubCopilot(providerId: string | null): Promise<GitHubCopilotFlow> {
+  return parseJsonOrThrow(await authFetch(`/api/providers/${providerId ?? "new"}/github/start`, { method: "POST" }));
+}
+
+export async function pollGitHubCopilot(providerId: string | null, flowId: string): Promise<{
+  status: "pending" | "connected" | "expired" | "denied";
+  interval?: number;
+  provider_id?: string;
+}> {
+  return parseJsonOrThrow(await authFetch(`/api/providers/${providerId ?? "new"}/github/flows/${flowId}/poll`, { method: "POST" }));
+}
+
+export async function cancelGitHubCopilot(providerId: string | null, flowId: string): Promise<void> {
+  const response = await authFetch(`/api/providers/${providerId ?? "new"}/github/flows/${flowId}`, { method: "DELETE" });
+  if (!response.ok) await parseJsonOrThrow(response);
+}
+
+export async function disconnectGitHubCopilot(providerId: string): Promise<void> {
+  const response = await authFetch(`/api/providers/${providerId}/github`, { method: "DELETE" });
+  if (!response.ok) await parseJsonOrThrow(response);
 }

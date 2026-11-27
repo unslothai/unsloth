@@ -22,6 +22,7 @@ import {
 
 const POPULAR_PROVIDER_TYPES = [
   "openai_codex",
+  "github_copilot",
   "openai",
   "anthropic",
   "gemini",

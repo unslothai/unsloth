@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { DashboardSquare01Icon } from "@hugeicons/core-free-icons";
+import { DashboardSquare01Icon, GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { isCustomProviderType } from "./external-providers";
@@ -107,6 +107,13 @@ function LetterTile({
 }
 
 export function ApiProviderLogo({ providerType, className, title, name }: ApiProviderLogoProps) {
+  if (providerType === "github_copilot") {
+    return (
+      <span title={title} aria-hidden className="inline-flex shrink-0">
+        <HugeiconsIcon icon={GithubIcon} className={cn("shrink-0", className)} />
+      </span>
+    );
+  }
   const src = apiProviderLogoSrc(providerType);
   const letter = name?.trim().charAt(0).toUpperCase();
   if (!src && letter) {

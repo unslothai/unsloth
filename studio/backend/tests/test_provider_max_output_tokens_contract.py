@@ -52,7 +52,9 @@ finally:
 CREDENTIAL = ("alice", None)
 
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
-OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
+OVERRIDABLE_PROVIDER_TYPES = tuple(
+    t for t in PROVIDER_REGISTRY if t not in ("openai_codex", "github_copilot")
+)
 
 _PRE_PR_TABLE_DDL = """
     CREATE TABLE llm_providers (
@@ -260,9 +262,7 @@ def test_a_non_custom_provider_accepts_an_explicit_null_override(
 
 
 @pytest.mark.parametrize("provider_type", OVERRIDABLE_PROVIDER_TYPES)
-def test_every_provider_type_but_codex_takes_a_real_override(
-    provider_routes: Path, provider_type: str
-):
+def test_non_subscription_providers_take_a_real_override(provider_routes: Path, provider_type: str):
     """A documented per-model cap still wins in the frontend; the override replaces the
     32,768-token fallback every provider reaches for an unlisted model."""
     providers_db.create_provider(

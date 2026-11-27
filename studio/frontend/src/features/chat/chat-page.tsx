@@ -2948,6 +2948,7 @@ export function ChatPage({
   );
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
   const externalProviders = useExternalProvidersStore((s) => s.providers);
+  const chatModelRequest = useExternalProvidersStore((s) => s.chatModelRequest);
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -4415,6 +4416,14 @@ export function ChatPage({
       isModelSelectionIntentCurrent,
     ],
   );
+  useEffect(() => {
+    if (!active || !settingsHydrated || !chatModelRequest || search.new !== chatModelRequest.newChat) return;
+    const store = useExternalProvidersStore.getState();
+    if (store.chatModelRequest !== chatModelRequest) return;
+    store.setChatModelRequest(null);
+    handleCheckpointChange(chatModelRequest.checkpoint, { source: "external" });
+  }, [active, chatModelRequest, handleCheckpointChange, search.new, settingsHydrated]);
+
   const handleReloadActiveModel = useCallback(
     (config: PerModelConfig) => {
       const checkpoint = inferenceCheckpoint;

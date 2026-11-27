@@ -67,6 +67,23 @@ test("a ChatGPT subscription reports its sign-in, not a key", () => {
   );
 });
 
+test("a Copilot connection points users to GitHub when signed out", () => {
+  const copilot = { authKind: "github_oauth" as const, models: ["auto"] };
+  assert.deepEqual(connectionStatus({ ...copilot, authStatus: "disconnected" }, on), {
+    tone: "warn",
+    label: "Not signed in",
+    detail: "Sign in with GitHub.",
+  });
+  assert.equal(
+    connectionStatus({ ...copilot, authStatus: "reauthorization_required" }, on).label,
+    "Sign in again",
+  );
+  assert.equal(
+    connectionStatus({ ...copilot, authStatus: "connected" }, on).label,
+    "Signed in",
+  );
+});
+
 test("a failed check names its cause and drops the boilerplate prefix", () => {
   const failed = (
     kind: "auth" | "billing" | "rate_limit" | "unreachable" | "timeout" | null,
@@ -212,6 +229,14 @@ test("the gallery leads with popular providers and always offers the self-hosted
   assert.deepEqual(
     groups[3].items.map((item) => item.name),
     ["Azure OpenAI", "Google Vertex AI", "TypeSafe"],
+  );
+});
+
+test("the gallery puts Copilot next to the ChatGPT subscription when available", () => {
+  const groups = buildConnectionGallery([...REGISTRY, entry("github_copilot", "GitHub Copilot")]);
+  assert.deepEqual(
+    groups[0].items.slice(0, 2).map((item) => item.providerType),
+    ["openai_codex", "github_copilot"],
   );
 });
 

@@ -12,6 +12,19 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "github_copilot": {
+        "display_name": "GitHub Copilot subscription",
+        "base_url": "https://github.com",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": False,
+        "supports_tool_calling": False,
+        "studio_tools": False,
+        "auth_kind": "github_oauth",
+        "base_url_editable": False,
+        "model_ids_editable": False,
+        "notes": "Personal Copilot subscription through the official SDK. Text chat only.",
+    },
     "openai_codex": {
         "display_name": "ChatGPT / Codex subscription",
         "base_url": "https://chatgpt.com/backend-api",
@@ -1098,7 +1111,9 @@ def list_available_providers(
     for provider_type, info in PROVIDER_REGISTRY.items():
         if (info.get("hidden") and not include_hidden) or info.get("managed"):
             continue
-        if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
+        if info.get("auth_kind") in ("chatgpt_oauth", "github_oauth") and not (
+            include_hidden or include_oauth
+        ):
             continue
         result.append(
             {

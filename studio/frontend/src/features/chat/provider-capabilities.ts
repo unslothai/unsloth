@@ -668,6 +668,10 @@ const ALL_SUPPORTED: ProviderCapabilities = {
 };
 
 const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
+  github_copilot: {
+    temperature: false, topP: false, topK: false, minP: false,
+    repetitionPenalty: false, presencePenalty: false,
+  },
   // Reasoning-class ids on /v1/responses reject temperature, top_p and penalties.
   openai_codex: {
     temperature: false,
@@ -1309,6 +1313,9 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
+  if (providerType === "github_copilot") {
+    return withEnableThinkingStyle({ supportsReasoning: false });
+  }
   // Check the connection before the catalog: known models must not opt Custom in.
   if (
     providerType?.trim().toLowerCase() === "custom" &&
