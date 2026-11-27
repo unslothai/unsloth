@@ -63,7 +63,11 @@ test("the premise: each probe normalises a fresh schemes array", () => {
   const first = normalizeDenseQuantSchemes(reported);
   const second = normalizeDenseQuantSchemes(reported);
   assert.deepEqual(first, second);
-  assert.notEqual(first, second, "a fresh array per probe is what defeats the memo");
+  assert.notEqual(
+    first,
+    second,
+    "a fresh array per probe is what defeats the memo",
+  );
 });
 
 test("a probe that only moved free RAM keeps the schemes array identity", () => {
@@ -134,13 +138,20 @@ test("free RAM drifting under 0.25 GiB keeps the published snapshot, so pages do
 
   const moved = snapshot(normalizeDenseQuantSchemes(["fp8"]), 30.9);
   const published = hooks.nextGpuInfo(current, moved);
-  assert.equal(published.systemRamAvailableGb, 30.9, "a real move is published");
+  assert.equal(
+    published.systemRamAvailableGb,
+    30.9,
+    "a real move is published",
+  );
   assert.equal(published.denseQuantSchemes, current.denseQuantSchemes);
 
   const otherChange = { ...drift, name: "NVIDIA RTX 6000" };
   assert.equal(hooks.nextGpuInfo(current, otherChange).name, "NVIDIA RTX 6000");
   const knownFlip = { ...drift, systemRamAvailableKnown: false };
-  assert.equal(hooks.nextGpuInfo(current, knownFlip).systemRamAvailableKnown, false);
+  assert.equal(
+    hooks.nextGpuInfo(current, knownFlip).systemRamAvailableKnown,
+    false,
+  );
 });
 
 test("a probe that only moved free RAM keeps the checkpoint formats array identity", () => {
@@ -155,11 +166,18 @@ test("a probe that only moved free RAM keeps the checkpoint formats array identi
       ...snapshot(normalizeDenseQuantSchemes(["fp8"]), 28.7),
       checkpointQuantFormats: formats(reported),
     };
-    assert.notEqual(current.checkpointQuantFormats, next.checkpointQuantFormats);
+    assert.notEqual(
+      current.checkpointQuantFormats,
+      next.checkpointQuantFormats,
+    );
 
     const published = hooks.nextGpuInfo(current, next);
 
-    assert.equal(published.systemRamAvailableGb, 28.7, "the RAM move is published");
+    assert.equal(
+      published.systemRamAvailableGb,
+      28.7,
+      "the RAM move is published",
+    );
     assert.equal(
       published.checkpointQuantFormats,
       current.checkpointQuantFormats,
@@ -192,5 +210,9 @@ test("changed checkpoint formats are published, and each list is held on its own
   assert.equal(kept.checkpointQuantFormats, current.checkpointQuantFormats);
 
   const same = { ...current, systemRamAvailableGb: 20 };
-  assert.equal(hooks.withStableSchemes(current, same), same, "nothing to hold: next as-is");
+  assert.equal(
+    hooks.withStableSchemes(current, same),
+    same,
+    "nothing to hold: next as-is",
+  );
 });

@@ -3,12 +3,12 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import type * as Runner from "../src/features/translate/translate-runner.ts";
 import {
   DEDICATED_TRANSLATE_MODELS,
   offeredTranslateModels,
 } from "../src/features/translate/models.ts";
 import { quantOnDisk } from "../src/features/translate/quant-on-disk.ts";
+import type * as Runner from "../src/features/translate/translate-runner.ts";
 import { readText } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
