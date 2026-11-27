@@ -71,7 +71,7 @@ _STALE_SQL = (
     "AND (d.linked_folder_id IS NULL OR EXISTS "
     "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id))"
 )
-# A full scan costs a row per document; the job takes one at most this often, else re-reads its next.
+# Full scans cost a row per document: at most one this often, else only the next document is re-read.
 _RESCAN_SECONDS = 1.0
 
 
@@ -168,7 +168,6 @@ def _run(job: _Job) -> None:
         failed_before = (d["id"], identity) in failed
         return not failed_before and (d["id"], d["embedding_model"], identity) not in refused
 
-    # Ordered snapshot of the stale ids: one scan per job, not one per document.
     queue: collections.deque = collections.deque()
     scanned_for, scanned_at = None, 0.0
     try:
