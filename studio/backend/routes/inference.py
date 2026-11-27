@@ -3906,13 +3906,9 @@ from core.inference.external_provider import (
     llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
-    _ANTHROPIC_COMPACTION_MIN,
-    _OPENAI_COMPACTION_MIN,
-    compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
-    _sse_payload,
     is_ui_control_sse_line,
     ServerToolCallStripper,
 )
@@ -30872,9 +30868,6 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 # keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
-# /compact on Anthropic lowers the native trigger to its 50K floor, which only fires on a prompt
-# past it; the margin covers the estimate running high. Shorter threads get Unsloth's summary.
-_ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
@@ -31160,6 +31153,7 @@ def _fit_external_context(
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one. ``unsummarised`` is ``messages``
     before a summary replaced its oldest turns, so those are archived and recalled too."""
+    from core.inference import cloud_compaction
     from core.inference.context_window import (
         _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
@@ -31239,7 +31233,7 @@ def _fit_external_context(
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = anchors or None,
+        anchor_ids = (anchors | cloud_compaction.request_reference_ids(messages, turn)) or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -31399,6 +31393,7 @@ def _plan_external_compaction(
             cut = cloud_compaction.tail_start(
                 plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
+        cut = cloud_compaction.keep_request_reference(plan.body, cut, turn)
         if cut > plan.covered:
             plan.cut = cut
             plan.to_summarise = plan.body[plan.covered : cut]
@@ -31607,31 +31602,6 @@ async def _finish_external_compaction(
     if truncation is None and refusal is not None:
         truncation = {**refusal, "summary_failed": bool(summary_failed)}
     return current, truncation, max_tokens
-
-
-def _is_compaction_block_sse(line: str) -> bool:
-    if '"compaction_block"' not in line:
-        return False
-    event = (_sse_payload(line) or {}).get("_toolEvent")
-    return isinstance(event, dict) and event.get("type") == "compaction_block"
-
-
-def _provider_compaction_truncation(messages: list[dict]) -> dict:
-    latest_user = max(
-        (index for index, message in enumerate(messages) if message.get("role") == "user"),
-        default = 0,
-    )
-    summarized = sum(
-        1
-        for message in messages[:latest_user]
-        if message.get("role") not in ("system", "developer")
-    )
-    return {
-        "dropped_messages": summarized,
-        "boundary_messages": summarized,
-        "fits": True,
-        "summarized": True,
-    }
 
 
 async def _proxy_to_external_provider(
@@ -32360,13 +32330,11 @@ async def _proxy_to_external_provider(
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
-    _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
     if (
         managed is None
         and payload.context_overflow == "truncate_oldest"
         and (provider_type == "ollama" or not payload.compaction_threshold)
-        and not _provider_compacts
     ):
         # a self-hosted server reports its startup window when the catalog has none.
         _loaded_window = None
@@ -32437,31 +32405,18 @@ async def _proxy_to_external_provider(
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _compaction_fallback = None
     _request_branch = chat_messages
     _rolling = _rolling_context_policy(payload) is not None
-    # The connection's "Auto-compact after" may pass the 200K default, never the model's window.
-    _compaction_uncapped = bool(payload.compaction_uncapped and payload.compaction_threshold)
-    if _compaction_uncapped and payload.context_window:
+    if payload.compaction_uncapped and payload.compaction_threshold and payload.context_window:
         payload = payload.model_copy(
             update = {
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
     # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
-    _evict_only = (
-        managed is None
-        and payload.compaction_mode in ("rolling", "checkpoint")
-        and not _provider_compacts
-    )
+    _evict_only = managed is None and payload.compaction_mode in ("rolling", "checkpoint")
     _rolling_only = _evict_only and payload.compaction_mode == "rolling"
-    # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = (
-        bool(payload.compaction_threshold)
-        and _rolling
-        and not _provider_compacts
-        and not _evict_only
-    )
+    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _evict_only
     # /compact. A saved thread only, so the summary outlives this request.
     _compact_now = (
         managed is None
@@ -32469,22 +32424,7 @@ async def _proxy_to_external_provider(
         and payload.compact_context is True
         and bool(payload.thread_id)
     )
-    _first_turn_overrides: dict = {}
-    if _compact_now and _provider_compacts:
-        _native_trigger = None
-        if provider_type != "anthropic":
-            _native_trigger = _OPENAI_COMPACTION_MIN
-        elif (
-            await asyncio.to_thread(
-                _external_token_counter(payload, _external_fit_tools), chat_messages
-            )
-            >= _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS
-        ):
-            _native_trigger = _ANTHROPIC_COMPACTION_MIN
-        if _native_trigger is not None:
-            # The provider compacts on this request because its trigger is already behind us.
-            _first_turn_overrides = {"compaction_threshold": _native_trigger}
-    _manual_summary_pending = _compact_now and not _first_turn_overrides
+    _manual_summary_pending = _compact_now
     _has_saved_summary = False
     if (
         managed is None
@@ -32710,16 +32650,6 @@ async def _proxy_to_external_provider(
     # Only with auto-compact on: a user who switched it off gets the provider's refusal as is.
     _overflow_recovery = managed is None and _rolling
 
-    if (
-        payload.compaction_threshold
-        and _rolling
-        and _provider_compacts
-        and (provider_type == "openai" or api_type == "responses")
-    ):
-
-        async def _compaction_fallback(messages):
-            return await _external_context_fitter(messages, auto = True)
-
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
     _unfitted_messages = chat_messages
@@ -32798,9 +32728,6 @@ async def _proxy_to_external_provider(
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
-            compaction_threshold = payload.compaction_threshold,
-            compaction_uncapped = _compaction_uncapped,
-            compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
@@ -32830,7 +32757,6 @@ async def _proxy_to_external_provider(
                     continue_final_message = _continue_final_message(payload),
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
-                    first_turn_overrides = _first_turn_overrides,
                     reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
@@ -32891,7 +32817,7 @@ async def _proxy_to_external_provider(
 
             async def _plain_turn():
                 nonlocal _sent_messages
-                overrides = dict(_first_turn_overrides)
+                overrides = {}
                 if _deferred_fit_plan is not None:
                     fit = None
                     async for step in _external_fit_steps(chat_messages, plan = _deferred_fit_plan):
@@ -32959,7 +32885,6 @@ async def _proxy_to_external_provider(
                 yield _context_truncated_sse_chunk(
                     f"chatcmpl-{uuid.uuid4().hex}", model, _external_truncation
                 )
-            provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():
                     # intercept [DONE] before the monitor records a cut-short reply as complete.
@@ -32996,25 +32921,6 @@ async def _proxy_to_external_provider(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                 yield f"{line}\n\n"
-                if (
-                    _provider_compacts
-                    and not provider_compaction_reported
-                    and _is_compaction_block_sse(line)
-                ):
-                    provider_compaction_reported = True
-                    yield _context_truncated_sse_chunk(
-                        f"chatcmpl-{uuid.uuid4().hex}",
-                        model,
-                        {
-                            **_provider_compaction_truncation(chat_messages),
-                            # /compact lowered the provider's trigger for this request.
-                            **(
-                                {"manual": True, "checkpoint_started": True}
-                                if _first_turn_overrides
-                                else {}
-                            ),
-                        },
-                    )
                 # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
                     sent_done = True

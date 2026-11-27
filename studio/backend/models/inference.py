@@ -3401,9 +3401,8 @@ class ChatCompletionRequest(BaseModel):
             "archived and searchable, and the model keeps the newest turn plus standing "
             "instructions until the chat outgrows the window again. Needs "
             "context_overflow=truncate_oldest and a saved thread; otherwise ignored. "
-            "On a cloud connection the turns before the newest one are summarised: "
-            "by the provider where it compacts server-side (Anthropic, OpenAI "
-            "Responses), otherwise by a summary call to the same model."
+            "On a cloud connection the turns before the newest one are summarised "
+            "by a summary call to the same model."
         ),
     )
     studio_tool_history: Optional[bool] = Field(
@@ -3565,34 +3564,20 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         le = 2_000_000,
         description = (
-            "[x-unsloth] Server-side context compaction trigger, in tokens. "
-            "Per-provider routing:\n"
-            "  - Anthropic (Opus 4.6+, Sonnet 4.6, Mythos preview): attaches "
-            "the `compact_20260112` edit and the `compact-2026-01-12` beta "
-            "header. The upstream floor is 50k; `_stream_anthropic` clamps "
-            "lower values up.\n"
-            "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
-            "(*.openai.azure.com, *.services.ai.azure.com): attaches "
-            "`context_management:[{type:'compaction', compact_threshold:N}]` "
-            "to /v1/responses. A deployment that answers `compact_threshold "
-            "is not enabled` is retried without it.\n"
-            "Both cap the trigger at 200k unless compaction_uncapped is set.\n"
-            "Every other provider and model ignores it unless context_overflow "
+            "[x-unsloth] External provider context compaction trigger, in tokens. "
+            "Ignored unless context_overflow "
             "is truncate_oldest, in which case Unsloth asks the same model to "
             "summarise the oldest turns, keeps the recent ones verbatim and "
             "reuses the summary on later turns of a saved thread, so the prompt "
             "and the reply fit within it before forwarding. If the summary call "
-            "fails the oldest turns are evicted instead, archived for recall on a saved thread. "
-            "Per-provider floors are enforced in the corresponding stream helpers."
+            "fails the oldest turns are evicted instead, archived for recall on a saved thread."
         ),
     )
     compaction_uncapped: Optional[bool] = Field(
         None,
         description = (
             "[x-unsloth] compaction_threshold is the connection's own \"Auto-compact "
-            'after" setting rather than the default. Anthropic and OpenAI server-side '
-            "compaction then use it as given instead of capping it at 200k: it is still "
-            "raised to the provider's floor and never exceeds context_window."
+            'after" setting rather than the default. It never exceeds context_window.'
         ),
     )
     compaction_percent: Optional[int] = Field(
@@ -3608,14 +3593,14 @@ class ChatCompletionRequest(BaseModel):
     compaction_mode: Optional[Literal["summary", "rolling", "checkpoint"]] = Field(
         None,
         description = (
-            "[x-unsloth] How a cloud connection that does not compact server-side "
-            "compacts once compaction_threshold is passed, and on compact_context. "
+            "[x-unsloth] How a cloud connection compacts once compaction_threshold is "
+            "passed, and on compact_context. "
             "'summary' (the default) asks the same model to summarise the older turns. "
             "'rolling' and 'checkpoint' make no summary call and drop whole oldest turns "
             "into the thread's archive, where search_conversation and inline recall find "
             "them: 'rolling' drops just enough on each request, 'checkpoint' resets to the "
             "latest turn as a local model does, and only it honours compact_context. "
-            "Ignored by local engines and by Anthropic and OpenAI server-side compaction."
+            "Ignored by local engines."
         ),
     )
     context_window: Optional[int] = Field(

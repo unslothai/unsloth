@@ -95,34 +95,25 @@ test("the Auto-compact after field takes whole tokens within the server's range"
   assert.equal(normalizeAutoCompactTokens(2_000_001), 1_200_000);
 });
 
-test("the meter's trigger mirrors what each provider really does", () => {
-  // Generic connections compact at three quarters of the window.
-  assert.equal(
-    cloudCompactionTrigger({ providerType: "openrouter", contextLength: 400_000 }),
-    300_000,
-  );
-  // Native compaction stops at 200K unless the connection says otherwise.
-  for (const providerType of ["anthropic", "openai"]) {
-    assert.equal(cloudCompactionTrigger({ providerType, contextLength: 1_000_000 }), 200_000);
+test("the meter marks the threshold Studio compacts at, on every provider", () => {
+  for (const options of [
+    { contextLength: 400_000 },
+    { contextLength: 1_000_000 },
+    { contextLength: 1_000_000, autoCompactTokens: 600_000 },
+    { contextLength: 200_000, autoCompactTokens: 5_000 },
+    { contextLength: 200_000, autoCompactPercent: 50 },
+    { contextLength: null, autoCompactTokens: 6_000 },
+  ]) {
     assert.equal(
-      cloudCompactionTrigger({ providerType, contextLength: 1_000_000, autoCompactTokens: 600_000 }),
-      600_000,
+      cloudCompactionTrigger(options),
+      apiCompactionRequestFields({ autoCompactEnabled: true, ...options }).compaction_threshold ??
+        null,
     );
   }
-  // Claude never compacts below 50K.
-  assert.equal(
-    cloudCompactionTrigger({ providerType: "anthropic", contextLength: 200_000, autoCompactTokens: 5_000 }),
-    50_000,
-  );
-  assert.equal(
-    cloudCompactionTrigger({ providerType: "openai", contextLength: 200_000, autoCompactTokens: 5_000 }),
-    5_000,
-  );
-  assert.equal(cloudCompactionTrigger({ providerType: "custom", contextLength: null }), null);
-  assert.equal(
-    cloudCompactionTrigger({ providerType: "custom", contextLength: null, autoCompactTokens: 6_000 }),
-    6_000,
-  );
+  assert.equal(cloudCompactionTrigger({ contextLength: 1_000_000 }), 750_000);
+  assert.equal(cloudCompactionTrigger({ contextLength: null }), null);
+  const page = readSrc("features/chat/chat-page.tsx");
+  assert.doesNotMatch(page, /cloudCompactionTrigger\(\{\s*providerType/);
 });
 
 test("the context meter marks where a cloud chat compacts", () => {
