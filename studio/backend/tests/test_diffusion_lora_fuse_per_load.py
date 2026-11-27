@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-load ``lora_fuse`` (auto / on / off): an explicit choice beats UNSLOTH_DIFFUSION_LORA_FUSE, which beats the
-default (off); auto keeps today's env-only behaviour; the choice rides on the load state across re-applies."""
+"""Per-load ``lora_fuse``: explicit beats UNSLOTH_DIFFUSION_LORA_FUSE, which beats the default (off)."""
 
 from __future__ import annotations
 
@@ -217,7 +216,6 @@ def test_engine_entry_points_take_the_choice():
 
 
 def test_dense_load_state_is_built_with_the_choice():
-    """The dense load publishes the state the fold reads; it must carry the normalised request."""
     import ast
     import inspect
     import textwrap

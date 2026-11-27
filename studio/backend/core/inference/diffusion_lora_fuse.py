@@ -31,14 +31,13 @@ _PINNED_CHUNK = 512 << 20
 
 
 LORA_FUSE_CHOICES = ("auto", "on", "off")
-# Where the fold decision came from: the load's own lora_fuse, the env switch, or the built-in default (off).
 SOURCE_PER_LOAD = "per_load"
 SOURCE_ENV = "env"
 SOURCE_DEFAULT = "default"
 
 
 def normalize_lora_fuse(value: Any) -> Optional[str]:
-    """A load's ``lora_fuse`` request: "on" / "off", or None for auto (unset, "", "auto"); anything else raises."""
+    """ "on" / "off", or None for auto (unset, "", "auto"); anything else raises."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -52,7 +51,7 @@ def normalize_lora_fuse(value: Any) -> Optional[str]:
 
 
 def resolve(request: Any = None) -> tuple[bool, str]:
-    """(fold allowed, source). A per-load on/off beats the env switch, which beats the default (off)."""
+    """(fold allowed, source): per-load beats the env switch, which beats the default (off)."""
     choice = normalize_lora_fuse(request)
     if choice is not None:
         return choice == "on", SOURCE_PER_LOAD

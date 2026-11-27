@@ -5203,7 +5203,7 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("lora_fuse", mode = "before")
     @classmethod
     def _normalize_lora_fuse(cls, value):
-        # "" reads as unset, like int8_attention; the Literal above is validated after this.
+        # "" reads as unset, like int8_attention.
         if isinstance(value, str):
             value = value.strip().lower()
             return value or None

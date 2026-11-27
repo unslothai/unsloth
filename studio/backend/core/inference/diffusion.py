@@ -2001,8 +2001,7 @@ class _LoadState:
     attention_request: Optional[str] = None
     # Resolved once at begin_load: the deferred speed profile must reuse it, not re-read the env.
     int8_policy: Any = None
-    # The load's own LoRA fold choice ("on" / "off"), None = auto (UNSLOTH_DIFFUSION_LORA_FUSE, else off). Kept on
-    # the state so every later fold (deferred compile, a LoRA change) honours it.
+    # Per-load fold choice ("on"/"off", None = auto); kept so later folds (deferred compile, LoRA change) honour it.
     lora_fuse: Optional[str] = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
@@ -2157,8 +2156,7 @@ def lora_fuse_status(pipe: Any) -> Optional[str]:
 
 
 def lora_fuse_resolved_entry(request: Optional[str]) -> dict[str, Any]:
-    """The load's LoRA fold choice for ``status()["resolved"]["lora_fuse"]``: value on/off, source explicit/auto (the
-    ResolvedBadge contract), origin per_load / env / default."""
+    """``status()["resolved"]["lora_fuse"]``; ``source`` follows the ResolvedBadge contract (explicit/auto)."""
     from . import diffusion_lora_fuse as lora_fuse
 
     allowed, origin = lora_fuse.resolve(request)
@@ -6636,8 +6634,7 @@ class DiffusionBackend:
 
         ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
         resolved once here into the load's ``Int8Policy``.
-        ``lora_fuse``: ``auto`` / ``on`` / ``off`` for folding an unchanged LoRA set into the denoiser weights on this
-        load (None / auto: the UNSLOTH_DIFFUSION_LORA_FUSE env switch, else off)."""
+        ``lora_fuse``: ``auto`` / ``on`` / ``off`` LoRA fold on this load (None / auto: the env switch, else off)."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
         from .diffusion_lora_fuse import normalize_lora_fuse
 
