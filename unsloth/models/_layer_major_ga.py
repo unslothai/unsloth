@@ -100,6 +100,28 @@ def _block_swap_layers(model):
     return None, None
 
 
+# Bumped by unsloth.models._utils._new_block_swap before every BlockSwap is built (attach, load, auto re-plan).
+_BLOCK_SWAP_INSTALLS = [0]
+
+
+def note_block_swap_installed():
+    _BLOCK_SWAP_INSTALLS[0] += 1
+
+
+def _hint_swap_found(trainer):
+    """Whether trainer.model has an active block swap, for the off-mode opt-in hint. A miss is remembered for the
+    same model until the next BlockSwap is built (and for this train() call only), so a model without offload_layers
+    walks its modules once instead of once per optimizer step."""
+    model = getattr(trainer, "model", None) or torch.nn.Module()
+    key = (id(model), _BLOCK_SWAP_INSTALLS[0])
+    if trainer.__dict__.get("_unsloth_layer_major_hint_miss") == key:
+        return False
+    if _block_swap_layers(model)[1] is not None:
+        return True
+    trainer._unsloth_layer_major_hint_miss = key
+    return False
+
+
 def _text_config(model):
     config = getattr(model, "config", None)
     get = getattr(config, "get_text_config", None)
@@ -883,7 +905,7 @@ def patch_layer_major_gradient_accumulation(Trainer):
             and _mode() == "off"
             and not os.environ.get("UNSLOTH_OFFLOAD_LAYER_MAJOR", "").strip()
             and "opt-in hint" not in self.__dict__.get("_unsloth_layer_major_said", ())
-            and _block_swap_layers(getattr(self, "model", None) or torch.nn.Module())[1] is not None
+            and _hint_swap_found(self)
         ):
             _say_once(
                 self,
