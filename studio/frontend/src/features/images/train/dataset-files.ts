@@ -103,6 +103,13 @@ function extensionOf(name: string): string {
   return dot < 1 ? "" : name.slice(dot).toLowerCase();
 }
 
+function storedName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower === "metadata.jsonl" || lower === "captions.jsonl") return lower;
+  const ext = extensionOf(name);
+  return ext === ".txt" || ext === ".caption" ? name.slice(0, name.length - ext.length) + ext : name;
+}
+
 function displayPath(file: File): string {
   return (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
 }
@@ -162,7 +169,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     }
     // Matched exactly: only the backend knows whether the filesystem folds case.
     const path = displayPath(file);
-    const previous = seen.get(dest);
+    const previous = seen.get(storedName(dest));
     if (previous !== undefined) {
       collisions.push({ kind: "name", first: previous, second: path });
       continue;
@@ -181,7 +188,7 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
       variants.push({ name: dest, path });
       mediaStems.set(key, variants);
     }
-    seen.set(dest, path);
+    seen.set(storedName(dest), path);
     files.push(file);
     if (isImage) imageCount += 1;
     else if (isClip) clipCount += 1;

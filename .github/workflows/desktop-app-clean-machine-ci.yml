@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Installs and launches the SHIPPED desktop app on a machine stripped of developer tooling.
-# No desktop session, so: bundle installs, binary arch and gatekeeper checks, the process stays up past
-# preflight, and tauri.log records a READY disposition. Linux runs a real webview under Xvfb.
+# Installs and launches the shipped desktop app on a tooling-free machine; no desktop session, so it
+# checks bundles, arch, gatekeeper, preflight survival and tauri.log READY; Linux uses Xvfb.
 
 name: Desktop app clean machine
 
 on:
   # Dispatch resolves the workflow from the default branch, so PRs are needed to test edits.
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
@@ -86,8 +84,7 @@ env:
 jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
-    # Fork PR tokens are read-only whatever the workflow declares, so they cannot list review
-    # drafts; skip rather than fail, since that is a property of the trigger, not a broken release.
+    # Fork PR tokens are read-only and cannot list drafts; skip, not fail: a trigger property.
     if: (github.event.pull_request.head.repo.fork != true) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -351,8 +348,7 @@ jobs:
           ls -la dl
 
       - name: Strip the developer toolchain
-        # Same strip gate as macOS, and before the package install so dpkg maintainer scripts see no
-        # toolchain.
+        # Same as macOS; before package install so dpkg maintainer scripts see no toolchain.
         if: ${{ steps.download.outputs.unreleased != 'true' && (github.event_name != 'workflow_dispatch' || inputs.strip_toolchain) }}
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
@@ -388,8 +384,7 @@ jobs:
             fi
             cat "$apt_log"
             BIN="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/usr/bin/' | head -1)"
-            # In-app .deb updates need the polkit action shipped via bundle.linux.deb.files;
-            # nothing else checks it.
+            # In-app updates need polkit action in bundle.linux.deb.files; only this checks it.
             POLICY=/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy
             if ! dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -qx "$POLICY"; then
               echo "::error::the .deb no longer ships $POLICY, so in-app Debian updates cannot authenticate"
@@ -467,8 +462,7 @@ jobs:
       - name: Launch under Xvfb and prove it stays up
         if: steps.download.outputs.unreleased != 'true'
         env:
-          # GTK3's X IO error handler reports via g_debug() and then _exit(1); without this a fatal X11
-          # error exits 1 with no output at all.
+          # GTK3 X IO errors go via g_debug() then _exit(1); need G_MESSAGES_DEBUG: all to see.
           G_MESSAGES_DEBUG: all
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
@@ -1069,8 +1063,7 @@ jobs:
             # The runner appends `exit $LASTEXITCODE` to pwsh steps, so a wanted failing probe would exit 1.
             $global:LASTEXITCODE = 0
           }
-          # Assert the winget shim survived the installer's PATH refreshes, or this lane silently becomes
-          # the no-winget leg.
+          # Winget shim must survive PATH refreshes or this lane silently becomes no-winget.
           $winget = Get-Command winget -ErrorAction SilentlyContinue
           Write-Host ("winget   {0}" -f $(if ($winget) { $winget.Source } else { 'ABSENT' }))
           if (-not $winget) {
@@ -1129,8 +1122,7 @@ jobs:
       - name: Run the bundled installer, the path first launch takes
         shell: pwsh
         run: |
-          # The launch alone passes with a broken install.ps1 (the app waits for a click), so run it
-          # from where NSIS put it, as install.rs does.
+          # Run install.ps1 where NSIS put it; a launch alone passes even when it is broken.
           $root = Split-Path -Parent $env:APP_EXE
           $ps1 = Get-ChildItem -Path $root -Recurse -Filter 'install.ps1' -ErrorAction SilentlyContinue |
                  Select-Object -First 1
@@ -1207,8 +1199,7 @@ jobs:
             Write-Host '::error::tauri.log records no desktop_preflight disposition; the app never completed preflight'
             exit 1
           }
-          # The app reads the default root (%USERPROFILE%\.unsloth\studio) it wrote, ignoring
-          # UNSLOTH_STUDIO_HOME, so anything but ready means it cannot boot what was installed.
+          # App ignores UNSLOTH_STUDIO_HOME; only a ready disposition lets the install boot.
           Write-Host "dispositions recorded: $($dispositions -join ', ')"
           if (-not ($dispositions | Where-Object { $_ -match '^(Managed|Owned|Attached)Ready$' })) {
             Write-Host "::error::preflight never reported a ready disposition (saw: $($dispositions -join ', ')); the app did not recognise the environment the bundled installer just built"

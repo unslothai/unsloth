@@ -765,6 +765,13 @@ def drop_inkling2_quantization_config(
             except Exception:
                 pass
     if verbose:
+        from .inkling2_packed import INKLING2_PACKED_EXPERTS_ENV, inkling2_packed_experts_enabled
+        if inkling2_packed_experts_enabled():
+            print(
+                f"Unsloth: Inkling 2 stores its MoE experts in NVFP4 / MXFP8; {INKLING2_PACKED_EXPERTS_ENV}=1 keeps "
+                "them packed as released."
+            )
+            return
         print(
             "Unsloth: Inkling 2 stores its MoE experts in NVFP4 / MXFP8; transformers dequantizes them while "
             "loading" + (", then bitsandbytes quantizes them to 4bit." if load_in_4bit else ".")
@@ -920,7 +927,11 @@ def _expert_lora_b_layout(lora_config, parameter):
     return layout
 
 
-def inkling2_lora_gguf_adapter(model, adapter_dir):
+def inkling2_lora_gguf_adapter(
+    model,
+    adapter_dir,
+    converted = (),
+):
     """Copy of the adapter saved in ``adapter_dir`` that llama.cpp's convert_lora_to_gguf.py can map, in a new
     temporary directory the caller removes.
 
@@ -932,7 +943,8 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
     swap a 3D parameter's features, trains the transposed pair, so its factors swap roles). transformers keeps
     gate_up halved (gate rows, then up rows), which is the order the converter writes the base expert stack in.
     A LoRA scaling other than ``lora_alpha / r`` (rsLoRA, alpha_pattern, rank_pattern) is folded into lora_B, since
-    the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``."""
+    the GGUF carries one alpha and llama.cpp scales every tensor by ``alpha / rank``. Modules in ``converted`` were
+    saved relative to the original base with the live scale already folded, so they keep the configured one."""
     import json
     import os
     import shutil
@@ -951,8 +963,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
         lora_config = json.load(f)
     alpha = float(lora_config.get("lora_alpha") or 0)
 
-    # PEFT saves the "default" adapter at the top of adapter_dir (others go to subfolders), and that is the one the
-    # converter reads, so its live scaling is the one to fold, whichever adapter is active.
+    # Converter reads the default adapter; fold its live scaling even if another is active.
     if "default" in (getattr(model, "peft_config", None) or {}):
         adapter = "default"
     else:
@@ -978,6 +989,7 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             out[key] = tensor  # the converter reports anything it cannot place
             continue
         prefix, kind = match.groups()
+        live_name = prefix
         module = layers.get(prefix)
         rank = None
         if ParamWrapper and isinstance(module, ParamWrapper):
@@ -995,9 +1007,8 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             else:
                 tensor = tensor.reshape(tensor.shape[0], rank, experts).permute(2, 0, 1)
             tensor = tensor.contiguous()
-            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features, so lora_A reads its last dim. PEFT 0.18
-            # does not: lora_A then reads dim 1 and the delta is A^T @ B^T, which llama.cpp sees as
-            # b = A^T, a = B^T.
+            # PEFT >= 0.19 swaps a (experts, out, in) parameter's features so lora_A reads the last
+            # dim; PEFT 0.18 reads dim 1, giving A^T @ B^T (b = A^T, a = B^T in llama.cpp).
             if kind == "lora_A" and not getattr(module, "_did_swap_in_out_features", False):
                 swapped_roles.append(prefix)
         else:
@@ -1008,7 +1019,11 @@ def inkling2_lora_gguf_adapter(model, adapter_dir):
             if module is not None:
                 rank = tensor.shape[0 if kind == "lora_A" else -1]
         if kind == "lora_B" and module is not None and rank:
-            scaling = float(module.scaling[adapter])
+            if live_name in converted:
+                from ._utils import _configured_scaling
+                scaling = float(_configured_scaling(model, module, adapter))
+            else:
+                scaling = float(module.scaling[adapter])
             factor = scaling * rank / alpha if alpha else scaling
             if abs(factor - 1.0) > 1e-6:
                 tensor = (tensor.float() * factor).to(tensor.dtype)
@@ -1089,8 +1104,7 @@ def _checkpoint_use_reentrant(text_model):
 
 
 def _weights_offloaded(module):
-    """True when accelerate keeps the module's weights elsewhere until its hook runs (CPU / disk offload: the
-    parameter sits on ``meta``) or the hook executes on another device than the parameter's."""
+    """True when accelerate offloads the weights (on meta) or its hook runs on another device."""
     query = getattr(module, "query", None)
     if query is None or query.device.type == "meta":
         return True
@@ -1501,8 +1515,7 @@ def _stage_text_forward(
         # The layers' short convolutions hand out time-major (transposed) outputs; the wire needs dense rows.
         hidden_states, block_states = hidden_states.contiguous(), block_states.contiguous()
         if torch.is_grad_enabled() and not block_states.requires_grad:
-            # Only frozen embeddings in it (a cut before the second block): a leaf, so the next stage's gradient has
-            # somewhere to go.
+            # Frozen-only: detach to a leaf so the next stage's gradient has somewhere to go.
             block_states = block_states.detach().requires_grad_()
         raise stage_output((hidden_states, block_states))
     hidden_states = decoder.final_input(block_states, hidden_states)[0]

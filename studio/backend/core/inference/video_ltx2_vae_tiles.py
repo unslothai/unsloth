@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free LTX-2/2.3 VAE tiling: widest tiles fitting VRAM; tiles span every frame, Studio never
-decodes framewise; UNSLOTH_VIDEO_VAE_WIDE_TILES=0 reverts; UNSLOTH_VIDEO_VAE_UNTILED=0 keeps >=2
-tiles"""
+"""Seam-free LTX-2/2.3 VAE tiling: widest tiles that fit VRAM, spanning every frame (never
+framewise); UNSLOTH_VIDEO_VAE_WIDE_TILES=0 reverts; UNSLOTH_VIDEO_VAE_UNTILED=0 keeps >=2 tiles."""
 
 from __future__ import annotations
 
@@ -140,8 +139,7 @@ def choose_tiles(
     fits: Any,
     allow_single: bool = True,
 ) -> tuple[int, int]:
-    """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) among tiles ``fits(th, tw)``
-    accepts. Nothing fits: the stock 16-latent tile."""
+    """Fewest-latent (h, w) tile (overlaps counted) that fits accepts; none: stock 16-latent."""
     floor = (min(MIN_TILE_LATENTS, height), min(MIN_TILE_LATENTS, width))
     best, best_cost = floor, None
     for nh in range(1, len(tile_starts(height, floor[0])) + 1):
@@ -224,9 +222,8 @@ def admission_decode_mib(
     free_mib: Optional[int],
     batch: int = 1,
 ) -> Optional[int]:
-    """MiB above the weights the tiled decode of a ``width x height x frames`` clip peaks at, headroom included, at the
-    tile ``tiled_decode`` takes with ``free_mib`` free (the request's room once only the decode-phase weights are on the
-    card). None when this decode does not run through the wide tiles (not installed, tiling off, unreadable VAE)."""
+    """MiB above the weights a width x height x frames tiled decode peaks at with free_mib free,
+    headroom included; None when not wide-tiled (not installed, tiling off, unreadable VAE)."""
     if (
         vae is None
         or not getattr(vae, "_unsloth_wide_tiles", False)

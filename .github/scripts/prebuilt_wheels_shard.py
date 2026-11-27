@@ -20,7 +20,6 @@ OBJECT_SUFFIXES = (".o", ".obj")
 
 
 def list_objects(ninja_targets: str) -> list[str]:
-    """Every object target in `ninja -t targets` output, sorted and unique."""
     return sorted(
         {
             target

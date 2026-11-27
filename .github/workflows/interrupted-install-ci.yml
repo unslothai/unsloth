@@ -12,8 +12,7 @@ name: Interrupted install recovery
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so readying a PR must start its run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
@@ -131,8 +130,7 @@ jobs:
 
       - name: Linux system deps
         if: runner.os == 'Linux'
-        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
-        # since short ones kill a slow but working mirror.
+        # Two long attempts: unbounded apt hangs cancel the job; short ones kill slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -162,16 +160,14 @@ jobs:
             tail -30 logs/install.log || true
             exit 1
           fi
-          # The installer can finish just before the signal; only exit 0 means it completed
-          # (SIGTERM 143, SIGKILL 137).
+          # Exit 0 means it completed before the kill; 143 and 137 are SIGTERM and SIGKILL.
           if [ "$installer_exit" = "0" ]; then
             echo "::error::installer exited 0 -- it COMPLETED inside the kill window, so"
             echo "::error::nothing was interrupted and this leg asserts nothing."
             tail -30 logs/install.log || true
             exit 1
           fi
-          # It must have died from our signal, not a natural failure; `kill` succeeding proves nothing
-          # over a zombie group, the exit status does.
+          # Exit code must show our signal: kill succeeding proves nothing for a zombie group.
           case "$installer_exit" in
             143|137) ;;
             *)
@@ -297,16 +293,14 @@ jobs:
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
-          # Exit 0 means the install completed before Stop-Tree; 'running' means it outlived it. Neither is
-          # an interrupted install, so only a real non-zero code counts.
+          # Exit 0 or 'running' is not an interrupt; only a real non-zero exit code counts.
           if ($vals['installer_exit'] -eq '0' -or $vals['installer_exit'] -notmatch '^-?\d+$') {
             Write-Host "::error::installer exit=$($vals['installer_exit']) -- it completed or never"
             Write-Host '::error::died inside the kill window, so this leg asserts nothing.'
             Get-Content logs/install.log -Tail 30 -ErrorAction SilentlyContinue
             exit 1
           }
-          # install.ps1 failing on its own also exits non-zero, so require the driver to have actually
-          # delivered the kill.
+          # install.ps1 can exit non-zero alone; require that the driver delivered the kill.
           if ($vals['interrupt_root_killed'] -ne 'true') {
             Write-Host '::error::the driver never terminated the installer -- it was already'
             Write-Host '::error::gone when Stop-Tree reached it, so it failed on its own and'

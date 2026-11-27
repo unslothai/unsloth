@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 denoisers in ComfyUI layout: fused qkv split by thirds; mlp.fc1 [gate; value] ->
-SwiGLU [value; gate], rows moved whole so codes and scales stay exact; pruned adaLN curve sized
-from adaln_t_table; float32 tensors kept; partition is not in the tensors: read it from the file
-name."""
+"""MiniMax-H3 ComfyUI denoisers: fused qkv split in thirds, fc1 gate/value swapped by whole rows
+(exact codes/scales), pruned adaLN curve from adaln_t_table, float32 kept, file-name partition."""
 
 from __future__ import annotations
 
@@ -61,7 +59,6 @@ def is_h3_comfy_name(filename: Optional[str]) -> bool:
 
 
 def h3_comfy_task(filename: Optional[str]) -> str:
-    """The workflow partition a ComfyUI H3 denoiser file serves, from its name: ``ref2va`` or ``fl2va``."""
     return "ref2va" if "ref2va" in os.path.basename(str(filename or "")).lower() else "fl2va"
 
 
@@ -153,8 +150,7 @@ def _h3_prepare_model(
     heads: int,
     logger: Any = None,
 ) -> Any:
-    """The ``prepare_model`` hook for one H3 file: curve adaLN for a pruned file, the stacked PDD head bank for a
-    ``with_heads`` one, None when the stock model already matches."""
+    """Curve adaLN for pruned files, PDD heads if with_heads; None when stock already matches."""
     if metadata is None and heads <= 1:
         return None
 

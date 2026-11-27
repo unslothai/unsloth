@@ -52,7 +52,6 @@ def test_generate_in_a_published_loads_tail_waits_and_runs(client, monkeypatch):
     calls = _arm(monkeypatch, tail = True, polls_until_ready = 3)
     resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
     assert resp.status_code == 200, resp.text
-    # Ran once, after the load reported ready.
     assert len(calls) == 1 and calls[0] > 3
 
 
@@ -116,8 +115,7 @@ def test_every_image_commit_site_publishes_through_the_helper():
 
 
 def test_a_stop_during_the_tail_wait_cancels_the_run(client, monkeypatch):
-    """A Stop sent while the run waits for the load's tail never reaches the engine (no generation ticket yet), so
-    the wait itself must notice it: the run is cancelled instead of rendering once the load finishes."""
+    """A Stop in the load tail has no generation ticket, so the wait must cancel the run."""
     import routes.inference as inference_routes
 
     monkeypatch.setattr(inference_routes, "_IMAGE_LOAD_TAIL_POLL_S", 0.0)

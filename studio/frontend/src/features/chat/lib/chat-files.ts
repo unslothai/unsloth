@@ -324,6 +324,15 @@ export function collectChatFiles(
   }));
 }
 
+export function settledMessageCount(thread: {
+  isRunning: boolean;
+  messages: readonly unknown[];
+}): number {
+  return thread.isRunning
+    ? Math.max(0, thread.messages.length - 1)
+    : thread.messages.length;
+}
+
 type Schedule = (run: () => void) => void;
 
 const idleSchedule: Schedule = (run) => {

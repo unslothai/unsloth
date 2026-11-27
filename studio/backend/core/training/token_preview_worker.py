@@ -100,7 +100,12 @@ def _render_tokens(tokenizer, input_ids: list, labels: list | None) -> dict:
     }
 
 
-def _mask(tokenizer, model_name: str, encoded: dict, final_format: str) -> tuple[list, dict]:
+def _mask(
+    tokenizer,
+    model_name: str,
+    encoded: dict,
+    dataset_template: str | None = None,
+) -> tuple[list, dict]:
     """Labels for each row via apply_completion_masking, the call the training worker makes."""
     from datasets import Dataset
     from unsloth.chat_templates import train_on_responses_only
@@ -140,7 +145,7 @@ def _mask(tokenizer, model_name: str, encoded: dict, final_format: str) -> tuple
         model_name,
         preview_train_fn,
         notify = lambda level, message: notes.append(message),
-        dataset_template = "alpaca" if final_format == "alpaca" else None,
+        dataset_template = dataset_template,
     )
     masking = {"applied": bool(applied), "notes": notes, **markers}
     if not applied:
@@ -148,7 +153,7 @@ def _mask(tokenizer, model_name: str, encoded: dict, final_format: str) -> tuple
     return list(trainer.train_dataset["labels"]), masking
 
 
-def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
+def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str, str | None]:
     from datasets import Dataset
     from utils.datasets import format_and_template_dataset
     from utils.datasets.raw_text import prepare_raw_text_dataset
@@ -162,7 +167,7 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
             eos_token = getattr(tokenizer, "eos_token", None),
             append_eos = True,
         )
-        return list(result.dataset["text"]), "raw_text"
+        return list(result.dataset["text"]), "raw_text", None
 
     info = format_and_template_dataset(
         dataset,
@@ -172,6 +177,7 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
         format_type = config.get("format_type") or "auto",
         dataset_name = config.get("dataset_name"),
         custom_format_mapping = config.get("custom_format_mapping"),
+        prefer_native_alpaca = True,
         # In-process: a pool for three rows costs seconds and changes nothing in the output.
         num_proc = 1,
     )
@@ -179,8 +185,8 @@ def _format_rows(tokenizer, config: dict, rows: list) -> tuple[list, str]:
         raise ValueError("; ".join(info.get("errors") or []) or "Dataset formatting failed")
     final_format = str(info.get("final_format", "")).lower()
     if final_format == PRETOKENIZED_FORMAT:
-        return info["dataset"].to_list(), final_format
-    return list(info["dataset"]["text"]), final_format
+        return info["dataset"].to_list(), final_format, None
+    return list(info["dataset"]["text"]), final_format, info.get("dataset_template")
 
 
 def _pretokenized(tokenizer, model_name: str, rows: list, max_length: int, request: dict):
@@ -202,9 +208,7 @@ def _pretokenized(tokenizer, model_name: str, rows: list, max_length: int, reque
             {"applied": False, "notes": []},
         )
     if request.get("train_on_completions"):
-        labels, masking = _mask(
-            tokenizer, model_name, {"input_ids": input_ids}, PRETOKENIZED_FORMAT
-        )
+        labels, masking = _mask(tokenizer, model_name, {"input_ids": input_ids})
         return input_ids, labels, full_lengths, masking
     return input_ids, [None] * len(input_ids), full_lengths, {"applied": False, "notes": []}
 
@@ -222,15 +226,21 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
 
     model_name = config["model_name"]
     if request.get("text") and request.get("raw_text"):
-        texts, final_format = _format_rows(tokenizer, request, [{"text": request["text"]}])
+        texts, final_format, dataset_template = _format_rows(
+            tokenizer, request, [{"text": request["text"]}]
+        )
         first_text = texts[0]
     elif request.get("text") is not None:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
+        dataset_template = (
+            "alpaca"
+            if final_format == "alpaca" and request.get("alpaca_serialization") != "native"
+            else None
+        )
         first_text = texts[0]
     else:
-        # Format a deep copy: templates mutate the tokenizer; the whole pool decides raw-text and
-        # BOS rules.
-        texts, final_format = _format_rows(
+        # Copy the tokenizer: templates mutate it; the pool decides raw-text and BOS rules.
+        texts, final_format, dataset_template = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )
         first_text = texts[0] if texts else None
@@ -258,7 +268,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         masking = {"applied": False, "notes": []}
         labels = [None] * len(texts)
         if request.get("train_on_completions") and final_format != "raw_text" and any(texts):
-            labels, masking = _mask(tokenizer, model_name, dict(encoded), final_format)
+            labels, masking = _mask(tokenizer, model_name, dict(encoded), dataset_template)
 
     samples = []
     for text, input_ids, row_labels, full_length in zip(texts, all_ids, labels, full_lengths):
@@ -278,6 +288,11 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         "samples": samples,
         "masking": masking,
         "final_format": final_format or None,
+        "alpaca_serialization": (
+            ("legacy" if dataset_template == "alpaca" else "native")
+            if final_format == "alpaca"
+            else None
+        ),
         "add_special_tokens": add_special_tokens,
         "vocab_size": len(tokenizer),
         "bos_token": getattr(tokenizer, "bos_token", None),
@@ -287,8 +302,7 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
 
 
 def _skip_fingerprint_hashing() -> None:
-    """datasets dill-hashes each map function (and the tokenizer it closes over) to name cache files the
-    in-memory preview never writes; a random id serves the same. Idempotent."""
+    """Random fingerprints replace dill-hashing; the preview writes no cache files. Idempotent."""
     import datasets.arrow_dataset as arrow_dataset
     import datasets.fingerprint as fingerprint
 

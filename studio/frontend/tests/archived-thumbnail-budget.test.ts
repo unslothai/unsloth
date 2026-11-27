@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A removed row's element unmounts without the observer reporting it, so its id must be dropped
-// from the protected set and the cache, or it shields its blob from pruning forever.
+// Rows unmount unreported, so the id must leave the protected set and cache or block pruning.
 
 import assert from "node:assert/strict";
 import test from "node:test";

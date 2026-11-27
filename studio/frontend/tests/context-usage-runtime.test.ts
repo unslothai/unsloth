@@ -180,7 +180,7 @@ function harness(name = "ThreadContextUsageRecount") {
     },
     setActiveBranchReader: (reader: typeof branchReader) => { branchReader = reader; },
     messagesContainImage: () => world.image,
-    findLatestUserAudioBase64: () => world.audio ? "audio" : null,
+    hasUncountableChatAudio: () => world.audio,
     findLatestUserVideoBase64: () => world.video ? "video" : null,
   });
   const render = () => {

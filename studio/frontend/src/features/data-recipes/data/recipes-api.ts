@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 export const RECIPES_API = "/api/data-recipe/recipes";
 
@@ -37,9 +38,8 @@ export async function recipeRequest<T>(
   if (res.status === 204) return undefined as T;
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    const detail = (body as { detail?: unknown } | null)?.detail;
     throw new RecipeApiError(
-      typeof detail === "string" ? detail : `Request failed (${res.status})`,
+      formatApiErrorBody(body) ?? `Request failed (${res.status})`,
       res.status,
     );
   }

@@ -180,8 +180,7 @@ export function tapResources(getElements: () => Element[], getElementsDeps?: rea
         continue;
       }
       if (next === null) {
-        // Dev strict mode reruns effects on first mount, unmounting children: remount from the last
-        // commit.
+        // Dev strict mode reruns effects and unmounts children: remount from the last commit.
         if (!slot.fiber.isMounted && slot.committed !== null) commitResourceFiber(slot.fiber, slot.committed);
         continue;
       }

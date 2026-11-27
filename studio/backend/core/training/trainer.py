@@ -3230,6 +3230,7 @@ class UnslothTrainer:
         hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
+        prefer_native_alpaca: bool = False,
     ) -> Optional[tuple]:
         """hf_token must reach every load_dataset call; otherwise gated datasets read the ambient
         HF_TOKEN."""
@@ -3860,6 +3861,7 @@ class UnslothTrainer:
                 dataset_name = dataset_source,
                 dataset_revision = dataset_revision,
                 custom_format_mapping = custom_format_mapping,
+                prefer_native_alpaca = prefer_native_alpaca,
                 progress_callback = self._update_progress,
             )
 
@@ -3902,6 +3904,7 @@ class UnslothTrainer:
                     dataset_name = dataset_source,
                     dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
+                    prefer_native_alpaca = prefer_native_alpaca,
                 )
                 if not eval_info.get("success", True):
                     eval_errors = eval_info.get("errors", [])
@@ -5177,7 +5180,7 @@ class UnslothTrainer:
                     train_on_responses_only,
                     num_proc = config_args["dataset_num_proc"],
                     notify = _notify,
-                    dataset_template = ("alpaca" if dataset_final_format == "alpaca" else None),
+                    dataset_template = dataset.get("dataset_template"),
                 )
 
                 if not masking_applied:

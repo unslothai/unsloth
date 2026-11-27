@@ -15,8 +15,7 @@ import {
 
 const keeper = createAutoContinueLeaseKeeper({
   signal: {
-    /** Ignores the image gate's true/false pulse, which would otherwise mark the message continued.
-     *  A real run sharing the key still counts. */
+    /** Ignores image gate pulses that would mark the message continued; real runs still count. */
     isRunning: (threadId) => {
       const state = useChatRuntimeStore.getState();
       return (

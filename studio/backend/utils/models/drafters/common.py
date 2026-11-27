@@ -17,7 +17,6 @@ def is_published_drafter_filename(
     kind: str,
     allow_legacy_suffix: bool = True,
 ) -> bool:
-    """Whether *name* uses an allowed published sidecar form for this layout."""
     lower = Path(name).name.lower()
     if not lower.endswith(".gguf"):
         return False

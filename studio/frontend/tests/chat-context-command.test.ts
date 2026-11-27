@@ -152,7 +152,7 @@ function loadCount(
         }),
         buildLocalTokenCountReasoning: () => ({}),
         messagesContainImage: () => false,
-        findLatestUserAudioBase64: () => undefined,
+        hasUncountableChatAudio: () => false,
         findLatestUserVideoBase64: () => undefined,
         ...media,
       },
@@ -288,7 +288,7 @@ const compacted = [
 
 for (const [name, media, loadedIsGguf, branch] of [
   ["an image", { messagesContainImage: () => true }, true, []],
-  ["audio", { findLatestUserAudioBase64: () => "UklGRg==" }, true, []],
+  ["audio", { hasUncountableChatAudio: () => true }, true, []],
   ["video", { findLatestUserVideoBase64: () => "AAAAIGZ0eXA=" }, true, []],
   ["a compacted chat off GGUF", {}, false, compacted],
 ] as const) {
@@ -307,8 +307,8 @@ test("/context counts a chat whose only audio is a clip still in the composer", 
     state,
     { input_tokens: 348 },
     {
-      findLatestUserAudioBase64: (_branch: unknown, pending = true) =>
-        pending ? "UklGRg==" : undefined,
+      hasUncountableChatAudio: (_branch: unknown, pending = true) =>
+        pending,
     },
   );
   await module.countContext([], "t1", () => []);

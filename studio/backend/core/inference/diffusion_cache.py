@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in FBCache step reuse; unset or auto only on max tier with 20+ steps; needs fullgraph=False
-under torch.compile; best-effort, an incompatible model loads uncached; torch and diffusers
-imported lazily"""
+"""Opt-in FBCache step reuse; unset or auto only on max tier, 20+ steps; needs fullgraph=False under
+torch.compile; incompatible models load uncached; torch/diffusers imported lazily."""
 
 from __future__ import annotations
 
@@ -252,8 +251,7 @@ def _invalidate_child_registry_cache(transformer: Any) -> None:
             pass
 
 
-# diffusers cache hook names whose compute branch we re-point at a compiled inner forward (leader = measuring first
-# block, block = the rest); both share the fn_ref layout.
+# Cache hook names whose compute is re-pointed at a compiled inner forward; both share fn_ref.
 _CACHE_HOOK_NAMES = (
     "mag_cache_leader_block_hook",
     "mag_cache_block_hook",
@@ -290,8 +288,7 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
                 extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
                 compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
-                # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
-                # restores the eager inner instead of failing the render.
+                # First-step lowering failure restores the eager inner, not a failed render.
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
                 if guard is not None:
 
@@ -852,8 +849,7 @@ def apply_step_cache(
             type(live).__name__ == "FirstBlockCacheConfig"
             and getattr(live, "threshold", None) == thr
         ):
-            # May not be a cache we installed, so the post-enable integration cannot be assumed
-            # done. Both idempotent; skipping the first strands the child-registry list.
+            # May be foreign: both idempotent; skipping first strands the child-registry list.
             _invalidate_child_registry_cache(transformer)
             _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)

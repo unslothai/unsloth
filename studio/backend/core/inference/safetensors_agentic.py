@@ -683,8 +683,6 @@ def run_safetensors_tool_loop(
         permission_upgrade = live_permissions,
         context_length = context_length,
         continue_final_message = continue_final_message,
-        # The downstream tokenizer owns fitting; only system context is guaranteed.
-        dedup_tool_context = False,
     )
 
     # Forced first-pass RAG (GGUF parity) so doc questions do not lose to web_search; skipped only when retrieval would prompt (ask mode).
@@ -725,8 +723,7 @@ def run_safetensors_tool_loop(
     _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
     _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
     _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
-    # Detection and gates keep ORIGINAL names, one-shots included (#7066); the controller gets
-    # sanitized.
+    # Gates keep ORIGINAL names incl. one-shots (#7066); the controller gets sanitized names.
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
     # Use the renderer's markup profile and the all-templates-safe catalog, so prepare_call never authorizes a tool the render left out of the prompt.
@@ -747,8 +744,7 @@ def run_safetensors_tool_loop(
     final_attempt_done = False
     next_call_id = 0
     reprompt_count = 0
-    # A browser task is many steps, each a chance to announce the next one and stop: there one
-    # nudge per tool turn, as in the GGUF and external loops; other requests never nudge after a tool.
+    # Multistep browser tasks nudge once per tool turn; other requests never nudge after tools.
     browser_turns = any(name in STEPWISE for name in _active_tool_names(tools or []))
     post_tool_reprompts = 0
     # Text that triggered the last nudge; if the retry restates it, stop (GGUF parity).
@@ -837,7 +833,6 @@ def run_safetensors_tool_loop(
 
         detect_state = _state_buffering
         content_buffer = ""
-        # Whether content_buffer has already been added to cumulative_display.
         buffer_in_display = False
         content_accum = ""
         cumulative_display = ""
@@ -1302,8 +1297,7 @@ def run_safetensors_tool_loop(
                 enabled_tool_names = _enabled_names_gate,
             )
             if not tool_calls:
-                # Auto-Heal strips unparseable tool XML from display; off, raw text keeps malformed
-                # markup visible.
+                # Auto-Heal strips unparseable XML from display; off keeps malformed markup.
                 if content_accum:
                     _drain_text = _strip_tool_markup_final(
                         content_accum,
@@ -1762,7 +1756,6 @@ def run_safetensors_tool_loop(
             forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
-            # Parsed only when there is a sink for them.
             _completion_images = completion.mcp_images() if images_sink is not None else []
             if _completion_images:
                 batch_mcp_images.append(_completion_images)

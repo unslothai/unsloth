@@ -23,7 +23,7 @@ from auth.authentication import get_current_subject
 from auth import policy
 from state import active_generations, run_subscribers, unattended_runs
 from utils.account_context import current_account, current_account_id, run_as
-from core.inference.chat_generation_runs import detach_embedded_images
+from core.inference.chat_generation_runs import detach_embedded_media
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from core.inference.providers import answers_decisions_only
@@ -78,7 +78,7 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
-# Attachments the composer sends inline. Durable replay has no representation for them.
+# Top-level new attachments are served on the live stream.
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
@@ -237,6 +237,7 @@ def _sanitize_request(
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
+        _studio_audio_replay_parts,
     )
 
     _admit_tool_access(request)
@@ -262,14 +263,17 @@ def _sanitize_request(
     external = any(raw.get(field) not in (None, "") for field in _EXTERNAL_ROUTING_FIELDS)
     if external:
         _admit_saved_connection(raw, http_request)
-    # This turn's media stays legacy; images of earlier turns are detached before the request persists.
+    # This turn's media stays legacy. Earlier images and recordings are detached before persistence.
     latest_user = max(
         (index for index, message in enumerate(request.messages) if message.role == "user"),
         default = 0,
     )
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
-        or _messages_have_input_audio(request.messages)
+        or (
+            _messages_have_input_audio(request.messages)
+            and (external or not _studio_audio_replay_parts(request))
+        )
         or _messages_have_embedded_image(request.messages[latest_user:])
         or _request_has_video(request)
     ):
@@ -417,8 +421,8 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload, request)
-    # Off the loop: hashing every earlier turn's data URL stalls other requests for tens of ms.
-    images = await asyncio.to_thread(detach_embedded_images, sanitized)
+    # Large attachments can stall other requests if hashed on the event loop.
+    media = await asyncio.to_thread(detach_embedded_media, sanitized)
     from routes.inference import _request_used_api_key
 
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
@@ -451,7 +455,7 @@ async def create_chat_generation_run(
                 run["id"],
                 thread_id = run["threadId"],
                 model = run["requestPayload"].get("model"),
-                images = images,
+                media = media,
                 external = bool(run["requestPayload"].get("provider_id")),
             )
     if payload.stopWhenUnattended and run["status"] not in db.TERMINAL_STATUSES:

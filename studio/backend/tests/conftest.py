@@ -164,8 +164,7 @@ def _no_real_windows_commit_reading(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
-    """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
-    (the cache tests turn it on against a temp dir)."""
+    """VAE fusion verdicts persist in Studio's cache root; tests must not touch the real one."""
     monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
 
 
@@ -209,8 +208,7 @@ def _c_cuda_mask():
     return None if raw is None else raw.decode(errors = "replace").strip()
 
 
-# A run that hid every GPU must never open a context: a CPU test that rewrites the mask and reaches a real CUDA
-# init would open one on each card it names (xdist workers held 600-900 MiB on six GPUs), so that init fails it.
+# A run hiding every GPU must not open CUDA contexts; a CPU test reaching real CUDA init fails.
 _SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
 _cuda_init_state = {"cpu_test": False, "attempts": []}
 
@@ -317,8 +315,7 @@ def _no_deleted_torch_config_entries():
 
 @pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
-    # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
-    # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
+    # Pin the older-zoo causal-conv1d answer for Qwen3.5/Qwen3-Next so results ignore the host.
     ssm_runtime = sys.modules.get("utils.ssm_runtime")
     if ssm_runtime is None:
         try:
@@ -409,9 +406,7 @@ def _forget_hub_gguf_listings():
 
 @pytest.fixture(autouse = True)
 def _forget_mcp_discovery_state():
-    # Discovered tools and failed-probe cool-offs are keyed by server id, and most tests reuse "s1": a cool-off
-    # one test records made a later test on the worker skip discovery for its own "s1". A scoped HTTP session a
-    # test leaves cached is the same: test_mcp_http_sessions asserts the cache is empty after its own calls.
+    # Discovery caches key on server id reused as s1 by tests; leftovers make later ones skip.
     def _forget():
         client = sys.modules.get("core.inference.mcp_client")
         if client is not None:
@@ -421,8 +416,7 @@ def _forget_mcp_discovery_state():
                 try:
                     client.close_mcp_sessions(all_accounts = True)
                 except AttributeError:
-                    # A test's monkeypatched stand-in sessions (SimpleNamespace) have no close(); its own
-                    # monkeypatch puts the real dict back.
+                    # Stand-in sessions lack close(), so AttributeError here is expected.
                     pass
 
     _forget()
@@ -612,8 +606,7 @@ def _isolate_agent_skills(_skills_home_root, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
-    """test_torchao_select runs install_python_stack in process, so it would rewrite this venv's
-    manifest."""
+    """Stops test_torchao_select's in-process install_python_stack rewriting the venv manifest."""
     for _up in _iso.parents:
         _shared = _up / "tests" / "_shared"
         if (_shared / "installer_venv_root.py").is_file():
@@ -723,10 +716,9 @@ def _drain_sandbox_movers(timeout: float = 30.0) -> None:
 
 @pytest.fixture(autouse = True)
 def _no_sandbox_mover_outlives_its_test(monkeypatch):
-    # get_sandbox_workdir starts a background mover that reads the legacy root from HOME when it gets
-    # scheduled, not when it starts: one left running moved the next test's legacy folder into the
-    # previous test's root. Requesting monkeypatch drains it before HOME is put back, so a late mover
-    # never reads the real home either.
+    # get_sandbox_workdir's background mover reads the legacy root from HOME when scheduled, so one
+    # left running moves the next test's legacy folder into the previous test's root; requesting
+    # monkeypatch drains it before HOME is restored, so no late mover reads the real home.
     _drain_sandbox_movers()
     yield
     _drain_sandbox_movers()
@@ -817,8 +809,7 @@ def _isolate_xet_health_home(tmp_path_factory):
 
 @pytest.fixture(autouse = True)
 def _isolate_xet_health_state():
-    """Keep the persisted Xet health verdict out of the real HF home, or a stalled machine starts on
-    HTTP."""
+    """Keep the Xet health verdict out of the real HF home, or stalled machines start on HTTP."""
     # Load like the shim: a bare unsloth_zoo import raises on CPU-only hosts.
     from utils.hf_xet_fallback import _load_optional
 
@@ -880,8 +871,7 @@ _REAL_OS_NAME = os.name
 
 @pytest.fixture(autouse = True)
 def _isolate_wal_keepers():
-    """Close the WAL keepers a test opened, so a later test's assertion on _wal_keepers sees only
-    its own."""
+    """Close WAL keepers a test opened, so later _wal_keepers assertions see only their own."""
     from storage import rag_db, studio_db
 
     before = set(studio_db._wal_keepers)
@@ -890,8 +880,7 @@ def _isolate_wal_keepers():
     rag_enabled = rag_db._wal_keepers_enabled
     rag_db.start_wal_keepers()
     yield
-    # Runs before the test's monkeypatch is undone: a test faking Windows (os.name = "nt") would make
-    # close_wal_keeper_for's Path() a WindowsPath, which cannot be built here.
+    # Runs before monkeypatch undoes a faked os.name; a WindowsPath cannot be built here.
     patched_os_name, os.name = os.name, _REAL_OS_NAME
     try:
         for path in set(studio_db._wal_keepers) - before:
@@ -1023,8 +1012,7 @@ def _engine_port_block(slot, worker_count):
 
 @pytest.hookimpl(optionalhook = True)
 def pytest_configure_node(node):
-    """xdist controller: a replacement worker gets a new gwN, so hand it the lowest slot no live
-    worker holds (the crashed one's) instead of deriving the slot from N."""
+    """A replacement gets a new gwN, so hand it the lowest free slot, not one derived from N."""
     taken = set(_engine_port_slots.values())
     slot = next(i for i in itertools.count() if i not in taken)
     _engine_port_slots[node.gateway.id] = slot
@@ -1050,10 +1038,8 @@ def engine_port_slot_hooks(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _engine_ports_no_other_worker_can_take(monkeypatch, request):
-    """managed_engine._free_port releases an ephemeral port that the engine binds later. In that
-    gap any bind(0) on the runner, such as another worker's test server, can be handed the same
-    port and answer /health, and a start that should time out returns ready. Each worker gets its
-    own ports below the ephemeral range instead, which bind(0) never hands out."""
+    """_free_port frees a port the engine binds later; bind(0) can take it and answer /health, so a
+    timed-out start reads ready; worker ports sit below the range bind(0) never hands out."""
     module = sys.modules.get("core.inference.managed_engine")
     if module is None:
         return
@@ -1106,8 +1092,7 @@ def _no_leftover_generation_account(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _assume_bare_metal(monkeypatch):
-    """Force the Metal paravirtual detector False: on a Mac or macOS runner, fixture state would
-    mismatch."""
+    """Force Metal paravirtual detector False; on macOS runners fixture state would mismatch."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
@@ -1320,8 +1305,7 @@ def _outbound_network_guard():
 
         patch.setattr(hf_http, "time", _NoBackoffClock())
 
-    # A configured proxy would be dialled instead of the test server, so bypass it via NO_PROXY.
-    # Bypass, not allow, so the proxy cannot carry Hub traffic. Session scope for session fixtures.
+    # Bypass, not allow, the configured proxy via NO_PROXY so it cannot carry Hub traffic.
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
         combined = no_proxy_with_test_servers(
             os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
@@ -1478,9 +1462,7 @@ def rag_conn(rag_home):
 
     from storage import rag_db
 
-    # Same gate as the RAG tests that skip on their own: an interpreter whose sqlite3 cannot load
-    # extensions (the macos-15 runner's) never has RAG, and the product reports that rather than
-    # failing. Anything else that stops sqlite-vec loading still errors here.
+    # Skip if sqlite3 cannot load extensions (macos-15); other sqlite-vec failures still error.
     if not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"):
         pytest.skip("sqlite-vec cannot be loaded by this Python's sqlite3")
     conn = rag_db.get_connection()
@@ -1623,8 +1605,7 @@ def real_prequant_safe_globals(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_carried_over_hardware_measurements():
-    """Clear the torch build and GPU inventory caches per test, since their 60 second TTL outlives a
-    test."""
+    """Clear torch build and GPU inventory caches per test; their 60s TTL outlives a test."""
     from utils.hardware import hardware as _hw
 
     def _clear():
@@ -1663,8 +1644,7 @@ def _process_shutdown_latch_is_clear():
 
 @pytest.fixture(autouse = True)
 def _no_leaked_inventory_handles():
-    """Empty the per-request handle table per test: its ContextVar is never reset, so handles leak
-    onward."""
+    """Empty the handle table per test; its ContextVar is never reset, so handles leak onward."""
     try:
         from hub.utils import host_paths
     except Exception:  # optional deps absent on some CI legs

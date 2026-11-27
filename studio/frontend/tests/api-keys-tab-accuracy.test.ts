@@ -22,10 +22,7 @@ const KEYLESS = readSrc(
 test("a failed create or revoke keeps the token list and says why", () => {
   assert.match(TAB, /onError=\{setActionError\}/);
   assert.match(TAB, /\{actionError \? \([\s\S]*?\{error \? \(/);
-  assert.match(
-    KEYS_API,
-    /typeof body\.detail === "string" \? body\.detail : ""/,
-  );
+  assert.match(KEYS_API, /formatApiErrorBody\(await res\.json\(\)\) \?\? ""/);
   assert.equal(KEYS_API.match(/throw await actionError\(res\)/g)?.length, 3);
   assert.match(FORM, /onError\(null\);/);
 });

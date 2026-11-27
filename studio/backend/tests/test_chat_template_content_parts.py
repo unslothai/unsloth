@@ -4,7 +4,7 @@
 import pytest
 from datasets import Dataset
 
-from utils.datasets import apply_chat_template_to_dataset
+from utils.datasets import apply_chat_template_to_dataset, format_and_template_dataset
 
 _LLAMA3_TEMPLATE = """
 {%- for message in messages %}
@@ -118,3 +118,121 @@ def test_processor_keeps_text_parts_for_list_only_templates():
     result = _format([row], _IDEFICS3_TEMPLATE, _JinjaProcessor)
 
     assert result["dataset"][0]["text"] == "user:hi thereassistant:hello back"
+
+
+@pytest.mark.parametrize("tokenizer_class", [_JinjaProcessor, _JinjaTokenizer])
+def test_native_alpaca_keeps_text_for_list_only_templates(tokenizer_class):
+    dataset = Dataset.from_list(
+        [{"system": "Be brief.", "instruction": "Say hi", "input": "in French", "output": "Salut"}]
+    )
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Idefics3ForConditionalGeneration",
+        tokenizer = tokenizer_class(_IDEFICS3_TEMPLATE),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["dataset"][0]["text"] == "system:Be brief.user:Say hi\n\nin Frenchassistant:Salut"
+
+
+@pytest.mark.parametrize("template_adds_eos", [True, False])
+def test_native_alpaca_renders_an_existing_assistant_eos_once(template_adds_eos):
+    tokenizer = _JinjaTokenizer(
+        _QWEN3_TEMPLATE if template_adds_eos else "{{ messages[-1].content }}"
+    )
+    tokenizer.eos_token = "<|im_end|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done<|im_end|>"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    text = result["dataset"][0]["text"]
+    assert text.rstrip().endswith("done<|im_end|>")
+
+
+def test_native_alpaca_drops_an_eos_the_turn_terminator_replaces():
+    # Gemma (<eos> vs <end_of_turn>) and base Qwen (<|endoftext|> vs <|im_end|>).
+    tokenizer = _JinjaTokenizer(_QWEN3_TEMPLATE)
+    tokenizer.eos_token = "<|endoftext|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done<|endoftext|>"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    text = result["dataset"][0]["text"]
+    assert text.rstrip().endswith("done<|im_end|>")
+    assert "<|endoftext|>" not in text
+
+
+def test_native_alpaca_terminates_rows_when_the_template_does_not():
+    tokenizer = _JinjaTokenizer("{{ messages[-1].content }}")
+    tokenizer.eos_token = "<|im_end|>"
+    dataset = Dataset.from_list([{"instruction": "Echo", "output": "done"}])
+    result = format_and_template_dataset(
+        dataset,
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["dataset"][0]["text"] == "done<|im_end|>"
+
+
+def test_native_alpaca_keeps_its_template_for_later_splits():
+    from utils.datasets.chat_templates import _CHOSEN_TEMPLATE_ATTR
+
+    tokenizer = _JinjaTokenizer(_QWEN3_TEMPLATE)
+    tokenizer.eos_token = "<|im_end|>"
+    format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Echo", "output": "done"}]),
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = tokenizer,
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR) == ("Qwen3ForCausalLM", _QWEN3_TEMPLATE)
+
+
+def test_native_alpaca_accepts_templates_that_rewrite_the_answer():
+    template = (
+        "{%- for m in messages %}{{ m.role }}:"
+        "{{ m.content.split('</think>')[-1].lstrip() if m.role == 'assistant' else m.content }}"
+        "{%- endfor %}"
+    )
+    result = format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Q", "output": "<think>reason</think>\n42"}]),
+        model_name = "Qwen3ForCausalLM",
+        tokenizer = _JinjaTokenizer(template),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["success"] is True
+    assert result["dataset"][0]["text"] == "user:Qassistant:42"
+
+
+def test_native_alpaca_sends_strings_to_a_processors_string_template():
+    template = "{%- for m in messages %}{{ m.role }}:{{ m.content | trim }}|{%- endfor %}"
+    result = format_and_template_dataset(
+        Dataset.from_list([{"instruction": "Say hi", "output": "Salut"}]),
+        model_name = "Gemma3ForConditionalGeneration",
+        tokenizer = _JinjaProcessor(template),
+        prefer_native_alpaca = True,
+        num_proc = 1,
+    )
+
+    assert result["dataset"][0]["text"] == "user:Say hi|assistant:Salut|"

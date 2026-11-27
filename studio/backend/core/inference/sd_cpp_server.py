@@ -201,8 +201,7 @@ class SdCppServer:
 
     @property
     def lora_dir(self) -> Optional[str]:
-        """Server rescans this dir per request; reference staged files via the lora field, not
-        prompt tags."""
+        """Server rescans this dir per request; refer staged files via lora, not prompt tags."""
         return self._scratch_dir
 
     def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
@@ -562,8 +561,7 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
-        instance; the backend never reuses a disposed server."""
+        """Closes httpx client; drops atexit hook (would pin reloaded instances); never reused."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001

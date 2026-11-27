@@ -16,8 +16,10 @@ type RepoKind = "model" | "dataset";
 
 type ModelScopePages = {
   base: string;
-  /** Lowercased Hugging Face id -> ModelScope id. */
+  /** Lowercased Hugging Face id -> ModelScope id; wins over `orgs`. */
   aliases: Record<RepoKind, Record<string, string>>;
+  /** Lowercased Hugging Face model org -> ModelScope org. */
+  orgs: Record<string, string>;
 };
 
 const store = createStore<{
@@ -99,7 +101,8 @@ export function resetHfEndpoints(): void {
 }
 
 function aliasTable(raw: unknown): Record<string, string> {
-  const table: Record<string, string> = {};
+  // No prototype: an org or id named like `constructor` must not read an inherited property.
+  const table: Record<string, string> = Object.create(null);
   if (raw && typeof raw === "object") {
     for (const [from, to] of Object.entries(raw)) {
       if (typeof to === "string") table[from.toLowerCase()] = to;
@@ -109,9 +112,13 @@ function aliasTable(raw: unknown): Record<string, string> {
 }
 
 /** `/api/health`'s web pages for the current `endpoint`: a relayed mirror's own origin, and
- * `modelscope_pages` (`{base, aliases}`) while ModelScope is the source. */
+ * `modelscope_pages` (`{base, aliases, orgs}`) while ModelScope is the source. */
 export function setHubPageLinks(pageBase?: string | null, modelScope?: unknown): void {
-  const ms = modelScope as { base?: unknown; aliases?: Record<string, unknown> } | null;
+  const ms = modelScope as {
+    base?: unknown;
+    aliases?: Record<string, unknown>;
+    orgs?: unknown;
+  } | null;
   const msBase = usableEndpoint(typeof ms?.base === "string" ? ms.base : null);
   store.setState((prev) => ({
     modelScopePages: msBase
@@ -121,6 +128,7 @@ export function setHubPageLinks(pageBase?: string | null, modelScope?: unknown):
             model: aliasTable(ms?.aliases?.model),
             dataset: aliasTable(ms?.aliases?.dataset),
           },
+          orgs: aliasTable(ms?.orgs),
         }
       : prev.modelScopePages,
   }));
@@ -158,7 +166,11 @@ export function hubWebUrl(url: string): string {
     const match = modelScopePages ? MODELSCOPE_PAGE_PATH.exec(rest) : null;
     if (!modelScopePages || !match) return url;
     const kind: RepoKind = match[1] ? "dataset" : "model";
-    const repo = modelScopePages.aliases[kind][match[2].toLowerCase()] ?? match[2];
+    const [org, name] = match[2].split("/");
+    const renamed = kind === "model" ? modelScopePages.orgs[org.toLowerCase()] : undefined;
+    const repo =
+      modelScopePages.aliases[kind][match[2].toLowerCase()] ??
+      (renamed ? `${renamed}/${name}` : match[2]);
     const file = match[3] ? `/resolve/master/${match[3]}` : "";
     return `${modelScopePages.base}/${kind}s/${repo}${file}${match[4] ?? ""}`;
   }
@@ -171,6 +183,12 @@ export function useHubWebUrl(url: string): string {
 
 export function useMissingHubPageBase(): string | null {
   return useStore(store, missingHubPageBase);
+}
+
+/** Browser origin for a Hugging Face repository, including when API requests use a relay. */
+export function getHubWebEndpoint(): string {
+  if (getHubSource() === "modelscope" || missingHubPageBase()) return DEFAULT_HF_ENDPOINT;
+  return hubWebUrl(getHfEndpoint());
 }
 
 export function getHfEndpoint(): string {

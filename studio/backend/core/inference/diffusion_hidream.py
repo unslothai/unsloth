@@ -60,8 +60,7 @@ def hidream_te4_kwargs(
             mode = normalize_te_quant(te_quant_mode)
             denied = getattr(precision, "_te_family_denied", None)
             allowed = not (callable(denied) and denied(getattr(fam, "name", None), mode))
-            # fp8 (the hosted fp8 file, else a dense load and cast) needs fp8 support; int8 takes the hosted int8
-            # ConvRot file, which Apple Silicon runs as plain tensors where fp8 does not.
+            # fp8 needs fp8 support; int8 ConvRot file runs as plain tensors on Apple Silicon.
             fp8_engages = (
                 mode in (TE_QUANT_FP8, "int8")
                 and te_quant_supported(target, TE_QUANT_FP8)
@@ -97,8 +96,7 @@ def hidream_te4_kwargs(
                 logger = logger,
                 # The int8 file carries no lm_head; the pipeline reads hidden states only.
                 trim_lm_head = scheme == "int8",
-                # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
-                # states/attentions from its forward.
+                # Standalone TE4 repo: config at root; pipeline needs hidden states/attentions.
                 config_subfolder = "",
                 config_overrides = {
                     "output_hidden_states": True,

@@ -144,7 +144,7 @@ import {
   type PageModelRow,
   pageModels,
   emptyStateModels,
-  recommendedPageModels,
+  pickLabel,
   rowOnPage,
 } from "./page-models";
 import {
@@ -1169,9 +1169,9 @@ export function AudioPage({
     [pickRecommendedModel],
   );
   const recommendedActions = (page: AudioWorkflowId) =>
-    recommendedPageModels(page, MODELS_BY_MODE.speak, pagePrefs).map(
+    emptyStateModels(page, MODELS_BY_MODE.speak, pagePrefs).map(
       (model) => ({
-        label: `use ${model.name}`,
+        label: `use ${pickLabel(model.name)}`,
         onClick: () => handlePickRecommended(model.id),
       }),
     );
@@ -1941,8 +1941,8 @@ export function AudioPage({
               variant="ghost"
               className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={HUB_TASKS_BY_MODE[mode]}
-              // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
-              hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
+              // Separate's models are folders of one repo tagged text-to-speech, so no Hub task filter finds them.
+              hubRepo={pageWorkflow === "separate" ? AUDIO_CPP_REPO : undefined}
               catalog={AUDIO_CATALOG}
               cpuLoad={audioDevice === "cpu"}
               // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.

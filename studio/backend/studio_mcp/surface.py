@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool text for one caller's surface. ``<<tool: shown with it | shown without it>>`` in a docstring,
-hint or field description keeps a caller from reading about a tool it was not given."""
+"""Per-caller tool text; ``<<tool: shown with it | shown without it>>`` hides tools not given."""
 
 from __future__ import annotations
 

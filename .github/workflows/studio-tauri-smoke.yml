@@ -46,9 +46,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR branches; on main nothing running is killed, pending runs are replaced.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -66,8 +64,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux native deps for Tauri / WebKit2GTK
-        # Bounded and retried: a hung apt step is reported as `cancelled` with no reason.
-        # update + install retry as one unit; two long attempts, since slow mirrors are common.
+        # Hangs show as cancelled; retry update+install jointly, 2 long tries for slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -115,7 +112,6 @@ jobs:
         run: cargo test --no-fail-fast
 
       - name: Tauri debug build (Linux, no bundle, no codesign)
-        # --debug --no-bundle: compile and wire the dist, no packaging or signing.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
@@ -136,8 +132,7 @@ jobs:
           file "$BIN"
           du -h "$BIN"
 
-      # The only job that catches a Linux startup regression before a release. Ten launches:
-      # the #8062 X11 race killed about one in three. The backend is a stub.
+      # Only startup gate pre-release; issue 8062 X11 race killed about one in three launches.
       - name: Launch repeatedly under Xvfb
         run: |
           set -u
@@ -220,9 +215,8 @@ jobs:
           fi
           echo "10 of 10 launches reached the backend spawn and stayed up"
 
-      # GPU rendering setting: Off must keep a working transport on X11, and a GPU launch that
-      # dies with Wayland Error 71 before the window is ready must relaunch on the CPU path.
-      # UNSLOTH_TEST_GPU_ERROR71 (debug builds only) sends the real GTK message through the hook.
+      # Rendering Off: X11 transport must work; GPU launch dying with Wayland Error 71 before window
+      # ready relaunches on CPU; UNSLOTH_TEST_GPU_ERROR71 (debug only) sends the GTK message.
       - name: GPU rendering Off and the Error 71 fallback under Xvfb
         run: |
           set -u

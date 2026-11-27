@@ -13,8 +13,7 @@ export type MmprojFallbackReason =
   | "projector_incompatible"
   | "projector_startup_failure";
 
-/** One MLX offload knob on the resident load: the fraction read from disk (null = none), as asked, and why a
- *  request is not applied. */
+/** MLX offload: applied fraction read from disk (null = none); reason says why not applied. */
 export interface MlxOffloadPart {
   applied: number | null;
   requested: "auto" | "off" | number | null;
@@ -102,8 +101,7 @@ export interface LoadModelRequest {
   spec_draft_n_max?: number | null;
   /** MLX only: a companion drafter, a local directory or an already-cached repo id. */
   spec_draft_model?: string | null;
-  /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
-   *  VRAM fitter may launch fewer to stay on GPU. */
+  /** llama-server --parallel slots, 1..64; null = launch default; VRAM fitter may launch fewer. */
   n_parallel?: number | null;
   /** -1 unrestricted, 0 end immediately, >0 token cap. */
   reasoning_budget?: number;
@@ -631,6 +629,7 @@ export type ProviderCompactionContentPart = {
 export type OpenAIMessageContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string }; studio_replay: true }
   | OpenAIReasoningContentPart
   | OpenAIImageGenerationCallContentPart
   | ProviderCompactionContentPart;
@@ -696,8 +695,7 @@ export interface OpenAIChatCompletionsRequest {
   confirm_tool_calls?: boolean;
   /** "ask" every call, "auto" unsafe only, "off" never, "full" never and no sandbox. Unset = ask. */
   permission_mode?: "ask" | "auto" | "off" | "full";
-  /** "high" (default) adds the OS sandbox when it works; "low" runs Python/Terminal on software
-   *  safeguards only. Full access overrides both. */
+  /** high (default): OS sandbox if it works; low: software safeguards; full access overrides. */
   sandbox_level?: "high" | "low";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;

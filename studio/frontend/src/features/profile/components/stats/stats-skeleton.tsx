@@ -3,9 +3,7 @@
 
 import { Skeleton } from "@/components/ui/skeleton";
 
-/**
- * Separate module so the Suspense fallback does not pull in the chart chunk.
- */
+/** Separate module so the Suspense fallback does not pull in the chart chunk. */
 export function StatsSkeleton() {
   return (
     <div className="flex flex-col gap-4">

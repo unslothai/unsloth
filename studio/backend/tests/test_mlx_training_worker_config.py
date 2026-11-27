@@ -451,12 +451,11 @@ def _masking_call_and_guard():
     return calls[0], guards[0]
 
 
-def test_alpaca_datasets_still_get_explicit_markers():
-    """Alpaca text carries no chat markers, so the template must be passed explicitly."""
+def test_masking_uses_the_formatter_selected_dataset_template():
     call, _ = _masking_call_and_guard()
     passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
 
-    assert passed["dataset_template"] == "'alpaca' if dataset_final_format == 'alpaca' else None"
+    assert passed["dataset_template"] == "dataset_template"
 
 
 def _run_masking(
@@ -483,6 +482,7 @@ def _run_masking(
             "config": {"train_on_completions": overrides.pop("train_on_completions", True)},
             "raw_text_mode": overrides.pop("raw_text_mode", False),
             "dataset_final_format": overrides.pop("dataset_final_format", "chatml"),
+            "dataset_template": overrides.pop("dataset_template", None),
             "model_name": model_name,
             "trainer": trainer,
             "train_on_responses_only": lambda t, **_kw: t,

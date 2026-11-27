@@ -5585,6 +5585,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
       const paramsPatch: Record<string, unknown> = {};
+      // Leaving a chat: memory saved inside it postdates the defaults captured on entry.
+      const checkpoint = state.params.checkpoint;
+      const modelMemory = state.paramsByModel[checkpoint];
+      const modelDefaults =
+        threadId === null &&
+        state.rememberParamsPerModel &&
+        paramsUnderChatValues?.checkpoint === checkpoint
+          ? getReplayedParams(
+              true,
+              state.paramsByModel,
+              paramsUnderChatValues,
+              checkpoint,
+              true,
+              loadedContextFor(checkpoint) ??
+                (isExternalModelId(checkpoint) ? undefined : state.loadedContextLength ?? undefined),
+            )
+          : null;
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         if (heldFields.has(key)) {
           if (isClampedPillKey(key) && heldPills[key] !== undefined) {
@@ -5624,11 +5641,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
-        const value = firstSetThreadScopedValue(
-          stored?.[key],
-          npuPillDefault(state.params.checkpoint, key),
-          globalThreadScopedDefaults?.[key],
-        );
+        const value =
+          modelDefaults &&
+          (isRecommendedSamplingKey(key) || key === "minPMode" || key === "repetitionPenalty") &&
+          modelMemory?.[key] !== undefined
+            ? modelDefaults[key]
+            : firstSetThreadScopedValue(
+                stored?.[key],
+                npuPillDefault(state.params.checkpoint, key),
+                globalThreadScopedDefaults?.[key],
+              );
         if (value === undefined) continue;
         applied[key] = value;
         if (isClampedPillKey(key)) {

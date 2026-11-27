@@ -19,8 +19,7 @@ import {
 
 const WATCH_INTERVAL_MS = 6000;
 
-/** The lifecycle poll only runs on the Train page; this keeps the sidebar fresh elsewhere.
- * Mount once in an always-rendered shell. */
+/** Keeps the sidebar fresh off the Train page; mount once in an always-rendered shell. */
 export function useTrainingCompletionWatch(): void {
   const active = useTrainingRuntimeStore(isTrainingStartPending);
 
@@ -52,8 +51,7 @@ export function useTrainingCompletionWatch(): void {
     return () => {
       cancelled = true;
       window.clearInterval(id);
-      // Post-download disk check: the worker downloads after start, so look again when the run stops,
-      // finished or failed. Forced so the reading is taken after the writes.
+      // Recheck disk on stop: the worker downloads after start; forced to read after writes.
       void checkDiskSpace({ force: true });
     };
   }, [active]);

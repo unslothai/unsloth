@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A dialog is centred by translating it half its own size. WebKit does not snap transforms to pixels,
-// so an odd or fractional height drew the whole dialog between pixel rows and blurred its text at 1x.
+// WebKit does not snap transforms, so an odd or fractional height blurred dialog text at 1x.
 
 import assert from "node:assert/strict";
 import test from "node:test";

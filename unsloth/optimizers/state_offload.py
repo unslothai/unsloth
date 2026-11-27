@@ -744,6 +744,10 @@ def offload_optimizer_state(
     load_state_dict = optimizer.load_state_dict
 
     def _load_state_dict_and_offload(state_dict, *args, **kwargs):
+        return _load_on_host(load_state_dict, state_dict, *args, **kwargs)
+
+    def _load_on_host(load, state_dict, *args, **kwargs):
+        # load(state_dict) fills the optimizer state; models/portable_resume.py passes its own loader.
         moved = {}
         original = vars(torch.optim.Optimizer).get("_process_value_according_to_param_policy")
         if isinstance(original, staticmethod):
@@ -769,7 +773,7 @@ def offload_optimizer_state(
                 _host_policy
             )
         try:
-            result = load_state_dict(state_dict, *args, **kwargs)
+            result = load(state_dict, *args, **kwargs)
         finally:
             if isinstance(original, staticmethod):
                 torch.optim.Optimizer._process_value_according_to_param_policy = original
@@ -795,6 +799,7 @@ def offload_optimizer_state(
         return result
 
     optimizer.load_state_dict = _load_state_dict_and_offload
+    offloader.load_on_host = _load_on_host
     optimizer._unsloth_state_offloader = offloader
     offloader.finish(offloader.offload())
     return offloader

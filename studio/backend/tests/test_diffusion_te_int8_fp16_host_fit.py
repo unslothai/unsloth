@@ -26,8 +26,7 @@ INT8_NAME = "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
 CUDA_FP16 = types.SimpleNamespace(device = "cuda", dtype = torch.float16)
 SWITCH = "UNSLOTH_TE_INT8_FP16"
 GIB = 1024
-# host readings (total, available) MiB: a 51 GB Colab high-RAM T4 (as measured: 49760 MiB available before the load)
-# and a 31 GB Kaggle T4 host
+# Host (total, available) MiB: 51 GB Colab high-RAM T4 (49760 available) and 31 GB Kaggle T4.
 HOST_51 = (52 * GIB, 49760)
 HOST_31 = (31 * GIB, 28 * GIB)
 
@@ -270,8 +269,7 @@ def test_a_partial_cache_is_priced_like_the_full_load(tmp_path, monkeypatch):
 
 
 def test_a_supplied_gguf_denoiser_is_left_out_like_the_loader_does(tmp_path, monkeypatch):
-    """Every header cached and a GGUF supplies the denoiser: the loader prices encoder + VAE (~19,952 MiB), which fits
-    28 GiB, so the dense encoder; counting the dense DiT would have picked int8."""
+    """The loader leaves a supplied GGUF denoiser out; counting the dense DiT would pick int8."""
     full = _full(tmp_path)
     reading = (31 * GIB, 28 * GIB)
     monkeypatch.setattr(sh, "resolve_snapshot_dir", lambda repo, cache_dir = None: full)

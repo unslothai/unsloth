@@ -250,7 +250,6 @@ class DatasetDownloadStartResponse(BaseModel):
     # Attached to a job already running, rather than starting one (see above).
     attached: bool = False
     generation: int
-    # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None
     cancel_transport: Optional[str] = None
 

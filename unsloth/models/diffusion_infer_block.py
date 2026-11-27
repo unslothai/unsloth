@@ -130,12 +130,10 @@ class _PrefixCache:
 
 
 def _llada2_runner(base, ids, mask, position_ids, cache):
-    """LLaDA2's model forward only takes a square [B, 1, L, L] mask, so a cached step drives its layers directly
-    with the same mask preparation and logits dtype as its forward."""
+    """Calls LLaDA2 layers directly with its forward's [B, 1, L, L] mask prep and logits dtype."""
     inner = base.model
     hidden = inner.word_embeddings(ids)
-    # LLaDA2.0's remote code prepares the 4D additive mask with this helper; LLaDA2.1's dropped it
-    # (create_bidirectional_mask) and its layers add the 4D mask as given, as the graph path passes it.
+    # LLaDA2.0 builds the 4D mask here; LLaDA2.1 dropped it, so layers take the mask as is.
     prepare = getattr(
         sys.modules.get(type(inner).__module__), "_prepare_4d_causal_attention_mask_for_sdpa", None
     )
@@ -238,16 +236,14 @@ class _Llada2Graph:
 
 
 def _llada2_graph(base, batch, block_length, total_length, dtype, device):
-    """A cached graph for this shape, or None when graphs are off, unavailable, or the model carries adapters
-    (capture would freeze their enabled / disabled state)."""
+    """Cached graph per shape; None if graphs are off or adapters would freeze in capture."""
     if any(hasattr(module, "lora_A") for module in base.modules()):
         # Adapters were added (typically for training): free any graph captured before, with its pool and cache.
         base.__dict__.pop("_unsloth_llada2_graphs", None)
         return None
     if graphs_disabled() or device.type != "cuda":
         return None
-    # Decide the grouped MoE dispatch now (it is otherwise decided on the first forward): an expert loop that
-    # copies counts to the host cannot be captured, so it is not attempted.
+    # Decide MoE dispatch now, not at the first forward; host-copying loops can't be captured.
     from .remote_moe_shims import _grouped_experts
 
     for module in base.modules():
@@ -260,8 +256,7 @@ def _llada2_graph(base, batch, block_length, total_length, dtype, device):
     capacity = -(-capacity // block_length) * block_length
     key = (batch, block_length, capacity, dtype, device)
     graphs = base.__dict__.setdefault("_unsloth_llada2_graphs", {})
-    # A graph replays raw weight addresses: once any parameter or buffer was re-pointed (`model.to(...)` there
-    # and back, a reload with assign, a re-stacked MoE), every captured graph would read freed memory.
+    # Graphs replay raw addresses; any re-pointed parameter or buffer would read freed memory.
     if graphs.get("weights") not in (None, _weight_addresses(base)):
         graphs.clear()
     graph = graphs.get(key)
@@ -309,8 +304,7 @@ def _sdar_runner(base, ids, mask, position_ids, cache, store_kv):
 
 
 def _select(logits, mask_index, temperature, top_k, top_p, count, threshold):
-    """The block sampler's per-step choice, on the device: sample / argmax, then accept every masked token above
-    `threshold`, or else the `count` most confident (never more than the masks left)."""
+    """Accept masked tokens over threshold, else top-count by confidence, capped at masks left."""
     if temperature > 0:
         logits = logits / temperature
         if top_k and top_k > 0:
@@ -427,8 +421,7 @@ def cached_block_sample(
     cache = _PrefixCache() if family == "llada2" else DynamicCache()
 
     def commit_then_step(commit_start, start, end):
-        """Commit x[:, commit_start:start] and run the first denoising step of x[:, start:end] in one forward,
-        then drop the active block's keys / values again: the active rows attend exactly as in a step forward."""
+        """Commit prefix and first step at once; crop active KV so rows match a step forward."""
         logits = run(x[:, commit_start:end], commit_start, end, cache, True)
         cache.crop(-(end - start))
         return logits[:, start - commit_start :]

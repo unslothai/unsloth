@@ -292,9 +292,8 @@ def studio_backend_pids() -> list[int]:
 
 
 def stop_leftover_backend():
-    """Stops the backend a previous candidate left behind: an orphan still answers (attaching as
-    OwnedReady) but its log copier died with the app; only Unsloth processes are killed, never by
-    port alone."""
+    """Stops the backend a previous candidate left behind: an orphan still answers as OwnedReady,
+    but its log copier died with the app; kills only Unsloth processes, never by port alone."""
     for pid in studio_backend_pids():
         try:
             os.kill(pid, signal.SIGTERM)
@@ -304,9 +303,8 @@ def stop_leftover_backend():
 
 
 def wait_for_leftover_backend_to_stop(timeout = 30):
-    """Waits up to a bounded timeout, with progress output, for the leftover Unsloth backend to
-    exit; a port held by another program is never waited on because _resolve_port in
-    studio/backend/run.py moves to the next free port."""
+    """Waits a bounded time for the leftover Unsloth backend to exit; ports held by other programs
+    are skipped since _resolve_port in studio/backend/run.py moves to the next free port."""
     if not studio_backend_pids():
         return True
     print(f"    waiting up to {timeout}s for the previous backend to exit", flush = True)
@@ -330,8 +328,7 @@ def backend_offsets() -> dict:
 
 
 def backend_tail(before: dict) -> str:
-    """Returns everything appended to any supervised backend log since the before offsets; logs are
-    re-globbed because the measured run usually creates its own log file."""
+    """Text appended since the before offsets; logs re-globbed as the run makes its own file."""
     out = []
     try:
         logs = list(BACKEND_LOGS.glob("backend-*.log"))
@@ -398,8 +395,7 @@ def _last_rise(samples: list, column: int) -> int | None:
 
 
 def _first_heard(samples: list, column: int) -> int | None:
-    """Elapsed time of the earliest sample proving the counter moved: a rise between samples, or a
-    first sample already above zero; None if it never moved while watched."""
+    """Elapsed time of the first rise (or the first sample if already above 0); None if never."""
     if not samples:
         return None
     if samples[0][column] > 0:
@@ -423,8 +419,7 @@ def classify(
     warmup: int = None,
     session_at: int = None,
 ) -> str:
-    """One candidate's verdict. Pure, so the wrong ones can be caught by a test rather than
-    by a reporter following them down a false path."""
+    """One candidate's verdict; kept pure so a test, not a reporter, catches wrong ones."""
     warmup = WARMUP if warmup is None else warmup
 
     if interrupted:

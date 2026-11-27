@@ -17,7 +17,6 @@ from utils.client_ip import (
 
 
 def uvicorn_forwarded_kwargs(*, is_colab: bool) -> dict[str, Any]:
-    """The ``proxy_headers`` / ``forwarded_allow_ips`` arguments for ``uvicorn.Config``."""
     if trust_forwarded_headers() and not is_colab:
         # uvicorn's own behaviour, including FORWARDED_ALLOW_IPS
         return {"proxy_headers": True}

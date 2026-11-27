@@ -17,8 +17,7 @@ export function exportRemoteCodeConsent({
   trustByDefault: boolean;
 } {
   if (sourceMode === "checkpoint") {
-    // Scan the checkpoint folder itself: the scan adds its LoRA base, so the fingerprint covers the
-    // same targets the export worker gates. A base-only scan misses a full fine-tune's copied code.
+    // Scan the checkpoint folder (as the export gate does); base-only scans miss copied code.
     return {
       scanTarget: checkpointPath ?? source,
       requiresTrustRemoteCode: false,

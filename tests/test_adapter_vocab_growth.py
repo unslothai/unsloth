@@ -132,3 +132,35 @@ def test_lora_wrapped_head_rows(tmp_path):
         str(path / "adapter_model.safetensors"),
     )
     assert _adapter_vocab_rows(str(path)) == 36
+
+
+@pytest.mark.parametrize("tie", [False, True])
+def test_trainable_tokens_adapter_reloads_onto_smaller_base(tmp_path, tie):
+    peft = pytest.importorskip("peft")
+    from unsloth.models.loader import _grow_vocab_for_adapter
+
+    def base():
+        torch.manual_seed(0)
+        model = _tiny_model()
+        model.config.tie_word_embeddings = tie
+        if tie:
+            model.tie_weights()
+        return model
+
+    model = base()
+    model.resize_token_embeddings(34)
+    targets = [32, 33] if tie else {"embed_tokens": [32, 33], "lm_head": [32, 33]}
+    config = peft.LoraConfig(r = 4, target_modules = ["q_proj"], trainable_token_indices = targets)
+    trained = peft.get_peft_model(model, config)
+    with torch.no_grad():
+        for name, param in trained.named_parameters():
+            if "trainable_tokens_delta" in name:
+                param.fill_(0.5)
+    trained.save_pretrained(str(tmp_path / "adapter"), save_embedding_layers = True)
+    expected = trained.get_input_embeddings()(torch.tensor([32, 33])).detach()
+
+    fresh = base()
+    assert _grow_vocab_for_adapter(fresh, str(tmp_path / "adapter"))
+    assert fresh.get_input_embeddings().weight.shape[0] == 34
+    reloaded = peft.PeftModel.from_pretrained(fresh, str(tmp_path / "adapter"), torch_device = "cpu")
+    assert torch.allclose(reloaded.get_input_embeddings()(torch.tensor([32, 33])), expected)

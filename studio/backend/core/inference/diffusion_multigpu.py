@@ -246,8 +246,7 @@ def make_selection(
             if others
             else None
         )
-    # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
-    # from Ada): a card of a lower compute capability may not run them, so it takes no component.
+    # Primary's dtype and patches (bf16 needs Ampere, FP8 Ada) exclude lower-capability cards.
     need = _capability(int(primary))
     if need is not None:
         others = tuple(o for o in others if (_capability(o) or need) >= need)
@@ -827,8 +826,7 @@ def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
 
 
 # One card plus a copy before a layer split when a copy fits and streaming is hidden; below
-# STREAM_HIDDEN_FRACTION exposed, card speed spread (T4s 10% apart) decides instead; splits add no
-# parallelism
+# STREAM_HIDDEN_FRACTION exposed, card speed spread decides instead; splits add no parallelism.
 STREAM_HIDDEN_FRACTION = 0.05
 STREAM_GATE_ENV = "UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE"
 _GEMM_PROBES: dict = {}
@@ -995,9 +993,8 @@ def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> 
     if exposed >= STREAM_HIDDEN_FRACTION:
         return None
     if streamed > 0:
-        # Split vs whole depends on which card runs cooler (FLUX.1-dev -7.7% to +4.4%, Klein-9B 0%
-        # to +14% on T4 VMs), so main split stays and no image is slower than main; applies when
-        # primary holds whole denoiser
+        # Split vs whole depends on which card runs cooler, so main's split stays (no image slower
+        # than main); applies when primary holds the whole denoiser.
         return None
     return (
         f"one card plus a copy on cuda:{partner}: streaming is hidden behind compute ({_gib(streamed)} per step in "
@@ -1030,8 +1027,7 @@ def _copy_partner(pipe: Any, selection: Any) -> Optional[int]:
 _STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDictionary()
 
 
-# Guided loads: one card plus a CFG replica running the second branch concurrently beats a split, which runs both
-# branches serially (Kaggle 2x T4, Wan 2.2 5B: 3.9 vs 4.9 s/step). ``0`` = split first; ``force`` = replica, unpriced.
+# A concurrent CFG replica beats a serial split; 0 = split first, force = unpriced replica.
 CFG_REPLICA_PLACEMENT_ENV = "UNSLOTH_DIFFUSION_CFG_REPLICA_PLACEMENT"
 # The FLOP price under-reads a real forward (T4 Wan 5B: 1.13 s priced, 2.5 s measured), so the real margin is wider.
 REPLICA_MIN_GAIN = 1.05
@@ -1119,7 +1115,6 @@ def video_default_tokens(pipe: Any, width: int, height: int, frames: int) -> Opt
         return None
 
 
-# These classes never run their guidance branches on two cards.
 REPLICA_LAYOUT_UNSPLITTABLE: dict[str, str] = {
     "HiDreamImageTransformer2DModel": "the pipeline batches both branches inside its llama states (dim 1), which no "
     "cut separates",
@@ -2352,8 +2347,7 @@ def _execution_device(module: Any) -> Any:
             if onload is not None and getattr(onload, "type", None) == "cuda":
                 onload = _torch().device(onload)
                 if onload.index is None:
-                    # an automatic load on the current card onloads to bare "cuda": name the card, so the replica
-                    # search compares it with the secondaries by ordinal
+                    # Bare "cuda" onloads: name the card so replica search compares ordinals.
                     onload = _torch().device("cuda", _torch().cuda.current_device())
                 return onload
     except Exception:  # noqa: BLE001 - unknown: the parameter device stands
@@ -2795,8 +2789,7 @@ _ROOT_HOOK_DICTS = (
 )
 
 
-# Offload machinery moves weights between host and card without changing the math. A replica holds its weights
-# resident, so it drops these instead of inheriting them.
+# Offload hooks move weights without changing the math; a resident replica drops them.
 _OFFLOAD_REGISTRY_HOOKS = frozenset(
     {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
 )
@@ -2918,6 +2911,72 @@ def _trusted_hook(fn: Any) -> bool:
     return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
 
 
+def _named_modules(module: Any) -> list:
+    """``list(module.named_modules())`` without nested generators: same order and de-duplication."""
+    base = _torch().nn.Module.named_modules
+    if type(module).named_modules is not base or "named_modules" in module.__dict__:
+        return list(module.named_modules())
+    out: list = []
+    memo: set = set()
+    stock: set = set()
+    add = out.append
+
+    def visit(prefix: str, sub: Any) -> None:
+        cls = type(sub)
+        if cls not in stock:
+            if cls.named_modules is not base:
+                out.extend(sub.named_modules(memo, prefix, True))
+                return
+            stock.add(cls)
+        if "named_modules" in sub.__dict__:
+            out.extend(sub.named_modules(memo, prefix, True))
+            return
+        if sub in memo:
+            return
+        memo.add(sub)
+        add((prefix, sub))
+        children = sub._modules
+        if children:
+            dot = prefix + "." if prefix else ""
+            for key, child in children.items():
+                if child is not None:
+                    visit(dot + key, child)
+
+    visit("", module)
+    return out
+
+
+def _plain_lookup(cls: Any) -> bool:
+    torch = _torch()
+    return (
+        cls.__getattr__ is torch.nn.Module.__getattr__
+        and cls.__getattribute__ is object.__getattribute__
+        and not any(hasattr(cls, n) for n in _HOOK_SLOTS)
+    )
+
+
+_HOOK_SLOTS = ("_hf_hook", "_forward_hooks", "_forward_pre_hooks")
+
+
+def _nothing_to_report(state: dict) -> bool:
+    """True only when :func:`_hooks_present` provably finds nothing in this ``__dict__``."""
+    if (
+        state.get("_diffusers_hook") is not None
+        or "_hf_hook" in state
+        or state.get("forward") is not None
+        or "_forward_hooks" not in state
+        or "_forward_pre_hooks" not in state
+        or state["_forward_hooks"]
+        or state["_forward_pre_hooks"]
+    ):
+        return False
+    for slot in ("_parameters", "_buffers", "_modules"):
+        members = state.get(slot)
+        if members is not None and "_hf_hook" in members:
+            return False
+    return True
+
+
 def _hooks_present(module: Any) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
@@ -2926,7 +2985,14 @@ def _hooks_present(module: Any) -> Optional[str]:
     ROOT's torch forward hooks run on the source around the router for every branch and the copy does not carry them,
     but whatever per-call state they write must reach the replica: only Studio's own root hooks are accepted, whose
     state is the ``_unsloth_*`` scalars :func:`_mirror_hook_state` copies."""
-    for name, sub in module.named_modules():
+    plain: dict = {}
+    for name, sub in _named_modules(module):
+        cls = type(sub)
+        fast = plain.get(cls)
+        if fast is None:
+            fast = plain[cls] = _plain_lookup(cls)
+        if fast and _nothing_to_report(sub.__dict__):
+            continue
         kind = _registry_kind(sub)
         if kind == "other":
             return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
@@ -3061,8 +3127,7 @@ def _copy_module(module: Any, device: Any) -> Any:
                 or moss_qkv_record(key, value)
                 or zimage_qkv_record(key, value)
             ):
-                # never traversed: offload state holds pinned host copies a deepcopy would duplicate, and a
-                # source-only cache holds source-card tensors
+                # Pinned offload copies and source-card caches are dropped, not deep-copied.
                 memo[id(value)] = _DROP
         for attr in ("_forward_hooks", "_forward_pre_hooks"):
             for hook in (getattr(sub, attr, None) or {}).values():
@@ -3153,10 +3218,9 @@ def _copy_module(module: Any, device: Any) -> Any:
 
 # Per-step precision state only the source's step loop advances (the replica never enters ``cache_context``).
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController", "StepPolicy"})
-# Caches only the source's own hooks fill and clear: the FLUX.3 conditioning blocks reach the copy through the
-# forwarded call (diffusion_cond_blocks), so a copied cache would only pin source-card tensors that no render clears.
-# AdaLN precompute's state (a lock, tables on the source card): the replica gets the real modulation modules instead
-# (diffusion_adaln_precompute.replica_memo).
+# Source-only caches are not copied (copies would pin source-card tensors no render clears); FLUX.3
+# conditioning reaches the replica via diffusion_cond_blocks; AdaLN's lock and tables stay on the
+# source, so the replica gets real modulation modules (diffusion_adaln_precompute.replica_memo).
 _SOURCE_ONLY_ATTRS = frozenset(
     {"_unsloth_cond_cache", "_unsloth_rocm_flash_replicas", "_unsloth_adaln"}
 )
@@ -3191,6 +3255,62 @@ _ADAPTER_ATTRS = (
     "disable_adapters",
     "_disable_adapters",
 )
+_ADAPTER_ATTR_SET = frozenset(_ADAPTER_ATTRS)
+_TRAVERSAL_METHODS = ("named_modules", "named_parameters", "named_buffers", "_named_members")
+
+
+def _stock_traversal(module: Any) -> bool:
+    """No traversal override on the root, so :func:`_named_modules` is equivalent."""
+    base = _torch().nn.Module
+    cls = type(module)
+    return all(
+        getattr(cls, n, None) is getattr(base, n) and n not in module.__dict__
+        for n in _TRAVERSAL_METHODS
+    )
+
+
+def _stock_fingerprint_parts(named: list) -> list:
+    """:func:`weights_fingerprint`'s parts in one pass, with torch's ``_named_members`` order and de-duplication."""
+    params: list = []
+    buffers: list = []
+    adapters: list = []
+    seen_params: set = set()
+    seen_buffers: set = set()
+    for prefix, sub in named:
+        own_params = sub._parameters
+        own_buffers = sub._buffers
+        if own_params or own_buffers:
+            dot = prefix + "." if prefix else ""
+            if own_params:
+                _member_parts(own_params, dot, seen_params, params)
+            if own_buffers:
+                _member_parts(own_buffers, dot, seen_buffers, buffers)
+        if not _ADAPTER_ATTR_SET.isdisjoint(sub.__dict__):
+            _adapter_parts(prefix, sub, adapters)
+    return params + buffers + adapters
+
+
+def _member_parts(members: dict, dot: str, seen: set, out: list) -> None:
+    for key, value in members.items():
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        try:
+            version = value._version
+        except Exception:  # noqa: BLE001 - inference tensors carry no version
+            version = -1
+        out.append((dot + key, id(value), version))
+
+
+def _adapter_parts(name: str, sub: Any, parts: list) -> None:
+    for attr in _ADAPTER_ATTRS:
+        value = sub.__dict__.get(attr)
+        if isinstance(value, dict):
+            value = {
+                k: (id(v), v._version) if hasattr(v, "_version") else v for k, v in value.items()
+            }
+        if value is not None and not callable(value):
+            parts.append((name, attr, repr(value)))
 
 
 def weights_fingerprint(module: Any) -> int:
@@ -3198,26 +3318,18 @@ def weights_fingerprint(module: Any) -> int:
     keep their packed weights and scales as buffers) replaced, edited in place (fused LoRA bumps the version counter),
     added or removed (PEFT injection), or an adapter's scale / activation changed. A ``.data`` swap to different values
     is not seen; diffusers' LoRA paths do not do that."""
+    # Identity + version, not data pointer: offload round trips must not force a rebuild.
+    if _stock_traversal(module):
+        return hash(tuple(_stock_fingerprint_parts(_named_modules(module))))
     parts: list = []
     for name, param in (*module.named_parameters(), *module.named_buffers()):
         try:
             version = param._version
         except Exception:  # noqa: BLE001 - inference tensors carry no version
             version = -1
-        # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force
-        # a rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
         parts.append((name, id(param), version))
     for name, sub in module.named_modules():
-        for attr in _ADAPTER_ATTRS:
-            value = sub.__dict__.get(attr)
-            if isinstance(value, dict):
-                # A pinned scale tensor: identity + version (an in-place write bumps it), no device read per call.
-                value = {
-                    k: (id(v), v._version) if hasattr(v, "_version") else v
-                    for k, v in value.items()
-                }
-            if value is not None and not callable(value):
-                parts.append((name, attr, repr(value)))
+        _adapter_parts(name, sub, parts)
     return hash(tuple(parts))
 
 
@@ -3667,18 +3779,30 @@ def _same_value(a: Any, b: Any) -> bool:
         return False
 
 
-# Per-call state Studio's root hooks write onto denoiser submodules (``_unsloth_*`` scalars, e.g. the HunyuanVideo-1.5
-# trim hook's null-mask flag). The root hooks run only on the source, around the router, so the replica's copy of that
-# state is mirrored from the source before every replica call and the prediction is verified against it.
+# Per-call _unsloth_* state (e.g. HunyuanVideo-1.5 null-mask flag) is written by source-only root
+# hooks; the replica mirrors it before each call and verifies the prediction against it.
 _STATE_PREFIX = "_unsloth_"
 _STATE_TYPES = (bool, int, float, str, type(None))
 _STATE_KEEP = frozenset({"_unsloth_replica_compiled"})
+_STATE_MARK = "\0" + _STATE_PREFIX
+
+
+def _may_hold_state(state: dict) -> bool:
+    """False only when no key starts with ``_unsloth_``."""
+    try:
+        joined = "\0".join(state)
+    except TypeError:
+        return True
+    return joined.startswith(_STATE_PREFIX) or _STATE_MARK in joined
 
 
 def _hook_state(pairs: list) -> tuple:
     out = []
     for i, (src, _dst) in enumerate(pairs):
-        for key, value in src.__dict__.items():
+        state = src.__dict__
+        if not _may_hold_state(state):
+            continue
+        for key, value in state.items():
             if key.startswith(_STATE_PREFIX) and isinstance(value, _STATE_TYPES):
                 out.append((i, key, value))
     return tuple(out)
@@ -3691,6 +3815,8 @@ def _mirror_hook_state(pairs: list) -> tuple:
         wanted.setdefault(i, {})[key] = value
     for i, (_src, dst) in enumerate(pairs):
         mine = wanted.get(i, {})
+        if not mine and not _may_hold_state(dst.__dict__):
+            continue
         for key in [
             k
             for k, v in dst.__dict__.items()
@@ -4032,8 +4158,7 @@ class CfgParallelRouter:
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
-                # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
-                # it would wait for it on the source stream and serialise the two branches.
+                # Copy inputs before queuing the primary; a later copy serialises the branches.
                 self._prefetch(args, kwargs)
                 sig = self._signature(args, kwargs)
                 self._launch_prediction(latent, sig)
@@ -4678,8 +4803,7 @@ class CfgParallelRouter:
         return free, total
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
-        # Unpredicted: nothing verified the copies made before the primary branch ran, and an input edited in place
-        # since then would reach the replica stale. Copy this call's inputs now (ordered after the primary branch).
+        # Unpredicted: inputs copied after the primary; in-place edits make the copy stale.
         self.prefetched.clear()
         _mirror_hook_state(self.pairs)
         sig = self._signature(args, kwargs)
@@ -4808,9 +4932,8 @@ class UnetCfgParallelRouter(CfgParallelRouter):
         return _join_batch(first, second)
 
 
-# DiT classes whose batch may be cut along dim 0 (every per-sample input is a dim-0 tensor; ids, when unbatched, keep
-# a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
-# Lumina 2: a half pads captions to its own longest, and the padding is masked out (fp order only).
+# Batch-cut DiT classes need per-sample dim-0 tensors (unbatched ids lead with the token count);
+# Z-Image has its own split; Lumina 2 pads captions per half, masked (fp order only).
 _DIT_BATCH_SPLIT_KWARGS = {
     "FluxTransformer2DModel": frozenset(
         {

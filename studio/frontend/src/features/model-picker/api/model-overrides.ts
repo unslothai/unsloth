@@ -513,8 +513,7 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     const tensorSplit = normalizeTensorSplit(config.tensorSplit, config.selectedGpuIds);
     // Explicit null clears a saved split; an older client omitting it keeps its value.
     payload.tensor_split = tensorSplit;
-    // Sent only when it is not the legacy default, so a physical pin's payload is
-    // unchanged from before this field.
+    // Sent only when not the legacy default, so physical pins keep their pre-field payload.
     if (gpuIndexKind !== "physical") {
       payload.gpu_index_kind = gpuIndexKind;
     }

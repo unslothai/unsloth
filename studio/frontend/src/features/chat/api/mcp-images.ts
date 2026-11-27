@@ -116,8 +116,7 @@ export function planMcpImageBound(
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
-    // Charge only what the backend can promote; shared spares keep corrupt entries from stranding
-    // valid older images.
+    // Charge only promotable images; spares stop corrupt entries stranding valid older images.
     let allowance = room + spare;
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {
@@ -169,10 +168,7 @@ function withReturned(images: readonly McpImage[], keep: McpImage[]): McpImage[]
   return keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
 }
 
-/**
- * Data-URL path: sends exactly what the backend's tool loop last showed, since the backend steps its
- * cut off this count (#18231). A spare rides only where its recount and admission ignore it.
- */
+/** Data-URL sends the count the backend cuts from (#18231); spares skip recount and admission. */
 function planSteppedBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   exchanges: readonly (readonly (readonly McpImage[])[])[],

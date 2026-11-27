@@ -35,6 +35,11 @@ from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
+from core.training.diffusion_caption_files import (
+    caption_sidecar_index,
+    find_caption_sidecar,
+    metadata_caption_files,
+)
 from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
@@ -100,7 +105,6 @@ _IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
 }
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-_CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
 
@@ -189,8 +193,7 @@ def _refuse_component_only_repo(base_model: str) -> None:
 
 
 def _trainable_hint() -> str:
-    """A user-facing hint listing the families Unsloth can train today. Always names SDXL explicitly
-    so the message is actionable even as more families become trainable."""
+    """Hint listing trainable families; SDXL is always named so it stays actionable."""
     names = ", ".join(_all_trainable_family_names()) or "sdxl"
     return (
         f"Trainable families right now: {names} "
@@ -406,8 +409,7 @@ def train_precision_modes() -> tuple[list[str], str]:
 
 
 def get_trainer(family: str) -> Callable[..., str]:
-    """Return the training entrypoint for ``family``. Imports the trainer module lazily so this
-    shared module stays free of the heavy trainer imports (and any import cycle)."""
+    """Return trainer for family, imported lazily to avoid heavy imports and import cycles."""
     key = (family or "sdxl").strip().lower()
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
@@ -508,8 +510,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
-    # resolution is the canvas SHORT EDGE and 768 is what the released checkpoint generates on; rank 16 not 32 because
-    # the adapter also serves the audio rows through one shared stack.
+    # Short-edge resolution (768 native); rank 16 not 32 since the adapter also serves audio.
     "minimax-h3": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
@@ -615,8 +616,7 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images. Trained on stills it learns the look, not motion.",
     },
-    # Measured on a B200: the loop peaks near 44 GB, but a 20-step run peaked at 77.76 GB with the 63 GiB Qwen3-VL
-    # conditioner resident, so 72 sizes users onto a card that OOMs later.
+    # Loop peaks ~44 GB, but 20-step runs hit 77.76 GB with Qwen3-VL resident; 72 GB cards OOM.
     "minimax-h3": {
         "params": "31B",
         "qlora_vram_gb": 80,
@@ -953,6 +953,10 @@ def reset_training_peak_memory(device: str) -> None:
     module = _accelerator_memory_module(device)
     if module is not None:
         try:
+            if device == "cuda":
+                # The run record's process peak covers load and previews, so keep it across the reset.
+                from utils.process_memory_peaks import bank_gpu_peaks
+                bank_gpu_peaks()
             module.reset_peak_memory_stats()
         except Exception:  # noqa: BLE001 -- reporting only
             pass
@@ -1276,8 +1280,7 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
                 # The images loader refuses video bases, so the panel offers no Deploy to Create for these.
                 "is_video": name in TRAINABLE_VIDEO_FAMILIES,
-                # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
-                # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
+                # Batch > 1 is refused for SINGLE_SEQUENCE_FAMILIES; cap it or Start fails.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
@@ -1666,8 +1669,7 @@ class PermutationBatchSampler:
         return out
 
     def state_dict(self) -> dict[str, Any]:
-        """Stores the cycle order, not just the position: the rng alone cannot reproduce a cycle in
-        progress."""
+        """Stores the cycle order too: the rng alone cannot reproduce a cycle in progress."""
         return {"n": self._n, "order": list(self._order), "pos": int(self._pos)}
 
     def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
@@ -1681,8 +1683,7 @@ class PermutationBatchSampler:
             restored = [int(i) for i in order]
         except (TypeError, ValueError):
             return False
-        # A shortened or duplicate-carrying order is in range and plausible, so the cycle reshuffles early or serves
-        # the same image twice with the RNG already past the original draw.
+        # Duplicate or short saved orders would reshuffle early or repeat images; reject them.
         if restored and sorted(restored) != list(range(self._n)):
             return False
         self._order = restored
@@ -1690,8 +1691,7 @@ class PermutationBatchSampler:
             pos = int(state.get("pos") or 0)
         except (TypeError, ValueError):
             return False
-        # A position outside 0..len(order) is a damaged manifest, and clamping it re-serves the permutation from the
-        # top or ends the cycle early behind an already-restored RNG.
+        # Out-of-range positions mean a damaged manifest; clamping re-serves or ends cycles.
         if not 0 <= pos <= len(self._order):
             return False
         self._pos = pos
@@ -1717,10 +1717,7 @@ def discover_image_caption_pairs(
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}
-    for meta_name in ("metadata.jsonl", "captions.jsonl"):
-        meta_path = root / meta_name
-        if not meta_path.is_file():
-            continue
+    for meta_path in metadata_caption_files(root):
         # Skip a bad upload (invalid UTF-8 or non-object JSON) so the instance_prompt fallback still applies.
         # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
@@ -1743,22 +1740,20 @@ def discover_image_caption_pairs(
             if key and value is not None:
                 meta_caption[str(key)] = str(value)
 
+    sidecars = caption_sidecar_index(root)
     pairs: list[tuple[str, str]] = []
     for img in images:
         caption: Optional[str] = None
         sidecar_present = False
         # An EMPTY sidecar is a tombstone: suppresses the metadata caption.
-        for ext in _CAPTION_EXTS:
-            sidecar = img.with_suffix(ext)
-            if sidecar.is_file():
-                sidecar_present = True
-                try:
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                except (OSError, UnicodeError):
-                    # An unreadable sidecar reads as the empty tombstone, so the instance_prompt fallback applies
-                    # instead of a 500.
-                    caption = ""
-                break
+        sidecar = find_caption_sidecar(img, sidecars)
+        if sidecar is not None:
+            sidecar_present = True
+            try:
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+            except (OSError, UnicodeError):
+                # Unreadable reads as the empty tombstone: instance_prompt fallback, not a 500.
+                caption = ""
         # Metadata keyed by basename or as_posix path (Windows-safe); a sidecar, even empty, wins.
         if not sidecar_present:
             caption = meta_caption.get(img.name) or meta_caption.get(
@@ -1805,8 +1800,7 @@ _H3_CANVAS_MULTIPLE = 32
 
 
 def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
-    """Returns the reason this config cannot train MiniMax-H3 (video or image), else None; never raises. Config-only,
-    so the route can check before freeing residents."""
+    """Returns MiniMax-H3 refusal or None; never raises; config-only, checked before eviction."""
     family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
     if family == "minimax-h3-image":
         return h3_image_train_unsupported_reason(cfg)
@@ -2117,8 +2111,7 @@ _SDPA_CACHE_TAG = "|unsloth_train_sdpa=flash,cudnn,efficient"
 
 
 def _tag_compile_cache(torch, snap: dict) -> None:
-    """The compile caches key on the traced graph, not on the SDPA priority, so a warm cache would hand back a graph
-    whose attention op was picked under the old pin. A cache key tag keeps the two apart."""
+    """Compile caches key on the graph, not SDPA priority; a cache key tag keeps the two apart."""
     cconfig = getattr(getattr(torch, "compiler", None), "config", None)
     if cconfig is None or not hasattr(cconfig, "cache_key_tag"):
         return
@@ -2364,8 +2357,7 @@ _NOT_A_CHECKPOINT_FOLDER = (
 
 
 def _single_file_shape(base_model: str) -> Optional[str]:
-    """ "file" / "folder" when a local base is, or holds (an A1111 / ComfyUI models folder), a single-file
-    checkpoint, else None. Wording only, never a verdict."""
+    """file' or 'folder' (holds one) for a local single-file base, else None; wording only."""
     try:
         path = Path(str(base_model or "").strip()).expanduser()
         if path.is_file():
@@ -2548,8 +2540,7 @@ def restore_resume_state(
         saved_optimizer = ckpt.optimizer_class
         live_optimizer = optimizer_key(optimizer)
         if not saved_optimizer:
-            # An optimizer file with no class beside it is a hand-edited or half-written bundle, and foreign moments
-            # load cleanly then die on the first step, after the preflight evicted the residents.
+            # No optimizer class: a hand-edited bundle; foreign moments die after eviction.
             raise ResumeError(
                 "This checkpoint does not record which optimizer wrote its state, so its "
                 "moments cannot be safely restored. Resume from an earlier checkpoint, or "
@@ -2587,8 +2578,7 @@ def restore_resume_state(
         for group, kept in zip(optimizer.param_groups, kernels):
             group.update(kept)
     elif optimizer is not None:
-        # Every bundle this writer produces has an optimizer, so continuing without one restarts Adam's moments from
-        # zero at step N while reporting a clean resume.
+        # Bundles always hold optimizer state; without it Adam's moments restart from zero.
         raise ResumeError(
             "This checkpoint carries no optimizer state, so the run cannot be continued from "
             "it: the moments would restart from zero at the resumed step. Start a new run."
@@ -2604,8 +2594,7 @@ def restore_resume_state(
             "restart from step 0. Start a new run."
         )
     if sampler is not None and not sampler.load_state_dict(ckpt.sampler_state):
-        # Every image checkpoint carries sampler state, so a missing or malformed one leaves a fresh sampler behind an
-        # RNG restored past the saved permutation: images silently skipped or repeated.
+        # Image bundles always hold sampler state; without it images silently skip or repeat.
         raise ResumeError(
             "This checkpoint's dataset sampler state is missing or unreadable, so the image "
             "order cannot be continued. Start a new run."

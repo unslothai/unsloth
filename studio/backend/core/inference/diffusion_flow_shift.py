@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuilds the loaded scheduler at ComfyUI static sigma shift unless the checkpoint ships its own
-grid; no torch or diffusers imports."""
+"""Rebuilds schedulers at ComfyUI's static sigma shift unless a grid ships; no torch/diffusers."""
 
 from __future__ import annotations
 
@@ -18,8 +17,7 @@ def comfy_sigmas_enabled() -> bool:
     return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-# The scheduler's float32 s*t / (1 + (s - 1)*t): e^mu past 80 overflows to NaN sigmas; below -5, 1 + (s - 1) cancels
-# (sigma_max already 1.07 at mu -8, inf at -20).
+# float32 s*t / (1 + (s - 1)*t): e^mu past 80 overflows to NaN; below -5, 1 + (s - 1) cancels.
 FLUX_MU_RANGE = (-5.0, 80.0)
 
 
@@ -30,8 +28,7 @@ def flux_mu_shift(mu: float) -> float:
 
 
 def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
-    """Scheduler config overrides that sample at static ``shift``, or None when the scheduler has
-    no flow shift Studio knows how to set."""
+    """Scheduler config overrides for static shift; None if Studio cannot set its flow shift."""
     try:
         keys = set(config.keys())
     except Exception:  # noqa: BLE001 - an exotic config just keeps its scheduler
@@ -226,9 +223,7 @@ def requested_flow_shift(
     height: Optional[int] = None,
     defaults: Optional[dict] = None,
 ) -> Optional[float]:
-    """The static flow shift a request asks for (None keeps today's schedule); a missing base or max
-    shift comes from shift_control's defaults, and ValueError is raised for a field the node does
-    not take."""
+    """None keeps today's schedule; base/max use shift_control defaults; ValueError if unused."""
     if shift is None and base_shift is None and max_shift is None:
         return None
     if node not in SHIFT_NODES:
@@ -266,9 +261,8 @@ def requested_flow_shift(
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:
-    """Returns a copy of the scheduler sampling at static shift (dynamic shifting and terminal
-    stretch off), or the scheduler itself when it already samples there (no rebuild, identical
-    render); ValueError if it has no flow shift."""
+    """Scheduler copy at static shift (dynamic shifting and terminal stretch off), or itself if it
+    already samples there (no rebuild, identical render); ValueError if no flow shift."""
     config = getattr(scheduler, "config", None)
     overrides = flow_shift_overrides(config, shift) if config is not None else None
     if not overrides:
@@ -279,8 +273,7 @@ def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:
 
 
 def shift_control(node: Optional[str], scheduler: Any) -> Optional[dict]:
-    """What the Shift control offers on this load, or None to hide it: the node kind plus the
-    defaults to seed it with (``shift`` None when the schedule is resolution-dependent)."""
+    """Shift control defaults: node kind, shift (None if resolution-dependent); None hides it."""
     if node not in SHIFT_NODES:
         return None
     config = getattr(scheduler, "config", None)
@@ -290,8 +283,7 @@ def shift_control(node: Optional[str], scheduler: Any) -> Optional[dict]:
         base, top = COMFY_FLUX_BASE_SHIFT, COMFY_FLUX_MAX_SHIFT
         try:
             if not config.get("use_dynamic_shifting", False) and "flow_shift" not in config.keys():
-                # The load resolved a fixed mu (ComfyUI's fixed-mu templates, ``flux_mu_shift``): base = max = mu
-                # reproduces it at every size.
+                # Fixed mu (ComfyUI flux_mu_shift): base = max = mu reproduces it at any size.
                 static = float(config.get("shift"))
                 if static > 0:
                     base = top = math.log(static)

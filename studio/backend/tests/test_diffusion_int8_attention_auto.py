@@ -218,8 +218,7 @@ def test_rocm_listed_dit_races_the_triton_kernel(card, monkeypatch):
 
 
 def test_apply_attention_backend_races_only_an_automatic_pick(card, monkeypatch):
-    """No request / "auto": the strided auto install runs over a native pick and its name is returned. An explicit
-    backend request, or a non-native pick, never races."""
+    """Only an automatic native pick races; explicit requests and non-native picks never do."""
     from core.inference import diffusion_attention as A
 
     monkeypatch.setattr(A, "_apply_attention_backend", lambda *a, **k: "_native_cudnn")
@@ -676,8 +675,7 @@ def test_a_native_verdict_never_moves_routes_another_used_plan_runs_on(monkeypat
 def test_thrown_away_graph_warmups_of_another_plan_do_not_pin_its_routes(
     monkeypatch, discarded, moves
 ):
-    """Graphs on: another plan's calls so far were side-stream warm-ups whose outputs a capture throws away, so a
-    torch verdict moves the routes as on main; one used call of that plan keeps them."""
+    """Graph warm-ups of another plan are thrown away, so only its used calls pin its routes."""
     import contextlib
 
     I.forget_plans()

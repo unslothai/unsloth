@@ -11,7 +11,6 @@ export function decodeBase64Bytes(base64: string): Uint8Array<ArrayBuffer> {
     try {
       return fromBase64.call(Uint8Array, base64);
     } catch {
-      // Fall through to atob.
     }
   }
   const binary = globalThis.atob(base64);
