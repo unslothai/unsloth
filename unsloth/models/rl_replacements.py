@@ -189,6 +189,8 @@ _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
+    # Qwen2-VL / Qwen2.5-VL / Qwen3-VL: one (t, h, w) row per image; TRL < 0.29 DPO drops it.
+    "image_grid_thw",
 )
 
 torch_compile_options = {
@@ -656,7 +658,12 @@ def dpo_trainer_vision_process_row(
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
-    if "pixel_values" in processed_features:
+    if "image_grid_thw" in processed_features:
+        # Grid processors return every image's patch rows flattened into one (patches, dim) array, not one
+        # array per row: [0] would keep a single patch row and the vision tower would see too few patches.
+        output["pixel_values"] = processed_features["pixel_values"]
+        output["image_grid_thw"] = processed_features["image_grid_thw"]
+    elif "pixel_values" in processed_features:
         output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
@@ -783,8 +790,17 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
+        "        if all('image_grid_thw' in example for example in examples):\n"
+        # Flattened patch rows: concatenate along patches (what the vision tower and image_grid_thw expect),
+        # never pad per row into a (batch, patches, dim) block.
+        "            output['pixel_values'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['pixel_values']) for example in examples], dim=0\n"
+        "            )\n"
+        "            output['image_grid_thw'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['image_grid_thw']).reshape(-1, 3) for example in examples], dim=0\n"
+        "            )\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
+        "            if _k == 'image_grid_thw' or not all(_k in example for example in examples):\n"
         "                continue\n"
         "            _is_position_key = _k.endswith('position_ids')\n"
         "            _padding_value = -1 if _is_position_key else 0\n"
@@ -803,6 +819,32 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "\n"
         "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
         "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def _unsloth_dpo_is_vision_model(model, processing_class):
+    # TRL 0.22 picks its vision path from MODEL_FOR_VISION_2_SEQ only, which on transformers 4.x leaves out
+    # image-text-to-text models such as Gemma3: their image rows went through the text tokenizer and datasets.map
+    # raised ArrowInvalid. Such a model counts as vision only when it is paired with an image processor.
+    from transformers.models.auto import modeling_auto
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}):
+        return True
+    if model_type not in getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}):
+        return False
+    return (
+        getattr(processing_class, "image_processor", None) is not None
+        and getattr(processing_class, "tokenizer", None) is not None
+    )
+
+
+def dpo_trainer_vision_model_detection(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        "self.is_vision_model = model.config.model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()",
+        "self.is_vision_model = _unsloth_dpo_is_vision_model(model, processing_class)",
     )
 
 
@@ -930,6 +972,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_model_detection)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_is_vision_model))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)

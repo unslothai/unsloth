@@ -4616,6 +4616,7 @@ class FastLlamaModel:
             kwargs["quantization_config"] = bnb_config
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         if offload_layers:
             import copy as _copy

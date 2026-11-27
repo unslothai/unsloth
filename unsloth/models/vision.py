@@ -1418,6 +1418,30 @@ def _zoo_supports_dense_gemma4_fast_inference():
         return False
 
 
+def _deepseek_v41_fast_inference_check(
+    config,
+    load_in_4bit = False,
+    load_in_8bit = False,
+):
+    """Raise before vLLM allocates when fast_inference cannot share this DeepSeek-V4.1 load with vLLM."""
+    try:
+        from unsloth_zoo.vllm_deepseek_v41 import deepseek_v41_fast_inference_refusal
+    except Exception:
+        raise NotImplementedError(
+            "Unsloth: DeepSeek-V4.1 fast_inference needs a newer unsloth_zoo "
+            "(`pip install --upgrade unsloth_zoo`), or set fast_inference = False."
+        )
+    reason = deepseek_v41_fast_inference_refusal(
+        config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
+    )
+    if reason is not None:
+        raise NotImplementedError(
+            f"Unsloth: fast_inference = True cannot share DeepSeek-V4.1 with vLLM: {reason}.\n"
+            "Load a 16-bit (BF16) copy with load_in_4bit = False and fast_inference = True, "
+            "or set fast_inference = False."
+        )
+
+
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
@@ -4280,6 +4304,15 @@ class FastBaseModel:
 
         vllm_enable_lora = True
 
+        if fast_inference and any(mt.startswith("deepseek_v41") for mt in model_types):
+            # Unsloth's native DeepSeek-V4.1 is a text model: vLLM serves it text-only, sharing every weight.
+            _deepseek_v41_fast_inference_check(
+                auto_config,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+            )
+            is_vlm_config = False
+
         if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
@@ -4943,6 +4976,7 @@ class FastBaseModel:
 
         # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)
         if config_attn_impl is None:
@@ -5295,9 +5329,11 @@ class FastBaseModel:
             keep_fp8_scale_names_on_save(model)
 
         # Qwen4Exp under fast_inference: its norms are views of vLLM's bf16 weights and already compute in float32
-        # ((1 + weight.float())); a float32 copy would stop sharing them with the rollout engine.
+        # ((1 + weight.float())); a float32 copy would stop sharing them with the rollout engine. DeepSeek-V4.1
+        # (weight.float() * x) marks its vLLM-shared model the same way.
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1" and not (
-            fast_inference and "qwen4_exp" in model_types
+            (fast_inference and "qwen4_exp" in model_types)
+            or getattr(model, "_unsloth_vllm_shared_norms", False)
         ):
             for jj, (name, module) in enumerate(model.named_modules()):
                 if (

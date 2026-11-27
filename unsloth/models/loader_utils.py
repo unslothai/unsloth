@@ -1294,6 +1294,18 @@ def __get_model_name(
 
     assert load_in_fp8 in (True, False, "block")
     if load_in_fp8 != False:
+        # The FBGEMM probe is lazy (at import it ran on GPU 0 for every torchrun rank): run it now, on this rank's
+        # card, so UNSLOTH_HAS_FBGEMM is known. Only once the FP8 kernels are loaded; never imports them here.
+        import sys
+
+        _resolve_fp8 = getattr(
+            sys.modules.get("unsloth.kernels.fp8"), "resolve_fp8_block_quant_linear", None
+        )
+        if _resolve_fp8 is not None:
+            try:
+                _resolve_fp8()
+            except Exception:
+                pass
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
                 # Faster row scaling only works if FBGEMM works; otherwise use the slower blockwise type.
@@ -5161,6 +5173,21 @@ def _get_fp8_mode_and_check_settings(
             "Use `pip install --upgrade --force-reinstall torchao`"
         )
     _allow_torchao_perblock_safetensors()
+
+    if fp8_mode == "row" and load_in_fp8 is True and DEVICE_TYPE_TORCH != "xpu":
+        # torchao's per-row GEMM is torch's row-wise _scaled_mm, which the Windows wheels do not ship; the
+        # per-block one is a Triton kernel and runs there.
+        from ..kernels.fp8_lora import rowwise_supported
+        try:
+            rowwise = rowwise_supported(torch.device("cuda", torch.cuda.current_device()))
+        except Exception:  # no verdict: keep per-row
+            rowwise = True
+        if not rowwise:
+            print(
+                "Unsloth: this torch build has no row-wise fp8 _scaled_mm, so `load_in_fp8 = True` "
+                "quantizes per block instead (as `load_in_fp8 = 'block'`)."
+            )
+            fp8_mode = "block"
 
     # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (

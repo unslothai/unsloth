@@ -95,6 +95,9 @@ def flashinfer_unavailable(device: Any = None) -> Optional[str]:
     if cap != (12, 0):
         return f"FlashInfer's MiniMax-H3 operators are sm_120 only (this device is sm_{cap[0]}{cap[1]})"
     try:
+        from .flashinfer_import import import_flashinfer
+
+        import_flashinfer()
         import flashinfer
         from flashinfer import diffusion_ops as fd
     except Exception as exc:  # noqa: BLE001
@@ -141,6 +144,9 @@ def _calibrated(key: tuple, amax_fn, margin: float, device: Any) -> tuple:
 def register_ops() -> bool:
     import torch
     import torch.nn.functional as F
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     from flashinfer import diffusion_ops as fd
     from torch.nn.attention import SDPBackend, sdpa_kernel
 

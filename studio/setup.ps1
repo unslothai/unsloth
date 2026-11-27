@@ -2874,6 +2874,33 @@ function Test-SetupConsoleHeadless {
     return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
 }
 
+# Windows on ARM installs NVIDIA's pinned win_arm64 build (e.g. +cu134), not the $CuTag leaf.
+function Get-CudaTorchInstallLabel {
+    param([string]$CuTag, [bool]$WinArm64Venv, [string]$WinArm64TorchSpec)
+    if ($WinArm64Venv) {
+        if ("$WinArm64TorchSpec" -match '\+(cu\d+)') { return $Matches[1] }
+        return "win_arm64 CUDA build"
+    }
+    return $CuTag
+}
+
+# An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
+function Test-SetupUacUnanswerable {
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    try {
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        if ($_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
+    } catch { }
+    $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    $ci = "$env:CI".Trim().ToLowerInvariant()
+    if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+    if (-not [Environment]::UserInteractive) { return $true }
+    try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+    return $false
+}
+
 # A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
 # outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
 function Test-LlamaBuildToolsInstallAllowed {
@@ -2978,6 +3005,13 @@ function Ensure-VCRedist {
     if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
         step "vcredist" "missing; already tried earlier in this update" "Yellow"
         substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+        return
+    }
+    if (Test-SetupUacUnanswerable) {
+        step "vcredist" "missing; not installed (needs admin approval, and this run is unattended)" "Yellow"
+        substep "torch and the prebuilt llama.cpp need it. Run this once in an Admin terminal:" "Yellow"
+        substep "winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements" "Yellow"
+        substep "(or install https://aka.ms/vs/17/release/vc_redist.x64.exe)" "Yellow"
         return
     }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -4790,6 +4824,10 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; skipped at your request" "Yellow"
     substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
     substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
+} elseif (Test-SetupUacUnanswerable) {
+    step "long paths" "could not enable (unattended run; UAC not requested)" "Yellow"
+    Write-StudioLine "       torch.compile / Triton may fail on very long paths. Run this manually in an Admin terminal:" -ForegroundColor Yellow
+    Write-StudioLine '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
@@ -7676,7 +7714,17 @@ function Get-TritonWindowsRocmSpec {
 # Defined before the fast path, which reads it too.
 function Get-TritonWindowsSpec {
     param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
+    if ($WinArm64) {
+        # Same per-torch-minor upper bound as x64 (a triton-windows built for a newer torch does not pair with
+        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing, and a minor
+        # the x64 table does not name yet (2.16 dev from the nightly index) keeps the open floor too.
+        $x64Spec = Get-TritonWindowsSpec -TorchVersion $TorchVersion
+        if ($x64Spec -match '^triton-windows>=3\.(\d+),<(\S+)$' -and [int]$Matches[1] -ge 8) {
+            $woaFloor = if ([int]$Matches[1] -eq 8) { "3.8.0.post28" } else { "3.$($Matches[1])" }
+            return "triton-windows>=$woaFloor,<$($Matches[2])"
+        }
+        return "triton-windows>=3.8.0.post28"
+    }
     if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
         switch ([int]$Matches[1]) {
             12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
@@ -8283,8 +8331,8 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         }
     }
 }
-# win_arm64's first triton-windows wheel is 3.8.0.post28.
-$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
+# Until torch is read below: win_arm64's first triton-windows wheel is 3.8.0.post28.
+$_tritonSpec = Get-TritonWindowsSpec -TorchVersion "" -WinArm64 ([bool]$WinArm64Venv)
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
@@ -8509,7 +8557,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
 } elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
-    substep "installing PyTorch with CUDA support ($CuTag)..."
+    substep "installing PyTorch with CUDA support ($(Get-CudaTorchInstallLabel -CuTag $CuTag -WinArm64Venv ([bool]$WinArm64Venv) -WinArm64TorchSpec $WinArm64TorchSpec))..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     # PEP 440 ignores +cuXXX, so a cu126 -> cu128 change needs --force-reinstall.
     $cudaForce = @()

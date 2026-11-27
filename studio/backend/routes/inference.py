@@ -51843,6 +51843,19 @@ async def _route_nvfp4_request(
     return routed, route
 
 
+def _lora_fuse_kwarg(begin_load: Any, lora_fuse: Optional[str]) -> dict:
+    """An explicit on/off only, and only to an engine that folds LoRAs (sd.cpp / MLX take no such argument)."""
+    if not lora_fuse or lora_fuse == "auto":
+        return {}
+    try:
+        import inspect
+        if "lora_fuse" in inspect.signature(begin_load).parameters:
+            return {"lora_fuse": lora_fuse}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 def _nvfp4_route_kwarg(begin_load: Any, route: Any) -> dict:
     """Unchanged decisions are passed too so the backend does not re-decide; native engines take no such argument."""
     from core.inference.diffusion_nvfp4_route import ROUTE_UNCHANGED
@@ -52669,6 +52682,7 @@ async def load_diffusion_model_gated(
                 attention_backend = request.attention_backend,
                 # Only when set: older engines and test doubles take no such argument.
                 **({"int8_attention": request.int8_attention} if request.int8_attention else {}),
+                **_lora_fuse_kwarg(engine.begin_load, request.lora_fuse),
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,

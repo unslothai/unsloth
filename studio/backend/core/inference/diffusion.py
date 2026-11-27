@@ -466,11 +466,13 @@ from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_fp16_hosted_int8 import (
+    FP16_CARD_HOSTED_INT8_AUTO_FAMILIES,
     fp16_card_hosted_int8_cached,
     fp16_card_hosted_int8_plan_source,
     fp16_card_hosted_int8_planned_scheme,
     fp16_card_hosted_int8_reason,
     fp16_card_hosted_int8_transformer,
+    hosted_auto_host_ram_shortfall,
     small_host_hosted_int8_reason,
 )
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -2001,6 +2003,8 @@ class _LoadState:
     attention_request: Optional[str] = None
     # Resolved once at begin_load: the deferred speed profile must reuse it, not re-read the env.
     int8_policy: Any = None
+    # Per-load fold choice ("on"/"off", None = auto); kept so later folds (deferred compile, LoRA change) honour it.
+    lora_fuse: Optional[str] = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
@@ -2151,6 +2155,26 @@ def lora_fuse_status(pipe: Any) -> Optional[str]:
     if not getattr(pipe, "_unsloth_loras", ()):
         return None
     return getattr(pipe, _LORA_FUSE_STATUS_ATTR, None)
+
+
+def lora_fuse_resolved_entry(request: Optional[str]) -> dict[str, Any]:
+    """``status()["resolved"]["lora_fuse"]``; ``source`` follows the ResolvedBadge contract (explicit/auto)."""
+    from . import diffusion_lora_fuse as lora_fuse
+
+    allowed, origin = lora_fuse.resolve(request)
+    reason = {
+        lora_fuse.SOURCE_PER_LOAD: "chosen for this load",
+        lora_fuse.SOURCE_ENV: f"{lora_fuse.LORA_FUSE_ENV} on this install",
+        lora_fuse.SOURCE_DEFAULT: "off by default: the unfolded adapters stay closer to full precision",
+    }[origin]
+    return {
+        "value": "on" if allowed else "off",
+        "requested": request if origin == lora_fuse.SOURCE_PER_LOAD else None,
+        "source": "explicit" if origin == lora_fuse.SOURCE_PER_LOAD else "auto",
+        "status": RESOLVED_APPLIED,
+        "reason": reason,
+        "origin": origin,
+    }
 
 
 def _speed_off_requested(state: Any) -> bool:
@@ -5150,6 +5174,14 @@ def _denoiser_streams_from_host(state: Any) -> bool:
     return denoiser_offload(getattr(state, "pipe", None), policy) != DENOISER_RESIDENT
 
 
+def _note_small_host_hosted_int8(pipe: Any, reason: str, *, picked: bool) -> None:
+    from .diffusion_small_host import mark
+
+    info = dict(small_host_engaged_on(pipe) or {})
+    info["hosted_int8"] = {"picked": picked, "reason": reason}
+    mark(pipe, info)
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -6606,12 +6638,17 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
         nvfp4_route: Any = None,
         int8_attention: Optional[str] = None,
+        lora_fuse: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once.
 
         ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
-        resolved once here into the load's ``Int8Policy``."""
+        resolved once here into the load's ``Int8Policy``.
+        ``lora_fuse``: ``auto`` / ``on`` / ``off`` LoRA fold on this load (None / auto: the env switch, else off)."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
 
         # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
@@ -6753,6 +6790,7 @@ class DiffusionBackend:
                 transformer_prequant_path = transformer_prequant_path,
                 attention_backend = attention_backend,
                 int8_attention = int8_policy,
+                **({"lora_fuse": lora_fuse} if lora_fuse is not None else {}),
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
@@ -9851,6 +9889,7 @@ class DiffusionBackend:
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
         int8_attention: Any = None,
+        lora_fuse: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
@@ -9908,6 +9947,9 @@ class DiffusionBackend:
         if not isinstance(int8_attention, Int8Policy):
             normalize_int8_attention(int8_attention)
         int8_policy = resolve_policy(int8_attention)
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
         normalize_transformer_cache(transformer_cache)
         # Text-encoder tri-state resolved once so every consumer agrees; must run before the load evicts the previous pipeline, since it validates the raw request.
         text_encoder_quant_requested = text_encoder_quant
@@ -10249,6 +10291,20 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
+                hosted_auto_ram_note = (
+                    hosted_auto_host_ram_shortfall(fam)
+                    if small_host_hosted is None
+                    and turing_auto_int8 is None
+                    and transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _has_active_lora(loras)
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    and getattr(fam, "name", None) in FP16_CARD_HOSTED_INT8_AUTO_FAMILIES
+                    and fp16_card_hosted_int8_reason(fam, TQ_INT8, target) is not None
+                    else None
+                )
+                if hosted_auto_ram_note is not None:
+                    logger.info("diffusion.fp16_hosted_int8: %s", hosted_auto_ram_note)
                 turing_auto_int8 = turing_auto_int8 or small_host_hosted
                 if turing_auto_int8 is not None:
                     logger.info(
@@ -11522,6 +11578,7 @@ class DiffusionBackend:
                                     try:
                                         # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
                                         # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
+                                        # Forced: the float32 encoder copy alone would take ~30 GB of host RAM.
                                         small_host = self._small_host_decision(
                                             _base_local_dir or fetch_base,
                                             pipe_kwargs,
@@ -11529,6 +11586,8 @@ class DiffusionBackend:
                                             dtype,
                                             lora_active = _has_active_lora(loras),
                                             dense_denoiser = small_host_dense,
+                                            force = small_host_hosted is not None
+                                            and hosted_native_scheme is not None,
                                             fetch = _per_component_small_host_fetch(
                                                 fetch_base,
                                                 _base_local_dir,
@@ -11728,6 +11787,10 @@ class DiffusionBackend:
                                 ):
                                     plan = self._mark_small_host_hosted(
                                         pipe, plan, small_host_hosted, fam, logger
+                                    )
+                                elif hosted_auto_ram_note is not None and pipe is not None:
+                                    _note_small_host_hosted_int8(
+                                        pipe, hosted_auto_ram_note, picked = False
                                     )
                         elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -13517,6 +13580,7 @@ class DiffusionBackend:
                         attention_backend = attention_engaged,
                         attention_request = attention_backend,
                         int8_policy = int8_policy,
+                        lora_fuse = lora_fuse,
                         transformer_cache = cache_engaged,
                         cache_auto = cache_may_toggle,
                         cache_quant_active = cache_quant_active,
@@ -15115,8 +15179,10 @@ class DiffusionBackend:
         fetch: Optional[Callable[[], Any]] = None,
         variant: Optional[str] = None,
         dense_denoiser: bool = False,
+        force: bool = False,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
+        ``force``: ``SMALL_HOST_ENV=1`` for this load only.
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
         is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
@@ -15124,7 +15190,7 @@ class DiffusionBackend:
         total, available = host_ram_mib()
         # route cannot engage: skip the prefetch, the loader downloads what it reads
         can_engage = small_host_ineligible(dtype, device = device) is None and (
-            small_host_forced() or (available is not None and not lora_active)
+            force or small_host_forced() or (available is not None and not lora_active)
         )
         if (
             fetch is not None
@@ -15159,6 +15225,7 @@ class DiffusionBackend:
             pread_libraries = ("transformers",) if pread_available() else (),
             spill_free_mib = spill_capacity_mib(),
             dense_denoiser = dense_denoiser,
+            force = force,
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -15280,6 +15347,7 @@ class DiffusionBackend:
         components = dict(info.get("components") or {})
         components["transformer"] = SMALL_HOST_HOSTED_INT8_COMPONENT
         info["components"] = components
+        info["hosted_int8"] = {"picked": True, "reason": reason}
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", components)
         return self._small_host_plan(pipe, plan, fam, logger)
@@ -16194,7 +16262,8 @@ class DiffusionBackend:
         if lora_fuse.fused(pipe):
             _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
             return
-        if not lora_fuse.enabled():
+        request = getattr(state, "lora_fuse", None)
+        if not lora_fuse.enabled(request):
             _set_lora_fuse_status(pipe, LORA_FUSE_DISABLED)
             return
         if _speed_off_requested(state):
@@ -16209,7 +16278,10 @@ class DiffusionBackend:
         ]
         denoisers = list({id(m): m for m in denoisers}.values())
         if not lora_fuse.denoisers_resident(
-            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+            getattr(state, "offload_policy", None),
+            getattr(state, "memory_mode", None),
+            denoisers,
+            request,
         ):
             _set_lora_fuse_status(pipe, LORA_FUSE_OFFLOAD)
             return  # offloaded or streamed denoiser weights move every render
@@ -18689,6 +18761,12 @@ class DiffusionBackend:
             )
             if live is not resolved["attention_backend"]:
                 resolved = {**resolved, "attention_backend": live}
+        if isinstance(resolved, dict):
+            # read live: an auto load follows the env switch at fold time, as the fold itself does
+            resolved = {
+                **resolved,
+                "lora_fuse": lora_fuse_resolved_entry(getattr(state, "lora_fuse", None)),
+            }
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,

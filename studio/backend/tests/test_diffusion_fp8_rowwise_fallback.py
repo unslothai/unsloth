@@ -237,6 +237,30 @@ def test_a_card_used_after_install_joins_the_fallback(monkeypatch):
     assert us.fallback_cards() == frozenset({0, 1})
 
 
+CUBLAS_ROWWISE_ERROR = (
+    "CUDA error: CUBLAS_STATUS_NOT_SUPPORTED when calling cublasLtMatmulAlgoGetHeuristic( ltHandle, computeDesc.descriptor(), "
+    "Adesc.descriptor(), Bdesc.descriptor(), Cdesc.descriptor(), Ddesc.descriptor(), preference.descriptor(), 1, &heuristicResult, "
+    "&returnedResult)"
+)
+
+
+def test_the_torch_210_cublas_rowwise_refusal_is_a_missing_kernel(monkeypatch):
+    # torch 2.10 routes sm_12x row-wise scales to cuBLASLt (major == 10 check), which refuses them: a real RTX 5090 on
+    # the Windows torch 2.10.0+cu130 wheel. That is a missing kernel, so the card takes the tensorwise fallback.
+    calls = _fake_card(monkeypatch, (12, 0), rowwise_ok = True)
+    inner = torch._scaled_mm
+
+    def refuses(a, b, scale_a, scale_b, **kw):
+        if scale_a.numel() > 1:
+            raise RuntimeError(CUBLAS_ROWWISE_ERROR)
+        return inner(a, b, scale_a, scale_b, **kw)
+
+    monkeypatch.setattr(torch, "_scaled_mm", refuses)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert us.fallback_cards() == frozenset({0})
+    assert us.gemm_path(0)["path"] == "unit_scale_fallback"
+
+
 @pytest.mark.parametrize(
     "error",
     [

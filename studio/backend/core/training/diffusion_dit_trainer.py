@@ -46,6 +46,7 @@ from core.training.diffusion_block_swap import (
     install_dit_block_swap,
     int8_w8a8_for_run,
     reset_block_swaps,
+    rocm_w8a8_train_opt_in,
 )
 from core.training.diffusion_gc_budget import (
     StepReplay,
@@ -536,6 +537,31 @@ def _apply_int8_w8a8(
             ) from exc
         _emit(on_event, "warning", message = f"int8 W8A8 unavailable, using weight-only int8: {exc}")
         return False
+
+
+def _build_int8_base(
+    transformer,
+    on_event,
+    cfg,
+    device = None,
+    fp16_amp: bool = False,
+) -> bool:
+    """True if W8A8, False if torchao weight-only. fp16 and ROCm raise instead (Windows-ROCm quantize_ is a no-op)."""
+    if _int8_w8a8(cfg) and _apply_int8_w8a8(
+        transformer, on_event, cfg.resolved_family, device = device
+    ):
+        return True
+    if fp16_amp:
+        raise ValueError(
+            "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
+        )
+    if torch_is_rocm():
+        raise ValueError(
+            "int8 W8A8 could not be built on this ROCm GPU (int8 GEMM probe failed or no eligible linear layers), "
+            "and torchao weight-only int8 is not supported on ROCm; use base_precision='nf4', 'bf16', or 'auto'."
+        )
+    _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+    return False
 
 
 # Small-M linears stay bf16 (casts outweigh GEMM); final_layer is Krea 2's output projection.
@@ -1212,14 +1238,15 @@ def _resolve_base_precision(cfg, spec, device) -> str:
                 f"Use base_precision='nf4' or 'auto'."
             )
         # Mirror the pre-eviction ROCm guard inside the trainer child.
-        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm():
+        rocm_w8a8 = torch_is_rocm() and rocm_w8a8_train_opt_in(mode, cfg)
+        if mode in ("int8", "fp8", "mxfp8") and torch_is_rocm() and not rocm_w8a8:
             raise ValueError(
                 f"base_precision={mode!r} is a torchao NVIDIA tensor-core path (int8 sm_80+, fp8 "
                 "sm_89+, mxfp8 sm_100+) and this is a ROCm/AMD GPU. Use base_precision='nf4', "
                 "'bf16', or 'auto'."
             )
         # int8 has no runtime fallback, so gate on a FUNCTIONAL torchao, not find_spec, which the Windows-ROCm stub satisfies.
-        if mode == "int8" and not has_functional_torchao():
+        if mode == "int8" and not rocm_w8a8 and not has_functional_torchao():
             raise ValueError(
                 "base_precision='int8' needs a functional torchao install; this host's "
                 "torchao is missing or the non-functional Windows-ROCm stub. Use "
@@ -4532,15 +4559,8 @@ def _train_dit(
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
     w8a8_on = lowp_swap == "int8_w8a8" or (
         base_precision == "int8"
-        and _int8_w8a8(cfg)
-        and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
+        and _build_int8_base(transformer, on_event, cfg, device = device, fp16_amp = fp16_amp)
     )
-    if base_precision == "int8" and not w8a8_on:
-        if fp16_amp:
-            raise ValueError(
-                "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
-            )
-        _int8_quantize_base(transformer, cfg.resolved_family, device = device)
     if fp16_amp and w8a8_on:
         fp16_report.update(prepare_fp16_base(transformer))
     if base_precision == "int8":
