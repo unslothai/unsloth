@@ -2753,7 +2753,6 @@ def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
     assert excinfo.value.status_code == 404
 
 
-
 def test_scan_folder_retains_the_native_media_alias(tmp_path, monkeypatch):
     from hub.services.models import local_inventory
 
@@ -2767,9 +2766,7 @@ def test_scan_folder_retains_the_native_media_alias(tmp_path, monkeypatch):
         empty, empty, empty, (), (), (), (), omlx_dirs = (native,)
     )
     monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: roots)
-    monkeypatch.setattr(
-        "storage.studio_db.list_scan_folders", lambda: [{"path": str(checkpoint)}]
-    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(checkpoint)}])
     monkeypatch.chdir(tmp_path)
     pick = mas.resolve_local_media_model("publisher/FLUX.1-dev", task = mas.IMAGE_TASK)
     assert pick is not None
