@@ -5042,7 +5042,7 @@ def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
 
 
 def prime_coalesce_tokenizers_for(state: Any) -> None:
-    """Prime for a loaded state; a resident load always renders serially (request_batching), so it never needs copies."""
+    """Resident loads always render serially, so they never need tokenizer copies."""
     if (getattr(state, "offload_policy", OFFLOAD_NONE) or OFFLOAD_NONE) == OFFLOAD_NONE:
         return
     prime_coalesce_tokenizers(state.family, state.pipe)

@@ -244,7 +244,6 @@ class _CopyCounted(_FastWords):
     ],
 )
 def test_a_resident_load_never_copies_tokenizers_it_cannot_batch_with(family):
-    """A resident load always renders serially, so the first render skips the copy (~0.2-0.4 s on transformers 5.x)."""
     from core.inference import diffusion
 
     tok = _CopyCounted()
