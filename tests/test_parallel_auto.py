@@ -1005,10 +1005,14 @@ def test_fused_expert_stacks_size_like_per_expert_linears(clean, repo):
     for kwargs in (
         {},
         {"load_in_4bit": True, "skip_modules": []},
+        # bnb 8-bit replaces nn.Linear only: a fused stack stays dense, like split experts it skips.
         {"load_in_8bit": True, "skip_modules": []},
     ):
         w_fused, lora_fused = auto.checkpoint_estimate(fused, **kwargs)
-        w_split, lora_split = auto.checkpoint_estimate(split, **kwargs)
+        split_kwargs = dict(kwargs)
+        if kwargs.get("load_in_8bit"):
+            split_kwargs["skip_modules"] = sorted(stacks)
+        w_split, lora_split = auto.checkpoint_estimate(split, **split_kwargs)
         assert lora_fused == lora_split > 0, kwargs
         # int() per tensor: at most one byte per expert apart.
         assert abs(w_fused - w_split) <= sum(1 for k, _, _ in split if k not in dict.fromkeys(

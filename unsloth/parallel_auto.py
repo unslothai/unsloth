@@ -382,8 +382,8 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
             dtype_bytes if dt.startswith(("F", "BF")) and not quant_state and not fp8 else stored
         )
         numel_total += numel
-        # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize, and get_peft_model's
-        # target_parameters LoRA is r * E * (in + out).
+        # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize on a 4-bit load (bnb 8-bit only
+        # replaces nn.Linear, so it stays dense there), and get_peft_model's target_parameters LoRA is r * E * (in + out).
         leaf = key.rsplit(".", 1)[-1].lower()  # a stack's quant scales / biases are not linears
         stacked = (
             len(shape) == 3
@@ -395,7 +395,8 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
                 shape[0] * (shape[1] + shape[2]) if stacked else shape[0] + shape[1]
             )
             module = key[: -len(".weight")] if key.endswith(".weight") else key
-            if quantize and not fp8 and not any(m in module for m in skip_modules):
+            dense = fp8 or (stacked and not load_in_4bit)
+            if quantize and not dense and not any(m in module for m in skip_modules):
                 weights += int(numel * per_quant)
                 continue
         weights += numel * loaded
