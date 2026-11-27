@@ -6973,6 +6973,14 @@ class ImageGenerationRequest(BaseModel):
         "none on the native sd.cpp and MLX engines. An empty list renders without any.",
     )
 
+    @model_validator(mode = "before")
+    @classmethod
+    def _null_response_format_is_omitted(cls, data):
+        # An explicit null response_format is the default, so it counts as omitted: jpeg/webp then answer inline.
+        if isinstance(data, dict) and data.get("response_format", ...) is None:
+            data = {k: v for k, v in data.items() if k != "response_format"}
+        return data
+
     @field_validator("n", "size", "response_format", "output_format", mode = "before")
     @classmethod
     def _null_means_default(cls, value, info):

@@ -56723,33 +56723,37 @@ async def _generate_openai_images(
         finally:
             _diffusion_persist_active -= 1
 
+    global _diffusion_persist_active
     echo = {"output_format": body.output_format} if "output_format" in body.model_fields_set else {}
     if body.output_format != "png":
         quality = 100 if body.output_compression is None else body.output_compression
+        # Held from the end of generation through the hand-off to the gallery task, released on failure too.
+        _diffusion_persist_active += 1
         try:
-            data = await asyncio.to_thread(
-                lambda: [
-                    ImageGenerationData(
-                        b64_json = base64.b64encode(
-                            image_gallery.encode_lossy(image, body.output_format, quality)
-                        ).decode("ascii")
-                    )
-                    for image in result["images"]
-                ]
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("openai_images.encode_failed: %s", exc)
-            raise HTTPException(status_code = 500, detail = "Failed to encode the generated image.")
-        task = asyncio.get_running_loop().create_task(_write_gallery_after_response())
-        _background_gallery_persists.add(task)
-        task.add_done_callback(_background_gallery_persists.discard)
-        # One yield lets the task take its hold before this returns, so liveness never reads 0 between
-        # the response and the gallery write (the loop runs ready callbacks in FIFO order).
-        await asyncio.sleep(0)
+            try:
+                data = await asyncio.to_thread(
+                    lambda: [
+                        ImageGenerationData(
+                            b64_json = base64.b64encode(
+                                image_gallery.encode_lossy(image, body.output_format, quality)
+                            ).decode("ascii")
+                        )
+                        for image in result["images"]
+                    ]
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("openai_images.encode_failed: %s", exc)
+                raise HTTPException(status_code = 500, detail = "Failed to encode the generated image.")
+            task = asyncio.get_running_loop().create_task(_write_gallery_after_response())
+            _background_gallery_persists.add(task)
+            task.add_done_callback(_background_gallery_persists.discard)
+            # One yield lets the task take its own hold before this one drops (ready callbacks run FIFO).
+            await asyncio.sleep(0)
+        finally:
+            _diffusion_persist_active -= 1
         return ImageGenerationResponse(created = created, data = data, **echo)
 
     # Same counter as /images/generate: liveness reads it until these records exist.
-    global _diffusion_persist_active
     _diffusion_persist_active += 1
     try:
         with account_access.media_generation("diffusion"):

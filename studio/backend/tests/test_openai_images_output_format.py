@@ -286,3 +286,26 @@ def test_the_liveness_hold_is_taken_before_a_lossy_response_returns(client, gall
         written = len(list(gallery.glob("*.png")))
         assert held > 0 or written >= 1
         _gallery_pngs(gallery, written + (1 if held else 0))
+
+
+def test_null_response_format_with_a_lossy_format_answers_inline(client, gallery):
+    """An SDK that sends response_format: null gets the omitted-field default, not a 400."""
+    resp = _post(client, response_format = None, output_format = "jpeg")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data and data[0].get("b64_json") and not data[0].get("url")
+
+
+def test_the_liveness_hold_covers_lossy_encoding(client, gallery, monkeypatch):
+    """Liveness must not read idle while a finished image is still being encoded as jpeg/webp."""
+    seen = []
+    real = gallery_module.encode_lossy
+
+    def spy(image, fmt, quality):
+        seen.append(inference_routes._diffusion_persist_active)
+        return real(image, fmt, quality)
+
+    monkeypatch.setattr(gallery_module, "encode_lossy", spy)
+    resp = _post(client, response_format = "b64_json", output_format = "jpeg")
+    assert resp.status_code == 200, resp.text
+    assert seen and all(n > 0 for n in seen)
