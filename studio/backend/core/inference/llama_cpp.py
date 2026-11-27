@@ -42071,7 +42071,7 @@ class LlamaCppBackend:
             context_overflow == "truncate_oldest" and self._effective_context_length
         )
 
-        def _round_tool_choice(active_tools, *, document_satisfies_choice = False):
+        def _round_tool_choice(active_tools):
             from core.inference.chat_template_helpers import (
                 neutralize_tool_descriptions,
                 reconciled_tool_choice,
@@ -42082,10 +42082,7 @@ class LlamaCppBackend:
                 active_tools, _markup_cache, self.markup_profile
             )
             requested_choice = "auto" if tool_choice is None else tool_choice
-            if (_forced_choice_resolved or document_satisfies_choice) and requested_choice not in (
-                "auto",
-                "none",
-            ):
+            if _forced_choice_resolved and requested_choice not in ("auto", "none"):
                 requested_choice = "auto"
             requested_choice = reconciled_tool_choice(requested_choice, tools, safe_tools) or "auto"
             forced_name = forced_tool_name(requested_choice)
@@ -42099,13 +42096,6 @@ class LlamaCppBackend:
                     safe_tools = matching_tools
                     requested_choice = "required"
             return safe_tools, requested_choice, forced_name
-
-        def _round_tool_names(safe_tools, forced_name):
-            return {
-                (tool.get("function") or {}).get("name")
-                for tool in safe_tools
-                if (tool.get("function") or {}).get("name")
-            } | (set() if forced_name else _loadable_mcp_names)
 
         def _round_reasoning_kw():
             return _with_template_extras(
@@ -42196,7 +42186,11 @@ class LlamaCppBackend:
 
             safe_tools, requested_choice, forced_name = _round_tool_choice(active_tools)
             # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-            _enabled_tool_names = _round_tool_names(safe_tools, forced_name)
+            _enabled_tool_names = {
+                (tool.get("function") or {}).get("name")
+                for tool in safe_tools
+                if (tool.get("function") or {}).get("name")
+            } | (set() if forced_name else _loadable_mcp_names)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
@@ -42300,15 +42294,8 @@ class LlamaCppBackend:
                                         len(base),
                                     )
                                     candidate = base[:at] + refreshed["messages"] + base[at:]
-                                    # A forced name stays forced: this fit priced and worded the prompt for that one tool.
-                                    satisfies_choice = tool_choice == "required"
-                                    candidate_tools, candidate_choice, candidate_name = (
-                                        _round_tool_choice(
-                                            active_tools, document_satisfies_choice = satisfies_choice
-                                        )
-                                    )
                                     measured = _fit_count_tokens(
-                                        candidate, candidate_tools, _reasoning_kw
+                                        candidate, safe_tools, _reasoning_kw
                                     )
                                     # The fit's own target, also on a replay: headroom, plus the recall reserve a rolling fit holds back.
                                     budget = prompt_budget(
@@ -42328,20 +42315,14 @@ class LlamaCppBackend:
                                         # A larger prompt leaves this fit's recall the room up to the headroom, not into it.
                                         if measured > fitted_tokens:
                                             _fit_recall_cap = max(0, headroom_line - measured)
+                                            _fit_grew_prompt = True
                                         _auto = refreshed
                                         conversation = candidate
                                         truncation["prompt_tokens_after"] = measured
-                                        _fit_grew_prompt = True
-                                        if satisfies_choice:
+                                        # A forced name stays forced: this fit priced and worded the prompt for that one tool.
+                                        if tool_choice == "required":
                                             _forced_choice_resolved = True
-                                            safe_tools, requested_choice, forced_name = (
-                                                candidate_tools,
-                                                candidate_choice,
-                                                candidate_name,
-                                            )
-                                            _enabled_tool_names = _round_tool_names(
-                                                safe_tools, forced_name
-                                            )
+                                            requested_choice = "auto"
                         except Exception:
                             logger.debug(
                                 "Whole-document retry after compaction failed", exc_info = True
