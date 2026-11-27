@@ -188,6 +188,7 @@ def _score(
     installed zoo has the EOS helper (a cache kept across a zoo upgrade)."""
     if old_zoo:
         monkeypatch.delattr(zoo, "grpo_pad_is_eos_rows", raising = False)
+        monkeypatch.delattr(zoo, "grpo_real_token_mask", raising = False)
     ns = {
         "os": os,
         "torch": torch,
@@ -486,3 +487,48 @@ def test_stale_cached_mask_helper_uses_the_installed_zoo(packing):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+needs_real_mask = pytest.mark.skipif(
+    not hasattr(zoo, "grpo_real_token_mask"), reason = "unsloth_zoo without grpo_real_token_mask"
+)
+
+
+def _multi_turn_batch():
+    """pad == eos == the turn end, real inside the prompt and inside tool-calling completions."""
+    prompts = [[EOS, EOS, 5, EOS], [7, EOS, 9, 10]]
+    prompt_mask = [[0, 0, 1, 1], [1, 1, 1, 1]]
+    comps = [[15, EOS, 3, EOS, 16, EOS, EOS, EOS], [17, 18, EOS, 4, EOS, 19, EOS, EOS]]
+    cm = torch.tensor([[1, 1, 1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1, 1, 0]])
+    ids = torch.tensor([p + c for p, c in zip(prompts, comps)])
+    att = torch.cat([torch.tensor(prompt_mask), cm], 1)
+    return ids, att, cm
+
+
+@needs_real_mask
+@pytest.mark.parametrize("packing", [True, False])
+def test_pad_is_eos_real_tokens_match_the_zoo_layout(packing, monkeypatch):
+    # Old / ref logps and the zoo loss must lay rows out alike when pad-id tokens are real
+    # (prompt turn ends, EOS inside a multi-turn completion), so every ratio and KL term
+    # compares the same token.
+    ids, att, cm = _multi_turn_batch()
+    monkeypatch.setattr(sys.modules[__name__], "KEEP", cm.shape[1])
+    trainer = _trainer(EOS)
+    old_model, ref_model = _CausalModel(1), _CausalModel(2)
+    old = _score(trainer, old_model, ids, att, packing)
+    ref = _score(trainer, ref_model, ids, att, packing)
+    assert trainer._unsloth_grpo_logps_prompt_from_mask is True
+    assert not getattr(trainer, "pg_asked", False), "PrefixGrouper engaged on real pad-id tokens"
+
+    seen = _zoo_loss_inputs(trainer, _CausalModel(3), ids, att, cm, old, ref)
+    mask = seen["mask"].bool()
+    assert mask.sum(1).tolist() == cm.sum(1).tolist()
+    m = cm.bool()
+    for got, model in (
+        (seen["old"], old_model),
+        (seen["ref"], ref_model),
+        (seen["new"], _CausalModel(3)),
+    ):
+        want = _reference(model, ids, att)
+        got = _to_trl_layout(got, mask)
+        assert torch.allclose(got[m], want[m], atol = 1e-5), (got * m, want * m)

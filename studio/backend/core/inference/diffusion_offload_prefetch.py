@@ -79,6 +79,93 @@ def prefetch_depth() -> int:
     return max(1, min(MAX_PREFETCH_DEPTH, depth))
 
 
+def prefetch_depth_override() -> Optional[int]:
+    """The depth ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` pins (clamped), or None when unset or unparsable."""
+    raw = (os.environ.get(PREFETCH_DEPTH_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, min(MAX_PREFETCH_DEPTH, int(raw)))
+    except ValueError:
+        return None
+
+
+def tight_prefetch_depth(
+    *,
+    available_mib: int,
+    required_mib: int,
+    largest_group_mib: int,
+    planned_depth: Optional[int] = None,
+) -> int:
+    """Groups to copy ahead for one request. ``required_mib`` is the request's admission need with ONE group copied
+    ahead (the placement floor prices the running group plus one, diffusers' own footprint); every further group of
+    depth adds ``largest_group_mib`` in flight. The deepest depth up to ``planned_depth`` (default ``prefetch_depth``)
+    whose need fits ``available_mib``; 1 when even that does not (memory-tight: the budget cannot hold a second group
+    ahead beside the plan's margin). An ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` override always wins."""
+    override = prefetch_depth_override()
+    if override is not None:
+        return override
+    planned = max(1, int(planned_depth if planned_depth is not None else prefetch_depth()))
+    largest = max(0, int(largest_group_mib))
+    if largest <= 0:
+        return planned
+    for depth in range(planned, 1, -1):
+        if int(required_mib) + (depth - 1) * largest <= int(available_mib):
+            return depth
+    return 1
+
+
+def module_prefetchers(module: Any) -> list:
+    """The ``GroupPrefetcher`` objects driving ``module``'s offload groups (installed or block-streamer), once each."""
+    found: dict = {}
+    pf = getattr(module, PREFETCHER_ATTR, None) if module is not None else None
+    if pf is not None:
+        found[id(pf)] = pf
+    try:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(module) if module is not None else []
+    except Exception:  # noqa: BLE001 - not group-offloaded
+        groups = []
+    for group in groups or ():
+        pf = getattr(group, "_unsloth_prefetcher", None)
+        if pf is not None:
+            found[id(pf)] = pf
+    return list(found.values())
+
+
+def streamed_group_mib(prefetchers: Sequence[Any]) -> int:
+    """MiB of the largest group the prefetchers still stream (resident groups never fill the window)."""
+    largest = 0
+    for pf in prefetchers:
+        for group in getattr(pf, "groups", ()) or ():
+            if getattr(group, "_unsloth_resident", False):
+                continue
+            largest = max(largest, int(getattr(pf, "nbytes", {}).get(id(group), 0)))
+    return -(-largest // (1 << 20))
+
+
+def set_request_prefetch_depth(prefetchers: Sequence[Any], depth: int) -> int:
+    """Run the next forwards ``depth`` groups ahead (never deeper than each prefetcher was built for), the window
+    shrunk by the groups dropped; restores the built depth when ``depth`` reaches it. A prefetcher replaying through
+    fixed slots (CUDA graphs) keeps its ring. Returns how many prefetchers changed."""
+    changed = 0
+    for pf in prefetchers:
+        if getattr(pf, "slot_of", None):
+            continue
+        base_depth = int(getattr(pf, "_unsloth_base_depth", pf.depth))
+        base_window = int(getattr(pf, "_unsloth_base_window", pf.window))
+        pf._unsloth_base_depth = base_depth
+        pf._unsloth_base_window = base_window
+        new = max(1, min(int(depth), base_depth))
+        largest = max(pf.nbytes.values()) if getattr(pf, "nbytes", None) else 0
+        window = max(largest, base_window - (base_depth - new) * largest)
+        if new != pf.depth or window != pf.window:
+            pf.depth = new
+            pf.window = window
+            changed += 1
+    return changed
+
+
 def _go() -> Any:
     from diffusers.hooks import group_offloading as go
     return go
@@ -694,6 +781,12 @@ class GroupPrefetcher:
             size = max(size, need)
         if not members:
             return 0
+        # a ring built after a memory-tight request (set_request_prefetch_depth) is sized for the built depth, which
+        # it runs from now on: requests never resize a ring, so a depth-1 ring would pin every later request at 1
+        base_depth = int(getattr(self, "_unsloth_base_depth", self.depth))
+        if base_depth != self.depth:
+            self.depth = base_depth
+            self.window = int(getattr(self, "_unsloth_base_window", self.window))
         count = min(self.depth + 1, len(members))
         # pinned groups never fill their slot unless a release streams them again; the ring is allocated on first use
         self.slot_streamed = sum(1 for g in members if not getattr(g, "_unsloth_resident", False))

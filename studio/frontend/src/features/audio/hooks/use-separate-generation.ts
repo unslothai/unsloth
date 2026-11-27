@@ -5,16 +5,24 @@ import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
 import { reportAudioFailure } from "../audio-failure-actions";
+import {
+  type AudioOptionValues,
+  audioOptionSpecsFor,
+  audioOptionsForRequest,
+} from "../audio-options";
+import type { SeparationGoal } from "../audio-cpp-catalog";
 import { selectionExpired, sourceRefOf } from "../audio-run-request";
 import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import type { GenerateBlocker } from "../pages/tts-workspace";
 import {
   type OverlapValue,
+  SEPARATE_EXPIRED_MESSAGE,
   type SeparateBlockerKind,
   estimateSeparateSeconds,
   overlapReloads,
   separateBlocker,
   separateCpuWarning,
+  separateRunOptions,
 } from "../separate-policy";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioSeparateStore } from "../stores/audio-separate-store";
@@ -31,8 +39,7 @@ import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
 import { showRunResult } from "./use-clone-generation";
 
-export const SEPARATE_TRACK_EXPIRED_MESSAGE =
-  "This track expired. Add it again.";
+export const SEPARATE_TRACK_EXPIRED_MESSAGE = SEPARATE_EXPIRED_MESSAGE;
 
 /** Mirrors useCloneGeneration so Stop, phases and errors behave the same. */
 export function useSeparateGeneration({
@@ -52,6 +59,7 @@ export function useSeparateGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
+  audioOptionValues,
 }: Pick<
   AudioHostState,
   | "status"
@@ -69,7 +77,9 @@ export function useSeparateGeneration({
     AudioGallery,
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
-  Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick">) {
+  Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
+    audioOptionValues: AudioOptionValues;
+  }) {
   const source = useAudioSeparateStore((state) => state.source);
   const lastOverlapByModel = useAudioSeparateStore(
     (state) => state.lastOverlapByModel,
@@ -77,6 +87,18 @@ export function useSeparateGeneration({
   const storedToolValues = useAudioCloneStore((state) => state.toolValues);
   const model = status?.active_model ?? null;
   const family = status?.audio_family ?? null;
+  const separation = status?.audio_separation ?? null;
+  const audioOptionSpecs = useMemo(
+    () =>
+      status?.audio_server_task === "s2s"
+        ? audioOptionSpecsFor(status, "separate")
+        : [],
+    [status],
+  );
+  const specOptions = useMemo(
+    () => audioOptionsForRequest(audioOptionSpecs, audioOptionValues),
+    [audioOptionSpecs, audioOptionValues],
+  );
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<AudioSourceStatus>({
     phase: "idle",
@@ -91,6 +113,7 @@ export function useSeparateGeneration({
   const [pendingRun, setPendingRun] = useState<{
     title: string;
     model: string | null;
+    goal: SeparationGoal | null;
   } | null>(null);
 
   const toolContext = useMemo(
@@ -155,7 +178,7 @@ export function useSeparateGeneration({
     sourceError: sourceStatus.phase === "error" ? sourceStatus.message : null,
   });
   const addTrack = {
-    label: "Add a track",
+    label: "Add a recording",
     onClick: () => sourceHandle.current?.focus(),
   };
   const blockerActions: Partial<
@@ -174,7 +197,7 @@ export function useSeparateGeneration({
     ],
     "too-long": [
       {
-        label: "Pick a shorter track",
+        label: "Pick a shorter recording",
         onClick: () => sourceHandle.current?.browse(),
       },
     ],
@@ -213,14 +236,18 @@ export function useSeparateGeneration({
     const controller = new AbortController();
     generateAbort.current = controller;
     setReloading(willReload);
-    setPendingRun({ title: state.source.name, model: runModel });
+    setPendingRun({
+      title: state.source.name,
+      model: runModel,
+      goal: separation?.goal ?? null,
+    });
     updateGenerationPhase("generating");
     try {
       const response = await runAudio(
         {
           workflow: "separate",
           inputs: { source: sourceRefOf(state.source) },
-          options: toolRequest.patch.options,
+          options: separateRunOptions(toolRequest.patch.options, specOptions),
         },
         controller.signal,
       );
@@ -283,6 +310,8 @@ export function useSeparateGeneration({
     generateAbort,
     willReload,
     toolRequest,
+    specOptions,
+    separation,
     overlapPanel,
     overlap,
     refreshGallery,
@@ -310,6 +339,9 @@ export function useSeparateGeneration({
     toolValues,
     handleToolValueChange,
     family,
+    goal: separation?.goal ?? null,
+    output: separation?.output ?? null,
+    audioOptionSpecs,
     overlap,
     willReload,
     reloading,

@@ -882,7 +882,7 @@ export const ar = {
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
-    addScheduledTask: "إضافة مهمة مجدولة…",
+    addScheduledTask: "إضافة مهمة مجدولة",
     compact: "ضغط المحادثة",
     compactEmpty: "لا يوجد ما يمكن ضغطه بعد",
     compactUnsupported: "ضغط المحادثة يتطلب نموذج GGUF أو MLX يدعم الأدوات",
@@ -2414,6 +2414,10 @@ export const ar = {
         confirmDescriptionChatOnly:
           "يوقف الخادم ويعيد تشغيل المثبّت. هذا تثبيت للدردشة فقط، لذا يرقّيه المثبّت أيضًا إلى التثبيت الكامل مع PyTorch، بحجم عدة غيغابايت إجمالًا. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "إصلاح الآن",
+        recommendedTorch:
+          "يُنصح بالإصلاح: يحتوي هذا التثبيت على PyTorch {torch}، وهو أقدم من الإصدار المُدار {managedTorch} الذي تدعم عليه وحدات RTX من الفئة 50.",
+        recommendedDriver:
+          "PyTorch {torch} أقدم من الإصدار المُدار {managedTorch} الذي تدعم عليه وحدات RTX من الفئة 50، لكن برنامج تشغيل وحدة معالجة الرسومات هذا لا يدعم CUDA 13. حدّث برنامج التشغيل أولًا، ثم أصلح التثبيت.",
       },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
@@ -4131,8 +4135,8 @@ export const ar = {
       summary: {
         single: "التدريب على GPU واحدة",
         layerSplit: "يُقسَّم النموذج طبقة بطبقة على {count} GPU",
-        ddp: "النموذج يتسع في GPU واحدة: توازي البيانات على {count} GPU",
-        fsdp2: "النموذج أكبر من GPU واحدة: مجزأ على {count} GPU",
+        ddp: "كل GPU تدرّب نسخة كاملة: توازي البيانات على {count} GPU",
+        fsdp2: "الأوزان وحالة المُحسِّن مجزأة على {count} GPU",
         tp: "تُقسَّم كل طبقة على {count} GPU",
         pp: "تعمل الطبقات كـ {count} مراحل في خط أنابيب، مرحلة لكل GPU",
         cp: "يُقسَّم كل تسلسل على {count} GPU",
@@ -4143,7 +4147,7 @@ export const ar = {
         noGpu: "اختر وحدة GPU واحدة على الأقل.",
         singleNeedsOne: "وضع GPU واحدة يستخدم وحدة واحدة فقط. ألغِ تحديد البقية.",
         needsTwo: "يحتاج هذا الوضع إلى وحدتي GPU على الأقل.",
-        customSpec: "أدخل تخطيطًا، مثل dp=2,tp=2.",
+        customSpec: "أدخل تخطيطًا، مثل {example}.",
       },
     },
     preview: {
@@ -4528,6 +4532,12 @@ export const ar = {
       epochs: "الحقب (Epochs)",
       useMaxSteps: "استخدام الحد الأقصى للخطوات",
       useEpochs: "استخدام الحقب",
+      stepGuidancePass: "حوالي {steps} خطوة تعني مرورًا واحدًا على صفوفك البالغة {rows} بدفعة فعلية قدرها {batch}.",
+      stepGuidanceFloor: "المرور مرة واحدة على صفوفك البالغة {rows} لا يتجاوز {passSteps} خطوة بدفعة فعلية قدرها {batch}، لذا فإن حوالي {steps} خطوة (عدة مرات) حد أدنى معقول.",
+      stepGuidanceCap: "المرور مرة واحدة على صفوفك البالغة {rows} يستغرق {passSteps} خطوة بدفعة فعلية قدرها {batch}؛ و{steps} خطوة تدرّب على جزء منها، وهذا يكفي غالبًا لتشغيل أول.",
+      stepGuidanceEpoch: "الحقبة الواحدة حوالي {passSteps} خطوة على صفوفك البالغة {rows} بدفعة فعلية قدرها {batch}.",
+      stepGuidancePacking: "التجميع يدمج الصفوف القصيرة، لذا قد يحتاج المرور الواحد خطوات أقل.",
+      useSuggestedSteps: "استخدام {steps}",
       maxStepsTooltip: "تجاوز إجمالي خطوات المُحسِّن.",
       epochsTooltip: "عدد المرات الكاملة للمرور على مجموعة البيانات.",
       contextLength: "السياق",
@@ -5071,6 +5081,7 @@ export const ar = {
       showPromptDescription: "اطّلع على التعليمات الدقيقة المرسلة إلى النموذج.",
     },
     history: {
+      notSaved: "لم تُحفظ في السجل: مساحة تخزين المتصفح ممتلئة.",
       title: "السجل",
       search: "البحث في السجل",
       empty: "تظهر ترجماتك هنا.",
@@ -6036,6 +6047,12 @@ export const ar = {
     maximize: "تكبير النافذة",
     restore: "استعادة حجم النافذة",
     close: "إغلاق النافذة",
+    mediaCodecs: {
+      title: "قد لا تعمل مقاطع الفيديو المُنشأة",
+      // {command}: an apt command line, never translated.
+      description: "يفتقد هذا النظام إلى أدوات فك ترميز الفيديو من GStreamer. ثبّتها باستخدام: {command}",
+      copy: "نسخ الأمر",
+    },
   },
   runtimeUpdate: {
     installAudio: "تثبيت بيئة تشغيل الصوت",

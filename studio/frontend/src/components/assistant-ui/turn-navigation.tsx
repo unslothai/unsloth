@@ -782,7 +782,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onPointerEnter={cancelHide}
           onPointerLeave={hidePreview}
           className={cn(
-            "aui-turn-preview dropdown-surface pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-xl bg-popover p-3 text-popover-foreground text-ui-13 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]",
+            "aui-turn-preview dropdown-surface pointer-events-auto fixed z-50 flex w-80 select-none flex-col gap-1 rounded-lg bg-popover p-3 text-popover-foreground text-ui-13 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]",
             !previewOpen && "invisible",
           )}
         >

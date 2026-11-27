@@ -292,5 +292,6 @@ def test_generic_auto_secondary_whose_cuda_kernel_fails_keeps_native(monkeypatch
 def test_generic_auto_secondary_still_runs_the_primary_pick(monkeypatch):
     installed, dit, probes, served = _split_flux3(monkeypatch, cuda_fails_on = -1, generic = True)
     assert installed == 1
-    assert (1, "cuda", False) in probes
+    # under Auto the secondary runs its own (timed) race on the primary's pick, not only the accuracy check
+    assert (1, "cuda", True) in probes
     assert served() == "cuda"

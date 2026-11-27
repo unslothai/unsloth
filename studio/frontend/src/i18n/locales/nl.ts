@@ -989,7 +989,7 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
-    addScheduledTask: "Geplande taak toevoegen…",
+    addScheduledTask: "Geplande taak toevoegen",
     compact: "Gesprek comprimeren",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
@@ -2663,6 +2663,10 @@ export const nl = {
         confirmDescriptionChatOnly:
           "Stopt de server en voert het installatieprogramma opnieuw uit. Dit is een installatie voor Alleen chat, dus het installatieprogramma upgradet deze ook naar de volledige installatie met PyTorch, in totaal enkele gigabytes. Chats en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Nu herstellen",
+        recommendedTorch:
+          "Reparatie aanbevolen: deze installatie heeft PyTorch {torch}, ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund.",
+        recommendedDriver:
+          "PyTorch {torch} is ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund, maar dit GPU-stuurprogramma ondersteunt CUDA 13 niet. Werk eerst het GPU-stuurprogramma bij en repareer daarna de installatie.",
       },
       resetPreferences: {
         sectionTitle: "Gevarenzone",
@@ -4476,8 +4480,8 @@ export const nl = {
       summary: {
         single: "Training op één GPU",
         layerSplit: "Model wordt laag voor laag over {count} GPU's verdeeld",
-        ddp: "Model past op één GPU: dataparallel op {count} GPU's",
-        fsdp2: "Model is te groot voor één GPU: geshard over {count} GPU's",
+        ddp: "Elke GPU traint een volledige kopie: dataparallel op {count} GPU's",
+        fsdp2: "Gewichten en optimizerstatus geshard over {count} GPU's",
         tp: "Elke laag wordt over {count} GPU's verdeeld",
         pp: "Lagen draaien als {count} pijplijnfasen, één per GPU",
         cp: "Elke reeks wordt over {count} GPU's verdeeld",
@@ -4488,7 +4492,7 @@ export const nl = {
         noGpu: "Selecteer minstens één GPU.",
         singleNeedsOne: "Eén GPU gebruikt precies één GPU. Vink de andere uit.",
         needsTwo: "Deze modus heeft minstens twee GPU's nodig.",
-        customSpec: "Voer een indeling in, bijvoorbeeld dp=2,tp=2.",
+        customSpec: "Voer een indeling in, bijvoorbeeld {example}.",
       },
     },
     preview: {
@@ -4889,6 +4893,12 @@ export const nl = {
       epochs: "Epochs",
       useMaxSteps: "Max. stappen gebruiken",
       useEpochs: "Epochs gebruiken",
+      stepGuidancePass: "Ongeveer {steps} stappen is één doorgang over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidanceFloor: "Eén doorgang over je {rows} rijen is maar {passSteps} stappen bij een effectieve batch van {batch}, dus ongeveer {steps} stappen (een paar doorgangen) is een redelijk minimum.",
+      stepGuidanceCap: "Eén doorgang over je {rows} rijen is {passSteps} stappen bij een effectieve batch van {batch}; {steps} stappen trainen op een deel ervan, wat vaak genoeg is voor een eerste run.",
+      stepGuidanceEpoch: "Eén epoch is ongeveer {passSteps} stappen over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidancePacking: "Packing voegt korte rijen samen, dus een doorgang kan minder stappen kosten.",
+      useSuggestedSteps: "{steps} gebruiken",
       maxStepsTooltip: "Het totale aantal optimizerstappen overschrijven.",
       epochsTooltip: "Aantal volledige doorlopen van de dataset.",
       contextLength: "Context",
@@ -5461,6 +5471,7 @@ export const nl = {
       showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
     },
     history: {
+      notSaved: "Niet opgeslagen in de geschiedenis: de opslag van de browser is vol.",
       title: "Geschiedenis",
       search: "Geschiedenis doorzoeken",
       empty: "Je vertalingen verschijnen hier.",
@@ -6500,6 +6511,12 @@ export const nl = {
     maximize: "Venster maximaliseren",
     restore: "Venster herstellen",
     close: "Venster sluiten",
+    mediaCodecs: {
+      title: "Gegenereerde video's worden mogelijk niet afgespeeld",
+      // {command}: an apt command line, never translated.
+      description: "Op dit systeem ontbreken de GStreamer-videodecoders. Installeer ze met: {command}",
+      copy: "Opdracht kopiëren",
+    },
   },
   runtimeUpdate: {
     installAudio: "De audioruntime installeren",

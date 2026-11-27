@@ -182,6 +182,15 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _credential(url: str, headers: dict | None, use_oauth: bool) -> str | list[tuple[str, str]]:
+    # OAuth tokens are keyed by url, so every OAuth server on one url is one account.
+    if use_oauth:
+        return "oauth"
+    # HTTP header names are case-insensitive; env names and all values stay exact.
+    fold = str if is_stdio(url) else str.casefold
+    return sorted((fold(str(k)), str(v)) for k, v in (headers or {}).items())
+
+
 def _image_mappings_active(row: dict) -> bool:
     from core.inference.tools import _enabled_mcp_servers
 
@@ -205,18 +214,20 @@ def _oauth_client(
     return client_id, client_secret or None
 
 
+def _visible_headers(row: dict, include_headers: bool) -> dict | None:
+    # A managed editor row's headers carry the editor's capability token, which no client needs.
+    if include_headers and row.get("builtin_id") not in editors.EDITORS:
+        return parse_server_headers(row) or {}
+    return None
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
         builtin_id = row.get("builtin_id"),
         display_name = row["display_name"],
         url = row["url"],
-        # A managed editor row's headers carry the editor's capability token, which no client needs.
-        headers = (
-            (parse_server_headers(row) or {})
-            if include_headers and row.get("builtin_id") not in editors.EDITORS
-            else {}
-        ),
+        headers = _visible_headers(row, include_headers) or {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
         oauth_client_id = row.get("oauth_client_id"),
@@ -789,15 +800,22 @@ async def import_mcp_servers(
     no_credential: WithoutCredential = False,
 ):
     """Bulk-register servers from a standard mcpServers JSON config (issue
-    #5936). Each entry rides the existing create path: _validate_url applies
-    the same stdio gate (a stdio entry becomes a per-entry error when stdio is
-    off; http still imports), and entries whose url already exists are skipped
-    so re-importing the same file is idempotent. One bad entry never 400s the
-    whole batch -- failures are reported per entry."""
+    #5936). Entries ride the create path's validation and stdio gate. An entry
+    is skipped when a server on its url has its name or its credential (headers,
+    env for stdio, or OAuth), or hides its headers from this caller, so
+    re-importing adds nothing while separate accounts on one endpoint import.
+    One bad entry never 400s the whole batch -- failures are reported per
+    entry."""
     entries, errors = parse_mcp_config(payload.config)
     created: list[McpServerResponse] = []
     skipped: list[str] = []
-    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+    seen = []
+    for row in mcp_servers_db.list_servers():
+        # Hidden headers match any entry on their url, so the result cannot confirm a guessed secret.
+        visible = _visible_headers(row, include_headers = not no_credential)
+        oauth = bool(row.get("use_oauth")) and not is_stdio(row["url"])
+        credential = None if visible is None else _credential(row["url"], visible, oauth)
+        seen.append((row["display_name"], row["url"], credential))
 
     for entry in entries:
         try:
@@ -811,7 +829,12 @@ async def import_mcp_servers(
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
-        if url in seen_urls:
+        use_oauth = entry.use_oauth and not is_stdio(url)
+        credential = _credential(url, headers, use_oauth)
+        if any(
+            seen_url == url and (seen_name == entry.display_name or seen_cred in (None, credential))
+            for seen_name, seen_url, seen_cred in seen
+        ):
             skipped.append(entry.display_name)
             continue
         server_id = uuid.uuid4().hex[:16]
@@ -821,9 +844,9 @@ async def import_mcp_servers(
             url = url,
             headers_json = json.dumps(headers) if headers else None,
             is_enabled = entry.is_enabled,
-            use_oauth = entry.use_oauth and not is_stdio(url),
+            use_oauth = use_oauth,
         )
-        seen_urls.add(url)
+        seen.append((entry.display_name, url, None if no_credential else credential))
         created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
 
     return McpServerImportResult(created = created, skipped = skipped, errors = errors)

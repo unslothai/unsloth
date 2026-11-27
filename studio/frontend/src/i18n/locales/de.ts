@@ -882,7 +882,7 @@ export const de = {
   chatMenu: {
     more: "Chat-Optionen",
     copy: "Kopieren",
-    addScheduledTask: "Geplante Aufgabe hinzufügen…",
+    addScheduledTask: "Geplante Aufgabe hinzufügen",
     compact: "Unterhaltung komprimieren",
     compactEmpty: "Noch nichts zu komprimieren",
     compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
@@ -2443,6 +2443,10 @@ export const de = {
         confirmDescriptionChatOnly:
           "Stoppt den Server und führt das Installationsprogramm erneut aus. Dies ist eine Nur-Chat-Installation, daher upgradet das Installationsprogramm sie auch auf die vollständige Installation mit PyTorch, insgesamt mehrere Gigabyte. Chats und Einstellungen bleiben erhalten. Dies kann einige Minuten dauern.",
         confirmAction: "Jetzt reparieren",
+        recommendedTorch:
+          "Reparatur empfohlen: Diese Installation hat PyTorch {torch}, älter als das verwaltete {managedTorch}, auf dem GPUs der RTX-50-Serie unterstützt werden.",
+        recommendedDriver:
+          "PyTorch {torch} ist älter als das verwaltete {managedTorch}, auf dem GPUs der RTX-50-Serie unterstützt werden, aber dieser GPU-Treiber unterstützt CUDA 13 nicht. Aktualisieren Sie zuerst den GPU-Treiber und reparieren Sie dann die Installation.",
       },
       resetPreferences: {
         sectionTitle: "Gefahrenzone",
@@ -4182,8 +4186,8 @@ export const de = {
       summary: {
         single: "Training auf einer GPU",
         layerSplit: "Modell wird schichtweise auf {count} GPUs aufgeteilt",
-        ddp: "Modell passt auf eine GPU: Datenparallel auf {count} GPUs",
-        fsdp2: "Modell ist zu groß für eine GPU: auf {count} GPUs geshardet",
+        ddp: "Jede GPU trainiert eine vollständige Kopie: Datenparallel auf {count} GPUs",
+        fsdp2: "Gewichte und Optimiererzustand auf {count} GPUs geshardet",
         tp: "Jede Schicht wird auf {count} GPUs aufgeteilt",
         pp: "Schichten laufen als {count} Pipeline-Stufen, eine pro GPU",
         cp: "Jede Sequenz wird auf {count} GPUs aufgeteilt",
@@ -4194,7 +4198,7 @@ export const de = {
         noGpu: "Wähle mindestens eine GPU.",
         singleNeedsOne: "Eine GPU nutzt genau eine GPU. Entferne die anderen Haken.",
         needsTwo: "Dieser Modus braucht mindestens zwei GPUs.",
-        customSpec: "Gib ein Layout ein, zum Beispiel dp=2,tp=2.",
+        customSpec: "Gib ein Layout ein, zum Beispiel {example}.",
       },
     },
     preview: {
@@ -4584,6 +4588,12 @@ export const de = {
       epochs: "Epochen",
       useMaxSteps: "Max. Schritte verwenden",
       useEpochs: "Epochen verwenden",
+      stepGuidancePass: "Etwa {steps} Schritte sind ein Durchlauf über deine {rows} Zeilen bei einer effektiven Batchgröße von {batch}.",
+      stepGuidanceFloor: "Ein Durchlauf über deine {rows} Zeilen sind nur {passSteps} Schritte bei einer effektiven Batchgröße von {batch}, daher sind etwa {steps} Schritte (einige Durchläufe) ein sinnvolles Minimum.",
+      stepGuidanceCap: "Ein Durchlauf über deine {rows} Zeilen sind {passSteps} Schritte bei einer effektiven Batchgröße von {batch}; {steps} Schritte trainieren auf einem Teil davon, was für einen ersten Lauf oft reicht.",
+      stepGuidanceEpoch: "Eine Epoche sind etwa {passSteps} Schritte über deine {rows} Zeilen bei einer effektiven Batchgröße von {batch}.",
+      stepGuidancePacking: "Packing fasst kurze Zeilen zusammen, daher kann ein Durchlauf weniger Schritte brauchen.",
+      useSuggestedSteps: "{steps} verwenden",
       maxStepsTooltip: "Überschreibt die gesamten Optimierer-Schritte.",
       epochsTooltip: "Anzahl vollständiger Durchläufe über den Datensatz.",
       contextLength: "Kontext",
@@ -5145,6 +5155,7 @@ export const de = {
       showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
     },
     history: {
+      notSaved: "Nicht im Verlauf gespeichert: Der Browserspeicher ist voll.",
       title: "Verlauf",
       search: "Verlauf durchsuchen",
       empty: "Deine Übersetzungen erscheinen hier.",
@@ -6110,6 +6121,12 @@ export const de = {
     maximize: "Fenster maximieren",
     restore: "Fenster wiederherstellen",
     close: "Fenster schließen",
+    mediaCodecs: {
+      title: "Generierte Videos werden möglicherweise nicht abgespielt",
+      // {command}: an apt command line, never translated.
+      description: "Auf diesem System fehlen die GStreamer-Videodecoder. Installieren Sie sie mit: {command}",
+      copy: "Befehl kopieren",
+    },
   },
   runtimeUpdate: {
     installAudio: "Audio-Laufzeit installieren",

@@ -101,6 +101,8 @@ def test_probe_matches_the_per_helper_reads_with_one_run(monkeypatch, used1, use
         probes = mg.probe_devices((0, 1, 2))
     assert smi.calls == 1
     assert _as_tuples(probes) == expected
+    # every card is the faked model, so the partner decisions below compare like with like
+    assert {p.name for p in probes.values()} == {"Tesla T4"}
     # the decisions built from the probes
     with mg.selection_scope(selection):
         assert mg.best_secondary(selection, probes) == mg.best_secondary(

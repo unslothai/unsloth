@@ -217,6 +217,24 @@ def tokenize_chunks(
     return chunks
 
 
+def _clip_chunk_counts(
+    pipe: Any,
+    texts: Sequence[str],
+    *,
+    weighted: bool = True,
+) -> list[int]:
+    """Per text, the max 77-token chunk count over the pipeline's tokenizers."""
+    convert = getattr(pipe, "maybe_convert_prompt", None)
+    pairs = _encoders(pipe)
+    return [
+        max(
+            [1]
+            + [len(tokenize_chunks(t, tok, weighted = weighted, convert = convert)) for tok, _ in pairs]
+        )
+        for t in texts
+    ]
+
+
 def _empty_chunk(tokenizer: Any) -> tuple[list[int], list[float]]:
     bos, eos, pad, _ = _special_ids(tokenizer)
     return [bos, eos] + [pad] * CHUNK_TOKENS, [1.0] * (CHUNK_TOKENS + 2)

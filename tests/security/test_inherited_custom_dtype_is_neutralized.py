@@ -181,8 +181,7 @@ def test_a_value_set_after_import_is_still_neutralized(monkeypatch):
 
 
 def test_a_shorthand_alias_is_written_back_canonically(monkeypatch):
-    """`eval("fp16")` is a NameError in the older zoo reader, so preserving the field
-    verbatim was only safe for the spellings that happen to be evaluable."""
+    """Older zoo reader: eval("fp16") is a NameError, so write shorthand back canonically."""
     import torch
     from unsloth.models._custom_dtype import (
         neutralize_inherited_custom_dtype,

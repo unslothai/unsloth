@@ -935,7 +935,7 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
-    addScheduledTask: "Lägg till schemalagd uppgift…",
+    addScheduledTask: "Lägg till schemalagd uppgift",
     compact: "Komprimera konversationen",
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
@@ -2559,6 +2559,10 @@ export const sv = {
         confirmDescriptionChatOnly:
           "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
+        recommendedTorch:
+          "Reparation rekommenderas: den här installationen har PyTorch {torch}, äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på.",
+        recommendedDriver:
+          "PyTorch {torch} är äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på, men den här GPU-drivrutinen stöder inte CUDA 13. Uppdatera GPU-drivrutinen först och reparera sedan installationen.",
       },
       resetPreferences: {
         sectionTitle: "Riskzon",
@@ -4318,8 +4322,8 @@ export const sv = {
       summary: {
         single: "Tränar på en GPU",
         layerSplit: "Modellen delas lager för lager över {count} GPU:er",
-        ddp: "Modellen får plats på en GPU: dataparallell på {count} GPU:er",
-        fsdp2: "Modellen är för stor för en GPU: shardad över {count} GPU:er",
+        ddp: "Varje GPU tränar en fullständig kopia: dataparallell på {count} GPU:er",
+        fsdp2: "Vikter och optimerartillstånd shardade över {count} GPU:er",
         tp: "Varje lager delas över {count} GPU:er",
         pp: "Lagren körs som {count} pipelinesteg, ett per GPU",
         cp: "Varje sekvens delas över {count} GPU:er",
@@ -4330,7 +4334,7 @@ export const sv = {
         noGpu: "Välj minst en GPU.",
         singleNeedsOne: "En GPU använder exakt en GPU. Avmarkera de andra.",
         needsTwo: "Det här läget kräver minst två GPU:er.",
-        customSpec: "Ange en layout, till exempel dp=2,tp=2.",
+        customSpec: "Ange en layout, till exempel {example}.",
       },
     },
     preview: {
@@ -4720,6 +4724,12 @@ export const sv = {
       epochs: "Epoker",
       useMaxSteps: "Använd maxsteg",
       useEpochs: "Använd epoker",
+      stepGuidancePass: "Ungefär {steps} steg är ett varv över dina {rows} rader med en effektiv batch på {batch}.",
+      stepGuidanceFloor: "Ett varv över dina {rows} rader är bara {passSteps} steg med en effektiv batch på {batch}, så ungefär {steps} steg (några varv) är ett rimligt minimum.",
+      stepGuidanceCap: "Ett varv över dina {rows} rader är {passSteps} steg med en effektiv batch på {batch}; {steps} steg tränar på en del av dem, vilket ofta räcker för en första körning.",
+      stepGuidanceEpoch: "En epok är ungefär {passSteps} steg över dina {rows} rader med en effektiv batch på {batch}.",
+      stepGuidancePacking: "Packning slår ihop korta rader, så ett varv kan ta färre steg.",
+      useSuggestedSteps: "Använd {steps}",
       maxStepsTooltip: "Åsidosätt totalt antal optimerarsteg.",
       epochsTooltip: "Antal fullständiga genomgångar av datauppsättningen.",
       contextLength: "Kontext",
@@ -5286,6 +5296,7 @@ export const sv = {
       showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
     },
     history: {
+      notSaved: "Inte sparad i historiken: webbläsarens lagring är full.",
       title: "Historik",
       search: "Sök i historiken",
       empty: "Dina översättningar visas här.",
@@ -6279,6 +6290,12 @@ export const sv = {
     maximize: "Maximera fönstret",
     restore: "Återställ fönstret",
     close: "Stäng fönstret",
+    mediaCodecs: {
+      title: "Genererade videor kanske inte spelas upp",
+      // {command}: an apt command line, never translated.
+      description: "Systemet saknar GStreamers videoavkodare. Installera dem med: {command}",
+      copy: "Kopiera kommando",
+    },
   },
   runtimeUpdate: {
     installAudio: "Installera ljudkörmiljön",

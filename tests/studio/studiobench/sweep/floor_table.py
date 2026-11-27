@@ -32,8 +32,7 @@ from tests.studio.studiobench.scoring import payload_rules  # noqa: E402
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
 
-# Compared by difference, not ratio: 0.0 is the clean reading (about half of scored cells), so `t / 0.0`
-# would drop exactly the pairs where a treatment introduces jank.
+# Compared by difference: 0.0 is the clean reading, so `t / 0.0` drops exactly the jank pairs.
 DIFFERENCE_METRICS: frozenset[str] = frozenset({"stream_time_in_jank_pct", "stream_jank_index"})
 
 

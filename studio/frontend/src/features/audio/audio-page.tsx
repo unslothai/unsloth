@@ -35,7 +35,10 @@ import type {
   ModelOption,
 } from "@/features/model-picker/components/model-selector/types";
 import { useVoiceSettingsStore } from "@/features/settings";
-import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import {
+  sttModelBytes,
+  sttModelSize,
+} from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
@@ -70,11 +73,7 @@ import {
 } from "./audio-page-policy";
 import { type AudioSourceSelection, clipReference } from "./audio-run-request";
 import { AudioActiveProvider } from "./components/audio-source-input";
-import {
-  audioModelLabel,
-  type CreateMode,
-  deviceSizeBytes,
-} from "./audio-workspace-utils";
+import { audioModelLabel, type CreateMode } from "./audio-workspace-utils";
 import {
   audioCapabilityLine,
   audioModelsForTask,
@@ -771,6 +770,7 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
+    audioOptionValues,
   });
   const generationPresentation = audioGenerationPresentation(
     generationPhase,
@@ -1747,7 +1747,6 @@ export function AudioPage({
     const catalogModel = MODELS_BY_MODE.transcribe.find(
       (model) => model.id.toLowerCase() === artifact.repoId.toLowerCase(),
     );
-    const size = sttModelSize(artifact.sidecarKey);
     return {
       ...(catalogModel ?? {
         id: artifact.repoId,
@@ -1761,8 +1760,8 @@ export function AudioPage({
           : artifact.engine === "gguf"
             ? "F16"
             : undefined,
-      deviceSize: size || undefined,
-      deviceSizeBytes: size ? deviceSizeBytes(size) : undefined,
+      deviceSize: sttModelSize(artifact.sidecarKey) || undefined,
+      deviceSizeBytes: sttModelBytes(artifact.sidecarKey),
       deviceLoaded:
         artifact.sidecarKey === sttLoadedModel &&
         artifact.engine === sttLoadedEngine,
@@ -2119,6 +2118,7 @@ export function AudioPage({
                         historyClips={clips}
                         pageModelLoaded={pageModelLoaded}
                         pageModelId={lastPageModel}
+                        audioOptionSpecs={pageModelLoaded ? separate.audioOptionSpecs : []}
                       />
                     </AudioActiveProvider>
                   ) : ttsWorkflow === "clone" ? (

@@ -882,7 +882,7 @@ export const hi = {
   chatMenu: {
     more: "चैट विकल्प",
     copy: "कॉपी करें",
-    addScheduledTask: "शेड्यूल किया गया कार्य जोड़ें…",
+    addScheduledTask: "शेड्यूल किया गया कार्य जोड़ें",
     compact: "बातचीत कॉम्पैक्ट करें",
     compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
     compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
@@ -2420,6 +2420,10 @@ export const hi = {
         confirmDescriptionChatOnly:
           "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है। यह केवल-चैट इंस्टॉल है, इसलिए इंस्टॉलर इसे PyTorch के साथ पूरे इंस्टॉल में भी अपग्रेड करता है, कुल मिलाकर कई गीगाबाइट। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
         confirmAction: "अभी ठीक करें",
+        recommendedTorch:
+          "मरम्मत की सलाह: इस इंस्टॉल में PyTorch {torch} है, जो प्रबंधित {managedTorch} से पुराना है, जिस पर RTX 50-सीरीज़ GPU समर्थित हैं।",
+        recommendedDriver:
+          "PyTorch {torch} प्रबंधित {managedTorch} से पुराना है, जिस पर RTX 50-सीरीज़ GPU समर्थित हैं, लेकिन यह GPU ड्राइवर CUDA 13 का समर्थन नहीं करता। पहले GPU ड्राइवर अपडेट करें, फिर इंस्टॉलेशन की मरम्मत करें।",
       },
       resetPreferences: {
         sectionTitle: "खतरनाक क्षेत्र",
@@ -4141,8 +4145,8 @@ export const hi = {
       summary: {
         single: "एक GPU पर ट्रेनिंग",
         layerSplit: "मॉडल को लेयर दर लेयर {count} GPU पर बांटा गया है",
-        ddp: "मॉडल एक GPU में फिट होता है: {count} GPU पर डेटा पैरेलल",
-        fsdp2: "मॉडल एक GPU के लिए बहुत बड़ा है: {count} GPU पर शार्ड किया गया",
+        ddp: "हर GPU पूरी कॉपी ट्रेन करता है: {count} GPU पर डेटा पैरेलल",
+        fsdp2: "वेट और ऑप्टिमाइज़र स्टेट {count} GPU पर शार्ड किए गए",
         tp: "हर लेयर को {count} GPU पर बांटा गया है",
         pp: "लेयर {count} पाइपलाइन चरणों के रूप में चलती हैं, हर GPU पर एक",
         cp: "हर सीक्वेंस को {count} GPU पर बांटा गया है",
@@ -4153,7 +4157,7 @@ export const hi = {
         noGpu: "कम से कम एक GPU चुनें।",
         singleNeedsOne: "एक GPU मोड ठीक एक GPU का उपयोग करता है। बाकी का चिह्न हटाएं।",
         needsTwo: "इस मोड के लिए कम से कम दो GPU चाहिए।",
-        customSpec: "लेआउट दर्ज करें, उदाहरण के लिए dp=2,tp=2।",
+        customSpec: "लेआउट दर्ज करें, उदाहरण के लिए {example}।",
       },
     },
     preview: {
@@ -4538,6 +4542,12 @@ export const hi = {
       epochs: "एपॉक",
       useMaxSteps: "अधिकतम स्टेप्स का उपयोग करें",
       useEpochs: "एपॉक का उपयोग करें",
+      stepGuidancePass: "लगभग {steps} स्टेप्स, {batch} के प्रभावी बैच पर आपकी {rows} पंक्तियों का एक पूरा पास है।",
+      stepGuidanceFloor: "{batch} के प्रभावी बैच पर आपकी {rows} पंक्तियों का एक पास केवल {passSteps} स्टेप्स है, इसलिए लगभग {steps} स्टेप्स (कुछ पास) एक उचित न्यूनतम है।",
+      stepGuidanceCap: "{batch} के प्रभावी बैच पर आपकी {rows} पंक्तियों का एक पास {passSteps} स्टेप्स है; {steps} स्टेप्स उसके एक हिस्से पर ट्रेन करते हैं, जो पहले रन के लिए अक्सर काफ़ी होता है।",
+      stepGuidanceEpoch: "{batch} के प्रभावी बैच पर एक एपॉक आपकी {rows} पंक्तियों पर लगभग {passSteps} स्टेप्स है।",
+      stepGuidancePacking: "पैकिंग छोटी पंक्तियों को जोड़ती है, इसलिए एक पास में कम स्टेप्स लग सकते हैं।",
+      useSuggestedSteps: "{steps} उपयोग करें",
       maxStepsTooltip: "कुल ऑप्टिमाइज़र स्टेप्स को ओवरराइड करें।",
       epochsTooltip: "डेटासेट पर पूर्ण पास की संख्या।",
       contextLength: "कॉन्टेक्स्ट",
@@ -5082,6 +5092,7 @@ export const hi = {
       showPromptDescription: "मॉडल को भेजे गए सटीक निर्देश देखें।",
     },
     history: {
+      notSaved: "इतिहास में सहेजा नहीं गया: ब्राउज़र का स्टोरेज भर गया है।",
       title: "हिस्ट्री",
       search: "हिस्ट्री खोजें",
       empty: "आपके अनुवाद यहाँ दिखेंगे।",
@@ -6047,6 +6058,12 @@ export const hi = {
     maximize: "विंडो बड़ी करें",
     restore: "विंडो पहले जैसी करें",
     close: "विंडो बंद करें",
+    mediaCodecs: {
+      title: "जनरेट किए गए वीडियो शायद न चलें",
+      // {command}: an apt command line, never translated.
+      description: "इस सिस्टम में GStreamer वीडियो डिकोडर नहीं हैं। इन्हें इस कमांड से इंस्टॉल करें: {command}",
+      copy: "कमांड कॉपी करें",
+    },
   },
   runtimeUpdate: {
     installAudio: "ऑडियो रनटाइम इंस्टॉल करें",

@@ -50,8 +50,7 @@ def _drive(
     flip_at,
     checks = 12,
 ):
-    """Calls the hooks as the training loop does; the SIGTERM timer fires (_enable_checkpoint) just before check
-    `flip_at`. Returns the check indices at which the checkpoint was written."""
+    """Returns check indices where a checkpoint was written; SIGTERM fires just before flip_at."""
     manager = callback.jit_manager
     saved = []
 

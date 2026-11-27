@@ -920,7 +920,7 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
-    addScheduledTask: "הוספת משימה מתוזמנת…",
+    addScheduledTask: "הוספת משימה מתוזמנת",
     compact: "כווץ שיחה",
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
@@ -2489,6 +2489,10 @@ export const he = {
         confirmDescriptionChatOnly:
           "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה. זוהי התקנה של צ'אט בלבד, ולכן תוכנית ההתקנה גם משדרגת אותה להתקנה המלאה עם PyTorch, כמה ג'יגה-בייט בסך הכול. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
+        recommendedTorch:
+          "מומלץ לתקן: בהתקנה זו PyTorch {torch}, ישן יותר מהגרסה המנוהלת {managedTorch} שבה נתמכים מעבדי RTX מסדרה 50.",
+        recommendedDriver:
+          "PyTorch {torch} ישן יותר מהגרסה המנוהלת {managedTorch} שבה נתמכים מעבדי RTX מסדרה 50, אבל מנהל ההתקן של ה-GPU הזה לא תומך ב-CUDA 13. עדכנו קודם את מנהל ההתקן של ה-GPU ואז תקנו את ההתקנה.",
       },
       resetPreferences: {
         sectionTitle: "אזור סכנה",
@@ -4212,8 +4216,8 @@ export const he = {
       summary: {
         single: "אימון על GPU אחד",
         layerSplit: "המודל מפוצל שכבה אחר שכבה על {count} GPU",
-        ddp: "המודל נכנס ב-GPU אחד: מקביליות נתונים על {count} GPU",
-        fsdp2: "המודל גדול מדי ל-GPU אחד: מפוצל על {count} GPU",
+        ddp: "כל GPU מאמן עותק מלא: מקביליות נתונים על {count} GPU",
+        fsdp2: "המשקלים ומצב האופטימייזר מפוצלים על {count} GPU",
         tp: "כל שכבה מפוצלת על {count} GPU",
         pp: "השכבות רצות כ-{count} שלבי צנרת, אחד לכל GPU",
         cp: "כל רצף מפוצל על {count} GPU",
@@ -4224,7 +4228,7 @@ export const he = {
         noGpu: "בחרו לפחות GPU אחד.",
         singleNeedsOne: "GPU יחיד משתמש ב-GPU אחד בדיוק. בטלו את סימון האחרים.",
         needsTwo: "המצב הזה דורש לפחות שני מעבדי GPU.",
-        customSpec: "הזינו פריסה, למשל dp=2,tp=2.",
+        customSpec: "הזינו פריסה, למשל {example}.",
       },
     },
     preview: {
@@ -4602,6 +4606,12 @@ export const he = {
       epochs: "תקופות (Epochs)",
       useMaxSteps: "השתמש ב-Max Steps",
       useEpochs: "השתמש ב-Epochs",
+      stepGuidancePass: "כ-{steps} צעדים הם מעבר אחד על {rows} השורות שלך באצווה אפקטיבית של {batch}.",
+      stepGuidanceFloor: "מעבר אחד על {rows} השורות שלך הוא רק {passSteps} צעדים באצווה אפקטיבית של {batch}, לכן כ-{steps} צעדים (כמה מעברים) הם מינימום סביר.",
+      stepGuidanceCap: "מעבר אחד על {rows} השורות שלך הוא {passSteps} צעדים באצווה אפקטיבית של {batch}; {steps} צעדים מאמנים על חלק מהן, ולרוב זה מספיק להרצה ראשונה.",
+      stepGuidanceEpoch: "Epoch אחד הוא כ-{passSteps} צעדים על {rows} השורות שלך באצווה אפקטיבית של {batch}.",
+      stepGuidancePacking: "Packing מאחד שורות קצרות, כך שמעבר עשוי לדרוש פחות צעדים.",
+      useSuggestedSteps: "השתמש ב-{steps}",
       maxStepsTooltip: "דרוס את סך כל צעדי האופטימיזציה.",
       epochsTooltip: "מספר המעברים המלאים על מערך הנתונים.",
       contextLength: "הקשר",
@@ -5153,6 +5163,7 @@ export const he = {
       showPromptDescription: "הצגת ההוראות המדויקות שנשלחות למודל.",
     },
     history: {
+      notSaved: "לא נשמר בהיסטוריה: האחסון של הדפדפן מלא.",
       title: "היסטוריה",
       search: "חיפוש בהיסטוריה",
       empty: "התרגומים שלך יופיעו כאן.",
@@ -6135,6 +6146,12 @@ export const he = {
     maximize: "הגדל חלון",
     restore: "שחזר גודל חלון",
     close: "סגור חלון",
+    mediaCodecs: {
+      title: "ייתכן שסרטונים שנוצרו לא יופעלו",
+      // {command}: an apt command line, never translated.
+      description: "חסרים במערכת זו מפענחי הווידאו של GStreamer. התקינו אותם באמצעות: {command}",
+      copy: "העתקת הפקודה",
+    },
   },
   runtimeUpdate: {
     installAudio: "התקן את סביבת זמן הריצה לשמע",

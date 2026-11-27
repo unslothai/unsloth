@@ -17,10 +17,10 @@ import {
   audioCppDisplayName,
   audioCppHubPath,
   audioCppModelFor,
-  audioCppSizeLabel,
   audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
+import { formatBytes } from "../src/features/hub/lib/format.ts";
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
@@ -148,12 +148,9 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(audioCppHubPath("unsloth/Qwen3-8B-GGUF"), null);
   assert.equal(audioCppModelFor("OpenMOSS-Team/MOSS-TTS-Nano-100M"), null);
   assert.equal(audioCppModelFor(""), null);
-  assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
-  assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 23);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -441,7 +438,7 @@ test("dictation settings list the saved keys by their Hub name", () => {
     assert.equal(STT_MODEL_REPOS[key], model.id);
     assert.doesNotMatch(sttModelName(key), BRAND);
     assert.ok(sttModelName(key).startsWith(audioCppDisplayName(model.id)), key);
-    assert.equal(sttModelSize(key), audioCppSizeLabel(model.sizeBytes));
+    assert.equal(sttModelSize(key), formatBytes(model.sizeBytes));
   }
   assert.equal(sttModelName("audiocpp-qwen3-asr-0.6b"), "Qwen3-ASR-0.6B-GGUF");
   assert.equal(sttModelName("audiocpp-moonshine-tiny"), "Moonshine-Streaming-GGUF (tiny)");

@@ -686,7 +686,8 @@ export const en = {
   },
   managedEngines: {
     gpu: "GPUs",
-    gpuHelp: "Choose which GPUs to use.",
+    gpuHelp:
+      "Choose which GPUs in this machine to use. Serving one model across machines (for example two DGX Sparks) is not part of this release.",
     parallelism: "Multi-GPU mode",
     tensor: "Tensor parallel",
     pipeline: "Pipeline parallel",
@@ -886,7 +887,7 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
-    addScheduledTask: "Add scheduled task…",
+    addScheduledTask: "Add scheduled task",
     compact: "Compact conversation",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
@@ -2453,6 +2454,10 @@ export const en = {
         confirmDescriptionChatOnly:
           "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
+        recommendedTorch:
+          "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch} that RTX 50-series GPUs are supported on.",
+        recommendedDriver:
+          "PyTorch {torch} is older than the managed {managedTorch} that RTX 50-series GPUs are supported on, but this GPU driver does not support CUDA 13. Update the GPU driver first, then repair the installation.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -4128,7 +4133,7 @@ export const en = {
       alternative: "Try instead: {alternative}",
       override: "Choose mode and GPUs",
       overrideHint:
-        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run.",
+        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run. Training uses the GPUs in this machine only: multi-node training (for example two DGX Sparks) is not part of this release.",
       modeLabel: "Mode",
       specLabel: "Layout",
       unavailable: "Not available here",
@@ -4149,8 +4154,8 @@ export const en = {
       summary: {
         single: "Training on one GPU",
         layerSplit: "Model is split layer by layer across {count} GPUs",
-        ddp: "Model fits one GPU: data parallel on {count} GPUs",
-        fsdp2: "Model is too big for one GPU: sharded across {count} GPUs",
+        ddp: "Each GPU trains a full copy: data parallel on {count} GPUs",
+        fsdp2: "Weights and optimizer state sharded across {count} GPUs",
         tp: "Each layer is split across {count} GPUs",
         pp: "Layers run as {count} pipeline stages, one per GPU",
         cp: "Each sequence is split across {count} GPUs",
@@ -4161,7 +4166,7 @@ export const en = {
         noGpu: "Select at least one GPU.",
         singleNeedsOne: "Single GPU uses exactly one GPU. Untick the others.",
         needsTwo: "This mode needs at least two GPUs.",
-        customSpec: "Enter a layout, for example dp=2,tp=2.",
+        customSpec: "Enter a layout, for example {example}.",
       },
     },
     preview: {
@@ -4542,6 +4547,12 @@ export const en = {
       epochs: "Epochs",
       useMaxSteps: "Use Max Steps",
       useEpochs: "Use Epochs",
+      stepGuidancePass: "About {steps} steps is one pass over your {rows} rows at an effective batch of {batch}.",
+      stepGuidanceFloor: "One pass over your {rows} rows is only {passSteps} steps at an effective batch of {batch}, so about {steps} steps (a few passes) is a sensible minimum.",
+      stepGuidanceCap: "One pass over your {rows} rows is {passSteps} steps at an effective batch of {batch}; {steps} steps trains on part of it, which is often enough for a first run.",
+      stepGuidanceEpoch: "One epoch is about {passSteps} steps over your {rows} rows at an effective batch of {batch}.",
+      stepGuidancePacking: "Packing joins short rows, so a pass can take fewer steps.",
+      useSuggestedSteps: "Use {steps}",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
       contextLength: "Context",
@@ -5095,6 +5106,7 @@ export const en = {
       showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
+      notSaved: "Not saved to History: the browser's storage is full.",
       title: "History",
       search: "Search history",
       empty: "Your translations appear here.",
@@ -6164,6 +6176,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.

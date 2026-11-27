@@ -5350,7 +5350,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .composer-run-settings > * {
 	flex: 1 0 auto;
 }
-.composer-run-settings :has(+ [data-pinned-footer]) {
+/* Marked in TSX: a bare `:has(+ ...)` here made each modal open restyle the whole page
+   (tests/studio/test_sibling_rules_have_a_key.py). */
+.composer-run-settings [data-pinned-footer-above] {
 	margin-bottom: calc(20px * var(--ui-space-scale, 1));
 }
 .composer-run-settings [data-pinned-footer] {
@@ -5715,7 +5717,8 @@ html.dark .translate-page .hub-tab-toggle-pill {
 		flex-basis: 100%;
 	}
 
-	.browser-web-toolbar > form ~ div {
+	/* A class, not `form ~ div` (tests/studio/test_sibling_rules_have_a_key.py). */
+	.browser-web-toolbar > .browser-web-toolbar-trailing {
 		margin-inline-start: auto;
 	}
 }
@@ -8271,9 +8274,6 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
    Keep measured placeholders and reconnected display:contents bodies at natural height. */
 .aui-thread-viewport [data-message-windowed] {
 	flex-shrink: 0;
-	/* duration-150 on user rows otherwise transitions the placeholder's height
-	   from its empty padding box, moving the reader as every batch is parked. */
-	transition-property: none;
 }
 
 /* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.

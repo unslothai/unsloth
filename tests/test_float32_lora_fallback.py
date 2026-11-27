@@ -31,8 +31,7 @@ def test_base_weight_dtype_reads_quant_state():
 
 
 def test_float32_base_is_not_a_skip_reason():
-    # float32 bases get the fused kernels, which run them only under bfloat16 autocast
-    # (test_fused_lora_fp32_master_autocast.py); the gate no longer reads the base dtype.
+    # float32 bases are not a skip reason: fused kernels run them only under bfloat16 autocast.
     assert _fused_lora_skip_reason(0, "none") == ""
     with pytest.raises(TypeError):
         _fused_lora_skip_reason(0, "none", float32_base = True)

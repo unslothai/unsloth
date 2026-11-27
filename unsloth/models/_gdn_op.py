@@ -51,6 +51,10 @@ def _fla_ops(make_inputs):
                     _FLA = fns if _self_check(*inputs) else False
                     # Packed (padding-free) batches: B = 1 plus cu_seqlens, checked the same way.
                     _VARLEN[0] = bool(_FLA) and _self_check_varlen(*inputs)
+        except torch.OutOfMemoryError:
+            # Transient: check again on the next call instead of keeping the slow path.
+            _FLA, _VARLEN[0] = None, False
+            raise
         except Exception:
             _FLA = False
             _VARLEN[0] = False

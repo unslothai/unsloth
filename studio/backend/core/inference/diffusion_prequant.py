@@ -2298,9 +2298,13 @@ def _engage_nvfp4_backend(
     logger: Any = None,
 ) -> int:
     """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
-    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_linear import _baked_activation_scales, convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
+    if _baked_activation_scales(metadata) is None:
+        # Nothing to move: only baked activation scales run on flashinfer (a runtime build, as the local prequant cache
+        # holds it, has none), so skip the backend preflight the fresh build never runs.
+        return 0
     converted = convert_nvfp4_backend(
         transformer, metadata, select_nvfp4_backend(device), logger = logger
     )

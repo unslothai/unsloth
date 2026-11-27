@@ -1700,6 +1700,22 @@ def detect_reasoning_channel_markers_from_model_info(
     return None
 
 
+def replays_reasoning_content(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+    template = None,
+) -> bool:
+    """Inkling's thought replays as a field; read the rendering template, not the cached native one an override hides."""
+    if template is None and tokenizer is None and isinstance(model_info, dict):
+        template = (model_info.get("chat_template_info") or {}).get("template")
+    if template is not None:
+        markers = detect_reasoning_channel_markers_from_template(template, tools)
+    else:
+        markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    return markers == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END)
+
+
 @dataclass(frozen = True)
 class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""
@@ -2638,6 +2654,43 @@ def count_structured_images(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
 
 
+def flatten_part_lists(messages: list, image_marker: Optional[str] = None) -> Optional[list]:
+    """String content for a template that concatenates ``message['content']``: parts in order, an
+    image as ``image_marker``. None when nothing is a part list or a part has nowhere to go."""
+
+    def typed(text):
+        # The template never names the marker, so the sweep left a typed one; only images may mark.
+        if image_marker and isinstance(text, str):
+            return text.replace(image_marker, f"{image_marker[0]} {image_marker[1:]}")
+        return text
+
+    flattened, changed = [], False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            flattened.append(
+                {**message, "content": typed(content)} if isinstance(content, str) else message
+            )
+            continue
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                text = typed(part)
+            elif not isinstance(part, dict):
+                return None
+            elif part.get("type") == "text":
+                text = typed(part.get("text"))
+            elif str(part.get("type", "")).lower() in _STRUCTURED_IMAGE_TYPES and image_marker:
+                text = image_marker
+            else:
+                return None
+            if isinstance(text, str) and text:
+                pieces.append(text)
+        flattened.append({**message, "content": "\n".join(pieces)})
+        changed = True
+    return flattened if changed else None
+
+
 def count_structured_videos(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
@@ -2931,8 +2984,10 @@ def apply_chat_template_for_generation(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     continue_final_message: bool = False,
+    image_marker: Optional[str] = None,
 ) -> str:
-    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
+    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn.
+    A template that cannot take part lists is retried on flattened content, images as ``image_marker``."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
     for template in _selected_chat_template_strings(tokenizer, tools):
@@ -3111,6 +3166,12 @@ def apply_chat_template_for_generation(
             try:
                 # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
                 return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
+        flattened = flatten_part_lists(normalized, image_marker)
+        if flattened is not None:
+            try:
+                return _render_with_fallback(flattened)
             except Exception:
                 pass
         raise
