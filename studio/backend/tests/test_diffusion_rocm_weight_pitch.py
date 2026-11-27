@@ -213,6 +213,65 @@ def test_unreadable_active_table_keeps_everything(gfx, monkeypatch):
     assert wp.pad_weights(Dit(), family = "qwen-image-2.1") == 0
 
 
+def _user_tunable(
+    monkeypatch,
+    enabled = True,
+    rows = TABLE_ROWS,
+):
+    """TunableOp enabled outside Studio (PYTORCH_TUNABLEOP_ENABLED=1 + a loaded file): Studio stays inactive."""
+    monkeypatch.setattr(tunableop, "is_active", lambda: False)
+
+    def results():
+        if isinstance(rows, BaseException):
+            raise rows
+        return rows
+
+    tun = type(
+        "T",
+        (),
+        {"is_enabled": staticmethod(lambda: enabled), "get_results": staticmethod(results)},
+    )
+    monkeypatch.setattr(torch.cuda, "tunable", tun, raising = False)
+
+
+@pytest.mark.parametrize("env", [None, "64"])
+@pytest.mark.parametrize("family", ["qwen-image-2.1", "wan2.2-ti2v-5b"])
+def test_user_enabled_tunableop_keeps_covered_rows(gfx, monkeypatch, env, family):
+    _user_tunable(monkeypatch)
+    if env is not None:
+        monkeypatch.setenv(wp.PITCH_ENV, env)
+    dit = Dit()
+    assert wp.pad_weights(dit, family = family) == 1
+    assert dit.attn.weight.is_contiguous()
+    assert _padded(dit.ffn)
+
+
+def test_user_enabled_tunableop_unreadable_pads_nothing(gfx, monkeypatch):
+    _user_tunable(monkeypatch, rows = RuntimeError("no results"))
+    dit = Dit()
+    assert wp.pad_weights(dit, family = "wan2.2-ti2v-5b") == 0
+    assert dit.attn.weight.is_contiguous() and dit.ffn.weight.is_contiguous()
+
+
+@pytest.mark.parametrize("probe", ["off", "raises"])
+def test_tunableop_disabled_unchanged(gfx, monkeypatch, probe):
+    if probe == "off":
+        _user_tunable(monkeypatch, enabled = False)
+    else:
+
+        def boom():
+            raise RuntimeError("no TunableOp in this build")
+
+        tun = type(
+            "T",
+            (),
+            {"is_enabled": staticmethod(boom), "get_results": staticmethod(lambda: TABLE_ROWS)},
+        )
+        monkeypatch.setattr(torch.cuda, "tunable", tun, raising = False)
+    assert wp.table_shapes() is None
+    assert wp.pad_weights(Dit(), family = "wan2.2-ti2v-5b") == 2
+
+
 def test_parse_row():
     assert wp.parse_row("tn_3072_4096_9216_ld_9216_9216_3072") == (3072, 9216, 4096)
     assert wp.parse_row("tn_3072_4096_9216_ld_9280_9216_3072") is None

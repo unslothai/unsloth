@@ -9,7 +9,8 @@ gfx1151 shapes and renders (not proven for every shape / kernel choice).
 TunableOp rows are keyed on the leading dimension, so a padded weight misses the shipped table (0.90-0.94x). Env unset:
 weights whose (N, K) has a loaded table row stay contiguous (byte-identical to main). ``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``:
 ``0`` off; ``<P>`` (multiple of 8) forces pitch P on any gfx11xx, keeping table rows only for ``TABLE_FAMILIES`` (or
-while tuning / with a local tuned cache)."""
+while tuning / with a local tuned cache / user-managed TunableOp). User-enabled TunableOp (``PYTORCH_TUNABLEOP_ENABLED=1``)
+guards its loaded rows the same way; enabled but unreadable keeps every weight contiguous."""
 
 from __future__ import annotations
 
@@ -78,17 +79,25 @@ def parse_row(param_sig: str) -> Optional[tuple]:
     return (n, k, m) if lda == k else None
 
 
-def table_shapes() -> Optional[set]:
-    """(N, K) of every TN row TunableOp currently holds; None when no Studio table is active."""
+def _user_tunableop(torch: Any) -> bool:
+    """TunableOp enabled outside Studio (``PYTORCH_TUNABLEOP_ENABLED=1``, a user call): its rows are the user's."""
     try:
-        from . import diffusion_rocm_tunableop as tunableop
+        return bool(torch.cuda.tunable.is_enabled())
+    except Exception:  # noqa: BLE001 - no TunableOp in this build: nothing to guard
+        return False
 
-        if not tunableop.is_active():
-            return None
+
+def table_shapes() -> Optional[set]:
+    """(N, K) of every TN row TunableOp currently holds, Studio- or user-enabled; None when TunableOp is off."""
+    try:
         import torch
 
+        from . import diffusion_rocm_tunableop as tunableop
+
+        if not tunableop.is_active() and not _user_tunableop(torch):
+            return None
         rows = list(torch.cuda.tunable.get_results() or ())
-    except Exception:  # noqa: BLE001 - active but unreadable: treat every weight as covered
+    except Exception:  # noqa: BLE001 - enabled but unreadable: treat every weight as covered
         return {"*"}
     out = set()
     for row in rows:
@@ -105,8 +114,14 @@ def _table_family(family: Optional[str], arch: Optional[str]) -> bool:
     if str(family or "").strip().lower() in TABLE_FAMILIES:
         return True
     try:
+        import torch
+
         from . import diffusion_rocm_tunableop as tunableop
+
         if tunableop.tuning_requested():
+            return True
+        if not tunableop.is_active() and _user_tunableop(torch):
+            # User-managed rows are tuned for lda = K whatever the family: never pad over them.
             return True
         return bool(arch) and tunableop.results_file(arch).exists()
     except Exception:  # noqa: BLE001
