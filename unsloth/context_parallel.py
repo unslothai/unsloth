@@ -3068,7 +3068,13 @@ def _generation_share(trainer, prompts, args, kwargs, manager):
         return None
     if getattr(trainer, "rollout_func", None) is not None:
         return None
-    if getattr(trainer, "environment_factories", None) or getattr(trainer, "use_vllm", False):
+    # TRL >= 1.10 keeps environment_factories; TRL 1.0 - 1.9 keep one environment per generation row in
+    # environments, reset row by row with the prompts, so a peer generating a share would reset other rows'.
+    if (
+        getattr(trainer, "environment_factories", None)
+        or getattr(trainer, "environments", None)
+        or getattr(trainer, "use_vllm", False)
+    ):
         return None
     if not isinstance(prompts, list) or _generation_is_collective(trainer, manager):
         return None

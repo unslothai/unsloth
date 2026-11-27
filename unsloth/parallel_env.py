@@ -540,7 +540,7 @@ def parallelize(
     # An inherited UNSLOTH_EP_SIZE beside the axes this call sets: refused before anything is written, as
     # `import unsloth` refuses it for UNSLOTH_PARALLEL.
     refuse_ep_composition({**environ, **resolved}, f"unsloth.parallelize({raw})")
-    _refuse_after_layout_read(resolved)
+    _refuse_after_layout_read(resolved, environ)
     for name, value in prior.items():
         if value is None:
             os.environ.pop(name, None)
@@ -558,8 +558,40 @@ def parallelize(
 _SET_BY_PARALLELIZE = [None, {}]
 
 
-def _refuse_after_layout_read(resolved):
-    """A layout already read (a model loaded) cannot change under it."""
+# What a loaded model was built for: every setting the load, expert parallel, native FSDP2 and the pipeline read.
+_LOAD_KEYS = (
+    "pp",
+    "tp",
+    "cp",
+    "cp_backend",
+    "ep",
+    "fsdp",
+    "pp_schedule",
+    "pp_microbatches",
+    "pp_stages_per_rank",
+)
+
+
+def layout_signature(environ = None):
+    """{key: value} of the parallel settings in `environ` (unset sizes 1, fsdp a bool, pp_* only under pp)."""
+    environ = os.environ if environ is None else environ
+    out = {}
+    for key in _LOAD_KEYS:
+        value = _legacy_value(key, environ)
+        if key in ("pp", "tp", "cp", "ep"):
+            value = 1 if value is None else value
+        elif key == "fsdp":
+            value = value is True
+        out[key] = value
+    if out["pp"] == 1:
+        out.update(pp_schedule = None, pp_microbatches = None, pp_stages_per_rank = None)
+    if out["cp"] == 1:
+        out["cp_backend"] = None
+    return out
+
+
+def _refuse_after_layout_read(resolved, environ = None):
+    """A layout already read (a model loaded) cannot change under it, on any axis."""
     import sys
 
     tp_env = sys.modules.get("unsloth.models.tp_env")
@@ -568,14 +600,20 @@ def _refuse_after_layout_read(resolved):
     layout = getattr(tp_env, "_LAYOUT", None)
     if layout is getattr(tp_env, "_UNSET", None):
         return
-    before = (1, 1) if layout is None else (layout.pp, layout.tp)
-    after = (int(resolved.get("UNSLOTH_PP_SIZE", 1)), int(resolved.get("UNSLOTH_TP_SIZE", 1)))
-    if before != after:
+    before = getattr(tp_env, "_LAYOUT_SIGNATURE", None)
+    if before is None:
+        before = layout_signature()
+    environ = os.environ if environ is None else environ
+    after = layout_signature({**environ, **resolved})
+    changed = [
+        f"{key} {before[key]} -> {after[key]}" for key in _LOAD_KEYS if before[key] != after[key]
+    ]
+    if changed:
         raise RuntimeError(
-            "Unsloth: unsloth.parallelize(...) must run before from_pretrained: a model was already loaded "
-            f"with pp {before[0]} x tp {before[1]}."
+            "Unsloth: unsloth.parallelize(...) must run before from_pretrained: a model was already loaded"
+            f"{f' with {layout}' if layout is not None else ''}, and this call changes {', '.join(changed)}."
         )
-    tp_env._reset_env_layout()
+    # The same layout: the one read at load stays, so a later call is still checked against it.
 
 
 def _reinstall_after_import():
@@ -588,9 +626,10 @@ def _reinstall_after_import():
 
     apply_unsloth_fsdp2_launch_env()
     install_native_fsdp2_trainer_init()
-    from .models.tp_env import _reset_env_layout, install_tensor_parallel_env_trainer_init
+    from .models.tp_env import install_tensor_parallel_env_trainer_init
 
-    _reset_env_layout()
+    # The layout is read on first use (from_pretrained); one read before this call was refused above unless it
+    # matches, and is kept.
     install_tensor_parallel_env_trainer_init()
 
 

@@ -138,7 +138,7 @@ def test_masking_goes_through_apply_completion_masking(monkeypatch):
         _unsloth_input_part = "<user>", _unsloth_output_part = "<assistant>"
     )
     labels, masking = token_preview_worker._mask(
-        tokenizer, "org/model", {"input_ids": [[1, 2, 3, 4]]}, "chatml_messages"
+        tokenizer, "org/model", {"input_ids": [[1, 2, 3, 4]]}
     )
     assert labels == [[-100, -100, 3, 4]]
     assert masking["applied"] is True
@@ -625,3 +625,44 @@ def test_pretokenized_rows_show_their_own_ids_and_labels(monkeypatch):
     assert [token[0] for token in sample["tokens"]] == [1, 2, 3, 4]
     assert [token[2] for token in sample["tokens"]] == [False, False, True, True]
     assert sample["truncated_from"] == 5 and out["masking"]["applied"] is False
+
+
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("dataset_template", [None, "alpaca"])
+def test_alpaca_preview_uses_the_training_marker(typed, dataset_template, monkeypatch):
+    import utils.datasets as datasets_pkg
+    from utils.datasets import chat_templates
+
+    class Tokenizer(_IdTokenizer):
+        chat_template = chat_templates.STUDIO_ALPACA_CHAT_TEMPLATE if dataset_template else "native"
+
+        def __call__(self, texts, **kwargs):
+            return {"input_ids": [[1, 2, 3] for _ in texts]}
+
+    monkeypatch.setattr(
+        datasets_pkg,
+        "format_and_template_dataset",
+        lambda dataset, **kwargs: {
+            "dataset": Dataset.from_dict({"text": ["example"]}),
+            "final_format": "alpaca",
+            "dataset_template": dataset_template,
+        },
+    )
+
+    def mask(tokenizer, model_name, encoded, template):
+        assert template == dataset_template
+        return [[-100, -100, 3]], {"applied": True}
+
+    monkeypatch.setattr(token_preview_worker, "_mask", mask)
+    args = (
+        {
+            "text": "example",
+            "final_format": "alpaca",
+            "alpaca_serialization": "native" if dataset_template is None else None,
+        }
+        if typed
+        else {"rows": [{"instruction": "prompt"}]}
+    )
+    args["train_on_completions"] = True
+    result = token_preview_worker._preview(Tokenizer(), {"model_name": "test/model"}, args)
+    assert result["samples"][0]["num_trained"] == 1

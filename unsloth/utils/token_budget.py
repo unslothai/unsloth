@@ -650,8 +650,13 @@ def _exactness_blocker(trainer, step_loss = True):
     divides by the window's num_items_in_batch."""
     args = getattr(trainer, "args", None)
     optim = str(getattr(args, "optim", "")).lower()
-    # LOMO / AdaLomo and the *_layerwise optimizers update weights inside every backward.
-    if "lomo" in optim or "layerwise" in optim:
+    # LOMO / AdaLomo, the *_layerwise optimizers and the in-backward step (optimizers/auto_fit.py) update
+    # weights inside every backward.
+    if (
+        "lomo" in optim
+        or "layerwise" in optim
+        or getattr(trainer, "_unsloth_updates_in_backward", False)
+    ):
         return "this optimizer updates the weights on every backward"
     # NEFTune scales its noise by the forward's sequence length, which a split shortens.
     if getattr(args, "neftune_noise_alpha", None):
@@ -1032,6 +1037,15 @@ def install_token_budget(trainer):
             *args,
             **kwargs,
         ):
+            if getattr(trainer, "__dict__", {}).get("_unsloth_pipeline_parallel") is not None:
+                # Pipeline parallel (models/pp_env.py) runs its own micro-batches and folds the gradient
+                # accumulation window: chunks of a batch would each flush or join that window as a short batch.
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: pipeline parallel runs each batch as its own "
+                    "micro-batches (UNSLOTH_PP_MICROBATCHES).",
+                )
+                return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             accelerator = getattr(trainer, "accelerator", None)
             distributed_type = str(getattr(accelerator, "distributed_type", "NO")).upper()
             # Only None (loss would be a per-chunk mean), plain or DDP: DeepSpeed and FSDP count micro-steps themselves.

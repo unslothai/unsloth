@@ -34,6 +34,7 @@ from .chat_templates import (
     get_dataset_info_summary,
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
+    STUDIO_ALPACA_CHAT_TEMPLATE,
 )
 from .cells import cell_text, cell_turns, message_list_columns, unwrap_message_column
 from .raw_text import prepare_raw_text_dataset
@@ -965,6 +966,7 @@ def format_and_template_dataset(
     raw_text_column = None,
     dataset_revision = None,
     vlm_fallback_instruction = None,
+    prefer_native_alpaca = False,
 ):
     """Combines format_dataset and apply_chat_template_to_dataset, for UI workflows where one call does everything. custom_prompt_template is retained for signature compatibility; non-None values are rejected because Studio cannot persist a matching inference template. vlm_instruction overrides every row's prompt; vlm_fallback_instruction is used only when the split has no per-row question column (a separate eval split passes the training prompt there). Returns {dataset (with a 'text' column), detected_format, final_format, success, requires_manual_mapping, warnings, errors, summary}."""
     from .tokenizer_fingerprint import install_tokenizer_fingerprint
@@ -1425,17 +1427,28 @@ def format_and_template_dataset(
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
         )
+        # Explicit Alpaca selects the legacy serialization, including mapped or converted rows.
+        chat_template = getattr(tokenizer, "chat_template", None)
+        native_alpaca = bool(
+            prefer_native_alpaca
+            and format_type == "auto"
+            and dataset_info["detected_format"] == "alpaca"
+            and not custom_format_mapping
+            and chat_template
+            and chat_template != STUDIO_ALPACA_CHAT_TEMPLATE
+        )
         is_gemma = "gemma" in model_name.lower()
         if (
             is_gemma
             and not dataset_info["is_image"]
-            and not is_alpaca
+            and (not is_alpaca or native_alpaca)
             and _tokenizer_adds_bos(tokenizer)
         ):
             remove_bos_prefix = True
         template_result = apply_chat_template_to_dataset(
             dataset_info = dataset_info,
             tokenizer = tokenizer,
+            native_alpaca = native_alpaca,
             model_name = model_name,
             custom_prompt_template = custom_prompt_template,
             add_eos_token = add_eos_token,
@@ -1465,6 +1478,7 @@ def format_and_template_dataset(
 
         return {
             "dataset": template_result["dataset"],
+            "dataset_template": template_result.get("dataset_template"),
             "detected_format": dataset_info["detected_format"],
             "final_format": final_format,
             "chat_column": dataset_info.get("chat_column"),

@@ -29,6 +29,7 @@ __all__ = [
     "inkling2_packed_experts_enabled",
     "install_inkling2_packed_expert_loading",
     "inkling2_expert_format",
+    "warn_if_inkling2_packed_experts_inert",
 ]
 
 INKLING2_PACKED_EXPERTS_ENV = "UNSLOTH_INKLING2_PACKED_EXPERTS"
@@ -50,6 +51,63 @@ def inkling2_packed_experts_enabled() -> bool:
         "on",
         "yes",
     )
+
+
+_INERT_WARNED = False
+
+
+def _quant_method(config) -> str:
+    text = (
+        config.get("text_config")
+        if isinstance(config, dict)
+        else getattr(config, "text_config", None)
+    )
+    for cfg in (config, text):
+        quant = (
+            cfg.get("quantization_config")
+            if isinstance(cfg, dict)
+            else getattr(cfg, "quantization_config", None)
+        )
+        if quant is None:
+            continue
+        if not isinstance(quant, dict):
+            quant = quant.to_dict() if hasattr(quant, "to_dict") else vars(quant)
+        return str(quant.get("quant_method", "")).lower()
+    return ""
+
+
+def warn_if_inkling2_packed_experts_inert(
+    config,
+    model_name = None,
+    load_in_4bit = False,
+) -> bool:
+    """Say once that the flag does nothing for an Inkling 2 checkpoint without the released packed experts, e.g. the
+    bitsandbytes 4bit copy ``load_in_4bit = True`` resolves to (its experts are already NF4). Returns True if it
+    printed. Not called for the released checkpoint, where the flag engages."""
+    global _INERT_WARNED
+    if _INERT_WARNED or not inkling2_packed_experts_enabled():
+        return False
+    from .inkling2 import is_inkling2_config
+
+    if not is_inkling2_config(config):
+        return False
+    _INERT_WARNED = True
+    name = f"`{model_name}`" if model_name else "this checkpoint"
+    if _quant_method(config) == "bitsandbytes":
+        why = (
+            " (the bitsandbytes 4bit copy that load_in_4bit = True loads stores its experts in NF4)"
+        )
+    elif load_in_4bit:
+        why = " (load_in_4bit = True)"
+    else:
+        why = ""
+    print(
+        f"Unsloth: {INKLING2_PACKED_EXPERTS_ENV}=1 has no effect: {name} has no packed NVFP4 / MXFP8 experts"
+        + why
+        + ". To train on the packed experts, load the released Inkling 2 checkpoint with load_in_4bit = False; "
+        "the 4bit load keeps using less memory."
+    )
+    return True
 
 
 def _zoo():

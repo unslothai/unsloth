@@ -883,6 +883,7 @@ class TokenPreviewRequest(BaseModel):
     text: Optional[str] = Field(None, max_length = 200_000)
     # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
     final_format: Optional[str] = None
+    alpaca_serialization: Optional[Literal["legacy", "native"]] = None
 
     _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
 

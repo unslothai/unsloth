@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from real_accelerator import has_real_cuda
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 pytest.importorskip("triton")
 
@@ -420,6 +421,7 @@ def test_install_sits_beneath_the_packed_router(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth.utils.hf_packed_attention", packed)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     try:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = packed_router
@@ -574,6 +576,7 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
     monkeypatch.setattr(model, "parameters", lambda: iter([_Param()]))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     monkeypatch.setattr(LH, "_self_check", lambda device, dtype: False)
     saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
@@ -621,6 +624,7 @@ def _install_with_params(monkeypatch, params, **attrs):
     monkeypatch.setattr(model, "parameters", lambda: iter(params))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     checked = []
     monkeypatch.setattr(

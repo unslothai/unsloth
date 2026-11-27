@@ -6918,6 +6918,19 @@ class ImageGenerationRequest(BaseModel):
     response_format: Literal["url", "b64_json"] = Field(
         "url", description = "Return each image as a URL or a base64-encoded PNG."
     )
+    output_format: Literal["png", "jpeg", "webp"] = Field(
+        "png",
+        description = "Encoding of the returned images: 'png' (default, lossless), 'jpeg' or "
+        "'webp' (lossy, smaller and faster). jpeg and webp come back as b64_json; the gallery "
+        "copy is always a lossless PNG.",
+    )
+    output_compression: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 100,
+        description = "Compression level (0-100) for jpeg and webp, used as the encoder quality; "
+        "100 when omitted. Ignored for png.",
+    )
     user: Optional[str] = Field(None, description = "End-user identifier (accepted, unused).")
     # gpt-image-only; declared so we can reject it clearly instead of returning JSON to a client that asked for an SSE stream.
     stream: Optional[bool] = Field(
@@ -6963,7 +6976,15 @@ class ImageGenerationRequest(BaseModel):
         "none on the native sd.cpp and MLX engines. An empty list renders without any.",
     )
 
-    @field_validator("n", "size", "response_format", mode = "before")
+    @model_validator(mode = "before")
+    @classmethod
+    def _null_response_format_is_omitted(cls, data):
+        # An explicit null response_format is the default, so it counts as omitted: jpeg/webp then answer inline.
+        if isinstance(data, dict) and data.get("response_format", ...) is None:
+            data = {k: v for k, v in data.items() if k != "response_format"}
+        return data
+
+    @field_validator("n", "size", "response_format", "output_format", mode = "before")
     @classmethod
     def _null_means_default(cls, value, info):
         # OpenAI marks these nullable WITH a default, so an explicit null means "use the default": coalesce rather than 400.
@@ -6992,18 +7013,25 @@ class ImageGenerationData(BaseModel):
     route serializes with ``exclude_none`` so the unused key is omitted."""
 
     b64_json: Optional[str] = Field(
-        None, description = "Base64-encoded PNG (response_format=b64_json)."
+        None,
+        description = "Base64-encoded image (response_format=b64_json), PNG unless "
+        "output_format asked for jpeg or webp.",
     )
     url: Optional[str] = Field(None, description = "URL to the PNG bytes (response_format=url).")
 
 
 class ImageGenerationResponse(BaseModel):
     """OpenAI ``ImagesResponse``. dall-e-shaped: the GPT-image-only top-level
-    fields (background/output_format/size/quality/usage) are omitted, since our
-    sizes wouldn't satisfy their fixed enums and we report no token usage."""
+    fields (background/size/quality/usage) are omitted, since our sizes wouldn't
+    satisfy their fixed enums and we report no token usage. ``output_format`` is
+    echoed only when the request set it, so a default response is unchanged."""
 
     created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
     data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+    output_format: Optional[Literal["png", "jpeg", "webp"]] = Field(
+        None,
+        description = "Encoding of data[].b64_json; present only when the request sent output_format.",
+    )
 
 
 class AudioSpeechRequest(BaseModel):

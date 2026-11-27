@@ -157,6 +157,8 @@ _INSTANCE_OK = (
     "_prepare_dataset",
     "_load_optimizer_and_scheduler",
     "get_train_dataloader",
+    # optimizers/auto_fit.py: builds the optimizer; an in-backward step it engages is refused on its own.
+    "create_optimizer",
 )
 
 
@@ -494,7 +496,11 @@ def layer_major_ineligible(
     if getattr(args, "torch_compile", False):
         return "torch_compile over the whole model"
     optim = str(getattr(args, "optim", "")).lower()
-    if "lomo" in optim or "layerwise" in optim:
+    if (
+        "lomo" in optim
+        or "layerwise" in optim
+        or getattr(trainer, "_unsloth_updates_in_backward", False)
+    ):
         return "this optimizer updates the weights inside every backward"
     if "_unsloth_token_budget_splits" in trainer.__dict__:
         # Its instance-level training_step splits micro-batches into chunks the window never sees.

@@ -11,6 +11,7 @@ import torch._dynamo
 from torch._subclasses.fake_tensor import FakeTensorMode
 
 from unsloth.kernels import fp8 as F8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 LARGE = (14336, 4096)  # Llama-3.1-8B MLP: 112 MiB in bf16, spills L4's 48 MiB L2
 
@@ -145,6 +146,7 @@ def test_fp16_output_near_the_fp16_max_stays_finite(monkeypatch, compiled, mode,
 @pytest.mark.parametrize("mode", ["bias", "dequant", "native"])
 def test_fp16_routing_decision(monkeypatch, mode, rows):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     monkeypatch.setattr(F8, "_FP8_DEQUANT_MAX_ROWS_ENV", None)

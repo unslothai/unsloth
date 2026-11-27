@@ -16,6 +16,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -254,7 +255,53 @@ def _publish(image_id: str, meta: dict[str, Any], data: bytes) -> dict[str, Any]
         raise
     if getattr(_ahead, "pending", None) is not None:
         _keep_after_previous(final_path)
+    written = getattr(_written, "bytes", None)
+    if written is not None:
+        written[image_id] = data
     return _record(image_id, meta, directory = directory)
+
+
+_written = threading.local()
+
+
+@contextmanager
+def keep_written_bytes() -> Iterator[dict[str, bytes]]:
+    """Collects ``{image_id: png_bytes}`` for every save on this thread, so a caller can use the
+    exact file bytes without reading the file back."""
+    previous = getattr(_written, "bytes", None)
+    collected: dict[str, bytes] = {}
+    _written.bytes = collected
+    try:
+        yield collected
+    finally:
+        _written.bytes = previous
+
+
+# OpenAI output_format -> (Pillow format, MIME type). png is the gallery format itself.
+RESPONSE_FORMATS = {
+    "png": ("PNG", "image/png"),
+    "jpeg": ("JPEG", "image/jpeg"),
+    "webp": ("WEBP", "image/webp"),
+}
+
+
+def encode_lossy(image: Any, output_format: str, quality: int) -> bytes:
+    """``image`` as JPEG or WebP at ``quality`` (OpenAI output_compression, 0-100), no metadata.
+    Only for responses; the gallery keeps the lossless PNG."""
+    import io
+
+    pil_format = RESPONSE_FORMATS[output_format][0]
+    if pil_format == "PNG":
+        raise ValueError("encode_lossy is for jpeg and webp; PNG goes through save()")
+    if pil_format == "JPEG" and image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    elif pil_format == "WEBP" and image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+    buf = io.BytesIO()
+    # WebP method 0: libwebp's default 4 is ~4x slower (~120 ms at 1024px) for ~25% fewer bytes.
+    extra = {"method": 0} if pil_format == "WEBP" else {}
+    image.save(buf, format = pil_format, quality = int(quality), **extra)
+    return buf.getvalue()
 
 
 def _keep_after_previous(path: Path) -> None:

@@ -249,6 +249,9 @@ class DiffusionFamily:
     hosted_bf16_vae: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
+    # True: on Apple Silicon Metal this family's VAE takes direct conv by default (``--conv-direct off,vae=on``). Set
+    # only for VAEs measured there: the FLUX.2 VAE and the FLUX.1 ``ae`` (sd_cpp_args.metal_vae_conv_direct_decision).
+    sd_cpp_metal_vae_conv_direct: bool = False
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # (repo_id, filename) of a tokenizer.json for sd-cli --tokenizer (MOSS-Image requires it).
     sd_cpp_tokenizer: Optional[tuple[str, str]] = None
@@ -595,6 +598,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_metal_vae_conv_direct = True,
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
         # schnell mu 0; dev rows (sd.cpp's mu 1.15) stop a dev GGUF matching a schnell id later in the list.
         sd_cpp_scheduler = "simple",
@@ -703,6 +707,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
         sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
+        sd_cpp_metal_vae_conv_direct = True,
         # Klein 4B's text encoder IS Qwen3-4B (byte-identical shards to unsloth/Qwen3-4B; the BF16 GGUF matches it
         # tensor for tensor and renders pixel-identical to the old single-file encoder), so sd-cli reads unsloth's
         # own GGUF of it. BF16, the precision the bf16 encoder had and ComfyUI's klein template loads: Q8_0 moved
@@ -876,6 +881,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # BFL's own diffusers VAE file, byte-identical to the single-file repack this used to name.
         sd_cpp_vae = ("black-forest-labs/FLUX.2-dev", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_vae_format = "flux2",
+        sd_cpp_metal_vae_conv_direct = True,
         # FLUX.2-dev's text encoder is Mistral-Small-3.2-24B-Instruct-2506 (byte-identical shards to the unsloth
         # copy; the BF16 GGUF matches every text tensor), so sd-cli reads unsloth's GGUF of it. Q8_0, not Q4_K_M: at
         # least as precise as ComfyUI's fp8 template (its default is a 36 GB bf16 file) and the int8 the diffusers route
@@ -918,6 +924,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         max_condition_images = 1,
         # Native: FLUX.1's VAE + CLIP-L / T5-XXL, the source as a reference image (sd.cpp docs/kontext.md).
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_metal_vae_conv_direct = True,
         sd_cpp_text_encoders = _FLUX1_SD_CPP_TEXT_ENCODERS,
         sd_cpp_scheduler = "simple",
     ),
@@ -1309,6 +1316,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         mlx_min_dense_bits = (("z-image", 8),),
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_metal_vae_conv_direct = True,
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
         # (hidden_states[-2]) nor sd.cpp (out_layers {35}) reads, so the conditioning is the same. Same BF16 file
         # klein 4B reads, so one download serves both.

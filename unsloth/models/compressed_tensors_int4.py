@@ -265,7 +265,7 @@ def make_int4_packed_linear(
 
 
 def finalize_int4_packed_linears(model, dtype = None) -> int:
-    from ..kernels.int4_packed import int4_repack_
+    from ..kernels.int4_packed import int4_fast_self_check, int4_repack_
 
     count = 0
     for module in model.modules():
@@ -280,6 +280,9 @@ def finalize_int4_packed_linears(model, dtype = None) -> int:
             qs = module.quant_state
             if qs.layout is None and int4_repack_(module._parameters["weight_packed"], qs):
                 module.__dict__["_int4_layout"] = qs.layout
+            if qs.layout is not None:
+                # Once per (layout, device, zero points, dtype); later layers hit the cache.
+                int4_fast_self_check(module._parameters["weight_packed"], qs)
             count += 1
     return count
 

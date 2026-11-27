@@ -4949,15 +4949,21 @@ def _converted_shards_pread(
 ) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
-    iGPU, or an integrated NVIDIA target ``device`` (any OS, diffusers too), reads every shard through ``pread``."""
-    from .host_pinning import cuda_is_integrated, xpu_is_integrated
+    iGPU, or an integrated NVIDIA target ``device`` (any OS, diffusers too), reads every shard through ``pread``; a ROCm
+    integrated ``device`` does so only when the load would pressure host memory."""
+    from .host_pinning import cuda_is_integrated, rocm_is_integrated, xpu_is_integrated
     from .safetensors_pread import pread_safetensors, pread_wanted
 
     keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
     integrated_cuda = device is not None and cuda_is_integrated(device)
+    integrated_rocm = device is not None and rocm_is_integrated(device)
     every = integrated_cuda or (pread_wanted() and xpu_is_integrated())
     return pread_safetensors(
-        convert_to = dtype, keep = keep, every_shard = every, integrated_cuda = integrated_cuda
+        convert_to = dtype,
+        keep = keep,
+        every_shard = every,
+        integrated_cuda = integrated_cuda,
+        integrated_rocm = integrated_rocm,
     )
 
 
