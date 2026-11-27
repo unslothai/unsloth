@@ -521,7 +521,9 @@ def test_neither_installer_declares_a_console_mode_import() -> None:
             )
     setup = _strip_comments(_text("studio/setup.ps1"))
     assert "StudioVTNative" not in setup, "the emitted console thunk is back in studio/setup.ps1"
-    assert "Add-Type" not in setup, "studio/setup.ps1 compiles C# through csc.exe again"
+    # -AssemblyName loads a framework assembly (ZipFile); it does not run csc.exe.
+    compiled = re.findall(r"(?m)^[ \t]*Add-Type\b(?![^\r\n]*-AssemblyName).*", setup)
+    assert not compiled, "studio/setup.ps1 compiles C# through csc.exe again"
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
