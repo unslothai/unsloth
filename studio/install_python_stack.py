@@ -10338,42 +10338,60 @@ def _mlx_lm_spec_for_installed_zoo() -> str:
 
 
 def _mlx_spec_for_installed_zoo(spec: str) -> str:
-    """`spec`, intersected with the range the INSTALLED unsloth-zoo declares for its package.
+    """`spec`, intersected with the range the installed zoo declares: this step runs before the core
+    phase (skipped on fresh installs), and e.g. mlx-vlm 0.7.1 beside an older zoo raises TypeError at
+    the first Qwen3.5 VLM training step, past the chat-only gate. Mirrors mlx_repair._install_packages."""
+    declared = _zoo_declared_specifier(re.split(r"[<>=!~;\[ ]", spec, maxsplit = 1)[0])
+    return f"{spec},{declared}" if declared else spec
 
-    This step runs before the core phase, and on a fresh install (SKIP_STUDIO_BASE=1) the core
-    phase is skipped entirely, so the zoo install.sh already put down is the one that stays.
-    mlx-vlm 0.7.1 passes `cache` to gated_delta_update and a zoo predating that keyword does not
-    accept it, so admitting 0.7.1 beside such a zoo raises TypeError at the first Qwen3.5 VLM
-    training step, after mlx_stack_available() has cleared the chat-only gate. Reading what the
-    installed zoo itself declares keeps the two in step without naming a zoo version here, and it
-    widens on its own once a zoo declaring 0.7.1 is installed. Likewise a zoo pinning mlx-lm 0.31.3
-    keeps 0.31.3. Mirrors utils/mlx_repair.py's _install_packages, which does the same for the
-    unattended self-heal.
-    """
+
+def _zoo_declared_specifier(name: str) -> str:
+    """The specifier the installed unsloth-zoo declares for `name`; "" without a zoo or a constraint."""
     try:
         from importlib.metadata import requires
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
     except ImportError:
-        return spec
+        return ""
     try:
         declared = requires("unsloth_zoo") or ()
-        wanted = canonicalize_name(Requirement(spec).name)
+        wanted = canonicalize_name(name)
     except Exception:  # noqa: BLE001 - not installed, or unreadable metadata
-        return spec
+        return ""
     for raw in declared:
         try:
             requirement = Requirement(raw)
         except Exception:  # noqa: BLE001 - a requirement string packaging cannot parse
             continue
         if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
-            return f"{spec},{requirement.specifier}"
-    return spec
+            return str(requirement.specifier)
+    return ""
+
+
+def _mlx_pins_for_installed_zoo() -> tuple[str, ...]:
+    """_MLX_PINS, moved to the installed zoo's exact mlx pin when it has one. The core phase installs
+    zoo with deps, so ours beside a zoo pinning another mlx is undone there and redone next update;
+    on a fresh install it leaves mlx outside what zoo declares."""
+    declared = _zoo_declared_specifier("mlx")
+    if not declared.startswith("==") or any(c in declared for c in ",*"):
+        return _MLX_PINS
+    version = declared[2:].strip()
+    return (f"mlx=={version}", f"mlx-metal=={version}")
+
+
+def _mlx_specs_for_installed_zoo() -> tuple[str, ...]:
+    return (
+        *_mlx_pins_for_installed_zoo(),
+        _mlx_lm_spec_for_installed_zoo(),
+        _mlx_vlm_spec_for_installed_zoo(),
+    )
 
 
 def _mlx_stack_is_current() -> bool:
     """Skips --upgrade when exact pins and ranges already hold, avoiding a wheel refetch on every update."""
-    if not all(_exact_distribution_spec_is_installed(spec) for spec in _MLX_PINS):
+    if not all(
+        _exact_distribution_spec_is_installed(spec) for spec in _mlx_pins_for_installed_zoo()
+    ):
         return False
     installed, installed_lm = (
         _installed_distribution_version(name) for name in ("mlx-vlm", "mlx-lm")
@@ -10428,10 +10446,7 @@ def _mlx_closure_unmet() -> bool:
         os.close(_fd)
         handle = Path(_name)
         handle.write_text(
-            "\n".join(
-                [*_MLX_PINS, _mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()]
-            )
-            + "\n",
+            "\n".join(_mlx_specs_for_installed_zoo()) + "\n",
             encoding = "utf-8",
         )
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
@@ -10483,8 +10498,7 @@ def _mlx_health_fingerprint() -> dict:
     """What a recorded MLX verdict is only valid for."""
     return {
         # The narrowed spec, so installing a different zoo invalidates a recorded verdict.
-        "pins": list(_MLX_PINS)
-        + [_mlx_lm_spec_for_installed_zoo(), _mlx_vlm_spec_for_installed_zoo()],
+        "pins": list(_mlx_specs_for_installed_zoo()),
         "python": _installer_python_tag(),
         "mlx_lm": _installed_distribution_version("mlx-lm") or "",
         "mlx_vlm": _installed_distribution_version("mlx-vlm") or "",
@@ -12108,8 +12122,7 @@ def install_python_stack() -> int:
 
     # macOS arm64: not keyed off skip_base (fresh installs still need MLX); --no-torch too, MLX needs no
     # torch. Pins align with utils/mlx_repair.py and unsloth-zoo. None when the MLX step did not run.
-    _mlx_vlm_spec_used: Optional[str] = None
-    _mlx_lm_spec_used: Optional[str] = None
+    _mlx_specs_used: Optional[tuple[str, ...]] = None
     if IS_MAC_ARM:
         # Both branches spend the slot, so the denominator does not depend on the host.
         if _mlx_pins_are_installable():
@@ -12129,16 +12142,13 @@ def install_python_stack() -> int:
                     "--no-cache-dir",
                     # Never a bare --upgrade, which re-resolves every transitive dependency.
                     *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
-                    *_MLX_PINS,
-                    _mlx_lm_spec_for_installed_zoo(),
-                    _mlx_vlm_spec_for_installed_zoo(),
+                    *_mlx_specs_for_installed_zoo(),
                 )
             # Inside the MLX slot, after the pins it runs on; its own check, so a satisfied
             # stack still gets a missing engine. Not on --no-torch: mflux declares torch.
             if not NO_TORCH:
                 _install_mlx_diffusion_engine()
-            _mlx_vlm_spec_used = _mlx_vlm_spec_for_installed_zoo()
-            _mlx_lm_spec_used = _mlx_lm_spec_for_installed_zoo()
+            _mlx_specs_used = _mlx_specs_for_installed_zoo()
         else:
             _progress("MLX stack (skipped, no wheel for this macOS or Python)")
             _note(
@@ -12228,15 +12238,11 @@ def install_python_stack() -> int:
     if _installer_replaced():
         raise _InstallerReplaced
 
-    # The MLX step honoured the OLD zoo's mlx-vlm range; re-resolve when the declared range moved,
-    # since the startup self-heal will not correct it.
+    # The MLX step honoured the OLD zoo's pins and ranges; re-resolve when they moved, since the
+    # startup self-heal will not correct it.
     if IS_MAC_ARM:
-        _mlx_vlm_spec_now = _mlx_vlm_spec_for_installed_zoo()
-        _mlx_lm_spec_now = _mlx_lm_spec_for_installed_zoo()
-        if _mlx_vlm_spec_used is None or (_mlx_vlm_spec_now, _mlx_lm_spec_now) == (
-            _mlx_vlm_spec_used,
-            _mlx_lm_spec_used,
-        ):
+        _mlx_specs_now = _mlx_specs_for_installed_zoo()
+        if _mlx_specs_used is None or _mlx_specs_now == _mlx_specs_used:
             _progress("MLX stack (zoo unchanged, skipped)")
         else:
             _progress("MLX stack (re-resolved for the new zoo)")
@@ -12245,9 +12251,7 @@ def install_python_stack() -> int:
                 "Installing MLX stack for the upgraded unsloth-zoo",
                 "--no-cache-dir",
                 *[arg for name in _MLX_NAMES for arg in ("--upgrade-package", name)],
-                *_MLX_PINS,
-                _mlx_lm_spec_now,
-                _mlx_vlm_spec_now,
+                *_mlx_specs_now,
             )
 
     if not skip_base:

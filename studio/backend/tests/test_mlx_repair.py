@@ -84,6 +84,18 @@ def test_install_keeps_an_older_zoos_mlx_lm(monkeypatch):
     assert "mlx-lm>=0.31.3,<=0.32.2,==0.31.3" in mr._install_packages()
 
 
+def test_install_takes_the_zoos_exact_mlx_pin(monkeypatch):
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "==0.32.4" if name == "mlx" else ""
+    )
+    packages = mr._install_packages()
+    assert "mlx==0.32.4" in packages and "mlx==0.32.5" not in packages
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: ">=0.22.0" if name == "mlx" else ""
+    )
+    assert "mlx==0.32.5" in mr._install_packages()
+
+
 def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):
     monkeypatch.setattr(mr, "_zoo_declared_specifier", lambda _name: "")
     assert mr._install_packages() == mr.MLX_PACKAGES
@@ -162,6 +174,10 @@ def test_constraint_caps_datasets_when_its_metadata_is_missing(monkeypatch):
 
 def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     pytest.importorskip("transformers")
+    real_declared = mr._zoo_declared_specifier
+    monkeypatch.setattr(
+        mr, "_zoo_declared_specifier", lambda name: "" if name == "mlx" else real_declared(name)
+    )
     captured = {}
     created_paths = []
     real_args = mr._transformers_constraint_args

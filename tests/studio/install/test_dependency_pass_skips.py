@@ -892,6 +892,7 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
     monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
     monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_pins_for_installed_zoo", lambda: stack._MLX_PINS)
     assert stack._mlx_stack_is_current() is True
     for lm in ("0.31.3", "0.32.2"):  # either end of the range, as Python 3.10 and 3.11+ resolve
         monkeypatch.setattr(
@@ -971,7 +972,8 @@ def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_pat
     monkeypatch.setattr(stack, "_installed_index", lambda: {})
     assert stack._mlx_closure_unmet() is True
     assert seen and all(
-        spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_LM_SPEC, stack._MLX_VLM_SPEC]
+        spec in seen[0]
+        for spec in [*stack._mlx_pins_for_installed_zoo(), stack._MLX_LM_SPEC, stack._MLX_VLM_SPEC]
     )
     assert not list(tmp_path.glob("unsloth-mlx-*.txt"))
     assert written and written[0].parent == tmp_path
@@ -1432,7 +1434,7 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
     fingerprint = stack._mlx_health_fingerprint()
     # The installed zoo narrows the mlx-vlm range, so changing the zoo must invalidate the verdict.
-    assert fingerprint["pins"] == list(stack._MLX_PINS) + [
+    assert fingerprint["pins"] == list(stack._mlx_pins_for_installed_zoo()) + [
         stack._mlx_lm_spec_for_installed_zoo(),
         stack._mlx_vlm_spec_for_installed_zoo(),
     ]
