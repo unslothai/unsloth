@@ -234,3 +234,74 @@ def test_load_repins_after_resolving_the_loras():
     resolve_at = src.index("baked_loras = video_lora.resolve(")
     pin_at = src.index("video_lora.side_branch_transformer_quant(", resolve_at)
     assert pin_at < src.index("is_h3_native(fam, kind)", resolve_at)
+
+
+class _H3PlanFam:
+    name, label, modular_workflow = "minimax-h3", "MiniMax-H3", "fl2va"
+
+
+def _modulation_file(tmp_path, key = "diffusion_model.blocks.0.adaln_proj.linear"):
+    path = tmp_path / "mod.safetensors"
+    save_file(
+        {f"{key}.lora_A.weight": torch.zeros(4, D), f"{key}.lora_B.weight": torch.zeros(8, 4)},
+        str(path),
+    )
+    return str(path)
+
+
+def _resolve_to(monkeypatch, path):
+    seen = {}
+
+    def fake_resolve(specs, **kw):
+        seen.update(kw)
+        if path is None:
+            raise FileNotFoundError("not cached")
+        return (("x", path, 1.0, None),)
+
+    monkeypatch.setattr(video_lora, "resolve", fake_resolve)
+    return seen
+
+
+def test_plan_pins_the_released_denoiser_for_a_modulation_lora(tmp_path, monkeypatch):
+    # Planned before the denoiser shards: an adaln_proj LoRA with precision unset must stage the released bf16
+    # shards, not the hosted int8 checkpoint the assembly would then abandon.
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    seen = _resolve_to(monkeypatch, _modulation_file(tmp_path))
+    loras = [("x", 1.0)]
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, None, loras, hf_token = None) == "none"
+    assert seen["local_files_only"] is True
+    with pytest.raises(ValueError, match = "pruned modulation"):
+        video_lora.planned_side_branch_quant(_H3PlanFam, "int8", loras, hf_token = None)
+
+
+def test_plan_keeps_the_int8_pick_for_an_attention_lora(tmp_path, monkeypatch):
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    path, _ = _community(tmp_path)
+    _resolve_to(monkeypatch, path)
+    loras = [("x", 1.0)]
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, None, loras, hf_token = None) is None
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, "int8", loras, hf_token = None) == "int8"
+
+
+def test_plan_with_an_uncached_lora_stages_the_released_denoiser(monkeypatch):
+    # Targets unknown before the adapter is cached: the conservative plan includes the dense shards.
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV, raising = False)
+    _resolve_to(monkeypatch, None)
+    loras = [("x", 1.0)]
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, None, loras, hf_token = None) == "none"
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, "int8", loras, hf_token = None) == "int8"
+    assert video_lora.planned_side_branch_quant(_H3PlanFam, "fp8", loras, hf_token = None) == "fp8"
+
+
+def test_download_planners_decide_before_planning_the_denoiser():
+    import inspect
+
+    from core.inference import video
+    for fn, marker in (
+        (video.VideoBackend.download_plan, "_h3_planned_auto_denoiser_scheme("),
+        (video.VideoBackend._run_load, "_denoiser_prequant_verified("),
+    ):
+        src = inspect.getsource(fn)
+        pin_at = src.index("video_lora.planned_side_branch_quant(")
+        assert pin_at < src.index("is_h3_native(fam, kind)")
+        assert pin_at < src.index(marker)

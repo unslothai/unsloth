@@ -7491,6 +7491,16 @@ class VideoBackend:
                 kwargs["transformer_quant"] = video_lora.dense_transformer_quant(
                     fam, kwargs.get("transformer_quant"), kwargs.get("loras")
                 )
+                # An H3 side-branch LoRA on the modulation / time embedder needs the released denoiser: decided
+                # here, from the resolved adapters, so the plan and skip_transformer_weights stage its shards.
+                kwargs["transformer_quant"] = video_lora.planned_side_branch_quant(
+                    fam,
+                    kwargs.get("transformer_quant"),
+                    kwargs.get("loras"),
+                    hf_token = kwargs.get("hf_token"),
+                    local_files_only = local_files_only,
+                    cancel_event = cancel_event,
+                )
             else:
                 kwargs.pop("loras", None)
             ltx25_dev = _ltx25_dev_load(
@@ -10027,6 +10037,10 @@ class VideoBackend:
             if lora_refusal:
                 raise ValueError(lora_refusal)
             transformer_quant = video_lora.dense_transformer_quant(fam, transformer_quant, loras)
+            # Cache only (a plan downloads nothing); an adapter not cached yet plans the released denoiser.
+            transformer_quant = video_lora.planned_side_branch_quant(
+                fam, transformer_quant, loras, hf_token = hf_token
+            )
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):

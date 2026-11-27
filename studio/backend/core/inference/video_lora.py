@@ -277,6 +277,38 @@ def side_branch_transformer_quant(
     )
 
 
+def planned_side_branch_quant(
+    fam: Any,
+    transformer_quant: Optional[str],
+    loras: Any,
+    *,
+    hf_token: Optional[str],
+    local_files_only: bool = True,
+    cancel_event: Optional[threading.Event] = None,
+) -> Optional[str]:
+    """``side_branch_transformer_quant`` for a download plan, made before the denoiser shards are planned. The
+    adapters are resolved (cache only unless ``local_files_only`` is False); one that cannot be resolved yet has
+    unknown targets, so an unset precision plans the released denoiser, which every target can ride on."""
+    if not (side_branch_enabled(fam) and getattr(fam, "modular_workflow", None)):
+        return transformer_quant
+    if not (
+        _precision_unset(transformer_quant) or str(transformer_quant).strip().lower() == "int8"
+    ):
+        return transformer_quant
+    try:
+        resolved = resolve(
+            active_specs(loras),
+            family = getattr(fam, "name", None),
+            hf_token = hf_token,
+            cancel_event = cancel_event,
+            local_files_only = local_files_only,
+            expert_pair = bool(getattr(fam, "is_moe", False)),
+        )
+    except Exception:  # noqa: BLE001 - not cached (or unresolvable): the load resolves and reports it
+        return "none" if _precision_unset(transformer_quant) else transformer_quant
+    return side_branch_transformer_quant(fam, transformer_quant, resolved)
+
+
 def check_families(specs: Iterable[tuple[str, float]], family: Optional[str]) -> None:
     """Network-free family gate for catalog ids, so a mismatched pick is a 400 before anything is evicted.
     Ids the catalog does not know (public HF repo ids) are resolved, and gated, by the load itself."""
