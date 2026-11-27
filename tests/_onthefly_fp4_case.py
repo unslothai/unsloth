@@ -71,6 +71,7 @@ def run_case(
     batch = 2,
 ):
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+    seq = int(os.environ.get("ONTHEFLY_CASE_SEQ", seq))
     import unsloth
     import unsloth.kernels.nvfp4 as nv
     from unsloth.models.onthefly_quant import onthefly_fp4_stats
@@ -128,10 +129,37 @@ def run_case(
     vocab = min(int(model.config.get_text_config().vocab_size), 4096)
     g = torch.Generator().manual_seed(0)
     ids = torch.randint(0, vocab, (batch, seq), generator = g).cuda()
+    if os.environ.get("ONTHEFLY_CASE_TEXT"):
+        # Real text for real checkpoints: the loss and LoRA grads then mean something.
+        words = open(os.environ["ONTHEFLY_CASE_TEXT"], encoding = "utf-8").read()
+        ids = (
+            tokenizer(words, return_tensors = "pt")
+            .input_ids[0][: batch * seq]
+            .view(batch, seq)
+            .cuda()
+        )
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr = 1e-3)
     model.train()
     losses, grad_norms, first_grads = [], [], None
     fused0 = dict(nv._FUSED_CALLS)
+    try:
+        from unsloth_zoo.packed_experts import PACKED_EXPERT_STATS
+    except Exception:
+        PACKED_EXPERT_STATS = {}
+    experts0 = dict(PACKED_EXPERT_STATS)
+    mx = {"n": 0}
+    try:
+        import unsloth_zoo.mxfp4_stacked_experts as mxs
+
+        real_grouped = mxs._grouped
+
+        def counted_grouped(*args, **kwargs):
+            mx["n"] += 1
+            return real_grouped(*args, **kwargs)
+
+        mxs._grouped = counted_grouped
+    except Exception:
+        pass
     for step in range(steps):
         loss = model(input_ids = ids, labels = ids).loss
         loss.backward()
@@ -168,7 +196,15 @@ def run_case(
         "fused_fwd": nv._FUSED_CALLS["fwd"] - fused0["fwd"],
         "fused_dx": nv._FUSED_CALLS["bwd"] - fused0["bwd"],
         "peak_alloc_gb": torch.cuda.max_memory_allocated() / 2**30,
+        "packed_expert_calls": PACKED_EXPERT_STATS.get("calls", 0) - experts0.get("calls", 0),
+        "packed_expert_chunks": PACKED_EXPERT_STATS.get("chunks", 0) - experts0.get("chunks", 0),
+        "mxfp4_expert_calls": mx["n"],
     }
+    model.eval()
+    with torch.no_grad():
+        gen = model.generate(input_ids = ids[:1, :8], max_new_tokens = 4, do_sample = False)
+    report["generate_new_tokens"] = int(gen.shape[1] - 8)
+    model.train()
     model.save_pretrained(os.path.join(out_dir, f"lora_{mode}_{api}"))
     report["saved"] = sorted(os.listdir(os.path.join(out_dir, f"lora_{mode}_{api}")))
     if merge:
