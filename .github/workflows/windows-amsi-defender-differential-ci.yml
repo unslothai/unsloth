@@ -44,9 +44,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The Windows Server image turns Defender's script scanning, real-time protection and cloud
-      # lookups off and excludes all of C:\ and D:\, so the AMSI control can never fire there. Turn
-      # them back on (no Tamper Protection on Server, so this takes); samples are never submitted.
+      # The Server image disables Defender's scanning and cloud lookups and excludes C:\ and D:\, so the
+      # AMSI control could never fire. Re-enable them (Server has no Tamper Protection); no samples are sent.
       - name: Turn Defender protection back on
         shell: pwsh
         run: |

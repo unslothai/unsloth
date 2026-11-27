@@ -75,11 +75,10 @@ function Submit-ToCompiler {
         reason    = ''
     }
     try {
-        # Parse first, so a script that does not parse is reported as such.
+        # Parse first, so a syntax error is reported as one.
         $null = [scriptblock]::Create($Text)
-        # Parsing alone never reaches AMSI: PowerShell scans a script block when it is first
-        # invoked. Invoke a wrapper that only DEFINES a function holding the text, so AMSI scans
-        # every byte of it while none of its statements run.
+        # AMSI scans a block when it is first invoked, not parsed. The wrapper only DEFINES a
+        # function holding the text, so AMSI sees all of it while none of it runs.
         $wrapper = "function __unsloth_amsi_probe {`n" + $Text + "`n}"
         & ([scriptblock]::Create($wrapper))
     } catch {
