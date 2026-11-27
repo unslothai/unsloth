@@ -750,7 +750,50 @@ def dpo_trainer_concatenated_inputs(function_name, function):
     return function
 
 
+def _unsloth_dpo_align_mm_token_type_ids(prompt_input_ids, mm_token_type_ids, input_ids):
+    # Legacy DPO rows keep mm_token_type_ids at prompt width, while the forward gets prompt + completion after
+    # flush, truncation or padding-free packing. Processors label tokens by id, so relabel the final ids from
+    # the (token id, type) pairs the prompt carries; completions are text unless they repeat a media token.
+    if not isinstance(mm_token_type_ids, torch.Tensor) or not isinstance(input_ids, torch.Tensor):
+        return mm_token_type_ids
+    if mm_token_type_ids.shape == input_ids.shape:
+        return mm_token_type_ids
+    if (
+        not isinstance(prompt_input_ids, torch.Tensor)
+        or prompt_input_ids.shape != mm_token_type_ids.shape
+    ):
+        return mm_token_type_ids
+    mm_token_type_ids = mm_token_type_ids.to(input_ids.device)
+    prompt_input_ids = prompt_input_ids.to(input_ids.device)
+    rebuilt = torch.zeros(input_ids.shape, dtype = mm_token_type_ids.dtype, device = input_ids.device)
+    is_media = mm_token_type_ids != 0
+    pairs = torch.stack(
+        (prompt_input_ids[is_media], mm_token_type_ids[is_media].to(prompt_input_ids.dtype))
+    )
+    for token_id, token_type in torch.unique(pairs, dim = 1).t().tolist():
+        rebuilt.masked_fill_(input_ids == token_id, token_type)
+    return rebuilt
+
+
+def _dpo_trainer_align_mm_token_type_ids(function):
+    if "_unsloth_dpo_align_mm_token_type_ids" in function:
+        return function
+    anchor = (
+        "            else:\n" '                model_kwargs["attention_mask"] = attention_mask\n'
+    )
+    return function.replace(
+        anchor,
+        anchor
+        + '            if "mm_token_type_ids" in model_kwargs:\n'
+        + '                model_kwargs["mm_token_type_ids"] = _unsloth_dpo_align_mm_token_type_ids(\n'
+        + '                    concatenated_batch["prompt_input_ids"], model_kwargs["mm_token_type_ids"], input_ids\n'
+        + "                )\n",
+        1,
+    )
+
+
 def _dpo_trainer_extend_vision_model_kwargs(function):
+    function = _dpo_trainer_align_mm_token_type_ids(function)
     if all(_k in function for _k in _DPO_VISION_KEYS):
         return function
 
@@ -1010,6 +1053,7 @@ RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_align_mm_token_type_ids))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
