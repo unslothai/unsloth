@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import flashinfer without letting it downgrade Triton's Blackwell ptxas.
-
-flashinfer.triton sets TRITON_PTXAS_BLACKWELL_PATH process-wide to any CUDA >= 13 ptxas on PATH, even if
-Triton's bundled ptxas-blackwell is newer (fixed upstream in flashinfer PR #10079). We undo that unless it
-is an upgrade; a value set before the import is never touched."""
+"""Import flashinfer, undoing its process-wide TRITON_PTXAS_BLACKWELL_PATH override (CUDA >= 13 ptxas on PATH)
+unless newer than Triton's bundled ptxas-blackwell (fixed upstream in flashinfer #10079); a preset value is kept."""
 
 from __future__ import annotations
 
