@@ -14,6 +14,8 @@ from torchao.quantization.quantize_.workflows.float8 import float8_tensor as f8t
 from core.inference import diffusion_compile_config as compile_config  # noqa: E402
 from core.inference import diffusion_fp8_unit_scale as us  # noqa: E402
 
+_REAL_PROBE_ROWWISE = us._probe_rowwise
+
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
@@ -26,6 +28,9 @@ def _clean(monkeypatch):
     us._ROWWISE.clear()
     monkeypatch.setattr(us, "_persisted_rowwise", lambda index: None)
     monkeypatch.setattr(us, "_persist_rowwise", lambda index, verdict: None)
+    # The mocked capability is the whole card: a real GPU without the row-wise kernel (Windows wheels) would otherwise
+    # turn every install into a fallback one. The missing-kernel path has its own tests (test_diffusion_fp8_rowwise_fallback.py).
+    monkeypatch.setattr(us, "_probe_rowwise", lambda index: True)
     original = f8t.addmm_float8_unwrapped_inference
     yield
     us._ROWWISE.clear()
@@ -343,10 +348,15 @@ def test_compiled_graph_after_a_cached_rowwise_one_uses_the_dispatcher(tmp_path)
     import sys
     from pathlib import Path
 
+    if _REAL_PROBE_ROWWISE(torch.cuda.current_device()) is not True:
+        pytest.skip(
+            "the base arm compiles torchao's row-wise fp8 GEMM, which this torch build lacks on this card"
+        )
     backend = Path(__file__).resolve().parents[1]
     env = {
         **os.environ,
         "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "inductor"),
+        "UNSLOTH_DIFFUSION_PROBE_CACHE": "0",  # no persisted row-wise verdict from this host's earlier runs
         us.UNIT_SCALE_ENV: "1",
         us.MIN_ROWS_ENV: "1",
         "PYTHONPATH": os.pathsep.join(filter(None, [str(backend), os.environ.get("PYTHONPATH")])),
