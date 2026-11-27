@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Copies share an in-flight forced read and reuse a recent one; explicit Check still forces.
-
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type * as HookModule from "../src/hooks/use-llama-update-check.ts";
@@ -162,7 +160,6 @@ test(
       STATUS_URL,
       STATUS_URL,
     ]);
-    // Past the window the next entry forces again.
     await advance(REUSE_MS);
     mount(module, { enabled: true });
     await advance(1000);
