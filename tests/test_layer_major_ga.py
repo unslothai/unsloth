@@ -76,9 +76,9 @@ class _Swap:
             self._tot["compute_ms"] += 100.0
 
 
-def _model(dropout = 0.0):
+def _model(dropout = 0.0, arch = "Llama"):
     torch.manual_seed(0)
-    cfg = transformers.LlamaConfig(
+    cfg = getattr(transformers, f"{arch}Config")(
         hidden_size = 64,
         intermediate_size = 128,
         num_hidden_layers = 4,
@@ -88,7 +88,7 @@ def _model(dropout = 0.0):
         max_position_embeddings = 256,
     )
     cfg._attn_implementation = "eager"
-    model = transformers.LlamaForCausalLM(cfg)
+    model = getattr(transformers, f"{arch}ForCausalLM")(cfg)
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
     model = peft.get_peft_model(
@@ -149,11 +149,17 @@ def _train(
     dropout = 0.0,
     stall = None,
     trainer_base = None,
+    arch = "Llama",
+    collate = None,
+    model_hook = None,
+    **extra_args,
 ):
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
     base = trainer_base or transformers.Trainer
     T = type("T", (base,), {})
-    model = _model(dropout)
+    model = _model(dropout, arch)
+    if model_hook is not None:
+        model = model_hook(model) or model
     sw = _Swap(stall)
     if swap:
         model.get_base_model().model.layers._unsloth_block_swap = sw
@@ -172,8 +178,15 @@ def _train(
         optim = "adamw_torch",
         lr_scheduler_type = "constant",
         disable_tqdm = True,
+        **{k: v for k, v in extra_args.items() if k not in ("trainer_kwargs",)},
     )
-    trainer = T(model = model, args = args, train_dataset = _Data(), data_collator = _collate)
+    trainer = T(
+        model = model,
+        args = args,
+        train_dataset = _Data(),
+        data_collator = collate or _collate,
+        **extra_args.get("trainer_kwargs", {}),
+    )
     _LAST[:] = [trainer]
     trainer.train()
     weights = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
@@ -502,9 +515,10 @@ def test_optimizers_that_step_inside_backward_are_ineligible(ga):
     assert "every backward" in mod.layer_major_ineligible(stub, model, layers, _Swap())
     stub.args.optim = "adamw_torch"
     assert mod.layer_major_ineligible(stub, model, layers, _Swap()) is None
+    assert mod._window_blocker(stub, model, layers) is None
     p = next(p for p in model.parameters() if p.requires_grad)
     p.register_post_accumulate_grad_hook(lambda t: None)
-    assert "inside backward" in mod.layer_major_ineligible(stub, model, layers, _Swap())
+    assert "inside backward" in mod._window_blocker(stub, model, layers)
 
 
 def test_vram_budget_uses_the_capped_allocator_budget(ga, monkeypatch):
@@ -542,3 +556,263 @@ def test_prefetched_batches_are_not_kept(ga, tmp_path, monkeypatch):
         # The trainer is still alive (_LAST): it must not hold the last step's micro-batches.
         assert _LAST and refs and all(r() is None for r in refs), (mode, swap)
     _LAST.clear()
+
+
+# ---------------------------------------------------------------- round 2 review fixes (each fails without its fix)
+def _with_init(monkeypatch, after):
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        after(self)
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+
+
+def _same(a, b):
+    (w0, l0, _), (w1, l1, _) = a, b
+    assert l0 == l1 and w0.keys() == w1.keys()
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+def test_compiled_models_are_ineligible(ga):
+    import types
+
+    mod, engine = ga
+    stub = types.SimpleNamespace(args = types.SimpleNamespace(optim = "adamw_torch", n_gpu = 1))
+    for how in ("compile", "optimized", "forward"):
+        model = _model()
+        base = model.get_base_model()
+        layers = base.model.layers
+        assert mod._window_blocker(stub, model, layers) is None
+        if how == "compile":
+            base.compile(backend = "eager")
+        elif how == "optimized":
+            model = torch.compile(model, backend = "eager")
+        else:
+            base.model.forward = torch.compile(base.model.forward, backend = "eager")
+        assert "torch.compile" in mod._window_blocker(stub, model, layers), how
+    # Compiled decoder layers themselves stay eligible (the window calls them; per-layer compile is bitwise).
+    model = _model()
+    layers = model.get_base_model().model.layers
+    for layer in layers:
+        layer.compile(backend = "eager")
+    assert mod._window_blocker(stub, model, layers) is None
+
+
+def test_compiled_model_trains_the_standard_way(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    _train(
+        mod,
+        tmp_path,
+        monkeypatch,
+        "1",
+        steps = 1,
+        model_hook = lambda m: m.get_base_model().compile(backend = "eager"),
+    )
+    assert _windows(engine) == 0
+
+
+def test_custom_compute_loss_func_keeps_standard_accumulation(ga, tmp_path, monkeypatch):
+    """compute_loss_func runs in each micro-batch's loss part; one that reads the accelerator's sync state (a
+    regulariser once per step) would see the first micro-batch's state for all of them under a window."""
+    mod, engine = ga
+    seen = []
+
+    def make():
+        trainer_ref = []
+
+        def loss_func(
+            outputs,
+            labels,
+            num_items_in_batch = None,
+        ):
+            logits = outputs.logits[..., :-1, :].float()
+            loss = (
+                torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]),
+                    labels[..., 1:].reshape(-1),
+                    ignore_index = -100,
+                    reduction = "sum",
+                )
+                / num_items_in_batch
+            )
+            sync = trainer_ref[0].accelerator.sync_gradients
+            seen.append(sync)
+            if sync:
+                loss = loss * 1.5  # weighs the step's last micro-batch more
+            return loss
+
+        return trainer_ref, loss_func
+
+    runs = []
+    for mode in ("0", "1"):
+        ref, fn = make()
+        _with_init(monkeypatch, lambda self: ref.append(self))
+        seen.clear()
+        engine.layer_major_stats(reset = True)
+        runs.append(
+            _train(mod, tmp_path, monkeypatch, mode, trainer_kwargs = {"compute_loss_func": fn})
+        )
+        runs[-1] = runs[-1] + (list(seen), _windows(engine))
+    (w0, l0, s0, seen0, n0), (w1, l1, s1, seen1, n1) = runs
+    assert n1 == 0 and seen1 == seen0 == [False, False, True] * 2
+    _same((w0, l0, s0), (w1, l1, s1))
+
+
+def test_backward_hooks_installed_after_the_auto_probe_are_ineligible(ga, tmp_path, monkeypatch):
+    """A post-accumulate-grad hook (an optimizer step inside backward) installed from a callback at step 3, after
+    auto's two probe steps: no window from then on."""
+    mod, engine = ga
+
+    class Install(transformers.TrainerCallback):
+        def on_step_begin(
+            self,
+            args,
+            state,
+            control,
+            model = None,
+            **kwargs,
+        ):
+            if state.global_step == 2:
+                p = next(p for p in model.parameters() if p.requires_grad)
+                p.register_post_accumulate_grad_hook(lambda t: None)
+
+    _with_init(monkeypatch, lambda self: self.add_callback(Install()))
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "auto", steps = 4, stall = 50.0)
+    assert _windows(engine) == 0
+
+
+def test_instance_assigned_substep_callbacks_are_ineligible(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    grads = []
+
+    def watch(
+        args,
+        state,
+        control,
+        model = None,
+        **kwargs,
+    ):
+        grads.append(
+            sum(float(p.grad.abs().sum()) for p in model.parameters() if p.grad is not None)
+        )
+
+    def add(self):
+        callback = transformers.TrainerCallback()
+        callback.on_substep_end = watch
+        self.add_callback(callback)
+
+    _with_init(monkeypatch, add)
+    _train(mod, tmp_path, monkeypatch, "0")
+    base, grads[:] = list(grads), []
+    engine.layer_major_stats(reset = True)
+    _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 0
+    assert grads == base and len(base) == 4
+
+
+def test_first_window_after_evaluation_runs(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    eval_args = dict(
+        eval_strategy = "steps",
+        eval_steps = 1,
+        per_device_eval_batch_size = 2,
+        trainer_kwargs = {"eval_dataset": _Data(4)},
+    )
+    a = _train(mod, tmp_path, monkeypatch, "0", steps = 3, **eval_args)
+    engine.layer_major_stats(reset = True)
+    b = _train(mod, tmp_path, monkeypatch, "1", steps = 3, **eval_args)
+    assert _windows(engine) == 3
+    _same(a, b)
+
+
+def test_tokenizer_batch_encodings_are_accepted(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+
+    def collate(rows):
+        return transformers.BatchEncoding(_collate(rows))
+
+    a = _train(mod, tmp_path, monkeypatch, "0", collate = collate)
+    engine.layer_major_stats(reset = True)
+    b = _train(mod, tmp_path, monkeypatch, "1", collate = collate)
+    assert _windows(engine) == 2
+    _same(a, b)
+
+
+def test_standalone_training_steps_keep_no_prefetched_batch(ga, tmp_path, monkeypatch):
+    """A trainer whose training_step never reaches the patched one (TRL's OnlineDPOTrainer): nothing consumes
+    the stashed micro-batches, so none are stashed."""
+    import gc
+    import weakref
+
+    mod, engine = ga
+    refs = []
+    real = transformers.Trainer.get_batch_samples
+
+    def recording(self, *args, **kwargs):
+        out = real(self, *args, **kwargs)
+        refs[:] = [weakref.ref(b["input_ids"]) for b in out[0]]
+        return out
+
+    monkeypatch.setattr(transformers.Trainer, "get_batch_samples", recording)
+
+    class Standalone(transformers.Trainer):
+        def training_step(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            model.train()
+            loss = model(**inputs).loss / self.args.gradient_accumulation_steps
+            loss.backward()
+            return loss.detach()
+
+    _train(mod, tmp_path, monkeypatch, "1", trainer_base = Standalone)
+    gc.collect()
+    assert _LAST and refs and all(r() is None for r in refs)
+    assert "_unsloth_layer_major_batch" not in _LAST[0].__dict__
+    _LAST.clear()
+
+
+@pytest.mark.parametrize("mode, want", [("auto", 0), ("1", 2)])
+def test_decoders_outside_the_auto_list_need_an_explicit_opt_in(
+    ga, tmp_path, monkeypatch, capsys, mode, want
+):
+    mod, engine = ga
+    if not hasattr(transformers, "OlmoForCausalLM"):
+        pytest.skip("no Olmo in this transformers")
+    base = _train(mod, tmp_path, monkeypatch, "0", arch = "Olmo")
+    capsys.readouterr()
+    engine.layer_major_stats(reset = True)
+    run = _train(
+        mod, tmp_path, monkeypatch, mode, arch = "Olmo", steps = 2 if mode == "1" else 4, stall = 50.0
+    )
+    out = capsys.readouterr().out
+    assert _windows(engine) == want
+    if mode == "auto":
+        assert out.count("opt-in for OlmoDecoderLayer") == 1
+    else:
+        assert "opt-in" not in out
+        _same(base, run)
+
+
+def test_auto_list_covers_the_dense_families(ga):
+    mod, engine = ga
+    for arch, name in (
+        ("Llama", "LlamaDecoderLayer"),
+        ("Qwen2", "Qwen2DecoderLayer"),
+        ("Mistral", "MistralDecoderLayer"),
+    ):
+        model = _model(arch = arch)
+        layers = model.get_base_model().model.layers
+        assert mod._auto_layers_ok(model, layers) == (True, None), arch
+    model = _model(arch = "Olmo")
+    assert mod._auto_layers_ok(model, model.get_base_model().model.layers) == (
+        False,
+        "OlmoDecoderLayer",
+    )

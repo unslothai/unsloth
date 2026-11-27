@@ -10,16 +10,18 @@ Trainer.training_step runs the N micro-batches of the step together through unsl
 through the trainer's own training_step: same shapes, loss, num_items_in_batch normalisation and accumulation order,
 so losses and gradients match standard accumulation bitwise.
 
-UNSLOTH_OFFLOAD_LAYER_MAJOR: "auto" (default) turns it on after two steps whose swap copies stalled the GPU for more
-than 5% of the swapped layers' time (always on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "1"
-whenever eligible; "0" never. Without an active block swap nothing here runs.
+UNSLOTH_OFFLOAD_LAYER_MAJOR: "auto" (default) turns it on, for the standard dense decoders in _AUTO_LAYERS (each
+proven bitwise against standard accumulation), after two steps whose swap copies stalled the GPU for more than 5% of
+the swapped layers' time (always on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "1" whenever
+eligible, for any decoder; "0" never. Every refusal below applies to both. Without an active block swap nothing here
+runs.
 """
 
 import copy
 import functools
-import os
 import sys
 import threading
+from collections.abc import Mapping
 
 import torch
 
@@ -50,6 +52,17 @@ _DROPOUT_KEYS = (
     "embd_pdrop",
 )
 _MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
+# auto engages only for these decoder layers (class name: the model_type it must come with), each covered by a
+# bitwise test against standard accumulation (CPU and B200 BlockSwap RAM / disk, and the Unsloth end-to-end run).
+# Any other decoder runs the standard way unless UNSLOTH_OFFLOAD_LAYER_MAJOR = 1.
+_AUTO_LAYERS = {
+    "LlamaDecoderLayer": ("llama",),
+    "Qwen2DecoderLayer": ("qwen2",),
+    "Qwen3DecoderLayer": ("qwen3",),
+    "MistralDecoderLayer": ("mistral",),
+    "Gemma2DecoderLayer": ("gemma2",),
+    "Gemma3DecoderLayer": ("gemma3_text",),
+}
 
 
 def _say_once(trainer, key, message):
@@ -107,8 +120,69 @@ def _trainer_ok(trainer):
     return True
 
 
-def _window_blocker(trainer):
+def _compiled(module):
+    optimized = getattr(getattr(torch, "_dynamo", None), "OptimizedModule", None)
+    forward = module.__dict__.get("forward")
+    return (
+        (optimized is not None and isinstance(module, optimized))
+        or getattr(module, "_compiled_call_impl", None) is not None
+        or hasattr(forward, "_torchdynamo_orig_callable")
+    )
+
+
+def _compiled_around(model, layers):
+    """torch.compile on the model or a module holding the decoder layers (model.compile(), torch.compile(model)):
+    the window's layer interceptor would run inside the compiled graph."""
+    if _compiled(model):
+        return True
+    for name, module in model.named_modules():
+        if module is layers:
+            parts = name.split(".") if name else []
+            for k in range(len(parts)):
+                try:
+                    if _compiled(model.get_submodule(".".join(parts[:k]))):
+                        return True
+                except AttributeError:
+                    return True
+            return False
+    return False
+
+
+def _auto_layers_ok(model, layers):
+    """(ok, class name): whether every decoder layer is one auto engages for."""
+    config = getattr(model, "config", None)
+    model_type = getattr(config, "model_type", None)
+    for cls in {type(layer) for layer in layers}:
+        allowed = _AUTO_LAYERS.get(cls.__name__)
+        module = getattr(cls, "__module__", "") or ""
+        if (
+            allowed is None
+            or model_type not in allowed
+            or not (
+                module.startswith("transformers.models.") or "unsloth_compiled_module" in module
+            )
+        ):
+            return False, cls.__name__
+    return True, None
+
+
+def _window_blocker(
+    trainer,
+    model,
+    layers = None,
+):
     """Per step (they can appear after the first): what makes this step's micro-batches run the standard way."""
+    if getattr(trainer, "compute_loss_func", None) is not None:
+        # Called inside each micro-batch's loss part, which under a window runs with the step's first
+        # micro-batch's accelerator sync state (and so on): standard accumulation keeps it exact.
+        return "a custom compute_loss_func"
+    if any(
+        p.requires_grad and getattr(p, "_post_accumulate_grad_hooks", None)
+        for p in model.parameters()
+    ):
+        return "post-accumulate-grad hooks (an optimizer step inside backward)"
+    if layers is not None and _compiled_around(model, layers):
+        return "torch.compile over the whole model"
     state = trainer.__dict__
     for name in ("training_step", "compute_loss"):
         fn = state.get(name)
@@ -123,8 +197,9 @@ def _window_blocker(trainer):
     except Exception:
         base = None
     for callback in getattr(handler, "callbacks", ()):
-        fn = getattr(type(callback), "on_substep_end", base)
-        if base is not None and fn is not base:
+        # The method Transformers dispatches: on the instance (an assigned handler), else the class's.
+        fn = getattr(callback, "on_substep_end", base)
+        if base is not None and getattr(fn, "__func__", fn) is not base:
             # Called between micro-batches: under a window it would see every micro-batch's gradients at once.
             return f"{type(callback).__name__}.on_substep_end"
     return None
@@ -158,12 +233,6 @@ def layer_major_ineligible(trainer, model, layers, swapper):
     optim = str(getattr(args, "optim", "")).lower()
     if "lomo" in optim or "layerwise" in optim:
         return "this optimizer updates the weights inside every backward"
-    if any(
-        getattr(p, "_post_accumulate_grad_hooks", None)
-        for p in model.parameters()
-        if p.requires_grad
-    ):
-        return "post-accumulate-grad hooks (an optimizer step inside backward)"
     if trainer.__dict__.get("_unsloth_token_budget_installed"):
         # Its instance-level training_step splits micro-batches into chunks the window never sees.
         return "UNSLOTH_TOKEN_BUDGET"
@@ -186,7 +255,7 @@ def layer_major_ineligible(trainer, model, layers, swapper):
 
 def _tokens(sample):
     for key in ("input_ids", "inputs_embeds", "labels", "attention_mask"):
-        value = sample.get(key) if isinstance(sample, dict) else None
+        value = sample.get(key) if isinstance(sample, Mapping) else None
         if isinstance(value, torch.Tensor) and value.dim() >= 2:
             return int(value.shape[0]) * int(value.shape[1])
     return None
@@ -298,7 +367,10 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     if len(samples) < 2 or samples[0] is not inputs or items is not num_items_in_batch:
         return None
     mode = layer_major_mode() if run_layer_major is not None else "off"
-    if mode == "off" or not getattr(model, "training", True):
+    # After an evaluation the model is still in eval mode here; the trainer's training_step switches it back.
+    if mode == "off" or (
+        not getattr(model, "training", True) and not getattr(trainer, "is_in_train", False)
+    ):
         return None
     cached = trainer.__dict__.get("_unsloth_layer_major_target")
     # Re-planned swaps (offload_layers = "auto") install a new BlockSwap on the same layer list.
@@ -307,20 +379,30 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         and cached[0] == id(model)
         and (cached[1] is None or cached[1].__dict__.get("_unsloth_block_swap") is cached[2])
     ):
-        _, layers, swapper, why = cached
+        _, layers, swapper = cached
     else:
         layers, swapper = _block_swap_layers(model)
-        why = None if swapper is None else layer_major_ineligible(trainer, model, layers, swapper)
-        trainer._unsloth_layer_major_target = (id(model), layers, swapper, why)
+        trainer._unsloth_layer_major_target = (id(model), layers, swapper)
     if swapper is None:
         return None
+    # Every step: hooks, compilation and optimizer settings can change after the first.
+    why = layer_major_ineligible(trainer, model, layers, swapper)
     if why is not None:
         _say_once(
             trainer, "why", f"Unsloth: offload_layers runs micro-batches one after another: {why}."
         )
-        trainer._unsloth_layer_major_off = True
         return None
-    blocker = _window_blocker(trainer)
+    if mode == "auto":
+        ok, name = _auto_layers_ok(model, layers)
+        if not ok:
+            _say_once(
+                trainer,
+                "opt-in",
+                f"Unsloth: offload_layers layer-major gradient accumulation is opt-in for {name}: set "
+                "UNSLOTH_OFFLOAD_LAYER_MAJOR=1 to run its micro-batches layer by layer.",
+            )
+            return None
+    blocker = _window_blocker(trainer, model, layers)
     if blocker is not None:
         _say_once(
             trainer,
@@ -348,7 +430,11 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         for k in ("_metrics", "_total_train_tokens")
         if k in trainer.__dict__
     }
-    losses, why = run_layer_major(layers, fns, swapper = swapper, model = model)
+    try:
+        losses, why = run_layer_major(layers, fns, swapper = swapper, model = model)
+    except BaseException:
+        trainer.__dict__.update(counters)  # the engine already put back gradients and RNG
+        raise
     if losses is None:
         trainer.__dict__.update(counters)
         if why.startswith("another layer-major window"):
@@ -390,7 +476,13 @@ def patch_layer_major_gradient_accumulation(Trainer):
             samples, items = out
         except (TypeError, ValueError):
             return out
-        if isinstance(samples, list) and len(samples) > 1 and layer_major_mode() != "off":
+        # Only for trainers whose training_step reaches the wrapper below, which consumes it each step.
+        if (
+            isinstance(samples, list)
+            and len(samples) > 1
+            and layer_major_mode() != "off"
+            and _trainer_ok(self)
+        ):
             self._unsloth_layer_major_batch = (samples, items)
         return out
 
