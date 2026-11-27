@@ -982,8 +982,13 @@ export async function getDiffusionTrainingRun(
   return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
-export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
-  return parseJson(await authFetch("/api/train/diffusion/status"));
+/** The raw body, so a poller can skip an unchanged reply without parsing it. */
+export async function getDiffusionTrainingStatusText(): Promise<string> {
+  const response = await authFetch("/api/train/diffusion/status");
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return response.text();
 }
 
 export interface DiffusionDatasetSummary {
