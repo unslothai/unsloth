@@ -246,10 +246,7 @@ const UNSPACED_START = new RegExp(`^${UNSPACED}`, "u");
 // `$`-anchored regexes scan the whole string, and this runs per streamed token.
 const TAIL = 64;
 
-/**
- * Joins a translated passage the way the target writes: no space before Chinese or Japanese,
- * and one where the source ran on with no space after Chinese or Japanese text (`previous`).
- */
+/** No space before Chinese or Japanese; one where `previous` ended in them and the target needs it. */
 export function joinPassage(
   output: string,
   piece: string,
