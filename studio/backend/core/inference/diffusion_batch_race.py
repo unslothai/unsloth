@@ -463,11 +463,21 @@ def run_race(
     class _Aborted(Exception):
         pass
 
-    def solo(prompt: str, seed_: int) -> tuple[float, Any]:
+    def solo(
+        prompt: str,
+        seed_: int,
+        *,
+        eager: bool = False,
+    ) -> tuple[float, Any]:
         if not idle():
             raise _Aborted()
         start = clock()
-        out = generate(prompt = prompt, seed = seed_, **common)
+        # ``eager``: the solo render on the batched-eager arm's own path, so a replay check compares like for like.
+        with (
+            _graphs_bypassed(handles) if eager else _nullctx(),
+            cuda_graph.forced_eager() if eager else _nullctx(),
+        ):
+            out = generate(prompt = prompt, seed = seed_, **common)
         return clock() - start, (out.get("images") or [None])[0]
 
     def batch(
@@ -628,7 +638,9 @@ def _nullctx() -> Iterator[None]:
 
 def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) -> dict:
     """G2a at this batch shape: change only the neighbours (prompt and seed), the target first then last; an A/A
-    repeat of the identical batch gives the noise floor. Plus whether a member equals its solo render (replay)."""
+    repeat of the identical batch gives the noise floor. Plus the batch-shape check G2a cannot see (it holds the batch
+    shape fixed): whether row 0 equals its own solo render on the SAME execution path (``eager`` renders the solo
+    eager too). ``b_exact``: bit-identical, or no further from its solo than the A/A floor of that path."""
     size = len(prompts)
     others = list(NEIGHBOUR_PROMPTS[: size - 1])
     other_seeds = [9000 + 13 * i for i in range(size - 1)]
@@ -637,7 +649,7 @@ def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) ->
     _, b = batch([prompts[0], *others], [seeds[0], *other_seeds], eager = eager)
     _, c = batch([*others, prompts[0]], [*other_seeds, seeds[0]], eager = eager)
     _, d = batch([*prompts[1:], prompts[0]], [*seeds[1:], seeds[0]], eager = eager)
-    _, alone = solo(prompts[0], seeds[0])
+    _, alone = solo(prompts[0], seeds[0], eager = eager)
     pa, pa2, pb, pc, pd = (_pixels(x) for x in (a, a2, b, c, d))
     [ps] = _pixels([alone])
     first = _same(pa[0], pb[0]) if pa and pb else None
@@ -651,7 +663,20 @@ def _neighbour_check(solo, batch, prompts: list, seeds: list, *, eager: bool) ->
         "aa_max_abs": _max_abs(pa[0], pa2[0]) if pa and pa2 else None,
         "replay_exact": bool(_same(pa[0], ps)) if pa else False,
         "replay_max_abs": _max_abs(pa[0], ps) if pa else None,
+        "replay_path": "eager" if eager else "graph",
+        "b_exact": _b_exact(pa[0] if pa else None, ps, pa2[0] if pa2 else None),
     }
+
+
+def _b_exact(row: Any, alone: Any, again: Any) -> bool:
+    """Row 0 of a batch against its solo render: equal, or no further than the same batch rerun (the kernel noise of
+    that shape and path)."""
+    if row is None or alone is None:
+        return False
+    if _same(row, alone):
+        return True
+    replay, floor = _max_abs(row, alone), _max_abs(row, again) if again is not None else None
+    return replay is not None and floor is not None and floor > 0 and replay <= floor
 
 
 def canvas_token(width: Any, height: Any, guidance: Any, steps: Any, layout: Any) -> str:
@@ -752,16 +777,19 @@ def effective_verdict(
             graph_missing = True,
             neighbour_exact = False,
             replay_exact = False,
+            b_exact = False,
         )
     return dict(verdict, promoted = False, graph_missing = True)
 
 
 def seeded_join_ok(verdict: Optional[dict]) -> bool:
     """A seeded request may join a batch of this size only when the measured path is neighbour-exact (G2a) and its
-    row replays bit for bit from the seed alone (G2b): otherwise the returned seed would not reproduce the image."""
-    return bool(
-        isinstance(verdict, dict)
-        and verdict.get("promoted")
-        and verdict.get("neighbour_exact")
-        and verdict.get("replay_exact")
-    )
+    row 0 is batch-exact against its solo render on the same path (``b_exact``; a verdict from before the check needs
+    ``replay_exact``): otherwise the returned seed would not reproduce the image."""
+    if not (
+        isinstance(verdict, dict) and verdict.get("promoted") and verdict.get("neighbour_exact")
+    ):
+        return False
+    if "b_exact" in verdict:
+        return bool(verdict.get("b_exact"))
+    return bool(verdict.get("replay_exact"))

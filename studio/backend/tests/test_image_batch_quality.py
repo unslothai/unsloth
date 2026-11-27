@@ -126,3 +126,62 @@ def test_the_race_itself_still_records_the_speed_verdict(monkeypatch):
         clock = lambda: clock["t"],
     )
     assert report["sizes"]["2"]["promoted"] is True and stored[2]["promoted"] is True
+
+
+# ------------------------------------------------------------------------------------------- batch-exact (row 0 vs solo)
+
+
+def test_the_eager_arms_replay_check_renders_its_solo_eager_too(monkeypatch):
+    """G2a holds the batch shape fixed; the replay check is row 0 of the batch against its own solo render, and on the
+    batched-eager arm that solo must run eager as well (not a graph replay), or the check compares two paths."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    seen = []
+    handle = types.SimpleNamespace(set_bypass = lambda on: None, drop_batched = lambda size: 0)
+    generate, clock, _ = _fake_generate(lambda rows: 1.0 if rows == 1 else 0.6 * rows)
+
+    def recording(**kw):
+        rows = len(kw.get("prompts") or [None])
+        seen.append((rows, cg.eager_forced()))
+        if rows > 1 and not cg.eager_forced():
+            clock["t"] += 1.0  # the graphed arm loses, so the neighbour check runs on the eager arm
+        return generate(**kw)
+
+    report = race.run_race(
+        recording,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 3,
+        clock = lambda: clock["t"],
+    )
+    verdict = report["sizes"]["2"]
+    assert verdict["arm"] == "batched_eager" and verdict["replay_path"] == "eager"
+    assert (1, True) in seen, "the eager arm's solo replay ran under forced_eager"
+    assert verdict["b_exact"] is True and verdict["replay_exact"] is True
+
+
+def test_b_exact_allows_only_the_same_shape_noise_floor():
+    import numpy as np
+
+    base = np.zeros((4, 4, 3), dtype = np.uint8)
+    off_by_2, off_by_5 = base.copy(), base.copy()
+    off_by_2[0, 0, 0], off_by_5[0, 0, 0] = 2, 5
+    assert race._b_exact(base, base.copy(), base.copy()) is True  # bit-identical
+    assert (
+        race._b_exact(base, off_by_2, base.copy()) is False
+    )  # deterministic path: any difference fails
+    assert race._b_exact(base, off_by_2, off_by_5) is True  # within the A/A floor of that shape
+    assert race._b_exact(base, off_by_5, off_by_2) is False  # further than the floor
+    assert race._b_exact(None, base, base) is False
+
+
+def test_seeded_joins_need_the_batch_exact_check():
+    won = {"promoted": True, "neighbour_exact": True, "replay_exact": True}
+    assert race.seeded_join_ok(won) is True  # a verdict from before the check
+    assert race.seeded_join_ok(dict(won, b_exact = False)) is False
+    assert race.seeded_join_ok(dict(won, replay_exact = False, b_exact = True)) is True
+    assert race.seeded_join_ok(dict(won, neighbour_exact = False, b_exact = True)) is False
