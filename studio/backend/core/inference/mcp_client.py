@@ -2217,16 +2217,29 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     unshown = []
     payloads = set()
     omitted = 0
-    has_text = False
+    structured = getattr(result, "structured_content", None)
     budget = MAX_IMAGE_PAYLOAD_CHARS
     lifted = []
     for block in getattr(result, "content", None) or []:
         text = _block_text(block)
         if text:
+            # FastMCP wraps plain string results while also returning the original text.
+            if (
+                isinstance(structured, dict)
+                and len(structured) == 1
+                and structured.get("result") == text
+            ):
+                structured = None
+            # Older clients read the JSON text mirror specified by MCP. Keep one copy.
+            elif structured is not None and text.lstrip().startswith("{"):
+                try:
+                    if json.loads(text) == structured:
+                        structured = None
+                except (ValueError, RecursionError):
+                    pass
             text, inline_images = _lift_inline_images(text)
             lifted.extend(inline_images)
             parts.append(text)
-            has_text = True
             seed.append((block, None))
             continue
         link = _block_link(block)
@@ -2262,7 +2275,6 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
         images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     # the filesystem server mirrors binary blocks in structured_content; keep everything else
-    structured = None if has_text else getattr(result, "structured_content", None)
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
     if structured is not None and structured is not _MIRRORED:

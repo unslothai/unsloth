@@ -426,9 +426,16 @@ def test_resource_link_does_not_displace_structured_content():
     assert flat == "{'path': '/out/gen.png'}\n[resource: <file:///out/gen.png>]"
 
 
-def test_server_text_still_wins_over_structured_content():
-    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"path": "/x"}))
-    assert flat == "[resource: <file:///out/gen.png>]\ndone"
+def test_independent_structured_content_is_kept_beside_status_text():
+    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"total": 42}))
+    assert flat == "{'total': 42}\n[resource: <file:///out/gen.png>]\ndone"
+
+
+def test_json_text_mirror_is_not_duplicated():
+    flat = _flatten_result(
+        _result(_text('{ "total": 42 }'), _text("done"), structured = {"total": 42})
+    )
+    assert flat == '{ "total": 42 }\ndone'
 
 
 def test_fastmcp_file_format_png_is_rendered():
