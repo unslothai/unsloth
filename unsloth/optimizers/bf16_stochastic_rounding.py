@@ -974,9 +974,14 @@ def enable_bf16_stochastic_rounding(
     Call before an LR scheduler is built over the optimizer. Idempotent."""
     if optimizer is None or not bf16_stochastic_rounding_enabled():
         return 0
+    # accelerate's AcceleratedOptimizer, and under it the in-backward step's wrapper (optimizers/auto_fit.py):
+    # transformers 5 builds the scheduler after accelerate wrapped the optimizer.
+    seen = set()
     inner = getattr(optimizer, "optimizer", None)
-    if inner is not None and hasattr(inner, "param_groups"):  # accelerate's AcceleratedOptimizer
+    while inner is not None and hasattr(inner, "param_groups") and id(inner) not in seen:
+        seen.add(id(optimizer))
         optimizer = inner
+        inner = getattr(optimizer, "optimizer", None)
     if getattr(optimizer, _MARK, None) is not None:
         return getattr(optimizer, _MARK)
     kind = _kind(optimizer)
