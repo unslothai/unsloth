@@ -5194,6 +5194,56 @@ _TP_QUANTIZE_OWNER = contextvars.ContextVar("_unsloth_tp_quantize_owner", defaul
 _NESTED_LOAD = object()
 
 
+def _held_bytes(t):
+    held = getattr(t, "nbytes_packed", None)
+    return held() if callable(held) else t.numel() * t.element_size()
+
+
+def _preload_expert_packed(owner, p, rank, tp, ranks):
+    """This rank's experts of a just-set packed stack (zoo's MXFP4 / NVFP4 / MXFP8), or None; its logical shape
+    keeps every expert, so PEFT sizes the expert LoRA for the whole stack."""
+    E = owner.__dict__.get("num_experts")
+    if (
+        not isinstance(E, int)
+        or isinstance(E, bool)
+        or _packed_expert_problem(p, E, tp) is not None
+    ):
+        return None
+    per_rank = E // tp
+    new = _packed_expert_slice(p, rank * per_rank, (rank + 1) * per_rank)
+    new._original_shape = torch.Size((E,) + tuple(p._original_shape)[1:])
+    setattr(new, _EXPERT_PRELOAD, (E, tp, tuple(ranks)))
+    return new
+
+
+def _cut_expert_stacks(module, block, rank, tp, ranks, experts_only):
+    """Cut every routed expert stack of a just-loaded experts `module` (of `block`) to this rank's experts:
+    (stacks cut, bytes saved, negative). Every stack of a block or none: one cut stack would leave it unshardable."""
+    params = {n: p for n, p in module._parameters.items() if p is not None}
+    if not params or any(
+        p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
+    ):
+        return 0, 0
+    if expert_shard_problem(block, tp) is not None:
+        return 0, 0
+    cuts = {}
+    for n, p in params.items():
+        if _is_params4bit(p):
+            cuts[n] = _preload_expert_params4bit
+        elif experts_only and _is_packed_expert(p):
+            cuts[n] = _preload_expert_packed
+        elif experts_only and _plain_expert(p):
+            cuts[n] = _preload_expert_plain
+    if not cuts:
+        return 0, 0
+    stacks = {n: params[n] for n in cuts}
+    shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
+    if any(new is None for new in shards.values()):
+        return 0, 0
+    module._parameters.update(shards)
+    return len(shards), sum(_held_bytes(shards[n]) - _held_bytes(stacks[n]) for n in shards)
+
+
 def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     """A bitsandbytes 4-bit quantize-on-load under tensor parallel sharded loading: transformers' own load, each
     4-bit projection weight of the plan and each 4-bit routed expert stack replaced by this rank's shard as soon
@@ -5248,29 +5298,11 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
         return t.numel() * t.element_size()
 
     def shard_experts(module):
-        # Every stack of a block or none: one cut stack would leave the block unshardable.
-        params = {n: p for n, p in module._parameters.items() if p is not None}
-        if not params or any(
-            p.is_meta or getattr(p, _EXPERT_PRELOAD, None) is not None for p in params.values()
-        ):
-            return 0
-        if expert_shard_problem(plan["experts"][id(module)], tp) is not None:
-            return 0
-        cuts = {}
-        for n, p in params.items():
-            if _is_params4bit(p):
-                cuts[n] = _preload_expert_params4bit
-            elif experts_only and _plain_expert(p):
-                cuts[n] = _preload_expert_plain
-        if not cuts:
-            return 0
-        stacks = {n: params[n] for n in cuts}
-        shards = {n: cuts[n](module, p, rank, tp, ranks) for n, p in stacks.items()}
-        if any(new is None for new in shards.values()):
-            return 0
-        module._parameters.update(shards)
-        counts["sharded_expert_stacks"] += len(shards)
-        return sum(nbytes(shards[n]) - nbytes(stacks[n]) for n in shards)
+        cut, delta = _cut_expert_stacks(
+            module, plan["experts"][id(module)], rank, tp, ranks, experts_only
+        )
+        counts["sharded_expert_stacks"] += cut
+        return delta
 
     def set_and_shard(model, target_name, param_value, *rest, **more):
         set_param(model, target_name, param_value, *rest, **more)
@@ -5397,8 +5429,15 @@ def _guard_preloaded_modules(model):
 
 
 def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
-    """transformers' own (full) load of an otherwise quantized checkpoint under expert parallel loading, where
-    packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut)."""
+    """transformers' own load of an otherwise quantized checkpoint under expert parallel loading:
+    packed_expert_loader reads each packed expert stack for this rank's experts only (ep_packed_load_cut), and a
+    routed expert stack transformers' converters build (gpt-oss MXFP4 kept packed or dequantized to 16 bit, a
+    compressed-tensors MXFP4 stack) is cut to this rank's experts as soon as it is set (transformers 5)."""
+    try:
+        from transformers import core_model_loading as loading
+    except Exception:
+        loading = None
+    set_param = getattr(loading, "set_param_for_module", None)
     owner = object()
     info = {
         "owner": owner,
@@ -5410,13 +5449,52 @@ def _ep_packed_load(original, cls, name, args, kwargs, mesh, state):
         "loaded_bytes": 0,
         "kept_bytes": 0,
     }
+
+    def set_and_cut(model, target_name, param_value, *rest, **more):
+        set_param(model, target_name, param_value, *rest, **more)
+        if (
+            _TP_QUANTIZE_OWNER.get() is not owner
+            or not isinstance(model, cls)
+            or info.setdefault("model", model) is not model
+        ):
+            return
+        if "experts" not in info:
+            info["experts"] = {}
+            for block in moe_blocks_with_experts(model):
+                chain = _experts_chain(block)
+                if chain:
+                    info["experts"][id(chain[-1])] = block
+        module_path = target_name.rpartition(".")[0]
+        try:
+            module = model.get_submodule(module_path) if module_path else model
+        except AttributeError:
+            return
+        block = info["experts"].get(id(module))
+        if block is None:
+            return
+        cut, delta = _cut_expert_stacks(
+            module, block, info["rank"], info["tp"], info["ranks"], True
+        )
+        if cut:
+            info["sharded_expert_stacks"] += cut
+            info["kept_bytes"] += sum(
+                _held_bytes(p) for p in module._parameters.values() if p is not None
+            )
+            info["loaded_bytes"] += (
+                sum(_held_bytes(p) for p in module._parameters.values() if p is not None) - delta
+            )
+
     # As _tp_load_quantizing: an enclosing sharded_loading passes this load through, a nested one is ordinary.
     state["active"] = True
     owner_token = _TP_QUANTIZE_OWNER.set(owner)
     token = _EP_PACKED_LOAD.set(info)
+    if callable(set_param):
+        loading.set_param_for_module = set_and_cut
     try:
         loaded = original(cls, name, *args, **kwargs)
     finally:
+        if callable(set_param):
+            loading.set_param_for_module = set_param
         _EP_PACKED_LOAD.reset(token)
         _TP_QUANTIZE_OWNER.reset(owner_token)
         state["active"] = False

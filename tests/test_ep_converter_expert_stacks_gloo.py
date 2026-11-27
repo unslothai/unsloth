@@ -1,0 +1,346 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+"""expert_parallel_loading of a quantized checkpoint whose routed expert stacks transformers' own converters build
+(gpt-oss native MXFP4, gloo CPU, 2 ranks): each stack is cut to this rank's experts as soon as it is set, so a rank
+never holds every expert. Dequantized to 16 bit (no MXFP4 kernels): bitwise the full load's rows, and one LoRA
+step after apply_expert_parallel matches the full load's (loss and every gradient). Kept packed (zoo's
+Mxfp4ExpertParam): the codes and scales are the full stack's rows, marked, logical shape whole, and
+apply_expert_parallel shards it."""
+
+import json
+import multiprocessing
+import os
+
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
+    os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
+    os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+import torch  # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+
+E, H, I = 4, 64, 64
+STACKS = ("gate_up_proj", "gate_up_proj_bias", "down_proj", "down_proj_bias")
+_SEQ = (7, 5)
+
+
+def _modules():
+    from unsloth_models_loader import load_models_module
+    return load_models_module("tp_native"), load_models_module("ep_native")
+
+
+def _write_checkpoint(path):
+    """gpt-oss's released MXFP4 layout: ``experts.{gate_up,down}_proj_{blocks,scales}`` and 16-bit biases."""
+    from safetensors.torch import save_file
+    from transformers import GptOssConfig, GptOssForCausalLM
+
+    config = GptOssConfig(
+        vocab_size = 128,
+        hidden_size = H,
+        intermediate_size = I,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 32,
+        num_local_experts = E,
+        num_experts_per_tok = 2,
+        layer_types = ["full_attention"] * 2,
+        tie_word_embeddings = False,
+    )
+    with torch.device("meta"):
+        skeleton = GptOssForCausalLM(config)
+    g = torch.Generator().manual_seed(0)
+    state = {}
+    for key, p in skeleton.state_dict().items():
+        if key.endswith((".mlp.experts.gate_up_proj", ".mlp.experts.down_proj")):
+            continue
+        state[key] = (torch.randn(p.shape, generator = g) * 0.05).to(torch.bfloat16)
+    for layer in range(2):
+        pre = f"model.layers.{layer}.mlp.experts"
+        for stack, (rows, cols) in (("gate_up_proj", (2 * I, H)), ("down_proj", (H, I))):
+            state[f"{pre}.{stack}_blocks"] = torch.randint(
+                0, 256, (E, rows, cols // 32, 16), dtype = torch.uint8, generator = g
+            )
+            state[f"{pre}.{stack}_scales"] = torch.randint(
+                122, 127, (E, rows, cols // 32), dtype = torch.uint8, generator = g
+            )
+    os.makedirs(path, exist_ok = True)
+    save_file(state, os.path.join(path, "model.safetensors"), metadata = {"format": "pt"})
+    data = config.to_dict()
+    data["quantization_config"] = {
+        "quant_method": "mxfp4",
+        "modules_to_not_convert": [
+            "model.layers.*.self_attn",
+            "model.layers.*.mlp.router",
+            "model.embed_tokens",
+            "lm_head",
+        ],
+    }
+    with open(os.path.join(path, "config.json"), "w") as f:
+        json.dump(data, f)
+
+
+def _keep_packed():
+    """zoo's keep-packed branch of transformers' MXFP4 converter (what Unsloth installs where grouped_mm decodes)."""
+    import transformers.integrations.mxfp4 as mx
+    from unsloth_zoo.mxfp4_dequant import Mxfp4ExpertParam
+    from unsloth_zoo.temporary_patches import moe_utils
+    from unsloth_zoo.temporary_patches.mxfp4 import (
+        patch_mxfp4_packed_expert_shape_check,
+        patch_peft_param_wrapper_mxfp4,
+    )
+
+    patch_mxfp4_packed_expert_shape_check()  # packed (E, N, G, 16) blocks against the logical stack shape
+    patch_peft_param_wrapper_mxfp4()  # PEFT's expert LoRA over the packed stack's logical shape
+    moe_utils.patch_param_wrapper_for_moe()
+
+    def dequantize_convertops(blocks, scales, *args, **kwargs):
+        return Mxfp4ExpertParam(blocks, mxfp4_scales = scales)
+
+    mx.dequantize_convertops = dequantize_convertops
+
+
+def _load(path):
+    from transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        path, dtype = torch.float32, attn_implementation = "eager"
+    )
+    model.config._attn_implementation = "eager"
+    return model
+
+
+def _stacks(model):
+    out = {}
+    for name, p in model.named_parameters():
+        if name.rpartition(".")[2] in STACKS and ".experts." in name:
+            extra = getattr(p, "mxfp4_scales", None)
+            out[name] = (torch.Tensor.detach(p).clone(), None if extra is None else extra.clone())
+    return out
+
+
+def _held(stacks):
+    return sum(t.numel() * t.element_size() for v in stacks.values() for t in v if t is not None)
+
+
+def _lora(model):
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(1)
+    config = LoraConfig(
+        r = 4,
+        lora_alpha = 8,
+        target_modules = ["q_proj", "v_proj"],
+        target_parameters = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"],
+        init_lora_weights = False,
+    )
+    return get_peft_model(model, config).train()
+
+
+def _step(epn, model, rank, world, mesh):
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    rows = [
+        torch.randint(0, 128, (2, _SEQ[r]), generator = torch.Generator().manual_seed(20 + r))
+        for r in range(world)
+    ]
+    n = sum(int(ids[:, 1:].numel()) for ids in rows)
+    epn.apply_expert_parallel(model, mesh)
+    ddp = DistributedDataParallel(model)
+    ids = rows[rank]
+    logits = ddp(input_ids = ids, use_cache = False).logits
+    loss = (
+        torch.nn.functional.cross_entropy(
+            logits[:, :-1].flatten(0, 1).float(), ids[:, 1:].flatten(), reduction = "sum"
+        )
+        * world
+        / n
+    )
+    loss.backward()
+    epn.ep_sync_expert_grads(model)
+    value = loss.detach() / world
+    dist.all_reduce(value)
+    group = epn._mesh(model).get_group()
+    grads = {
+        k: (epn._gather_expert(p, group, p.grad) if getattr(p, epn._EP, None) else p.grad)
+        .detach()
+        .clone()
+        for k, p in model.named_parameters()
+        if p.grad is not None
+    }
+    return float(value), grads
+
+
+def _case(rank, world, tmp, packed):
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    tpn, epn = _modules()
+    if packed:
+        _keep_packed()
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
+    ckpt = os.path.join(tmp, "ckpt")
+    if rank == 0:
+        _write_checkpoint(ckpt)
+    dist.barrier()
+    full = _load(ckpt)
+    want = _stacks(full)
+    with epn.expert_parallel_loading(mesh) as state:
+        model = _load(ckpt)
+    have = _stacks(model)
+    per = E // world
+    lo, hi = rank * per, (rank + 1) * per
+    params = dict(model.named_parameters())
+    out = {
+        "models": len(state["models"]),
+        "stats": dict(model.__dict__.get("_unsloth_tp_load_stats") or {}),
+        "types": sorted({type(params[n]).__name__ for n in have if not n.endswith("_bias")}),
+        "marks": sorted({getattr(params[n], tpn._EXPERT_PRELOAD, None) for n in have}),
+        "sliced": set(have) == set(want)
+        and all(
+            all(
+                (a is None and b is None) or torch.equal(a, b[lo:hi])
+                for a, b in zip(have[k], want[k])
+            )
+            for k in want
+        ),
+        "held": _held(have),
+        "whole": _held(want),
+    }
+    if packed:
+        out["logical"] = sorted(
+            {
+                tuple(params[n]._original_shape)[0]
+                for n in have
+                if hasattr(params[n], "_original_shape")
+            }
+        )
+        # PEFT and apply_expert_parallel accept the cut packed stacks (no forward: zoo's grouped decode is GPU only).
+        model = _lora(model)
+        epn.apply_expert_parallel(model, mesh)
+        out["applied"] = sorted(
+            {
+                tuple(p.shape)[0]
+                for n, p in model.named_parameters()
+                if n.endswith(("gate_up_proj", "down_proj"))
+            }
+        )
+        return out
+    try:
+        model(input_ids = torch.zeros(1, 3, dtype = torch.long))
+        out["unapplied_forward"] = "ran"
+    except RuntimeError as exc:
+        out["unapplied_forward"] = str(exc)
+    full, model = _lora(full), _lora(model)
+    lora = lambda m: {k: p.detach().clone() for k, p in m.named_parameters() if "lora_" in k}  # noqa: E731
+    want_lora, got_lora = lora(full), lora(model)
+    out["lora_equal"] = set(want_lora) == set(got_lora) and all(
+        torch.equal(want_lora[k], got_lora[k]) for k in want_lora
+    )
+    out["full"] = _step(epn, full, rank, world, mesh)
+    out["sharded"] = _step(epn, model, rank, world, mesh)
+    return out
+
+
+def _worker(rank, world, tmp, case, kwargs):
+    os.environ.update(
+        RANK = str(rank), WORLD_SIZE = str(world), LOCAL_RANK = str(rank), LOCAL_WORLD_SIZE = str(world)
+    )
+    import datetime
+
+    import torch.distributed as dist
+
+    torch.set_num_threads(2)
+    dist.init_process_group(
+        "gloo",
+        store = dist.FileStore(os.path.join(tmp, "rendezvous"), world),
+        rank = rank,
+        world_size = world,
+        timeout = datetime.timedelta(seconds = 300),
+    )
+    try:
+        res = globals()[case](rank, world, tmp, **kwargs)
+    except BaseException as exc:  # a rank must report, not vanish
+        import traceback
+        res = {"error": f"{type(exc).__name__}: {exc}"[:600] + traceback.format_exc()[-4000:]}
+    torch.save(res, os.path.join(tmp, f"result_{rank}.pt"))
+    dist.destroy_process_group()
+
+
+def _spawn(
+    case,
+    world = 2,
+    **kwargs,
+):
+    pytest.importorskip("transformers.core_model_loading")
+    pytest.importorskip("peft")
+    try:
+        from transformers import GptOssConfig  # noqa: F401
+        import transformers.integrations.mxfp4 as mx
+    except ImportError:
+        pytest.skip("transformers without gpt-oss MXFP4")
+    if not hasattr(mx, "dequantize_convertops"):
+        pytest.skip("transformers without the MXFP4 weight converter")
+    ctx = multiprocessing.get_context("spawn")
+    with tempfile.TemporaryDirectory() as tmp:
+        procs = [
+            ctx.Process(target = _worker, args = (r, world, tmp, case, kwargs)) for r in range(world)
+        ]
+        for p in procs:
+            p.start()
+        deadline = time.monotonic() + 600
+        while any(p.is_alive() for p in procs) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        for p in procs:
+            if p.is_alive():
+                p.terminate()
+            p.join(30)
+        out = []
+        for r in range(world):
+            path = os.path.join(tmp, f"result_{r}.pt")
+            out.append(torch.load(path, weights_only = False) if os.path.exists(path) else None)
+        return out
+
+
+def _common(results, kind):
+    assert all(r is not None and "error" not in r for r in results), results
+    for r in results:
+        assert r["models"] == 1, r
+        assert r["stats"].get("sharded_expert_stacks") == 8 and r["stats"].get("prequantized"), r[
+            "stats"
+        ]
+        assert r["types"] == [kind], r["types"]
+        assert r["marks"] == [(E, 2, (0, 1))], r["marks"]
+        assert r["sliced"], "a rank's stacks are not the full load's rows [lo, hi)"
+        assert r["held"] * 2 == r["whole"], (r["held"], r["whole"])
+
+
+def test_ep_mxfp4_dequantized_stacks_cut_on_load_match_full_load():
+    results = _spawn("_case", packed = False)
+    _common(results, "Parameter")
+    for r in results:
+        assert "apply_expert_parallel" in r["unapplied_forward"], r["unapplied_forward"]
+        assert r["lora_equal"]
+        (got_loss, got), (want_loss, want) = r["sharded"], r["full"]
+        assert got_loss == want_loss, (got_loss, want_loss)
+        assert set(got) == set(want) and any(".experts." in k and "lora_" in k for k in got)
+        for k in want:
+            assert torch.equal(got[k], want[k]), k
+
+
+def test_ep_mxfp4_packed_stacks_cut_on_load():
+    pytest.importorskip("unsloth_zoo.mxfp4_dequant")
+    results = _spawn("_case", packed = True)
+    _common(results, "Mxfp4ExpertParam")
+    for r in results:
+        assert r["logical"] == [E], r["logical"]
+        assert r["applied"] == [E // 2], r["applied"]
