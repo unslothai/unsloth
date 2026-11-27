@@ -287,36 +287,8 @@ def test_download_plan_refuses_every_quant_of_an_unknown_gguf_repo(monkeypatch):
             SimpleNamespace(rfilename = "Q8_0/Big-Q8_0-00001-of-00009.gguf", size = 10**12),
         ],
     )
-    with pytest.raises(ValueError, match = "is a GGUF repository"):
+    with pytest.raises(ValueError, match = "publishes several GGUF quants"):
         native_audio_download_plan("unsloth/Big-Chat-GGUF")
-
-
-def test_download_plan_refuses_a_gguf_repo_whose_only_other_weights_are_stray(monkeypatch):
-    _hub_repo(
-        monkeypatch,
-        [
-            SimpleNamespace(rfilename = "imatrix.bin", size = 1),
-            SimpleNamespace(rfilename = "legacy/model.pt", size = 1),
-            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
-            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 10**12),
-        ],
-    )
-    with pytest.raises(ValueError, match = "is a GGUF repository"):
-        native_audio_download_plan("unsloth/Big-Chat-GGUF")
-
-
-def test_download_plan_refuses_quants_beside_only_a_peft_adapter(monkeypatch):
-    _hub_repo(
-        monkeypatch,
-        [
-            SimpleNamespace(rfilename = "adapter_model.safetensors", size = 10),
-            SimpleNamespace(rfilename = "adapter_config.json", size = 1),
-            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
-            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 2 * 10**12),
-        ],
-    )
-    with pytest.raises(ValueError, match = "is a GGUF repository"):
-        native_audio_download_plan("someone/lora-and-quants-GGUF")
 
 
 def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch):
@@ -346,7 +318,7 @@ def test_download_plan_still_lists_one_quant_beside_a_companion_gguf(monkeypatch
 )
 def test_download_plan_refuses_quants_named_by_folder_or_bare_label(monkeypatch, files):
     _hub_repo(monkeypatch, [SimpleNamespace(rfilename = f, size = 10) for f in files])
-    with pytest.raises(ValueError, match = "is a GGUF repository"):
+    with pytest.raises(ValueError, match = "publishes several GGUF quants"):
         native_audio_download_plan("someone/Big-GGUF")
 
 
@@ -375,7 +347,8 @@ def test_download_plan_still_lists_a_gguf_repo_with_one_quant(monkeypatch):
     assert plan["required_bytes"] == 25
 
 
-def test_download_plan_still_lists_a_safetensors_repo_that_also_ships_gguf_quants(monkeypatch):
+def test_download_plan_refuses_quants_beside_a_cached_checkpoint(monkeypatch):
+    # The loader picks a GGUF here, so a zero-byte checkpoint-only plan would fetch an unplanned quant.
     _hub_repo(
         monkeypatch,
         [
@@ -384,23 +357,12 @@ def test_download_plan_still_lists_a_safetensors_repo_that_also_ships_gguf_quant
             SimpleNamespace(rfilename = "gguf/tts-Q8_0.gguf", size = 20),
         ],
     )
-    plan = native_audio_download_plan("someone/tts-with-quants")
-    assert plan["entries"][0]["files"] == ["model.safetensors"]
-    assert plan["required_bytes"] == 100
-
-
-def test_download_plan_never_lists_several_quants_beside_a_stray_checkpoint(monkeypatch):
-    _hub_repo(
-        monkeypatch,
-        [
-            SimpleNamespace(rfilename = "original/model-00001-of-00002.safetensors", size = 5),
-            SimpleNamespace(rfilename = "Q4_K_M/Big-Q4_K_M.gguf", size = 10**12),
-            SimpleNamespace(rfilename = "Q8_0/Big-Q8_0.gguf", size = 10**12),
-        ],
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached",
+        lambda _repo, filename, *_args: filename == "model.safetensors",
     )
-    plan = native_audio_download_plan("unsloth/Big-Chat-GGUF")
-    assert plan["entries"][0]["files"] == ["original/model-00001-of-00002.safetensors"]
-    assert plan["required_bytes"] == 5
+    with pytest.raises(ValueError, match = "publishes several GGUF quants"):
+        native_audio_download_plan("someone/tts-with-quants")
 
 
 def test_download_plan_still_lists_an_unknown_safetensors_repo(monkeypatch):

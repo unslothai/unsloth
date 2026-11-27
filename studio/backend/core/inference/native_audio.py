@@ -736,16 +736,6 @@ def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
     return models
 
 
-_NATIVE_WEIGHTS = re.compile(
-    r"(^|/)(?!adapter_model)([^/]*\.safetensors|pytorch_model[^/]*\.bin)$", re.IGNORECASE
-)
-
-
-def _has_native_weights(siblings: list[Any]) -> bool:
-    """A Transformers checkpoint; a stray .pt or a PEFT adapter is not one."""
-    return any(_NATIVE_WEIGHTS.search(str(getattr(s, "rfilename", "")).strip()) for s in siblings)
-
-
 def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
     """Native models add companion codec repos, and MiniMax skips legacy weights its index never names."""
     normalized = str(model_name or "").strip()
@@ -795,18 +785,13 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         if not siblings:
             raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
         # No audio loader names this repo, so its plan is every file: for a multi-quant GGUF repo, every quant.
+        # Refused even beside a checkpoint: ModelConfig.from_identifier loads a GGUF from such a repo, not the checkpoint.
         if audio_type is None and any(
             len(quants) > 1 for quants in _gguf_quants(siblings).values()
         ):
-            if not _has_native_weights(siblings):
-                raise ValueError(
-                    f"{repo_id} is a GGUF repository: pick one of its GGUF files instead of downloading all of them."
-                )
-            siblings = [
-                s
-                for s in siblings
-                if not str(getattr(s, "rfilename", "")).lower().endswith(".gguf")
-            ]
+            raise ValueError(
+                f"{repo_id} publishes several GGUF quants: pick one of its GGUF files instead of downloading all of them."
+            )
         revision = str(getattr(info, "sha", "") or "") or None
         missing_files = []
         missing_bytes = 0
