@@ -853,3 +853,14 @@ test("an edit left after another tab switched accounts is not sent with the new 
     assert.equal(s.server.puts.length, 0, leave);
   }
 });
+
+test("an upload removed during a save is cleaned when it lands after the editor closed", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  s.uploads.pending.push("removed-mid-save");
+  s.editor.unmount();
+  s.uploads.pending.push("next-editor");
+  await s.server.release();
+  assert.deepEqual(s.uploads.removed, ["removed-mid-save"]);
+});

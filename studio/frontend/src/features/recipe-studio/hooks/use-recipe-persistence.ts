@@ -190,7 +190,7 @@ function sanitizeSeedForShare(payload: unknown): unknown {
 // autosave never leaves the saved recipe pointing at deleted files.
 function drainQueuedUploadCleanups(
   savedPayload: RecipePayloadResult["payload"],
-  // A save that settles after its editor closed may only drain what was queued when it started.
+  // A save that settles after its editor closed may only drain what was queued before it closed.
   pending: readonly string[] = useRecipeStudioStore.getState().pendingUploadCleanups,
 ): void {
   if (pending.length === 0) {
@@ -317,6 +317,8 @@ export function useRecipePersistence({
   const inFlight = useRef<{ signature: string; done: Promise<void> } | null>(
     null,
   );
+  // Null while open; once closed, the upload queue as it stood then.
+  const closedQueue = useRef<readonly string[] | null>(null);
 
   useEffect(() => {
     savedRef.current.saved = savedSignature;
@@ -328,9 +330,6 @@ export function useRecipePersistence({
       payload: RecipePayloadResult["payload"],
       signature: string,
       keepalive: boolean,
-      queued: readonly string[] = [
-        ...useRecipeStudioStore.getState().pendingUploadCleanups,
-      ],
     ): Promise<void> => {
       const { recipeId: id, onPersistRecipe: persist } = latest.current;
       const seq = ++savedRef.current.seq;
@@ -347,7 +346,7 @@ export function useRecipePersistence({
             setFailedSignature(null);
             savedRef.current.saved = signature;
             setSavedSignature(signature);
-            drainQueuedUploadCleanups(payload, queued);
+            drainQueuedUploadCleanups(payload, closedQueue.current ?? undefined);
           },
           (error: unknown) => {
             // A newer save already landed, so this content is superseded, not rejected.
@@ -404,12 +403,8 @@ export function useRecipePersistence({
   useEffect(() => {
     // Another tab may switch accounts first; its tokens must never carry this account's recipe.
     const account = window.localStorage.getItem(BROWSER_ACCOUNT_KEY);
-    const flush = (
-      keepalive: boolean,
-      unloading = keepalive,
-      // Snapshot now: a deferred save may run after the next editor queued its own uploads.
-      queued = [...useRecipeStudioStore.getState().pendingUploadCleanups],
-    ): void => {
+    closedQueue.current = null;
+    const flush = (keepalive: boolean, unloading = keepalive): void => {
       const { ready, name, payload, signature } = latest.current;
       const { saved, failed } = savedRef.current;
       const running = inFlight.current;
@@ -423,10 +418,10 @@ export function useRecipePersistence({
       }
       // Only an unloading page sends on top of the save in flight; a hidden one may come back.
       if (running && !unloading) {
-        void running.done.then(() => flush(keepalive, false, queued));
+        void running.done.then(() => flush(keepalive, false));
         return;
       }
-      void runSave(name, payload, signature, keepalive, queued);
+      void runSave(name, payload, signature, keepalive);
     };
     const onPageHide = () => flush(true);
     const onVisibilityChange = () => {
@@ -437,6 +432,7 @@ export function useRecipePersistence({
     return () => {
       window.removeEventListener("pagehide", onPageHide);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      closedQueue.current = [...useRecipeStudioStore.getState().pendingUploadCleanups];
       flush(false);
     };
   }, [runSave]);
