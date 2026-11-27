@@ -45507,8 +45507,7 @@ async def _mlx_count_chat_tokens(
     entry = getattr(backend, "models", {}).get(active) or {}
     if not entry:
         return None
-    # A resident model is named, never reported as nothing loaded. Vision serves text turns
-    # through the chat render, so it is counted; speech and transcription render no chat prompt.
+    # A resident model is named, never reported as unloaded; vision counts, speech renders no chat.
     if entry.get("is_audio"):
         raise HTTPException(
             status_code = 503,
@@ -45797,8 +45796,7 @@ async def _mlx_count_chat_tokens(
         instructions = system_prompt if include_system else ""
         if instructions and _tools_to_use and not tools:
             instructions = _without_tool_nudge(instructions, _nudge)
-        # The completion refuses a chat of instructions alone, so price its next send without the
-        # user's text; some templates (Qwen3.5) cannot render one without a user turn.
+        # The completion refuses instructions alone, so price the next send minus the user's text.
         if not any(m.get("role") not in ("system", "developer") for m in count_messages):
             count_messages = [*count_messages, {"role": "user", "content": ""}]
         count, _counted = backend.count_chat_tokens(

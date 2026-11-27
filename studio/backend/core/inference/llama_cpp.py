@@ -46055,8 +46055,7 @@ class LlamaCppBackend:
                         pass
                     return None, False
 
-                # Qwen3.5+ templates raise on an empty render, and the stock Qwen3.5 template on a
-                # chat with no user turn; retry behind an empty user turn after the instructions.
+                # Qwen3.5+ refuse an empty chat (stock: any without a user turn); retry behind one.
                 lead = 0
                 while (
                     lead < len(template_messages)
@@ -46075,8 +46074,7 @@ class LlamaCppBackend:
                     {"role": "user", "content": ""},
                     *rest,
                 ]
-                # The remembered refusal is of an empty chat: a template refusing that may still
-                # render instructions alone, so those are always tried as sent first.
+                # The memo is an empty chat's refusal; instructions alone are tried as sent first.
                 if renders_empty and not lead and self._empty_chat_render_refused:
                     count, _refused = _render_count(with_user_turn)
                 else:
