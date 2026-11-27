@@ -705,7 +705,8 @@ def test_a_batched_job_keeps_its_slot_until_every_clip_is_saved(monkeypatch, sav
     assert saved["lead"][1]["seed"] == 1 and saved["ride"][1]["seed"] == 2
     # Never handed on: the next queued clip starts only after both clips are saved and settled.
     assert handoffs == [] and backend._encode_tail is None
-    assert len(encodes) == 2 and all(e["slot_busy"] and not e["tail"] for e in encodes)
+    # A shared denoise encodes every clip in the job, under the lock, as before #19817.
+    assert encodes == [{"locked": True, "slot_busy": True, "tail": False}] * 2
     account = video_module.current_account_id()
     assert backend.generate_outcome("lead", account)["phase"] == "completed"
     assert backend.generate_outcome("ride", account)["phase"] == "completed"
