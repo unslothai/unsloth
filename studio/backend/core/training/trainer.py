@@ -392,6 +392,28 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+def _s3_dataset_has_audio(dataset, audio_paths: frozenset[str], custom_format_mapping) -> bool:
+    from datasets import Audio
+
+    features = dataset.features or {}
+    if not audio_paths and not any(isinstance(feature, Audio) for feature in features.values()):
+        return False
+    columns = resolve_audio_columns(dataset, custom_format_mapping)
+    audio_col = columns["audio_col"]
+    if not audio_col or not columns["text_col"]:
+        return False
+    if isinstance(features.get(audio_col), Audio):
+        return True
+
+    # A filename in a metadata field is insufficient; the audio column must refer to a downloaded object.
+    for row in dataset.select_columns([audio_col]).take(_AUDIO_SNIFF_ROWS):
+        value = row[audio_col]
+        path = value.get("path") if isinstance(value, dict) else value
+        if isinstance(path, str) and path in audio_paths:
+            return True
+    return False
+
+
 def _raise_if_empty_train_split(dataset, stage: str) -> None:
     # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
     if hasattr(dataset, "__len__") and len(dataset) == 0:
@@ -2370,6 +2392,8 @@ class UnslothTrainer:
         self,
         dataset,
         custom_format_mapping = None,
+        *,
+        temporary_audio_paths: frozenset[str] = frozenset(),
     ):
         from datasets import Audio
 
@@ -2398,6 +2422,21 @@ class UnslothTrainer:
                 f"Skipped {total - len(dataset):,} of {total:,} audio rows with a blank transcript."
             )
 
+        if temporary_audio_paths:
+            # Native torchcodec maps can retain the source path in Arrow. Keep the bytes available to the
+            # collator after the S3 download directory is cleaned up.
+            dataset = dataset.cast_column(audio_col, Audio(decode = False))
+
+            def embed_temporary_audio(audio):
+                path = audio.get("path") if audio else None
+                if path in temporary_audio_paths and audio["bytes"] is None:
+                    with open(path, "rb") as file:
+                        return {audio_col: {"path": os.path.basename(path), "bytes": file.read()}}
+                return {audio_col: audio}
+
+            dataset = dataset.map(
+                embed_temporary_audio, input_columns = [audio_col], writer_batch_size = 16
+            )
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
             dataset = prepare_audio_vlm_image_column(dataset, image_col)
@@ -3725,7 +3764,7 @@ class UnslothTrainer:
             if (
                 s3_download is not None
                 and not raw_text_mode
-                and _dataset_has_audio_column(dataset) is True
+                and _s3_dataset_has_audio(dataset, s3_download.audio_paths, custom_format_mapping)
             ):
                 # The S3 picker has no local rows to inspect. Resolve modality from its loaded manifest.
                 self._is_dataset_audio = True
@@ -3853,7 +3892,11 @@ class UnslothTrainer:
                 return (dataset_info, eval_dataset)
 
             elif self.is_audio_vlm:
-                formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
+                formatted = self._format_audio_vlm_dataset(
+                    dataset,
+                    custom_format_mapping,
+                    **({"temporary_audio_paths": s3_download.audio_paths} if s3_download else {}),
+                )
                 return (
                     formatted,
                     self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),

@@ -153,7 +153,7 @@ def test_s3_manifest_selects_audio_input_for_the_downloaded_rows(monkeypatch, wi
     from .test_s3_audio_dataset import _FakeS3Client
 
     repo = "LiquidAI/LFM3-Audio-2B"
-    row = {"text": "A spoken line."}
+    row = {"text": "A spoken line.", "id": "episode-001.wav"}
     objects = {}
     if with_audio:
         row["audio"] = "speech.wav"
@@ -193,6 +193,10 @@ def test_s3_manifest_selects_audio_input_for_the_downloaded_rows(monkeypatch, wi
     assert trainer._is_dataset_audio is with_audio
     assert trainer.is_audio_vlm is with_audio
     if with_audio:
+        from datasets import Audio
+
+        assert formatted.cast_column("audio", Audio(decode = False))[0]["audio"]["bytes"]
+        assert len(formatted[0]["audio"]["array"]) == 400
         parts = [part for message in formatted[0]["messages"] for part in message["content"]]
         assert any(part.get("text") == row["text"] for part in parts)
         [audio] = [part for part in parts if part["type"] == "audio"]
