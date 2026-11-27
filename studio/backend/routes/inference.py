@@ -39250,19 +39250,18 @@ def _sandbox_download_account(token: str, session_id: str, filename: str):
 
 @router.post("/sandbox-download-link")
 async def create_sandbox_download_link(
-    request: Request,
     session_id: str = Query(max_length = 4096),
     filename: str = Query(max_length = 4096),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     from starlette.concurrency import run_in_threadpool
 
-    from auth.authentication import request_admitted_without_credential
-
-    if request_admitted_without_credential(request):
+    # The link redeems as the bare account, dropping the API caller's sandbox restrictions.
+    if via_api_key:
         raise HTTPException(
             status_code = 403,
-            detail = "Download links can only be created from the Unsloth UI or with an API key.",
+            detail = "Download links can only be created from the Unsloth UI.",
         )
     await run_in_threadpool(_sandbox_regular_file, session_id, filename)
     target = media_link_target(_sandbox_download_id(session_id, filename))

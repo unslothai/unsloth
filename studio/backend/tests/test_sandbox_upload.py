@@ -184,20 +184,13 @@ def test_a_volume_without_hard_links_still_never_replaces_unless_asked(
 def _mint_download_token(
     session,
     name,
-    keyless = False,
+    via_api_key = False,
 ):
     import json
-    from types import SimpleNamespace
-    from unittest import mock
 
     from routes import inference
 
-    with mock.patch(
-        "auth.authentication.request_admitted_without_credential", return_value = keyless
-    ):
-        link = asyncio.run(
-            inference.create_sandbox_download_link(SimpleNamespace(), session, name, "u")
-        )
+    link = asyncio.run(inference.create_sandbox_download_link(session, name, "u", via_api_key))
     assert link.headers["cache-control"] == "no-store"
     return json.loads(link.body)["token"]
 
@@ -246,11 +239,13 @@ def test_sandbox_download_link_is_bound_to_the_session_file_and_expiry(tools, mo
     with pytest.raises(HTTPException) as missing:
         _mint_download_token(session, "missing.txt")
     assert missing.value.status_code == 404
-    with pytest.raises(HTTPException) as keyless:
-        _mint_download_token(session, name, keyless = True)
-    assert keyless.value.status_code == 403
+    with pytest.raises(HTTPException) as api_caller:
+        _mint_download_token(session, name, via_api_key = True)
+    assert api_caller.value.status_code == 403
     (mint,) = [r for r in inference.router.routes if r.path == "/sandbox-download-link"]
-    assert inference.get_current_subject in [d.call for d in mint.dependant.dependencies]
+    dependencies = [d.call for d in mint.dependant.dependencies]
+    assert inference.get_current_subject in dependencies
+    assert inference.authenticated_via_api_key in dependencies
 
 
 def test_sandbox_download_link_serves_the_minting_accounts_file(tools, tmp_path, monkeypatch):
