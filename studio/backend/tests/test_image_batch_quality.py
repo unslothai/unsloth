@@ -397,3 +397,39 @@ def test_the_race_endpoint_answers_422_for_an_unsupported_size(monkeypatch):
         )
     assert caught.value.status_code == 422
     assert "2" in caught.value.detail and str(race.MAX_RACE_SIZE) in caught.value.detail
+
+
+# ------------------------------------------------------------------------------------------- adapters
+
+
+@pytest.mark.parametrize(
+    "pipe",
+    [
+        types.SimpleNamespace(_unsloth_loras = (("style", "/tmp/style.safetensors", 0.8),)),
+        types.SimpleNamespace(
+            _unsloth_loras_baked = True, _unsloth_baked_lora_specs = (("style", 0.8),)
+        ),
+        types.SimpleNamespace(_unsloth_load_lora_specs = (("style", 0.8),)),
+    ],
+)
+def test_the_race_refuses_a_load_with_active_adapters_before_any_render(monkeypatch, pipe):
+    """The race renders without ``loras``, which generate() reads as none: it would unload or zero the user's adapters
+    (or, baked under streamed graphs, refuse with a reload error mid-race). Verdicts are not keyed by adapter set, so
+    the race refuses an adapted load up front."""
+    engine = _engine(pipe = pipe, offload_policy = "sequential")
+    rendered = []
+    monkeypatch.setattr(engine, "generate", lambda **kw: rendered.append(kw) or {"images": []})
+    with pytest.raises(race.RaceRefused, match = "adapter"):
+        engine.batch_race(width = 512, height = 512)
+    assert rendered == []
+
+
+def test_an_adapter_free_load_still_races(monkeypatch):
+    engine = _engine(
+        pipe = types.SimpleNamespace(_unsloth_loras = (("off", "/tmp/off.safetensors", 0.0),)),
+        offload_policy = "sequential",
+    )
+    called = []
+    monkeypatch.setattr(race, "run_race", lambda *a, **k: called.append(k) or {"sizes": {}})
+    engine.batch_race(width = 512, height = 512)
+    assert called, "a zero-weight adapter is not an active selection"

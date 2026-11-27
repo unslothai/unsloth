@@ -2200,6 +2200,23 @@ class GraphedForward:
                     warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                     return call(*warm_args, **warm_kwargs)
                 except Exception as exc:  # noqa: BLE001 - like a failed capture: never fails the render
+                    if rows is not None and _is_oom(exc):
+                        # Out of memory warming a batched shape (as when recording one): drop only the batched
+                        # graphs, keep the size-1 ones, and run this step eager like the other unrecorded shapes.
+                        self._real_warm_closed.add(key)
+                        exc.__traceback__ = None
+                        warm_args = warm_kwargs = live = None
+                        self._drop_batched(f"out of memory warming a batch of {rows[0]}")
+                        self.stats["batch_capture_failures"] += 1
+                        if self.logger is not None:
+                            self.logger.warning(
+                                "diffusion.cuda_graph: no memory to warm a batch-%d graph on %s; batched calls run "
+                                "eager, the size-1 graphs keep replaying",
+                                rows[0],
+                                type(self.module).__name__,
+                            )
+                        self._release()
+                        return self._eager_as_recorded(eager_args, eager_kwargs)
                     # The copies cost memory the plain step does not need (an OOM here), or the step failed on them:
                     # this load runs eager, as after a failed capture.
                     self.poison(exc)

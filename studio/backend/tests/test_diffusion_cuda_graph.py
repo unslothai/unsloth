@@ -2793,3 +2793,44 @@ def test_a_batched_graph_carries_the_race_canvas_it_recorded_and_replayed_at(stu
     assert handle._batched_canvas[key] == {"c512", "c512-steps8"}
     handle(_t((2, 4)), timestep = _t((2,)), return_dict = False)
     assert key not in handle._batched and key not in handle._batched_canvas
+
+
+def test_out_of_memory_in_a_batched_real_warmup_keeps_the_size_one_graphs(stub_torch, monkeypatch):
+    """With real warm-ups (the default) a new batch shape warms on copies first; an OOM there must not poison the
+    load: only the batched graphs go, the size-1 graph keeps replaying (an optional batching race never slows solo
+    requests for the rest of the load)."""
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    module = _FakeDiT()
+    handle = _armed(module)
+    cg.note_render_steps((handle,), 8)
+    for i in range(cg.WARMUP_ITERS + 1):
+        handle(_t(value = float(i)), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["captures"] == 1 and len(handle.cache) == 1
+    statics = handle._statics
+
+    def oom_for_a_batch(live):
+        if any(getattr(t, "shape", (1,))[0] == 4 for t in live):
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return statics(live)
+
+    monkeypatch.setattr(handle, "_statics", oom_for_a_batch)
+    with cg.batch_rows(4, capture = True):
+        out = handle(_t((4, 4), value = 3.0), timestep = _t((4,), value = 10.0), return_dict = False)
+    assert out[0].value[0] == "out", "the batched step still renders (eager)"
+    assert handle.poisoned is False
+    assert len(handle.cache) == 1 and not handle._batched, "the size-1 graph is kept"
+    assert handle.stats["batch_capture_failures"] == 1 and handle._batched_off
+    replays = handle.stats["replays"]
+    handle(_t(value = 7.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.stats["replays"] == replays + 1, "the size-1 graph still replays"
+
+
+def test_out_of_memory_in_a_size_one_real_warmup_still_poisons(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.REAL_WARMUP_ENV, raising = False)
+    handle = _armed()
+    cg.note_render_steps((handle,), 8)
+    monkeypatch.setattr(
+        handle, "_statics", lambda live: (_ for _ in ()).throw(RuntimeError("CUDA out of memory"))
+    )
+    handle(_t(value = 1.0), timestep = _t((1,), value = 10.0), return_dict = False)
+    assert handle.poisoned is True

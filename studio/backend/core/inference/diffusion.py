@@ -1194,6 +1194,19 @@ def _record_load_lora_specs(pipe: Any, loras: Any) -> None:
         pass
 
 
+def _race_adapters_active(pipe: Any) -> bool:
+    """Whether the load carries adapters with a non-zero weight: applied now, baked in, or requested at load."""
+    if pipe is None:
+        return False
+    if any(
+        float(entry[2]) != 0
+        for entry in getattr(pipe, "_unsloth_loras", ()) or ()
+        if len(entry) > 2
+    ):
+        return True
+    return any(float(spec.get("weight", 0) or 0) != 0 for spec in _load_lora_specs(pipe))
+
+
 def _load_lora_specs(pipe: Any) -> list:
     baked = _baked_lora_specs(pipe)
     if baked:
@@ -18560,6 +18573,12 @@ class DiffusionBackend:
         if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
             raise diffusion_batch_race.RaceRefused(
                 "this family's pipeline renders one image per forward"
+            )
+        if _race_adapters_active(getattr(state, "pipe", None)):
+            # The race renders without loras, which generate() reads as none: it would unload or zero the adapters (or,
+            # baked under streamed graphs, refuse mid-race), and verdicts are not keyed by adapter set.
+            raise diffusion_batch_race.RaceRefused(
+                "this load has active LoRA adapters; race an adapter-free load"
             )
         if _step_cache_couples_rows(state, steps):
             raise diffusion_batch_race.RaceRefused(
