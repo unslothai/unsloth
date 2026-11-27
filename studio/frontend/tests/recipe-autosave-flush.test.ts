@@ -244,12 +244,12 @@ const settle = async () => {
 function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   const timers = new Map<number, () => void>();
   let nextTimer = 1;
-  const listeners = new Map<string, Set<() => void>>();
-  const on = (type: string, fn: () => void) => {
+  const listeners = new Map<string, Set<(event?: unknown) => void>>();
+  const on = (type: string, fn: (event?: unknown) => void) => {
     if (!listeners.has(type)) listeners.set(type, new Set());
     listeners.get(type)!.add(fn);
   };
-  const off = (type: string, fn: () => void) => listeners.get(type)?.delete(fn);
+  const off = (type: string, fn: (event?: unknown) => void) => listeners.get(type)?.delete(fn);
   const doc = { visibilityState: "visible", addEventListener: on, removeEventListener: off };
   const account = { marker: "alice" as string | null };
   Object.assign(globalThis, {
@@ -404,8 +404,8 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
       for (const fn of due) fn();
       await settle();
     },
-    fire: async (type: string) => {
-      for (const fn of [...(listeners.get(type) ?? [])]) fn();
+    fire: async (type: string, event: unknown = { persisted: false }) => {
+      for (const fn of [...(listeners.get(type) ?? [])]) fn(event);
       await settle();
     },
     hide: async () => {
@@ -927,4 +927,30 @@ test("an upload a pending save still writes is not cleaned when a later save fai
   await s.server.release("lifo");
   assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 409]);
   assert.ok(!s.uploads.removed.includes("u1"));
+});
+
+test("a pagehide into the back/forward cache waits for the save in flight", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide", { persisted: true });
+  assert.equal(s.server.puts.length, 1);
+  await s.server.release("lifo");
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+  assert.deepEqual(s.errors, []);
+});
+
+test("recovery keeps every plausible unanswered version, not just the newest", async () => {
+  const s = setup();
+  await s.edit({ columns: ["x"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(true);
+  await s.edit({ columns: ["y"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(false);
+  await s.edit({ columns: ["z"] });
+  await s.fire("pagehide");
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["z"] });
 });

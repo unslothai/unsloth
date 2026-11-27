@@ -112,7 +112,8 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
   }, [loadedRecord]);
 
   const inFlightVersion = useRef<number | undefined>(undefined);
-  const unansweredVersion = useRef<number | undefined>(undefined);
+  // Versions of saves lost to the network that may have landed, newest first.
+  const unansweredVersions = useRef<number[]>([]);
   const handlePersist = useCallback(
     async (input: {
       id: string | null;
@@ -121,20 +122,15 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       keepalive?: boolean;
       recover?: boolean;
     }) => {
-      // The server keeps the updatedAt sent, so a save builds on one in flight; an unanswered
-      // one tries both.
+      // The server keeps the updatedAt sent, so a save builds on one in flight; a recovering
+      // one also tries every version an unanswered save may have left.
       const confirmed = editedVersion.current;
       const inFlight = inFlightVersion.current;
-      const unanswered = input.recover ? unansweredVersion.current : undefined;
-      const bases =
-        inFlight !== undefined
-          ? [inFlight]
-          : unanswered !== undefined
-            ? [unanswered, confirmed]
-            : [confirmed];
+      const candidates = input.recover ? unansweredVersions.current : [];
+      const bases = inFlight !== undefined ? [inFlight] : [...candidates, confirmed];
       const updatedAt = Math.max(
         Date.now(),
-        Math.max(confirmed ?? 0, inFlight ?? unanswered ?? 0) + 1,
+        Math.max(confirmed ?? 0, inFlight ?? candidates[0] ?? 0) + 1,
       );
       inFlightVersion.current = updatedAt;
       try {
@@ -157,20 +153,20 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
           );
         });
         // Only this save or an older one is settled; a newer unanswered save stays a candidate.
-        if ((unansweredVersion.current ?? 0) <= record.updatedAt) {
-          unansweredVersion.current = undefined;
-        }
+        unansweredVersions.current = unansweredVersions.current.filter(
+          (v) => v > record.updatedAt,
+        );
         if (record.updatedAt >= (editedVersion.current ?? 0)) {
           editedVersion.current = record.updatedAt;
         }
         return { id: record.id, updatedAt: record.updatedAt };
       } catch (error) {
-        const pending = unansweredVersion.current;
-        if (!(error instanceof RecipeApiError)) {
-          unansweredVersion.current = Math.max(pending ?? 0, updatedAt);
-        } else if (pending === updatedAt) {
-          unansweredVersion.current = undefined;
-        }
+        const kept = unansweredVersions.current.filter((v) => v !== updatedAt);
+        unansweredVersions.current =
+          error instanceof RecipeApiError
+            ? // Every base tried was rejected, so none of them is the stored version.
+              kept.filter((v) => !bases.includes(v))
+            : [updatedAt, ...kept].sort((a, b) => b - a).slice(0, 3);
         throw error;
       } finally {
         if (inFlightVersion.current === updatedAt) {

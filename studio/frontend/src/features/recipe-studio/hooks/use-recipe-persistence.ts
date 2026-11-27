@@ -430,7 +430,8 @@ export function useRecipePersistence({
       }
       void runSave(name, payload, signature, keepalive, true);
     };
-    const onPageHide = () => flush(true);
+    // A persisted pagehide enters the back/forward cache and may come back, like a hidden tab.
+    const onPageHide = (event: PageTransitionEvent) => flush(true, !event.persisted);
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") flush(true, false);
     };
