@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-encoder residency on a discrete CUDA card, re-decided per render.
-
-After each prompt encode the encoders stay on the card (whole, or in resident groups) only while the render's priced
-peak plus the planner's slack fits live free memory; otherwise they stream from the host before the denoise, and come
-back at a later encode once they fit. Same weights either way, so outputs are bit-identical.
-``UNSLOTH_DIFFUSION_TE_RESIDENCY=0`` keeps the load's placement for the whole session."""
+"""Text-encoder residency on a discrete CUDA card, re-decided per render: encoders stay on the card
+(whole or in resident groups) only while the priced peak plus slack fits free memory, else stream
+from host before denoise; outputs are bit-identical; UNSLOTH_DIFFUSION_TE_RESIDENCY=0 keeps the
+load's placement."""
 
 from __future__ import annotations
 
@@ -102,8 +100,7 @@ def render_need_mib(
     measured_activation: Any = None,
     tiled: bool = False,
 ) -> Optional[int]:
-    """MiB this render needs above the weights once the prompt is encoded (margin included); None when unpriced
-    (the placement then stands)."""
+    """MiB above weights after prompt encode (with margin); None if unpriced, placement stands."""
     from .diffusion_memory import (
         DEFAULT_IMAGE_HEIGHT,
         DEFAULT_IMAGE_WIDTH,
@@ -570,8 +567,7 @@ def maybe_install(
     *,
     logger: Any = None,
 ) -> Optional[EncoderResidency]:
-    """Attach the per-render residency check when the encoders sit on one discrete CUDA card, whole or in resident
-    groups. Never raises."""
+    """Per-render residency check for encoders on one discrete CUDA card; never raises."""
     try:
         if pipe is None or not enabled():
             return None

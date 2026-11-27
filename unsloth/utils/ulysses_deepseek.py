@@ -226,6 +226,50 @@ def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, traini
     return outs[0] if len(outs) == 1 else torch.cat(outs, dim = 1)
 
 
+def _position_key(position_ids, group):
+    # Under inference mode the gathered tensor is an inference tensor (no version counter): gather every call.
+    if torch.is_inference_mode_enabled():
+        return None
+    try:
+        version = position_ids._version
+    except RuntimeError:  # inference tensors carry no version counter
+        return None
+    return (
+        position_ids.data_ptr(),
+        version,
+        tuple(position_ids.shape),
+        position_ids.stride(),
+        position_ids.dtype,
+        position_ids.device,
+        id(group),
+    )
+
+
+def _full_position_ids(position_ids, group):
+    """All-gather the local position shard once per step: every compressor layer, and its gradient
+    checkpoint recompute, sees the same positions. Cached on the active CP manager, which drops it
+    when the step's scope exits. The cache holds the local tensor, so its storage cannot be reused
+    within the step, and an in-place write bumps _version, so neither gives a stale hit. Hits are
+    rank-consistent: every rank passes the same layers the same positions object (or a detached
+    alias of it), so all ranks gather on the same calls."""
+    from ..context_parallel import get_cp_manager
+
+    manager = get_cp_manager()
+    key = _position_key(position_ids, group)
+    cached = getattr(manager, "_deepseek_full_position_ids", None)
+    if key is not None and cached is not None and cached[0] == key:
+        full, version = cached[2], cached[3]
+        if full._version == version:
+            return full
+    pos_local = position_ids.contiguous()
+    pos_list = [torch.empty_like(pos_local) for _ in range(dist.get_world_size(group))]
+    dist.all_gather(pos_list, pos_local, group = group)
+    full = torch.cat(pos_list, dim = -1)
+    if manager is not None and key is not None:
+        manager._deepseek_full_position_ids = (key, position_ids, full, full._version)
+    return full
+
+
 def ulysses_deepseek_v4_forward(
     module,
     hidden_states,
@@ -239,7 +283,7 @@ def ulysses_deepseek_v4_forward(
 ):
     """Training forward of a DeepSeek-V4 attention layer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V4 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(
@@ -270,10 +314,7 @@ def ulysses_deepseek_v4_forward(
     if module.compressor is not None:
         full_hidden = _gather_seq(hidden_states, group)
         full_q_res = _gather_seq(q_residual, group)
-        pos_local = position_ids.contiguous()
-        pos_list = [torch.empty_like(pos_local) for _ in range(cp)]
-        dist.all_gather(pos_list, pos_local, group = group)
-        full_pos_ids = torch.cat(pos_list, dim = -1)
+        full_pos_ids = _full_position_ids(position_ids, group)
         compressed_kv, block_bias = module.compressor(
             full_hidden, full_q_res, full_pos_ids, None, module.layer_idx
         )
@@ -432,7 +473,7 @@ def ulysses_deepseek_v32_forward(
 ):
     """Training forward of DeepSeek-V3.2 MLA + DSA indexer on a contiguous sequence shard."""
     cp = dist.get_world_size(group)
-    if past_key_values is not None:
+    if past_key_values is not None or kwargs.get("cache") is not None:
         raise RuntimeError("DeepSeek-V3.2 context parallel is the training path; cache is off.")
     if module.num_heads % cp != 0:
         raise RuntimeError(

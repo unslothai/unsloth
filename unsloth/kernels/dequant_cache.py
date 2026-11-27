@@ -112,9 +112,8 @@ _ACTIVE = 0  # Trainer.train() calls running: nothing is cached outside them
 _CHECKED = set()
 _SHAPE_SEEN = [0, 0]  # most tokens / longest sequence of a model input before the last safe point
 _SHAPE_NEW = [0, 0]  # the same since the last safe point
-# Largest dense attention mask (tokens x sequence length = batch x length^2 elements) of a padded training input
-# before the last safe point / since it. A padded batch builds that mask before any LoRA op, and its size is a
-# joint bound: the largest batch and the longest sequence may come from different measured batches.
+# Largest padded attention mask (batch x length^2 elements) before and since the last safe point;
+# built before any LoRA op; a joint bound since max batch and max length may differ.
 _PADDED_SEEN = [0]
 _PADDED_NEW = [0]
 _HOOKS = []  # forward pre-hooks on the trained model, removed when training ends
@@ -282,10 +281,9 @@ _SHRINK_UNSAFE = set()  # device indices whose last shrink was a size drop or me
 
 
 def _note_shrink(index, kind):
-    """The cache just shrank. Until the allocator's peak rises above its value now, peak - current would count
-    the freed cache as activation memory. After a plain clear (evaluation, inference, saving, end of training,
-    a smaller budget) the shapes trained on are unchanged and the last measured transient still holds; after a
-    size drop or memory pressure it may not, so those keep the conservative reading."""
+    """Until the peak rises, peak - current counts freed cache; after a plain clear (evaluation,
+    inference, saving, end of training, smaller budget) the last transient still holds; size
+    drops or pressure stay conservative."""
     measured = _usable(index)
     peak = measured[2].get("allocated_bytes.all.peak", 0) if measured is not None else float("inf")
     _SHRINK_PEAK[index] = peak
@@ -294,10 +292,9 @@ def _note_shrink(index, kind):
 
 
 def _mark_growth(index):
-    """A larger step (more tokens, a longer sequence, more matmul rows) than the last measurement, or another
-    training run. While the allocator's peak is stale (a shrink since the last new peak) the last measured
-    transient no longer covers it, so the conservative bound applies until a new peak is measured. Without a
-    pending shrink the next safe point measures the step itself."""
+    """Growth past the last measurement (more tokens, longer sequence, more matmul rows, or another
+    run); with a stale peak after a shrink use the conservative bound; without a pending shrink
+    the next safe point measures the step."""
     if index in _SHRINK_PEAK and index not in _SHRINK_UNSAFE:
         _SHRINK_UNSAFE.add(index)
         STATS["growth_marks"] += 1
@@ -363,6 +360,14 @@ def _evict(
         _note_shrink(index, kind)
 
 
+_GC_SKIP_WAIT_MAX = 4
+
+
+def _checkpoint_skip_pending():
+    pending = getattr(sys.modules.get("unsloth.models._utils"), "checkpoint_skip_pending", None)
+    return pending is not None and bool(pending())
+
+
 def _on_optimizer_step(optimizer, args, kwargs):
     """Safe point: the step's activations are freed; size every device's budget from what is free now."""
     if _MODE is None or _DISABLED or not _SEEN:
@@ -370,6 +375,15 @@ def _on_optimizer_step(optimizer, args, kwargs):
     if (_MODE == "auto" and not _auto_allowed()) or not _ACTIVE:
         if _CACHE:
             clear_dequant_cache(release = True)
+        return
+    if _checkpoint_skip_pending() and STATS["gc_skip_wait"] < _GC_SKIP_WAIT_MAX:
+        # Auto plan's kept activations not measured yet; capped at _GC_SKIP_WAIT_MAX so it cannot stay off.
+        with _lock:
+            for index in list(_SEEN):
+                if _cached_bytes(index):
+                    _evict(index, 0, kind = "budget")
+                _BUDGET[index] = 0
+        STATS["gc_skip_wait"] += 1
         return
     with _lock:
         for key in [k for k, e in _CACHE.items() if e[0].expired()]:
@@ -658,10 +672,8 @@ def dequantize(
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Traced callers: opaque ops doing the lookup and the GEMM, so the dense tensor never enters the graph (Inductor
-# may reuse a dead buffer, which must never be a cached weight) and the graph is the same whatever is cached.
-# Registered as plain CUDA kernels (no autograd wrapper: they are only called with grad off): their dispatch costs
-# less than the custom_op they replace.
+# Opaque so the dense tensor never enters the graph and Inductor cannot reuse cached weight buffers;
+# plain CUDA kernels with no autograd wrapper, only called with grad off; cheaper than custom_op.
 
 
 def _parts(quant_state):
@@ -742,6 +754,9 @@ def _addmm_impl(
     Wd = _dense_from_parts(
         W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, X.shape[0]
     )
+    if Wd.dtype != out.dtype:
+        # NF4 decodes to the quant state's dtype, and in-place addmm_ needs matching dtypes (autocast skips it).
+        Wd = Wd.to(out.dtype)
     out.addmm_(X, Wd.t())
 
 
@@ -819,9 +834,8 @@ def nf4_matmul(
         out = nf4_matmul(X.reshape(-1, shape[-1]), W, quant_state, XA, Bt, alpha)
         return out.view(*shape[:-1], out.shape[-1])
     if XA is None:
-        # The op is opaque to autocast, which would cast both operands of the torch.matmul it replaces to the
-        # autocast dtype (an fp16 X under bf16 autocast overflowed in fp16): apply that cast here, where it is
-        # traced. The lora-first form replaces an opaque op already, which autocast does not cast either.
+        # Autocast skips opaque ops, so cast X to the autocast dtype here (an fp16 X under bf16
+        # autocast overflowed in fp16); the lora-first form is already opaque and uncast too.
         device = X.device.type
         if torch.is_autocast_enabled(device) and X.dtype in _AUTOCAST_FLOATS:
             dtype = torch.get_autocast_dtype(device)
@@ -841,10 +855,9 @@ def nf4_lora_first(X, W, quant_state, XA, Bt, alpha):
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Trainer scope: the budget is only set between on_train_begin and the end of Trainer.train(); evaluation and
-# prediction run without the cache (their batches were never measured), and the end of training returns the
-# cache's memory to the driver. A default callback carries the scope (wrappers other code puts around
-# Trainer.train cannot bypass it); the train() wrapper also ends it when training raises.
+# Budget set only from on_train_begin to the end of Trainer.train(); eval and predict run uncached
+# (never measured); training end returns cache memory to the driver; a default callback carries the
+# scope so wrappers cannot bypass it; train() wrapper also ends it if training raises.
 
 
 def _end_train():

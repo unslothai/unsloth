@@ -723,8 +723,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Latest-tier models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         if load_in_4bit:
-            from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(config["model_name"], hf_token):
+            from utils.transformers_version import latest_tier_forces_16bit
+            if latest_tier_forces_16bit(config["model_name"], hf_token):
                 load_in_4bit = False
                 logger.info(
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -919,6 +919,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_options_by_workflow",
                         "audio_workflow_tasks",
                         "audio_server_task",
+                        "audio_separation",
                         "audio_convert",
                         "audio_convert_route",
                         "audio_convert_rules",
@@ -1198,9 +1199,8 @@ def _dispatch_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> Non
 
 
 def _screenshot_request(backend, tools) -> bool:
-    """Whether a request offering the computer tool can afford precise screenshots: its images then
-    reach the processor as taken (the parent already caps every other image), under the screenshot
-    budget."""
+    """Whether a request offering the computer tool can afford precise screenshots: its images reach
+    the processor as taken, since the parent caps all other images."""
     from core.inference.computer_use import COMPUTER_TOOL_NAME
     from core.inference.computer_use.budget import affords_precision
 
@@ -2847,9 +2847,10 @@ def run_inference_process(
 
             elif cmd_type == "shutdown":
                 logger.info("Shutdown command received, exiting")
+                unload = getattr(backend, "unload_model_for_exit", backend.unload_model)
                 for name in list(backend.models.keys()):
                     try:
-                        backend.unload_model(name)
+                        unload(name)
                     except Exception:
                         pass
                 _send_response(

@@ -1119,13 +1119,12 @@ def _management(
     async def _tunnel_safe_json(coro, *, label):
         return await coro
 
-    async def _gpu_ids_resolve(gpu_ids, kind):
-        return True
+    from routes.inference import _with_saved_settings
 
     double.load_model_gated = _load_gated
     double._unload_model_impl = _unload_impl
     double._tunnel_safe_json = _tunnel_safe_json
-    double._override_gpu_ids_still_resolve = _gpu_ids_resolve
+    double._with_saved_settings = _with_saved_settings
     return mod, calls
 
 
@@ -1221,6 +1220,52 @@ def test_management_load_applies_saved_launch_settings(monkeypatch, _no_local_gg
         assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
     assert asked == [("/models/qwen.gguf", QWEN, None)]
     assert seen == [(2, "q8_0", 20)]
+
+
+SNAPSHOT = "/hf/models--unsloth--Qwen3.8-27B-GGUF/snapshots/abc"
+
+
+@pytest.mark.parametrize(
+    "row_key,expected",
+    [
+        (f"{SNAPSHOT}:UD-Q4_K_XL", f"{SNAPSHOT}:UD-Q4_K_XL"),
+        (f"{QWEN}:UD-Q4_K_XL", f"{QWEN}:UD-Q4_K_XL"),
+        (None, QWEN),
+    ],
+)
+def test_management_load_keeps_the_matched_saved_row_key(
+    monkeypatch, _no_local_gguf, row_key, expected
+):
+    """Replay and the managed path check re-read the row by this key, as after a Studio load."""
+    import utils.openai_auto_switch_settings as overrides
+
+    # The path also resolves under another root's alias; the listed alias still keys the lookup.
+    resolved = {
+        QWEN: (SNAPSHOT, "UD-Q4_K_XL", QWEN),
+        f"{SNAPSHOT}:UD-Q4_K_XL": (SNAPSHOT, "UD-Q4_K_XL", "Qwen3.8-27B-GGUF"),
+    }
+    monkeypatch.setattr(
+        _no_local_gguf, "resolve_local_gguf", lambda requested, **k: resolved.get(requested)
+    )
+    row = {"kv_cache_dtype": "q8_0"} if row_key else {}
+    asked = []
+    monkeypatch.setattr(
+        overrides, "resolve_override_for_load", lambda *a: asked.append(a) or (row_key, row)
+    )
+    mod, _ = _management()
+    seen = []
+    double = mod._inference()
+    original = double.load_model_gated
+
+    async def _capture(request, *args, **kwargs):
+        seen.append((request._override_alias_id, request._advertised_id, request.cache_type_kv))
+        return await original(request, *args, **kwargs)
+
+    double.load_model_gated = _capture
+    with _client(mod) as c:
+        assert c.post("/models/load", json = {"model": QWEN}).status_code == 200
+    assert asked == [(SNAPSHOT, QWEN, "UD-Q4_K_XL")]
+    assert seen == [(expected, QWEN, "q8_0" if row_key else None)]
 
 
 def test_management_unload_maps_the_advertised_alias_to_the_resident(_no_local_gguf):

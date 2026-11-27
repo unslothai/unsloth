@@ -38,7 +38,7 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     normalize_token,
 )
-from utils.utils import without_hf_auth
+from utils.utils import hf_env_offline, without_hf_auth
 from utils.training_runs import (
     base_model_from_run_dir_name as _base_model_from_dir_name,
 )
@@ -57,6 +57,7 @@ from utils.models.gguf_metadata import (
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
+from glob import escape as _glob_escape
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
@@ -84,22 +85,6 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
-
-
-_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _env_offline() -> bool:
-    """Open force_hf_offline window wins over the env; raw requests.get ignores the hub constant."""
-    try:
-        from utils.utils import hf_env_offline
-        return hf_env_offline()
-    except Exception:
-        pass
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
 
 
 @_contextlib.contextmanager
@@ -1002,11 +987,12 @@ def _raw_config_has_vision_config(
             return None
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
-        explicit_vision = (
-            "vision_config" in config
-            or "img_processor" in config
-            or "image_token_index" in config
-            or "projector_config" in config
+        # Empty modality fields mean text only on a causal LM (LFM3); Qwen3-Omni and Molmo2 VLMs ship them too.
+        causal_lm = any(isinstance(x, str) and x.endswith("ForCausalLM") for x in architectures)
+        explicit_vision = any(
+            config[key] not in (None, {}) or not causal_lm
+            for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
+            if key in config
         )
         vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
@@ -1315,7 +1301,7 @@ def _hub_model_info(
     from huggingface_hub import model_info as hf_model_info
 
     # from_identifier's remote-LoRA probe needs this to raise; _offline_while_reading can force offline.
-    scope = None if _env_offline() else _hub_model_info_scope.get()
+    scope = None if hf_env_offline() else _hub_model_info_scope.get()
     # The forced-anonymous sentinel is a credential of its own, so key on its fingerprint.
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
@@ -1348,6 +1334,13 @@ def _hub_model_info(
 def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
     """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
     if is_local_path(repo_id):
+        return None
+
+    # Resolve the lazy import before the thread can race the MLX hardware probe's Hub imports.
+    try:
+        from huggingface_hub import model_info  # noqa: F401
+    except Exception as exc:
+        logger.debug("model_info import for read ahead failed for %s: %s", repo_id, exc)
         return None
 
     def read():
@@ -1461,7 +1454,7 @@ def _is_vision_model_or_none(
         )
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
-    effective_offline = bool(local_files_only or _env_offline())
+    effective_offline = bool(local_files_only or hf_env_offline())
     # Uncached, so use is_vision_model(); None marks a transient failure the caller must not cache, and the code-free raw-config reader runs first.
     if _offline_cache_read_refused(hf_token, model_name, resolved_name, effective_offline):
         return False
@@ -1749,7 +1742,7 @@ def detect_audio_type_checked(
         return curated_type, True
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
-    effective_offline = bool(local_files_only or _env_offline())
+    effective_offline = bool(local_files_only or hf_env_offline())
     audio_cpp_type = _audio_cpp_repo_audio_type(str(model_name), hf_token, effective_offline)
     if audio_cpp_type is not None:
         return audio_cpp_type or None, True
@@ -1979,7 +1972,7 @@ def _detect_audio_from_tokenizer(
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
     # This raw requests.get ignores HF offline flags, so gate it explicitly.
-    if local_files_only or _env_offline():
+    if local_files_only or hf_env_offline():
         return None, read_any and not unresolved
 
     # A filesystem path is not a repo id, so no Hub URL; the local read is the whole answer, or /loras blocks the event loop on timeouts.
@@ -2517,6 +2510,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    dspark_preferred_first,
     is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
@@ -2525,7 +2519,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.paths.path_utils import is_appledouble_metadata
 
 
-def dspark_preference_key(name: str) -> Tuple[int, str]:
+def dspark_preference_key(name: str) -> Tuple[int, int, str]:
     """Delegates instead of re-exporting: repointing routes/inference.py's import trips the lint rule."""
     return _drafters_dspark_preference_key(name)
 
@@ -2658,9 +2652,10 @@ def detect_dspark_file(
 ) -> Optional[str]:
     """Requires a published drafter name even in dspark/, so a parked weight never loads as --model-draft."""
 
-    def _rank(candidate: Path) -> tuple[int, int, int, str]:
-        # Most specific family, then precision, then total size, then name.
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A model's preferred published drafter, then most specific family, then precision, then total size, then name.
         return (
+            dspark_preferred_first(candidate.name),
             _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
@@ -3156,7 +3151,7 @@ def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
     """Returns (variants, has_vision); the mmproj projector in the repo is what flags vision."""
-    if _env_offline():
+    if hf_env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         return cached if cached is not None else ([], False)
 
@@ -3597,7 +3592,7 @@ def _refused_repo_cached_gguf(
 
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Retries transient Hub failures, since a silent None would send a GGUF-only repo down the MLX path."""
-    if _env_offline():
+    if hf_env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
 
     last_err: Optional[Exception] = None
@@ -4265,6 +4260,14 @@ def get_base_model_from_lora_identifier(
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
+        from utils.datasets.remote_images import is_network_share
+
+        if isinstance(base_model, str) and is_network_share(base_model):
+            # Touching a share path makes Windows sign in to its host (NTLM); the Hub repo picked it.
+            logger.warning(
+                "Ignoring a network share base in adapter_config.json of '%s'", identifier
+            )
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
@@ -4346,7 +4349,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
 
         # Runs after the registry so an alias never loses to a filename.
         for name in lookup_names:
-            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+            for config_path in defaults_dir.rglob(_glob_escape(name.replace("/", "_")) + ".yaml"):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
@@ -4703,7 +4706,7 @@ class ModelConfig:
                             and is_rejected_credential_error(detect_failures[-1], hf_token),
                         )
                     ) from None
-                if _env_offline():
+                if hf_env_offline():
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # A GGUF only audio.cpp reads never reaches llama-server; its header reveals this before download.
@@ -4949,7 +4952,7 @@ class ModelConfig:
             target,
             resolved_variant,
             hf_token,
-            network = not _env_offline(),
+            network = not hf_env_offline(),
             gguf_hint = gguf_hint,
         )
         if model is None:

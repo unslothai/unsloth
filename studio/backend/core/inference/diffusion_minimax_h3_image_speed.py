@@ -216,7 +216,11 @@ def _install(
         if int8_gemm.install(transformer, logger, device = dev):
             _unwrap(_row_pads(transformer), keep = _fused_gemm_serves)
             levers.append("h3_int8_gemm_streamed")
-    from .diffusion_attention import apply_attention_backend, select_attention_backend
+    from .diffusion_attention import (
+        apply_attention_backend,
+        explicit_pick_fallback,
+        select_attention_backend,
+    )
     from .video_minimax_h3_attn import (
         h3_attention_backend,
         install_strided_attention,
@@ -238,11 +242,19 @@ def _install(
         backend = h3_attention_backend(backend, requested = request, target = target)
     except Exception:  # noqa: BLE001 - keep the generic pick
         pass
+    # an explicit kernel that cannot run keeps the automatic pick (and so the strided processors + QK-RoPE)
+    fallback = explicit_pick_fallback(target, request, speed_active = True)
+    if fallback is not None:
+        try:
+            fallback = h3_attention_backend(fallback, requested = None, target = target)
+        except Exception:  # noqa: BLE001 - keep the generic pick
+            pass
     engaged = apply_attention_backend(
         pipe,
         backend,
         logger = logger,
         target = target,
+        fallback = fallback,
         **({"requested": attention_backend} if pick is not None else {}),
         **({"int8_policy": int8_policy} if int8_policy is not None else {}),
     )
@@ -285,6 +297,8 @@ def _install(
         from .video_minimax_h3_rowmod import install as install_row_mod
         if install_row_mod(transformer, logger = logger):
             levers.append("h3_row_mod")
+            from .diffusion_minimax_h3_image_batch import install_batched_row_mod
+            install_batched_row_mod(transformer)
     # the streamed GEMM keeps the swapped Linears and their parameters (the pinned streamer copies into them), so the
     # fused SwiGLU serves there too; per call it runs stock while a weight is off the card (producer_linear)
     if "h3_int8_gemm" in levers or "h3_int8_gemm_streamed" in levers:

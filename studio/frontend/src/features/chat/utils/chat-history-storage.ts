@@ -1111,7 +1111,11 @@ export async function saveStoredChatMessage(
 export async function syncStoredChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return messages;
   if (isChatThreadDeleted(threadId)) return [];
@@ -1356,12 +1360,14 @@ async function clearStoredChatsWithAdmissionClosed(
   return result;
 }
 
-export async function buildStoredChatExport(): Promise<ExportedChat> {
+export async function buildStoredChatExport(
+  archived = false,
+): Promise<ExportedChat> {
   await importLegacyChatsIfNeeded().catch(() => undefined);
   const [legacyThreads, legacyMessages] = await readLegacyStore<
     [ThreadRecord[], MessageRecord[]]
   >(() => Promise.all([db.threads.toArray(), db.messages.toArray()]), [[], []]);
-  const backend = await buildBackendChatExport();
+  const backend = await buildBackendChatExport(archived);
   const threadsById = new Map<string, unknown>();
   const backendThreadIds = new Set<string>();
   const messagesById = new Map<string, unknown>();

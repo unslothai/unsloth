@@ -140,6 +140,9 @@ PLAIN_HELPERS = {
     "_FIRST_USE_WORK": [0],
     # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
     "_QSA_TRIM_HELD": [],
+    # zoo's speculative.py tree-width filter (unsloth_zoo #2729); zoo's default when
+    # UNSLOTH_MLX_FAST_VERIFY_LOW_ROWS is unset.
+    "_LANE_LOW_ROWS": 4,
 }
 
 
@@ -5190,6 +5193,8 @@ def _text_family_backend(
     monkeypatch.setattr(
         model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
     )
+    # The stub loader builds families no installed mlx-vlm / mlx-lm ships (mm_family).
+    monkeypatch.setattr(mlx_inference, "_mlx_unsupported_model_type", lambda *a: None)
     monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
     monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
     monkeypatch.setattr(
@@ -5210,6 +5215,40 @@ def test_a_text_family_only_mlx_vlm_ships_is_loaded_and_served_there(monkeypatch
     backend.load_model(config)
     assert "raon1_mini" in asked and attempts == [not vlm_only]
     assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
+
+
+@pytest.mark.parametrize("vlm_only", [True, False])
+def test_disabling_vision_recomputes_the_text_route(monkeypatch, vlm_only):
+    backend, config, attempts, _ = _text_family_backend(monkeypatch, vlm_only)
+    config.is_vision = True
+    loader = sys.modules["unsloth_zoo.mlx.loader"]
+    loader._prefer_vlm_loader_for_text = lambda *args: False
+
+    backend.load_model(config, disable_vision = True)
+
+    assert attempts == [not vlm_only]
+    assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
+
+
+def test_a_text_load_uses_the_backend_chosen_by_zoo(monkeypatch):
+    backend, config, attempts, _ = _text_family_backend(monkeypatch, False)
+    tokenizer = SimpleNamespace()
+    processor = SimpleNamespace(tokenizer = tokenizer)
+    model = SimpleNamespace(config = {}, _is_vlm_model = True, _processor = processor)
+
+    def load(name, *, text_only, **kwargs):
+        attempts.append(text_only)
+        return model, SimpleNamespace()
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"]
+    monkeypatch.setattr(loader.FastMLXModel, "from_pretrained", staticmethod(load))
+    monkeypatch.setattr(backend, "_generate_vlm", lambda *args, **kwargs: iter(["reply"]))
+
+    assert backend.load_model(config)
+    assert attempts == [True]
+    assert backend._processor is processor and backend._tokenizer is tokenizer
+    assert backend._is_vlm is True and not backend._reads_vision_input()
+    assert list(backend.generate_chat_response([{"role": "user", "content": "Hi"}])) == ["reply"]
 
 
 def test_a_text_family_only_mlx_vlm_ships_is_routed_by_its_precision_folder_config(monkeypatch):
@@ -12173,6 +12212,72 @@ def test_a_video_turn_renders_through_the_tokenizer_only_when_the_processor_drop
     prompt, target, _ = backend._render_vlm_prompt(video_turn, None, videos = ["clip.mp4"])
     assert (prompt, target) == ("<|video|> hi", keeps)
     assert _mlx_reads_video(keeps) is True
+
+
+class _JinjaImageProcessor:
+    def __init__(
+        self,
+        template,
+        image_token = "<image>",
+    ):
+        self.chat_template = template
+        self.image_token = image_token
+
+    def apply_chat_template(
+        self,
+        conversation,
+        tokenize = False,
+        add_generation_prompt = False,
+        **_k,
+    ):
+        sandbox = pytest.importorskip("jinja2.sandbox")
+        env = sandbox.ImmutableSandboxedEnvironment()
+        return env.from_string(self.chat_template).render(messages = conversation)
+
+
+# mlx-community/llava-v1.6-mistral-7b-4bit's form, and one taking strings or parts as Qwen2-VL's does.
+_STRING_ONLY_TEMPLATE = (
+    "{% for m in messages %}{% if m['role'] == 'user' %}{{ '[INST] ' + m['content'] + ' [/INST]' }}"
+    "{% else %}{{ m['content'] + '</s>' }}{% endif %}{% endfor %}"
+)
+_PART_LIST_TEMPLATE = (
+    "{% for m in messages %}{% if m['role'] == 'user' %}[INST] {% endif %}"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}{% for c in m['content'] %}"
+    "{% if c['type'] == 'image' %}<image>\n{% else %}{{ c['text'] }}{% endif %}{% endfor %}{% endif %}"
+    "{% if m['role'] == 'user' %} [/INST]{% else %}</s>{% endif %}{% endfor %}"
+)
+
+
+def test_a_string_only_template_renders_image_turns_with_the_image_token():
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    turns = [
+        {"role": "user", "content": [{"type": "text", "text": "Look"}, {"type": "image"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Red."}]},
+        {"role": "user", "content": [{"type": "text", "text": "Sure?"}]},
+    ]
+    backend = MLXInferenceBackend()
+    backend._processor = _JinjaImageProcessor(_STRING_ONLY_TEMPLATE)
+    prompt, _, _ = backend._render_vlm_prompt(turns, [object()])
+    assert prompt == "[INST] Look\n<image> [/INST]Red.</s>[INST] Sure? [/INST]"
+    prompt, _, _ = backend._render_vlm_prompt([turns[2]], None)
+    assert prompt == "[INST] Sure? [/INST]"
+    # A typed tag would be a second marker for one image.
+    typed = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "an <image> tag"}]}
+    ]
+    prompt, _, _ = backend._render_vlm_prompt(typed, [object()])
+    assert prompt == "[INST] <image>\nan < image> tag [/INST]"
+
+    # A template that takes part lists renders them as it always did.
+    backend._processor = _JinjaImageProcessor(_PART_LIST_TEMPLATE)
+    prompt, _, _ = backend._render_vlm_prompt(turns, [object()])
+    assert prompt == "[INST] Look<image>\n [/INST]Red.</s>[INST] Sure? [/INST]"
+
+    # Nothing names the image token, so flattening would drop the image.
+    backend._processor = _JinjaImageProcessor(_STRING_ONLY_TEMPLATE, image_token = None)
+    with pytest.raises(TypeError):
+        backend._render_vlm_prompt(turns, [object()])
 
 
 def _sampling_release(monkeypatch, **utils_fields):

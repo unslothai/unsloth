@@ -402,7 +402,18 @@ def _speech_only(llama: Any, orchestrator: Any) -> bool:
 
 
 # Translate's models (frontend lib/translation-models.ts): Chat reads their slot as empty, so a run does too.
-_TRANSLATION_ONLY_REPOS = frozenset({"unsloth/hy-mt2-1.8b-gguf", "unsloth/hy-mt2-7b-gguf"})
+_TRANSLATION_ONLY_REPOS = frozenset(
+    {
+        "unslothai/hy-mt3-1.8b-gguf",
+        "unslothai/hy-mt3-7b-gguf",
+        "unslothai/hy-mt3-30b-a3b-gguf",
+        "unslothai/hy-mt3-1.8b-fp8",
+        "unslothai/hy-mt3-7b-fp8",
+        "unslothai/hy-mt3-30b-a3b-fp8",
+        "unsloth/hy-mt2-1.8b-gguf",
+        "unsloth/hy-mt2-7b-gguf",
+    }
+)
 
 
 def _translation_only(name: Optional[str]) -> bool:
@@ -457,12 +468,16 @@ def _model_is_loaded(model: str) -> bool:
     )
 
 
-# Levels the request accepts; a template may list others, which a run never sends.
+# Levels Lowest/Highest may pick; a template may list others, which they never send.
 _EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
 
 
-def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: bool) -> dict:
-    """The request fields for a task's thinking effort; None keeps the model's default."""
+def _reasoning_fields(
+    effort: Optional[str],
+    connection: bool,
+    flags: Optional[dict] = None,
+) -> dict:
+    """Request fields for a task's effort (None: the model's default) given the model's ``flags``."""
     if effort is None:
         return {}
     relative = {"off": "none", "lowest": "low", "highest": "high"}
@@ -470,33 +485,31 @@ def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: 
         return {"reasoning_effort": relative.get(effort, effort)}
     if effort not in relative:
         return {"enable_thinking": True, "reasoning_effort": effort}
-    backend = None
-    if on_loaded_model:
-        from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
-        if not getattr(backend, "is_loaded", False):
-            backend = None
-    if backend is None:
+    if flags is None:
         if effort == "off":
             return {"enable_thinking": False}
         return {
             "enable_thinking": True,
             "reasoning_effort": "low" if effort == "lowest" else "high",
         }
-    if not backend.supports_reasoning:
+    if not flags.get("supports_reasoning"):
         return {}
-    style = backend.reasoning_style
+    style = flags.get("reasoning_style")
+    levels = [
+        level
+        for level in (flags.get("reasoning_effort_levels") or ["low", "medium", "high"])
+        if level in _EFFORT_LEVELS
+    ] or ["low", "high"]
     if effort == "off":
-        if backend.reasoning_always_on or style == "reasoning_effort":
+        if flags.get("reasoning_always_on"):
             return {}
+        if style == "reasoning_effort":
+            # Effort-only templates ignore enable_thinking: name the level, "none" when offered.
+            offers_none = "none" in (flags.get("reasoning_effort_levels") or ())
+            return {"reasoning_effort": "none" if offers_none else levels[0]}
         return {"enable_thinking": False}
     if style == "enable_thinking":
         return {"enable_thinking": True}
-    levels = [
-        level
-        for level in (backend.reasoning_effort_levels or ["low", "medium", "high"])
-        if level in _EFFORT_LEVELS
-    ] or ["low", "high"]
     fields = {"reasoning_effort": levels[0] if effort == "lowest" else levels[-1]}
     if style == "enable_thinking_effort":
         fields["enable_thinking"] = True
@@ -672,18 +685,23 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
-def _tool_fields(web_search: bool) -> dict:
-    """Web search only, never python or terminal: nobody is there to approve a call, so "off" never prompts."""
+def _tool_fields(web_search: bool, mcp_enabled: bool) -> dict:
+    """Use only tools explicitly enabled on the task, with no interactive approval."""
     from state.tool_policy import get_tool_policy
 
     # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
-    if not web_search or get_tool_policy() is False:
+    if get_tool_policy() is False:
+        if mcp_enabled:
+            raise RunFailed(message = "MCP tools are disabled in Unsloth.")
+        web_search = False
+    if not web_search and not mcp_enabled:
         # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
         # means every built-in, python and terminal included.
         return {"tool_choice": "none", "enabled_tools": []}
     return {
         "enable_tools": True,
-        "enabled_tools": ["web_search"],
+        "enabled_tools": ["web_search"] if web_search else [],
+        "mcp_enabled": mcp_enabled,
         "permission_mode": "off",
         # Studio's search, not a provider's hosted one, as Chat sends it.
         "run_tools_locally": True,
@@ -703,7 +721,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task; web search is the only tool a run may use."""
+    """Ask the chat model to do the task with its explicitly selected tools."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -763,6 +781,7 @@ async def generate_answer(
         activity.reserve()
         producer: Optional[asyncio.Future] = None
         response = None
+        mcp_thread: Optional[str] = None
         try:
             # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
@@ -789,6 +808,8 @@ async def generate_answer(
                 )
             except TimeoutError:
                 raise RunFailed("timeout") from None
+            mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
+            tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
@@ -804,19 +825,23 @@ async def generate_answer(
                         if history
                         else {}
                     ),
-                    **_tool_fields(bool(task.get("webSearch"))),
+                    **tool_fields,
                     **model_fields,
-                    **_reasoning_fields(
-                        task.get("reasoningEffort"),
-                        provider is not None,
-                        # Only the primary's levels are known here: a model kept beside it gets the generic fields.
-                        on_loaded_model = not allow_switch
-                        and (
-                            not model_fields.get("model") or _primary_serves(model_fields["model"])
-                        ),
+                    **(
+                        _reasoning_fields(task.get("reasoningEffort"), True)
+                        if provider is not None
+                        else {}
                     ),
                 }
             )
+            if provider is None:
+                # Resolved by the chat route against the model that serves the run, once loaded or routed.
+                payload._scheduled_reasoning_effort = task.get("reasoningEffort")
+
+            if mcp_server_ids:
+                payload._scheduled_mcp_server_ids = mcp_server_ids
+                # Stateful MCP sessions last one run, closed in release().
+                payload.thread_id = mcp_thread = run["id"]
 
             serving: dict = {}
 
@@ -884,6 +909,11 @@ async def generate_answer(
 
             def release(*_: Any) -> None:
                 activity.finish(request.scope)
+                if mcp_thread is not None:
+                    from core.inference.tools import close_mcp_thread_sessions
+
+                    # Off the loop: past the cleanup queue's cap a close runs inline.
+                    loop.run_in_executor(None, close_mcp_thread_sessions, mcp_thread)
                 if producer is None:
                     end_in_process_request(request.scope, answered = False)
 
@@ -990,6 +1020,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "createdAt": answered_at,
                 },
             ],
+            return_rows = False,
         )
     except Exception:
         # Never leave an empty chat behind.

@@ -65,6 +65,7 @@ import {
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
   isHuggingFaceOffline,
+  formatBytes,
 } from "@/features/hub";
 import { type HfModelResult, useHubModelSearch } from "@/features/hub";
 import {
@@ -179,6 +180,7 @@ import {
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import { modelConfigTarget } from "../../model-config/model-config-handoff";
+import { isServedByMlx } from "../../model-config/per-model-config";
 import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import {
   type CommunityModelPolicy,
@@ -224,6 +226,7 @@ import {
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
+  videoRecommendedTierFor,
 } from "./model-catalog";
 import {
   curatedPickerFit,
@@ -251,7 +254,6 @@ import {
 import {
   type CuratedBudget,
   type FormatFilter,
-  cachedRepoIsMlx,
   coerceFormatFilter,
   curatedBudget,
   curatedBudgetText,
@@ -637,20 +639,8 @@ export function ListLabel({
   );
 }
 
-function formatBytes(bytes: number, unitSeparator = ""): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  // Decimal units to match Hugging Face sizes (GPU-fit math stays base-1024); Math.log is off at
-  // exact powers of 1000.
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let value = bytes;
-  while (value >= 1000 && i < units.length - 1) {
-    value /= 1000;
-    i += 1;
-  }
-  // No space: "145MB" reads as one value beside the quant chip.
-  return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
-}
+// No space: "145MB" reads as one value beside the quant chip.
+const compactBytes = (bytes: number) => formatBytes(bytes, "");
 
 // Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn.
 const CAPABILITY_BADGES: {
@@ -1001,7 +991,7 @@ export function formatFootprintBytes(bytes: number): string {
     ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
     : bytes >= 1_000_000_000_000
       ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
-      : formatBytes(bytes, " ");
+      : formatBytes(bytes);
 }
 
 /** Diffusion GGUFs get an explanation, since the checkpoint is only part of what is kept on disk. */
@@ -1115,7 +1105,7 @@ const META_COLUMN = {
   // Device rows reserve the slot so the quant column stays aligned; 4.4em fits "0.35B" at text-ui-10.
   param: "min-w-min min-[560px]:w-[4.4em]",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // formatBytes writes no space ("536MB"), so 3.2em suffices.
+  // compactBytes writes no space ("536MB"), so 3.2em suffices.
   size: "min-w-min min-[560px]:w-[3.2em]",
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
@@ -1823,7 +1813,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         <ModelRow
           label={c.repo_id}
           hubUrl={hubRepoUrl(c.repo_id)}
-          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${formatBytes(
+          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${compactBytes(
             c.size_bytes,
           )}`}
           selected={isSelected}
@@ -2039,7 +2029,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             meta={[
               "GGUF",
               // Match the Hub's cached inventory size; the weight-only size remains in the memory estimate.
-              formatBytes(c.size_bytes > 0 ? c.size_bytes : variant.size_bytes),
+              compactBytes(c.size_bytes > 0 ? c.size_bytes : variant.size_bytes),
               variant.estimated_resident_gb && audioCardGb > 0
                 ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
                 : null,
@@ -3269,7 +3259,7 @@ function GgufVariantExpander({
                 )}
               >
                 {companionBytes === null ? (
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                  <SizeText value={compactBytes(v.size_bytes)} />
                 ) : (
                   <GgufDownloadFootprint
                     checkpointBytes={v.size_bytes}
@@ -3606,6 +3596,11 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   safetensors: "Safetensors",
   npu: "NPU",
 };
+
+const VLLM_CHECKPOINT_QUANTS: ReadonlySet<string> = new Set([
+  "compressed-tensors",
+  "fbgemm_fp8",
+]);
 
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
@@ -4470,8 +4465,12 @@ export function HubModelPicker({
   );
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  // null is an older backend.
-  const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyMeasured = usePlatformStore(
+    (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
+  );
+  const servesMlx = usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
+  );
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
   const hostClass = useHostClass();
@@ -4503,9 +4502,9 @@ export function HubModelPicker({
   const chatSupportedCheckpointQuant = useCallback(
     (r: HfModelResult) =>
       isChatSupported(r) ||
-      // Only compressed-tensors: the vLLM engine loads it; fbgemm / fine-grained FP8 stay refused.
+      // Only vLLM loads these; plain fp8 passes on Default.
       (runsCheckpointQuant(r) &&
-        r.quantMethod?.toLowerCase() === "compressed-tensors" &&
+        VLLM_CHECKPOINT_QUANTS.has(r.quantMethod?.toLowerCase() ?? "") &&
         isChatSupported({ ...r, quantMethod: undefined })),
     [isChatSupported, runsCheckpointQuant],
   );
@@ -4628,6 +4627,14 @@ export function HubModelPicker({
     if (IMAGE_GEN_TASKS.some((t) => tasks.includes(t))) return [];
     if (AUDIO_GEN_TASKS.some((t) => tasks.includes(t))) return [];
     return null;
+  }, [task]);
+  const imageGenPicker = useMemo(() => {
+    const tasks: readonly string[] = task
+      ? typeof task === "string"
+        ? [task]
+        : task
+      : [];
+    return IMAGE_GEN_TASKS.some((t) => tasks.includes(t));
   }, [task]);
 
   const hubRowsShowSize =
@@ -4791,6 +4798,7 @@ export function HubModelPicker({
       pinnedTogether: catalog
         ?.filter((g) => g.pinToTop && g.pinRowsTogether)
         .map((g) => g.canonicalId.toLowerCase()),
+      tierOf: videoRecommendedTierFor(catalog, hostClass, denseQuantSchemes),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Community rows append below everything unsloth publishes, with the same gates.
@@ -4832,6 +4840,8 @@ export function HubModelPicker({
     isLoadableCommunityRepo,
     runsCheckpointQuant,
     chatSupportedCheckpointQuant,
+    hostClass,
+    denseQuantSchemes,
   ]);
 
   const moreById = useMemo(
@@ -4958,7 +4968,7 @@ export function HubModelPicker({
         ? [
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
-            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedSizeBytes ? compactBytes(r.estimatedSizeBytes) : null,
             r.estimatedResidentGb && audioCardGb > 0
               ? `${residentGbLabel(r.estimatedResidentGb)} to run`
               : null,
@@ -4970,7 +4980,7 @@ export function HubModelPicker({
               ? formatCompact(r.totalParams)
               : extractParamLabel(r.id),
             isMlxId(r.id, hasMlxCardTag(r)) ? "MLX" : "Safetensors",
-            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedSizeBytes ? compactBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
             .join(" · ") || null;
@@ -5394,7 +5404,7 @@ export function HubModelPicker({
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
-              (isMac && mlxInference !== false && localModelIsMlx(m))) &&
+              servesMlx) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
             (!rowFilter ||
@@ -5417,7 +5427,7 @@ export function HubModelPicker({
       loadTimes,
       localQuery,
       chatOnly,
-      mlxInference,
+      servesMlx,
       task,
       catalog,
       activeCatalogArtifactIds,
@@ -5628,8 +5638,8 @@ export function HubModelPicker({
   // Empty-state logic must use this or the picker can go blank.
   const visibleCachedModelRows =
     chatOnly && !task
-      ? isMac && mlxInference === true
-        ? visibleCachedModels.filter(cachedRepoIsMlx)
+      ? servesMlx
+        ? visibleCachedModels
         : []
       : visibleCachedModels;
 
@@ -6214,7 +6224,12 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !chatOnly ||
-            isRecommendableFormat(id, isKnownGgufRepo(id), isMac) ||
+            // Task pickers keep the Mac rule (Whisper runs without MLX); an unmeasured Chat only guess narrows nothing.
+            isRecommendableFormat(
+              id,
+              isKnownGgufRepo(id),
+              isMac && (Boolean(task) || !chatOnlyMeasured || servesMlx),
+            ) ||
             runsCheckpointQuant({ id }),
         )
         .filter(
@@ -6241,6 +6256,9 @@ export function HubModelPicker({
       cachedIdFor,
       searchRowFits,
       isMac,
+      chatOnlyMeasured,
+      servesMlx,
+      task,
       curatedOfferable,
       rowFilter,
       runsCheckpointQuant,
@@ -6297,6 +6315,8 @@ export function HubModelPicker({
         return false;
       }
       if (connectedModality === "all") return true;
+      // An image page lists only connections it generates through; the chat marks know only a built-in image tool.
+      if (connectedModality === "imageGen" && imageGenPicker) return true;
       const marks = connectedModelMarks({
         providerType: model.providerType,
         modelId: parseExternalModelId(model.id)?.modelId ?? model.name,
@@ -6313,6 +6333,7 @@ export function HubModelPicker({
     externalModels,
     debouncedQuery,
     connectedModality,
+    imageGenPicker,
     externalBaseUrlById,
     externalApiTypeById,
     catalogVersion,
@@ -6594,7 +6615,7 @@ export function HubModelPicker({
           .map((result) => [
             result.id,
             result.estimatedSizeBytes
-              ? `~${formatBytes(result.estimatedSizeBytes)}`
+              ? `~${compactBytes(result.estimatedSizeBytes)}`
               : formatCompact(result.totalParams!),
           ]),
       ),
@@ -7396,7 +7417,7 @@ export function HubModelPicker({
               entry.quant,
             )})`}
             meta={
-              sizeBytes ? `GGUF · ${formatBytes(sizeBytes)}` : "GGUF"
+              sizeBytes ? `GGUF · ${compactBytes(sizeBytes)}` : "GGUF"
             }
             quantChip={ggufQuantChipLabel(entry.quant)}
             showVision={hasVision}
@@ -9205,7 +9226,7 @@ function FineTunedRows({
                   label={adapter.name}
                   meta={
                     adapter.sizeBytes
-                      ? `${meta} · ${formatBytes(adapter.sizeBytes)}`
+                      ? `${meta} · ${compactBytes(adapter.sizeBytes)}`
                       : meta
                   }
                   selected={value === adapter.id}

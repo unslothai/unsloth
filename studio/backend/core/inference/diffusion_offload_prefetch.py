@@ -79,6 +79,93 @@ def prefetch_depth() -> int:
     return max(1, min(MAX_PREFETCH_DEPTH, depth))
 
 
+def prefetch_depth_override() -> Optional[int]:
+    """The depth ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` pins (clamped), or None when unset or unparsable."""
+    raw = (os.environ.get(PREFETCH_DEPTH_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(1, min(MAX_PREFETCH_DEPTH, int(raw)))
+    except ValueError:
+        return None
+
+
+def tight_prefetch_depth(
+    *,
+    available_mib: int,
+    required_mib: int,
+    largest_group_mib: int,
+    planned_depth: Optional[int] = None,
+) -> int:
+    """Groups to copy ahead for one request. ``required_mib`` is the request's admission need with ONE group copied
+    ahead (the placement floor prices the running group plus one, diffusers' own footprint); every further group of
+    depth adds ``largest_group_mib`` in flight. The deepest depth up to ``planned_depth`` (default ``prefetch_depth``)
+    whose need fits ``available_mib``; 1 when even that does not (memory-tight: the budget cannot hold a second group
+    ahead beside the plan's margin). An ``UNSLOTH_DIFFUSION_PREFETCH_DEPTH`` override always wins."""
+    override = prefetch_depth_override()
+    if override is not None:
+        return override
+    planned = max(1, int(planned_depth if planned_depth is not None else prefetch_depth()))
+    largest = max(0, int(largest_group_mib))
+    if largest <= 0:
+        return planned
+    for depth in range(planned, 1, -1):
+        if int(required_mib) + (depth - 1) * largest <= int(available_mib):
+            return depth
+    return 1
+
+
+def module_prefetchers(module: Any) -> list:
+    """The ``GroupPrefetcher`` objects driving ``module``'s offload groups (installed or block-streamer), once each."""
+    found: dict = {}
+    pf = getattr(module, PREFETCHER_ATTR, None) if module is not None else None
+    if pf is not None:
+        found[id(pf)] = pf
+    try:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(module) if module is not None else []
+    except Exception:  # noqa: BLE001 - not group-offloaded
+        groups = []
+    for group in groups or ():
+        pf = getattr(group, "_unsloth_prefetcher", None)
+        if pf is not None:
+            found[id(pf)] = pf
+    return list(found.values())
+
+
+def streamed_group_mib(prefetchers: Sequence[Any]) -> int:
+    """MiB of the largest group the prefetchers still stream (resident groups never fill the window)."""
+    largest = 0
+    for pf in prefetchers:
+        for group in getattr(pf, "groups", ()) or ():
+            if getattr(group, "_unsloth_resident", False):
+                continue
+            largest = max(largest, int(getattr(pf, "nbytes", {}).get(id(group), 0)))
+    return -(-largest // (1 << 20))
+
+
+def set_request_prefetch_depth(prefetchers: Sequence[Any], depth: int) -> int:
+    """Run the next forwards ``depth`` groups ahead (never deeper than each prefetcher was built for), the window
+    shrunk by the groups dropped; restores the built depth when ``depth`` reaches it. A prefetcher replaying through
+    fixed slots (CUDA graphs) keeps its ring. Returns how many prefetchers changed."""
+    changed = 0
+    for pf in prefetchers:
+        if getattr(pf, "slot_of", None):
+            continue
+        base_depth = int(getattr(pf, "_unsloth_base_depth", pf.depth))
+        base_window = int(getattr(pf, "_unsloth_base_window", pf.window))
+        pf._unsloth_base_depth = base_depth
+        pf._unsloth_base_window = base_window
+        new = max(1, min(int(depth), base_depth))
+        largest = max(pf.nbytes.values()) if getattr(pf, "nbytes", None) else 0
+        window = max(largest, base_window - (base_depth - new) * largest)
+        if new != pf.depth or window != pf.window:
+            pf.depth = new
+            pf.window = window
+            changed += 1
+    return changed
+
+
 def _go() -> Any:
     from diffusers.hooks import group_offloading as go
     return go
@@ -694,6 +781,12 @@ class GroupPrefetcher:
             size = max(size, need)
         if not members:
             return 0
+        # a ring built after a memory-tight request (set_request_prefetch_depth) is sized for the built depth, which
+        # it runs from now on: requests never resize a ring, so a depth-1 ring would pin every later request at 1
+        base_depth = int(getattr(self, "_unsloth_base_depth", self.depth))
+        if base_depth != self.depth:
+            self.depth = base_depth
+            self.window = int(getattr(self, "_unsloth_base_window", self.window))
         count = min(self.depth + 1, len(members))
         # pinned groups never fill their slot unless a release streams them again; the ring is allocated on first use
         self.slot_streamed = sum(1 for g in members if not getattr(g, "_unsloth_resident", False))
@@ -1362,15 +1455,42 @@ def cross_forward_step(
 LIST_STREAM_DEPTH = 1
 
 
+def spread_stream_indices(
+    total: int,
+    count: int,
+    keep: Sequence[int] = (),
+) -> list:
+    """Sorted indices of the ``count`` of ``total`` list members to stream, spaced evenly and ending on the last one,
+    so each streamed copy overlaps the resident members run before it (a streamed tail leaves the copy engine idle
+    through the resident head). A superset of ``keep`` (members already streamed) when it fits in ``count``."""
+    total = max(0, int(total))
+    count = max(0, min(total, int(count)))
+    keep = sorted({int(i) for i in keep if 0 <= int(i) < total})
+    if len(keep) > count:
+        keep = []
+    extra = count - len(keep)
+    if not extra:
+        return keep
+    taken = set(keep)
+    free = [i for i in range(total) if i not in taken]
+    # floor(j * len(free) / extra) strictly increases (len(free) >= extra): distinct, the last free member first
+    picked = [free[len(free) - 1 - (j * len(free)) // extra] for j in range(extra)]
+    return sorted(taken.union(picked))
+
+
 class PrefetchedListStreamer:
-    """Streams ``blocks[resident:]`` via pinned slabs and event-fenced copies ``depth`` members ahead, from the second
-    forward on (the first records the order); a forward that raises still releases its queued copies."""
+    """Streams ``blocks[resident:]`` (or as many members spread among the resident ones) via pinned slabs and
+    event-fenced copies ``depth`` members ahead, from the second forward on (the first records the order); a forward
+    that raises still releases its queued copies."""
 
     def __init__(self) -> None:
         self.handles: list = []
         self.groups: list = []
         self.prefetcher: Optional[GroupPrefetcher] = None
         self.streamed = 0
+        # positions of the streamed members in the list (``stream_module_list(..., spread = True)`` spaces them out)
+        self.streamed_indices: list = []
+        self.spread = False
         self.pinned_bytes = 0
         self.replaced_bytes = 0
         self.arena: Any = None
@@ -1486,20 +1606,34 @@ def stream_module_list(
     release_after_forward: bool = False,
     reuse: Optional[dict] = None,
     reuse_arenas: Sequence[Any] = (),
+    spread: bool = False,
 ) -> Optional[PrefetchedListStreamer]:
     """A ``PrefetchedListStreamer`` over ``blocks``, or None (nothing changed) when it does not apply or cannot pin.
     Pins must fit ``_pin_budget_mib`` less ``reserve_bytes``, and ``max_pin_bytes`` if given. ``replaces_counted``:
     pins replace host copies the caller already counts, so only the live budget bounds them.
     ``release_after_forward``: empty the copy stream's cache after each forward (once-per-request owners).
     ``reuse``: ``PrefetchedListStreamer.detach()`` of an earlier streamer over the same blocks: its groups keep their
-    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs."""
+    pinned copies (only the blocks new to the streamed set are pinned and counted), ``reuse_arenas`` their slabs.
+    ``spread``: stream ``len(blocks) - resident`` members spaced evenly among the resident ones
+    (``spread_stream_indices``, a superset of the reused ones) instead of ``blocks[resident:]``: the same weights and
+    the same number of copies in flight, but each copy overlaps resident compute."""
     import torch
 
     refused = _list_stream_refusal(device)
     blocks = list(blocks)
     resident = max(0, min(len(blocks), int(resident)))
-    streamed = blocks[resident:]
     reuse = dict(reuse or {})
+    if spread:
+        indices = spread_stream_indices(
+            len(blocks),
+            len(blocks) - resident,
+            [i for i, b in enumerate(blocks) if id(b) in reuse],
+        )
+    else:
+        indices = list(range(resident, len(blocks)))
+    chosen = set(indices)
+    streamed = [blocks[i] for i in indices]
+    kept_resident = [b for i, b in enumerate(blocks) if i not in chosen]
     fresh = [b for b in streamed if id(b) not in reuse]
     if refused is None and not streamed:
         refused = "nothing streams"
@@ -1587,7 +1721,7 @@ def stream_module_list(
                 type(group).offload_(group)
                 streamer.groups.append(group)
         streamer.arena = arena
-        for block in blocks[:resident]:
+        for block in kept_resident:
             block.to(onload)
         pf = GroupPrefetcher(owner, streamer.groups, onload, depth)
         pf.fence_first = True
@@ -1634,6 +1768,8 @@ def stream_module_list(
         streamer.handles.append(owner.register_forward_hook(_eager(_end), always_call = True))
         streamer.prefetcher = pf
         streamer.streamed = len(streamed)
+        streamer.streamed_indices = list(indices)
+        streamer.spread = bool(spread)
         streamer.pinned_bytes = int(need) + int(kept_bytes)
         streamer.replaced_bytes = int(replaced)
         bump_placement_epoch()
@@ -1660,12 +1796,13 @@ def stream_module_list(
         payload = getattr(arena, "payload_bytes", 0) if arena is not None else 0
         logger.info(
             "diffusion.memory: %s streams %d of %d members with pinned copies (%.2f GB) and event-fenced prefetch "
-            "(%d ahead)%s",
+            "(%d ahead)%s%s",
             type(owner).__name__,
             len(streamed),
             len(blocks),
             payload / 1e9,
             depth,
             " in place of the host copies the plan counts" if replaced else "",
+            " spread among the resident ones" if spread and kept_resident else "",
         )
     return streamer

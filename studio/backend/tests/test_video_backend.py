@@ -159,9 +159,13 @@ def _pin_video_fetch_to_the_named_repo(monkeypatch):
 @pytest.fixture(autouse = True)
 def _roomy_host_ram(monkeypatch):
     """Native H3 loads fit against the host's available RAM, which a CI runner may not have (macos-15: about 3 GiB).
-    Tests that need a tight host stub usable_host_ram_mib themselves, after this."""
+    Tests that need a tight host stub usable_host_ram_mib themselves, after this. CPU-only loads (no GPU here) are
+    also sized against host RAM before downloading (video_cpu_host), so a 16 GB runner refused cosmos3-nano / Wan."""
+    from core.inference import diffusion_small_host
     from utils import host_memory
+
     monkeypatch.setattr(host_memory, "usable_host_ram_mib", lambda *a, **k: 1 << 30)
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
 
 
 @pytest.fixture(autouse = True)
@@ -1132,11 +1136,17 @@ def test_generate_reclaims_model_offload_host_memory(fake_runtime, tmp_path, mon
     assert backend.generate_progress()["active"] is False
 
 
-def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_path, monkeypatch):
+@pytest.mark.parametrize("encode_outside_lock", ["0", "1"])
+def test_a_stop_during_the_reclaim_cannot_be_answered_true(
+    fake_runtime, tmp_path, monkeypatch, encode_outside_lock
+):
     """The trim blocks after the last is_set() check, so the event must be deregistered before the
-    trim, under cancel_generate's lock; a Stop in that window must not be answered true."""
+    trim, under cancel_generate's lock; a Stop in that window must not be answered true. With the
+    encode after the lock the trim comes before the encode, so a Stop there is answered true and
+    does discard the clip."""
     from core.inference import video as video_mod
 
+    monkeypatch.setenv("UNSLOTH_VIDEO_ENCODE_OUTSIDE_LOCK", encode_outside_lock)
     backend = VideoBackend()
     _load_gguf(backend, tmp_path)
     backend._state = dataclasses.replace(backend._state, offload_policy = "model")
@@ -1149,6 +1159,11 @@ def test_a_stop_during_the_reclaim_cannot_be_answered_true(fake_runtime, tmp_pat
 
     monkeypatch.setattr(video_mod, "reclaim_offload_host_memory", stop_midway)
 
+    if encode_outside_lock == "1":
+        with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+            backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
+        assert answered == [True]
+        return
     result = backend.generate(prompt = "a sloth surfing", width = 256, height = 256, num_frames = 9, fps = 8)
     assert result["mp4_bytes"] == b"MP4"
     assert answered == [False], "cancel_generate answered true for a clip that was still persisted"
@@ -2639,6 +2654,8 @@ def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
 
 def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
     # The DiT quant exists only on the pipeline path, so refuse it on a GGUF pick.
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the quant check.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
     backend = VideoBackend()
     with pytest.raises(RuntimeError) as excinfo:
         backend.begin_load(
@@ -3974,6 +3991,8 @@ def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, 
     from types import SimpleNamespace
 
     H3_COMPONENT_REPO, H3_GGUF_REPO, _ = _shared_setup_3()
+    # Not a host RAM test: a CPU-only runner (16 GB on CI) would refuse the float32 load before the claim.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_HOST_RAM_CHECK", "0")
 
     backend = VideoBackend()
     monkeypatch.setattr(
@@ -13494,6 +13513,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         cancel_event = None,
         local_files_only = False,
         scheme = None,
+        on_fallback = None,
     ):
         fetched.append(([src.location for src in sources], cancel_event, local_files_only))
 
@@ -13663,10 +13683,11 @@ def test_cudnn_benchmark_opt_out_families():
         "ltx-2.5",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
+        "minimax-h3",
     } <= off
     assert all(
         fam.vae_force_fp32
-        or fam.name in ("ltx-2", "ltx-2.5")
+        or fam.name in ("ltx-2", "ltx-2.5", "minimax-h3")
         or fam.name.startswith("hunyuanvideo-1.5")
         or fam.name.startswith("cosmos3-")
         for fam in _FAMILIES
@@ -14349,3 +14370,16 @@ def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_p
     monkeypatch.setattr(Image.Image, "save", failing_save)
     with pytest.raises(OSError, match = "disk full at 3"):
         h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)
+
+
+def test_begin_load_refuses_an_unknown_attention_backend_before_loading(monkeypatch):
+    # Like the image backend: inside the load an unknown name only aborted the speed layer and ran it unoptimised.
+    import threading
+
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda *a, **k: started.append(1))
+    with pytest.raises(ValueError, match = "Unsupported attention_backend"):
+        VideoBackend().begin_load(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", attention_backend = "_native_bogus"
+        )
+    assert started == []

@@ -78,6 +78,8 @@ from .loader_utils import (
     _offline_aware_load,
     _load_probe_memo_scope,
     _memo_config_probe,
+    _resolved_revision,
+    _cached_missing_adapter_error,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -537,6 +539,23 @@ def _refuse_network_share_adapter_base(model_name, peft_config):
         )
 
 
+def _refuse_network_share_raw_adapter_base(model_name, **hub_kwargs):
+    """transformers loads the base a Hub repo's raw adapter_config.json names, even when PEFT cannot parse it."""
+    if os.path.isdir(model_name):
+        return
+    try:
+        import json
+        from transformers.utils import find_adapter_config_file
+        with open(find_adapter_config_file(model_name, **hub_kwargs), encoding = "utf-8") as file:
+            base = json.load(file).get("base_model_name_or_path")
+    except Exception:
+        # No adapter_config.json or not JSON: transformers swaps in no base either.
+        return
+    from types import SimpleNamespace
+
+    _refuse_network_share_adapter_base(model_name, SimpleNamespace(base_model_name_or_path = base))
+
+
 def _adapter_file_shapes(path):
     if path.endswith(".safetensors"):
         from safetensors import safe_open
@@ -953,6 +972,13 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
+
+def _set_partial_compile_disable():
+    # Keep a full disable full; true/yes become "1" since zoo only reads "1" / "partial" as off.
+    value = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower()
+    os.environ["UNSLOTH_COMPILE_DISABLE"] = "1" if value in ("1", "true", "yes") else "partial"
+
+
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the flash-linear-attention Triton kernels, so no install is needed; transformers falls back to the much slower pure PyTorch path only when they cannot be enabled.
 FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
 _fla_advised = False
@@ -1082,7 +1108,7 @@ def _fix_rope_inv_freq(model):
                 if module.multi_gpu_cos_cached[device_idx] is not None:
                     module._set_cos_sin_cache(
                         seq_len = module.current_rope_size,
-                        device = torch.device(device_idx),
+                        device = torch.device(DEVICE_TYPE_TORCH, device_idx),
                         dtype = torch.get_default_dtype(),
                     )
 
@@ -1126,7 +1152,7 @@ def _fix_rope_inv_freq(model):
                         )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
-                            device_obj = torch.device(device_idx)
+                            device_obj = torch.device(DEVICE_TYPE_TORCH, device_idx)
                             module.multi_gpu_short_cos_cached[device_idx] = (
                                 emb.cos() * module.scaling_factor
                             ).to(dtype = dtype, device = device_obj, non_blocking = True)
@@ -1381,7 +1407,15 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
+
+        _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -1557,6 +1591,9 @@ class FastLanguageModel(FastLlamaModel):
                 trust_remote_code = trust_remote_code,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -1711,6 +1748,15 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -1781,7 +1827,17 @@ class FastLanguageModel(FastLlamaModel):
             raise RuntimeError(combined_error) from _cause
 
         if peft_config is not None:
-            _refuse_network_share_adapter_base(model_name, peft_config)
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            # The snapshot the config probe pinned, which the weight load reuses.
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -1824,6 +1880,9 @@ class FastLanguageModel(FastLlamaModel):
                     trust_remote_code = trust_remote_code,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
@@ -2369,7 +2428,15 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
+
+        _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
@@ -2538,6 +2605,9 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = load_in_fp8,
                 local_files_only = kwargs.get("local_files_only", False),
                 cache_dir = kwargs.get("cache_dir", None),
+                quantization_config = None
+                if fast_inference
+                else kwargs.get("quantization_config", None),
                 revision = revision,
             )
         else:
@@ -2676,6 +2746,9 @@ class FastModel(FastBaseModel):
             if float8_training is not None:
                 converted = convert_model_to_float8_training(model, float8_training)
                 print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
+            if qat_scheme is not None:
+                print("Unsloth: Applying QAT to mitigate quantization degradation")
+                model = FastModel._prepare_for_qat(model, qat_scheme)
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2718,6 +2791,15 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if user_config is None and adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -2786,7 +2868,16 @@ class FastModel(FastBaseModel):
             raise RuntimeError(combined_error) from _cause
 
         if peft_config is not None:
-            _refuse_network_share_adapter_base(model_name, peft_config)
+            # A ModelScope adapter is a downloaded folder by now: check it under its repo id.
+            _refuse_network_share_adapter_base(modelscope_repo_id or model_name, peft_config)
+        else:
+            _refuse_network_share_raw_adapter_base(
+                model_name,
+                token = token,
+                revision = _resolved_revision(model_name, base_revision, token, local_files_only),
+                local_files_only = local_files_only,
+                cache_dir = kwargs.get("cache_dir"),
+            )
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
             _model_type_config = _memo_config_probe(
@@ -2941,7 +3032,7 @@ class FastModel(FastBaseModel):
             from unsloth.kernels.utils import is_rdna
 
             if is_rdna():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "cohere2" in model_types_all and transformers_version < Version("4.50.0.dev0"):
             raise RuntimeError(
                 "Unsloth: Cohere's Command model only works on transformers >= 4.50.0." + NIGHTLY
@@ -2953,9 +3044,9 @@ class FastModel(FastBaseModel):
             except ImportError:
                 prepare_compiled_checkpoint = None
             if prepare_compiled_checkpoint is None or not prepare_compiled_checkpoint():
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                _set_partial_compile_disable()
         elif "csm" in model_types_all:
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"  # Inference is too slow
+            _set_partial_compile_disable()  # Inference is too slow
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"  # Sesame fails
             # Set the down projection compute dtype to float32 for float16 machines, and norms to float32 since they get upcasted anyway.
             register_custom_dtype(
@@ -3025,6 +3116,7 @@ class FastModel(FastBaseModel):
                 register_custom_dtype(
                     "torch.float16;torch.bfloat16;torch.float16;"
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "
+                    "not module.weight.is_meta and "  # another expert parallel rank's expert
                     "torch.amax(dequantize_module_weight(module)) >= 0:"
                     "module._pre_set_compute_dtype = torch.float32\n"
                     ""
@@ -3034,14 +3126,15 @@ class FastModel(FastBaseModel):
                 )
             os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
         elif "inkling2" in model_types_all:
+            from .inkling2 import raise_if_inkling2_parallel_unsupported
+            raise_if_inkling2_parallel_unsupported(model_config, model_types)
             # Inkling 2 (Mini and Small): compiled, every new sequence length recompiles the layers (A100, Mini QLoRA at
             # 1024 tokens: 85-840 s per step, eager 4.4 s), and the compiled block attention residual has wrong grads.
-            if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "0":
-                os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            _set_partial_compile_disable()
         else:
             for check_model_name in DISABLE_COMPILE_MODEL_NAMES:
                 if check_model_name in lowered_model_name:
-                    os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+                    _set_partial_compile_disable()
                     os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
                     if transformers_version < Version("4.50.0.dev0"):
                         raise RuntimeError(
@@ -3055,7 +3148,7 @@ class FastModel(FastBaseModel):
             and getattr(model_config, "model_type", None) in ("t5", "mt5", "umt5")
             and _is_text_seq2seq_config(model_config)
         ):
-            os.environ["UNSLOTH_COMPILE_DISABLE"] = "partial"
+            _set_partial_compile_disable()
 
         if auto_model is not None:
             # All other models need to disable static cache.
@@ -3080,6 +3173,9 @@ class FastModel(FastBaseModel):
                     load_in_4bit,
                     local_files_only = kwargs.get("local_files_only", False),
                     cache_dir = kwargs.get("cache_dir", None),
+                    quantization_config = None
+                    if fast_inference
+                    else kwargs.get("quantization_config", None),
                 )
             # Pre-quantized models allowed? AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2, and our pre-quants use 64.
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(

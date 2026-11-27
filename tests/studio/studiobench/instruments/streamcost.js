@@ -123,13 +123,24 @@
     st.pending = parts.pop();
     if (carried && parts.length > 0) noteCarried(st);
     for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith("data:")) continue;
-      const body = line.slice(5).trim();
+      // Only data: lines form a block's data, joined by newlines; other fields are skipped.
+      const dataLines = [];
+      for (const raw of part.split("\n")) {
+        const field = raw.trim();
+        if (field.startsWith("data:")) dataLines.push(field.slice(5).trim());
+      }
+      if (dataLines.length === 0) continue;
+      const body = dataLines.join("\n").trim();
       if (body === "" || body === "[DONE]") continue;
       try {
         const frame = JSON.parse(body);
-        const choices = frame && frame.choices;
+        // A chat run (/api/inference/chat-runs/{id}/events) wraps each OpenAI chunk as {seq, type: "chunk", payload};
+        // its other event types (status, done, ...) carry no delta and are skipped like any frame without choices.
+        const chunk =
+          frame && frame.type === "chunk" && frame.payload && typeof frame.payload === "object"
+            ? frame.payload
+            : frame;
+        const choices = chunk && chunk.choices;
         if (!choices || !choices.length) continue;
         const delta = choices[0].delta || {};
         // Reasoning arrives as reasoning_content beside empty content, so summing is not double counting.
@@ -174,8 +185,7 @@
       // A frame continuation is stream traffic and starts a task chain like any other chunk.
       const continuesFrame = st.pending.length > 0;
       if (looksSse || continuesFrame) noteSse();
-      // looksSse || pending: the second half of a split frame has no marker.
-      // Feed the whole chunk (only the scan is bounded); only now does this decoder become active.
+      // Split frame's tail has no marker; feed the whole chunk, then mark the decoder active.
       if (looksSse || continuesFrame) {
         // A fragment on a different decoder cannot be part of this stream.
         if (markerHold && markerHold !== st) setMarkerTail(markerHold, "");

@@ -57,6 +57,7 @@ def _generic_save():
         ProcessorMixin = type("Processor", (), {}),
         patch_saving_functions = lambda t: t,
         get_token = lambda: None,
+        _defer_to_main_process = lambda is_main_process, model = None: not is_main_process,
         get_model_name = lambda n: n,
         _prewarm_base_model_hub_cache = lambda *a, **k: None,
         _is_qwen3_5_vlm = lambda m: False,

@@ -1764,6 +1764,10 @@ def _verify_packed_fingerprint(
         else:
             actual = packed_weight_fingerprint(state_dict, select = select).get("modules") or {}
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        # Out of memory is not an uncomputable fingerprint: the load cannot proceed either.
+        raise_if_allocation_failure(exc)
         _warn(logger, "fingerprint", exc)
         return True
     if not actual:
@@ -2294,9 +2298,13 @@ def _engage_nvfp4_backend(
     logger: Any = None,
 ) -> int:
     """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
-    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_linear import _baked_activation_scales, convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
+    if _baked_activation_scales(metadata) is None:
+        # Nothing to move: only baked activation scales run on flashinfer (a runtime build, as the local prequant cache
+        # holds it, has none), so skip the backend preflight the fresh build never runs.
+        return 0
     converted = convert_nvfp4_backend(
         transformer, metadata, select_nvfp4_backend(device), logger = logger
     )
@@ -3226,16 +3234,28 @@ def _validate_checkpoint(
     return True
 
 
+_HUB_REPO_ID = _re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+
+
 def _same_base_model(a: str, b: str) -> bool:
-    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download."""
-    from .diffusion_families import canonical_base
+    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download.
+    Two Hub ids must be the same repo: ``someone/Qwen-Image-2.1`` is a fine-tune, not the official base.
+    A local path keeps the name compare (a downloaded copy of the base)."""
+    from .diffusion_families import _is_local_path, canonical_base, retired_full_copy_base
 
-    a, b = canonical_base(a), canonical_base(b)
+    def _canon(x: str) -> str:
+        x = canonical_base(x)
+        return (retired_full_copy_base(x) or x).replace("\\", "/").rstrip("/")
 
-    def _tail(x: str) -> str:
-        return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+    def _hub(x: str) -> bool:
+        return bool(_HUB_REPO_ID.fullmatch(x)) and not _is_local_path(x)
 
-    return a == b or _tail(a) == _tail(b)
+    a, b = _canon(a), _canon(b)
+    if a.lower() == b.lower():
+        return True
+    if _hub(a) and _hub(b):
+        return False
+    return a.split("/")[-1].lower() == b.split("/")[-1].lower()
 
 
 def _unhook_from_manager(

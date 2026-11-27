@@ -62,8 +62,7 @@ def _collect_text_mode_subprocess_calls() -> list[ast.Call]:
 
 
 def test_text_mode_subprocess_calls_exist():
-    """Guard the guard: ensure save.py still has text-mode subprocess calls so
-    the drift test below isn't vacuously passing."""
+    """Ensure save.py still has text-mode subprocess calls so the drift test is not vacuous."""
     calls = _collect_text_mode_subprocess_calls()
     assert len(calls) >= 6, (
         f"Expected several text-mode subprocess calls in {SAVE_PY.name}, "
@@ -89,8 +88,7 @@ def test_save_subprocess_text_calls_declare_utf8_encoding():
 
 
 def test_utf8_replace_decodes_non_cp1252_subprocess_output():
-    """A real subprocess reproduces the bug: the child emits U+201D (UTF-8 E2 80 9D, where 0x9D is
-    undefined in cp1252), so cp1252 decoding raises while utf-8 with replace reads it."""
+    """Child emits U+201D: 0x9D is undefined in cp1252, so cp1252 raises while utf-8 reads it."""
     # All-ASCII argv; the child builds the non-ASCII char so it is locale-independent.
     child = (
         "import sys; "

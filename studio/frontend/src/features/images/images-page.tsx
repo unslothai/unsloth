@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
+import { modelErrorToast } from "@/lib/model-error-toast";
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
@@ -109,6 +111,7 @@ import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   curatedArtifactTakesDenseQuant,
+  downloadRepoIdFor,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import {
@@ -117,7 +120,16 @@ import {
   useNvfp4Diffusion,
   useNvfp4DiffusionKnown,
 } from "@/hooks/use-host-class";
-import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
+import { reseedAction } from "@/lib/failed-load-reseed";
+import {
+  activePrecisionDenials,
+  deniedSelectionFallback,
+  gpuSelectionKey,
+  type PlannedPrecision,
+  precisionResidentKey,
+  withPrecisionDenials,
+} from "@/lib/precision-denials";
+import { nvfp4SelectionFallback, type SelectOption, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
   ExternalModelOption,
   ModelOption,
@@ -238,7 +250,11 @@ import {
   int8AttentionSelection,
   type Int8AttentionChoice,
 } from "@/lib/int8-attention";
-import { diffusionPipelineLoadTarget, diffusionStagingEntries } from "@/lib/diffusion-pipeline-load-target";
+import {
+  diffusionPipelineLoadTarget,
+  diffusionStagingEntries,
+  stagedDownloadRepoId,
+} from "@/lib/diffusion-pipeline-load-target";
 import {
   routedImageFilename,
   routedGgufLabel,
@@ -321,6 +337,7 @@ import {
 
 import {
   type ControlNetSpecInput,
+  type ChatImageSwapSetting,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionGenerateRequest,
@@ -336,6 +353,7 @@ import {
   GenerateResponseLostError,
   cancelDiffusionGeneration,
   cancelDiffusionQueueJob,
+  chatImageSwapSetting,
   clearDiffusionQueue,
   deleteGalleryImage,
   enqueueDiffusionImage,
@@ -360,6 +378,7 @@ import {
 } from "./api";
 import { GenerationQueuePanel } from "./generation-queue-panel";
 import { collectGalleryWindow } from "./lib/gallery-window";
+import { promptBoundaryIds } from "./lib/prompt-boundaries";
 import { pickReleased, queueBusy, queuedJobs, runningJob } from "./lib/generation-queue";
 import { useImageQueue } from "./use-image-queue";
 import {
@@ -439,7 +458,15 @@ import {
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
 import { addGalleryImageToProject, listDiffusionControlNets, moveGalleryImage } from "./images-page-api";
-import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import { EmbeddingsField, FastCfgField, ShiftField } from "./shift-embeddings-controls";
+import {
+  FAST_CFG_STORAGE_KEY,
+  fastCfgAvailable,
+  fastCfgEndFromRecipe,
+  fastCfgLabel,
+  fastCfgNotApplied,
+  fastCfgRequestFields,
+} from "./lib/fast-cfg";
 import { HiresControls, UpscaleModelField } from "./hires-controls";
 import {
   HIRES_OFF,
@@ -470,6 +497,15 @@ import {
   withEnhanceChoice,
 } from "./lib/prompt-enhance";
 import { EnhancedPromptRecipeRow, EnhancePromptControls } from "./prompt-enhance-panel";
+import {
+  LORA_FUSE_CONTROL_HINT,
+  LORA_FUSE_CONTROL_LABEL,
+  LORA_FUSE_OPTIONS,
+  loraFuseLabel,
+  loraFuseSelection,
+  type LoraFuseChoice,
+} from "./lib/lora-fuse";
+import { MULTI_GPU_BATCH_NOTE, multiGpuPlacementRow } from "@/lib/multi-gpu-placement";
 import {
   ENGINE_HINT,
   ENGINE_HINT_CPU_ONLY,
@@ -508,6 +544,7 @@ import {
   varyBlockedReason,
 } from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
@@ -1048,7 +1085,7 @@ function AdvancedSelect({
   desc?: string;
   value: string;
   onValueChange: (v: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<SelectOption>;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -1063,9 +1100,19 @@ function AdvancedSelect({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {options.map(([v, l]) => (
-              <SelectItem key={v} value={v} className="text-xs">
-                {l}
+            {options.map(([v, l, disabledReason]) => (
+              <SelectItem key={v} value={v} className="text-xs" disabled={!!disabledReason}>
+                {disabledReason ? (
+                  // Disabled items take no pointer events, so the reason is shown inline rather than as a tooltip.
+                  <span className="flex flex-col items-start gap-0.5">
+                    <span>{l}</span>
+                    <span className="max-w-[calc(16rem*var(--ui-space-scale,1))] whitespace-normal text-ui-10 leading-snug text-muted-foreground">
+                      {disabledReason}
+                    </span>
+                  </span>
+                ) : (
+                  l
+                )}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1498,6 +1545,9 @@ function RecipePopover({
           ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
+          {fastCfgLabel(image.cfg_interval_end) ? (
+            <RecipeRow label="Fast CFG" value={fastCfgLabel(image.cfg_interval_end) ?? ""} />
+          ) : null}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
@@ -1551,6 +1601,8 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
   const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
+  const loraFuse = loraFuseLabel(status.lora_fuse);
+  const multiGpu = multiGpuPlacementRow(status.multi_gpu);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1602,6 +1654,20 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
           badge={<InfoHint>{placement.detail}</InfoHint>}
         />
       ) : null}
+      {multiGpu ? (
+        <BuildRow
+          label="Multi-GPU"
+          value={multiGpu.label}
+          badge={<InfoHint>{multiGpu.detail}</InfoHint>}
+        />
+      ) : null}
+      {loraFuse ? (
+        <BuildRow
+          label="LoRA"
+          value={loraFuse.label}
+          badge={<InfoHint>{loraFuse.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -1630,7 +1696,7 @@ function reportLoadFailure(failure: unknown, fallback: string): void {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
   }
-  toast.error(text || fallback);
+  modelErrorToast(text || fallback);
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
@@ -1659,6 +1725,7 @@ type LoadAdvanced = Pick<
   | "text_encoder_quant"
   | "attention_backend"
   | "int8_attention"
+  | "lora_fuse"
   | "memory_mode"
   | "transformer_cache"
   | "family_override"
@@ -1717,6 +1784,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite,
   dragging,
   cueEdge,
+  promptBoundary,
   actions,
 }: {
   image: GalleryImage;
@@ -1727,6 +1795,7 @@ const GalleryStripTile = memo(function GalleryStripTile({
   favorite: boolean;
   dragging: boolean;
   cueEdge: StripDropCue["edge"] | null;
+  promptBoundary: boolean;
   actions: StripTileActionsBox;
 }) {
   const id = image.id;
@@ -1747,6 +1816,9 @@ const GalleryStripTile = memo(function GalleryStripTile({
       }}
       className={cn("group relative size-16 shrink-0", dragging && "opacity-40")}
     >
+      {promptBoundary && (
+        <span data-prompt-boundary aria-hidden="true" className="pointer-events-none absolute -left-1 top-2 bottom-2 w-px bg-border" />
+      )}
       {cueEdge && <StripDropLine edge={cueEdge} />}
       <button
         type="button"
@@ -2022,6 +2094,16 @@ export function ImagesPage({
   );
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
+  const [fastCfgOn, setFastCfgOn] = usePersistedToggle(FAST_CFG_STORAGE_KEY);
+  // A restored recipe's own stop, sent until the switch is touched (null: the preset).
+  const [fastCfgEnd, setFastCfgEnd] = useState<number | null>(null);
+  const changeFastCfg = useCallback(
+    (next: boolean) => {
+      setFastCfgOn(next);
+      setFastCfgEnd(null);
+    },
+    [setFastCfgOn],
+  );
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
@@ -2048,6 +2130,12 @@ export function ImagesPage({
   const [engineChoice, setEngineChoice] = useState<EngineChoice>("auto");
   // The loaded build the Engine select was last seeded from; cleared by a failed load to force a reseed.
   const [engineSeed, setEngineSeed] = useState("");
+  // Bumped once a failed load's status re-read lands: the resident record did not move, so without it Precision and
+  // the other Advanced selects would keep showing the refused pick while Generate runs the resident build.
+  const [failedLoadReseed, setFailedLoadReseed] = useState(0);
+  const handledFailedLoadReseed = useRef(0);
+  // The last picked model's per-scheme refusals from its download plan, for the Precision select before it loads.
+  const [plannedPrecisionOptions, setPlannedPrecisionOptions] = useState<PlannedPrecision>(null);
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -2058,6 +2146,7 @@ export function ImagesPage({
     "auto",
   );
   const [int8Attention, setInt8Attention] = useState<Int8AttentionChoice>("auto");
+  const [loraFuse, setLoraFuse] = useState<LoraFuseChoice>("auto");
   useEffect(() => {
     setTransformerQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
@@ -2132,6 +2221,34 @@ export function ImagesPage({
   // Background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const isOwner = useIsAccountOwner();
+  const [swapSetting, setSwapSetting] = useState<ChatImageSwapSetting | null>(null);
+  const [savingSwap, setSavingSwap] = useState(false);
+  useEffect(() => {
+    if (!isOwner || !advancedOpen) return;
+    const request = new AbortController();
+    setSwapSetting(null);
+    void chatImageSwapSetting(undefined, request.signal)
+      .then((value) => {
+        if (!request.signal.aborted) setSwapSetting(value);
+      })
+      .catch((error) => {
+        if (!request.signal.aborted) {
+          toast.error("Could not load chat image swapping", { description: String(error) });
+        }
+      });
+    return () => request.abort();
+  }, [advancedOpen, isOwner]);
+  async function toggleChatImageSwap(on: boolean) {
+    setSavingSwap(true);
+    try {
+      setSwapSetting(await chatImageSwapSetting(on));
+    } catch (error) {
+      toast.error("Could not save chat image swapping", { description: String(error) });
+    } finally {
+      setSavingSwap(false);
+    }
+  }
   const residentReconciledFor = useRef<DiffusionStatus | null>(null);
   const reconcileResidentComponents = useCallback(
     (loaded: DiffusionStatus) => {
@@ -2165,6 +2282,7 @@ export function ImagesPage({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
   const [images, setImages] = useState<GalleryImage[]>(() => galleryCache.images);
+  const promptBoundaries = useMemo(() => promptBoundaryIds(images), [images]);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // A pick made during a run takes the stage from the live preview and is not replaced by finished runs.
@@ -2511,6 +2629,8 @@ export function ImagesPage({
   const effectiveGuidance = guidanceFixed
     ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
     : guidance;
+  const fastCfgShown = fastCfgAvailable(status, effectiveGuidance, Boolean(external));
+  const cfgIntervalSupported = !external && status?.loaded === true && status.supports_cfg_interval === true;
   // The guidance a negative prompt needs: 0 with no model loaded or on an older backend, the old rule.
   const negativeMinGuidance =
     status?.loaded && status.negative_prompt_min_guidance !== undefined
@@ -3097,6 +3217,9 @@ export function ImagesPage({
     setHeight(restored.height);
     setBatchSize(image.batch_size ?? 1);
     setShiftValue(shiftFromRecipe(image));
+    const restoredFastCfgEnd = fastCfgEndFromRecipe(image);
+    setFastCfgOn(restoredFastCfgEnd !== null);
+    setFastCfgEnd(restoredFastCfgEnd);
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -3170,13 +3293,14 @@ export function ImagesPage({
       ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
       // Restored into the hidden control, which Generate omits: say so, as an import does.
       ...(via === "restore" ? detailerNotApplied(detail.enabled, detailerReady) : []),
+      ...(via === "restore" ? fastCfgNotApplied(image.cfg_interval_end, cfgIntervalSupported) : []),
     ];
     if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status, detailerReady]);
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3255,7 +3379,6 @@ export function ImagesPage({
           id: "",
           url: "",
           seed: settings.seed ?? 0,
-          batch_index: 0,
           created_at: 0,
           localized_edit:
             localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
@@ -3300,6 +3423,7 @@ export function ImagesPage({
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...shiftNotApplied(recipe, shiftControl),
+        ...fastCfgNotApplied(recipe.cfg_interval_end, cfgIntervalSupported),
         ...hiresNotApplied(hiresFromRecipe(settings), status?.loaded ? status.hires : null),
         ...unknownRecipeKeys(recipe),
       ];
@@ -3366,7 +3490,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, detailerReady],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, sdCaps, embeddingsEnabled, shiftControl, cfgIntervalSupported, detailerReady],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -3665,8 +3789,9 @@ export function ImagesPage({
         // And for the Engine select: a worker that failed before publishing leaves the resident provenance, so the
         // seed would not move and the next Reapply would replay the failed pick.
         setEngineSeed("");
-        // A failed load may have freed a previously-loaded model, so resync to the real backend state.
-        void refreshStatus();
+        // A failed load may have freed a previously-loaded model, so resync to the real backend state, then snap the
+        // Advanced selects to what that state says is loaded.
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return;
       }
       if (p.phase === null) {
@@ -3963,10 +4088,42 @@ export function ImagesPage({
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
   // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
+  // Schemes the loaded (else last planned) family or card refuses: disabled in Precision with the reason, and a held
+  // one falls back to Auto rather than being refused at load.
+  // A plan's denials die with the resident it was made beside: a load landing, an eject or an eviction drops them.
+  const residentPrecisionKey = precisionResidentKey(status);
+  useEffect(() => {
+    setPlannedPrecisionOptions(null);
+  }, [residentPrecisionKey]);
+  // And with a failed load, which abandons the pick it planned (the selects snap back to the resident build).
+  useEffect(() => {
+    if (failedLoadReseed > 0) setPlannedPrecisionOptions(null);
+  }, [failedLoadReseed]);
+  const precisionDenials = activePrecisionDenials(
+    status,
+    plannedPrecisionOptions,
+    selectedGpu !== "auto" && gpuChoices.some((d) => String(d.index) === selectedGpu) ? selectedGpu : "auto",
+  );
+  useEffect(() => {
+    setTransformerQuant((v) => deniedSelectionFallback(v, precisionDenials));
+  }, [precisionDenials, transformerQuant]);
+
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    const afterFailedLoad = failedLoadReseed !== handledFailedLoadReseed.current;
+    handledFailedLoadReseed.current = failedLoadReseed;
+    const action = reseedAction(status, record != null, afterFailedLoad);
+    if (action === "auto") {
+      setTransformerQuant("auto");
+      setTextEncoderQuant("auto");
+      setMemoryMode("auto");
+      setAttentionBackend("auto");
+      setInt8Attention("auto");
+      setLoraFuse("auto");
+      return;
+    }
+    if (action !== "record" || !record) return;
     const family = resolvedFamilyOverrideSelection(record.family_override);
     if (family) setFamilyOverride(family);
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
@@ -3995,8 +4152,10 @@ export function ImagesPage({
     if (attention) setAttentionBackend(attention);
     const int8 = int8AttentionSelection(record.int8_attention);
     if (int8) setInt8Attention(int8);
+    const fuse = loraFuseSelection(record.lora_fuse);
+    if (fuse) setLoraFuse(fuse);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+  }, [resolvedKey, failedLoadReseed]);
 
   const bakedLorasFor = useCallback(
     (repoId: string, preserveSelection = false): LoraSpecInput[] => {
@@ -4020,6 +4179,8 @@ export function ImagesPage({
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         // Always sent: the backend reads "auto" as no per-load override.
         int8_attention: int8Attention,
+        // Only an explicit choice: auto leaves the env switch in charge, as on an older backend.
+        lora_fuse: loraFuse === "auto" ? undefined : loraFuse,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         family_override: familyOverrideRequired ? explicitFamily(familyOverride) : undefined,
@@ -4044,6 +4205,7 @@ export function ImagesPage({
       textEncoderQuant,
       attentionBackend,
       int8Attention,
+      loraFuse,
       memoryMode,
       transformerCache,
       familyOverride,
@@ -4146,6 +4308,7 @@ export function ImagesPage({
           text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           int8_attention: advanced.int8_attention,
+          lora_fuse: advanced.lora_fuse,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           family_override: advanced.family_override,
@@ -4169,7 +4332,7 @@ export function ImagesPage({
         dismissLoadToast();
         if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
-        void refreshStatus();
+        void refreshStatus().finally(() => setFailedLoadReseed((n) => n + 1));
         return settle(false);
       } finally {
         savePoll.stop();
@@ -4364,6 +4527,8 @@ export function ImagesPage({
       pickToast.dismiss(pendingStagedLoad.current?.toastId);
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // The canceled pick planned the Precision denials; the resident build's status describes the next load again.
+      setPlannedPrecisionOptions(null);
       // Staging starts no load, so the optimistic label must be reverted here, for this job's pick only.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         revertPick(quantRevert.current);
@@ -4540,7 +4705,10 @@ export function ImagesPage({
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
       }
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts, advanced);
-      const pickToastId = downloadOnly ? undefined : pickToast.show(opts.displayRepoId ?? repoId);
+      // Label with the repo actually fetched (a vendor id's unsloth mirror), not the picked id.
+      const pickToastId = downloadOnly
+        ? undefined
+        : pickToast.show(downloadRepoIdFor(opts.displayRepoId ?? repoId, IMAGE_CATALOG));
       // Read before the await: a pick made meanwhile replaces quantRevert. Download-only owns no slot.
       const ownRevert = downloadSnapshot || downloadOnly ? null : quantRevert.current;
       // Acted on outside the try: a throwing refusal would otherwise fall through to the load.
@@ -4557,6 +4725,13 @@ export function ImagesPage({
           pickToast.dismiss(pickToastId);
           dropReleasedPick(ownRevert);
           return true;
+        }
+        if (!downloadOnly) {
+          setPlannedPrecisionOptions({
+            gpu: gpuSelectionKey(advanced.gpu_ids),
+            options: plan.precision_options ?? null,
+            repos: [repoId, opts.displayRepoId],
+          });
         }
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
@@ -4595,11 +4770,13 @@ export function ImagesPage({
           } else {
             pendingLoadEntries.current = entries;
             const pending = pendingStagedLoad.current;
+            // The plan names the repo actually downloaded, which the catalog may not know (a gated row's mirror).
+            const downloadName = stagedDownloadRepoId(entries, opts.displayRepoId ?? repoId);
             if (downloadOnlyPlans.current.length === 0 && pending) {
               stagedPlan.current = { token: pending.token };
-              pickToast.setPhase(pickToastId, "downloading", stage(entries));
+              pickToast.setPhase(pickToastId, "downloading", stage(entries), downloadName);
             } else {
-              pickToast.setPhase(pickToastId, "queued");
+              pickToast.setPhase(pickToastId, "queued", undefined, downloadName);
             }
           }
           return true;
@@ -4776,6 +4953,12 @@ export function ImagesPage({
     const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
+    if (modelLinkedFromOutside(wanted)) {
+      const linked = { model: wanted, quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
+      void navigateSelf({ to: "/images", search: {}, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/images", search: linked, replace: true }));
+      return;
+    }
     // A Download only arrival owns nothing and must leave a staging load its claim.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
@@ -5777,6 +5960,7 @@ export function ImagesPage({
           !controlnetEngaged,
         ),
         ...shiftRequestFields(shiftControl, shiftValue),
+        ...fastCfgRequestFields(fastCfgShown, fastCfgOn, fastCfgEnd),
         ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
         ...condFields,
         ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
@@ -5965,7 +6149,7 @@ export function ImagesPage({
           },
         });
       } else if (report)
-        toast.error(msg, { action: generationFailureLogsAction(msg) });
+        modelErrorToast(msg, { action: generationFailureLogsAction(msg) });
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -5981,7 +6165,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
+  }, [external, loraReload, reloadWithLoras, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, fastCfgShown, fastCfgOn, fastCfgEnd, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, upscaleModel, upscaleModels, hires, hiresCapability, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits, detailerOn, detailerReady, detailerOptions]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -6085,6 +6269,7 @@ export function ImagesPage({
       samplers: samplerOptions,
       samplerChoice,
       shift: shiftControl,
+      cfgInterval: cfgIntervalSupported,
       loraCapable,
       loras: loras
         .filter((l) => l.id.trim())
@@ -6101,7 +6286,7 @@ export function ImagesPage({
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, cfgIntervalSupported, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -6318,23 +6503,26 @@ export function ImagesPage({
           && !isNativeEngineStatus(status)) ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
+          hint="How the model computes. Auto picks per model and GPU: usually INT8 (or FP8 where the card has it), quantising the transformer onto low-precision tensor cores, but it keeps BF16 for models where quantising was measured as no faster or visibly different, so Auto is not always the fastest choice. The loaded build reports what Auto picked. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
           options={[
-            ["auto", "Auto (fastest for GPU)"],
+            ["auto", "Auto (per model and GPU)"],
             ["none", "Off (run the checkpoint as-is)"],
             // Mac and CPU-only hosts cannot run the dense tensor-core path these schemes need.
             ...(hostOffersDensePrecision(hostClass)
-              ? withNvfp4Option(
-                  [
-                    ["fp8", "FP8"],
-                    ["int8", "INT8"],
-                    ["nvfp4", "NVFP4 (Blackwell)"],
-                    ["mxfp8", "MXFP8 (Blackwell)"],
-                  ] as [string, string][],
-                  nvfp4Diffusion,
+              ? withPrecisionDenials(
+                  withNvfp4Option(
+                    [
+                      ["fp8", "FP8"],
+                      ["int8", "INT8"],
+                      ["nvfp4", "NVFP4 (Blackwell)"],
+                      ["mxfp8", "MXFP8 (Blackwell)"],
+                    ] as SelectOption[],
+                    nvfp4Diffusion,
+                  ),
+                  precisionDenials,
                 )
               : []),
           ]}
@@ -6364,7 +6552,7 @@ export function ImagesPage({
             ["fp8_dynamic", "FP8 (compute)"],
             ["int8", "INT8"],
             ["nvfp4", "NVFP4"],
-          ] as [string, string][],
+          ] as SelectOption[],
           nvfp4Diffusion,
         )}
       />
@@ -6424,7 +6612,7 @@ export function ImagesPage({
       {gpuChoices.length > 0 && (
         <AdvancedSelect
           label="GPU"
-          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          hint={`Which card this model loads on. Auto starts on whichever device torch is pointing at, which on a mixed box is not necessarily the largest, and on a computer with several GPUs may put the text encoder, or a copy of the model for the guidance pass, on a second card. Picking a card keeps the whole model on that card. Multi-GPU means the cards inside this one computer: using two machines (for example two DGX Sparks) for one image is not part of this release. ${MULTI_GPU_BATCH_NOTE}`}
           value={selectedGpu}
           onValueChange={setSelectedGpu}
           options={[
@@ -6460,6 +6648,22 @@ export function ImagesPage({
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      {isOwner && swapSetting && (
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            Swap models for chat images
+            <InfoHint>{swapSetting.managed_by_env
+              ? "Configured by UNSLOTH_CHAT_IMAGE_SWAP."
+              : "Let chat load an image generator when you ask for an image, then resume with the same chat model."}</InfoHint>
+          </span>
+          <Switch
+            aria-label="Swap models for chat images"
+            checked={swapSetting.enabled}
+            disabled={savingSwap || swapSetting.managed_by_env}
+            onCheckedChange={toggleChatImageSwap}
+          />
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           {ALLOW_OVERSIZED_LABEL}
@@ -7393,6 +7597,16 @@ export function ImagesPage({
                     </Button>
                   </div>
                 </div>
+                <div className="mt-2">
+                  <AdvancedSelect
+                    label={LORA_FUSE_CONTROL_LABEL}
+                    hint={LORA_FUSE_CONTROL_HINT}
+                    badge={<ResolvedBadge status={status} controlKey="lora_fuse" />}
+                    value={loraFuse}
+                    onValueChange={(v) => setLoraFuse(v as LoraFuseChoice)}
+                    options={LORA_FUSE_OPTIONS}
+                  />
+                </div>
                 <OnDeviceFoldersDialog
                   open={loraFoldersOpen}
                   onOpenChange={setLoraFoldersOpen}
@@ -7550,6 +7764,7 @@ export function ImagesPage({
               </Field>
             )}
             <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <FastCfgField available={fastCfgShown} enabled={fastCfgOn} onChange={changeFastCfg} />
             {hiresVisible(hiresCapability, workflow) ? (
               <HiresControls capability={hiresCapability} choice={hires} onChange={setHires} width={width} height={height} />
             ) : !external && workflow === "create" && status?.hires_unavailable_reason ? (
@@ -7991,6 +8206,7 @@ export function ImagesPage({
                   favorite={isFavorite(`image:${image.id}`)}
                   dragging={stripReorder.draggingId === image.id}
                   cueEdge={stripReorder.cue?.id === image.id ? stripReorder.cue.edge : null}
+                  promptBoundary={promptBoundaries.has(image.id)}
                   actions={stripTileActions}
                 />
               ))}

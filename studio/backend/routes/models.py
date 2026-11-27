@@ -2,6 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+import functools
 import json
 import os
 import shutil
@@ -2727,6 +2730,38 @@ async def scan_model_remote_code(
             if isinstance(ref, str) and ref:
                 await asyncio.to_thread(account_access.require_model_access, ref)
         allow_ambient_token = False
+    # Blocking Hub listing / downloads / scan: own pool, off the event loop and the shared default executor.
+    return await asyncio.get_running_loop().run_in_executor(
+        _remote_code_scan_pool,
+        contextvars.copy_context().run,
+        functools.partial(
+            _scan_model_remote_code_sync,
+            model_name = model_name,
+            hf_token = hf_token,
+            prefer_local_cache = prefer_local_cache,
+            model_local_path = model_local_path,
+            model_snapshot_path = model_snapshot_path,
+            model_snapshot_repo_id = model_snapshot_repo_id,
+            allow_ambient_token = allow_ambient_token,
+            current_subject = current_subject,
+        ),
+    )
+
+
+_remote_code_scan_pool = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "remote-code-scan")
+
+
+def _scan_model_remote_code_sync(
+    *,
+    model_name: str,
+    hf_token: Optional[str],
+    prefer_local_cache: bool,
+    model_local_path: Optional[str],
+    model_snapshot_path: Optional[str],
+    model_snapshot_repo_id: Optional[str],
+    allow_ambient_token: bool,
+    current_subject: str,
+):
     # An absent token would read as ambient-authorized and leak private cached source.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     # Offline the scanner reads cached config/Python and returns source snippets.
@@ -3071,7 +3106,9 @@ async def discard_remote_code_download(
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
             return {"deleted": False, "reason": "not_cached"}
-        hf_cache.delete_revisions(*revision_hashes).execute()
+        from hub.utils.inventory_scan import scan_of_repo
+
+        scan_of_repo(hf_cache, target_repo).delete_revisions(*revision_hashes).execute()
         logger.info("Discarded declined remote-code download: %s", model_name)
         return {"deleted": True}
     except Exception as e:
@@ -3230,8 +3267,7 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
-    # A two-expert video model loads only high / low-noise pairs, every other model only single adapters, so each
-    # picker lists only what its load accepts.
+    # Two-expert video models take only high/low-noise pairs, others only single adapters.
     two_expert = diffusion_lora.two_expert_family(family)
     entries = [e for e in entries if bool(e.weight_name_2) == two_expert]
     if account_access.managed_account():

@@ -97,6 +97,71 @@ def _skills_home_root(tmp_path_factory):
 _skills_home_counter = itertools.count()
 
 
+@pytest.fixture
+def tmp_cache_home_allowed(monkeypatch, tmp_path_factory):
+    """Lets a Hugging Face cache home live under pytest's base temp directory.
+
+    macOS denies /private/var as a system folder, and pytest's tmp_path is always under /private/var/folders,
+    so set_hf_cache_home(tmp_path / ...) raises "System folders cannot be used" there. Only paths inside the
+    base temp are exempt; every other path keeps the real verdict.
+    """
+    from hub.storage import scan_folders
+
+    base = os.path.realpath(str(tmp_path_factory.getbasetemp()))
+    real = scan_folders.is_denied_system_path
+
+    def is_denied_system_path(path):
+        return False if scan_folders.is_within_any(path, [base]) else real(path)
+
+    monkeypatch.setattr(scan_folders, "is_denied_system_path", is_denied_system_path)
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _plain_structlog_tracebacks():
+    """Without setup_logging, structlog's default rich formatter lexes each frame's file from line 1:
+    seconds per logged exception in the 2 MB llama_cpp.py, which the tool-loop tests log constantly."""
+    try:
+        import structlog
+        from structlog import _config as structlog_config
+    except ImportError:
+        yield
+        return
+    renderer_cls = structlog.dev.ConsoleRenderer
+    plain = structlog.dev.plain_traceback
+    # The builtin list too: reset_defaults() copies it shallowly, so its renderer comes back.
+    candidates = [
+        *getattr(structlog_config, "_BUILTIN_DEFAULT_PROCESSORS", ()),
+        *structlog.get_config()["processors"],
+    ]
+    renderers = list({id(p): p for p in candidates if isinstance(p, renderer_cls)}.values())
+    # structlog 25.5 added the public property; 24.1 to 25.4 keep the formatter in _exception_formatter.
+    attr = (
+        "exception_formatter"
+        if isinstance(getattr(renderer_cls, "exception_formatter", None), property)
+        else "_exception_formatter"
+    )
+    previous = [
+        (renderer, getattr(renderer, attr)) for renderer in renderers if hasattr(renderer, attr)
+    ]
+    for renderer, _ in previous:
+        setattr(renderer, attr, plain)
+
+    try:
+        yield
+    finally:
+        for renderer, formatter in previous:
+            setattr(renderer, attr, formatter)
+
+
+@pytest.fixture(autouse = True)
+def _no_real_windows_commit_reading(monkeypatch):
+    """Tests fake the host's RAM; on a Windows runner the real commit headroom would otherwise leak
+    into the llama.cpp pre-launch check (the commit-check tests fake their own)."""
+    module = sys.modules.get("core.inference.llama_cpp")
+    if module is not None and hasattr(module, "_windows_host_commit_headroom_mib"):
+        monkeypatch.setattr(module, "_windows_host_commit_headroom_mib", lambda: None)
+
+
 @pytest.fixture(autouse = True)
 def _no_vae_structural_verdict_cache(monkeypatch):
     """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
@@ -281,6 +346,42 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _no_sdpa_align_wrapper_left_installed():
+    # _maybe_compile_transformer installs it for a compiled diffusion run; tests that drive it never reach the
+    # training loop's uninstall, and the wrapper's cache_key_tag suffix then leaks into every later test.
+    yield
+    sdpa_align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if sdpa_align is not None and sdpa_align.installed():
+        sdpa_align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
+def _no_nvfp4_weight_quant_patch_left_installed():
+    # quantize_transformer installs it process-wide for an NVFP4 load. A test that drives the real quantize
+    # leaves torchao's NVFP4Tensor.to_nvfp4 rewritten to 4over6, so every later "torchao reference" in that
+    # worker is the patch itself and max6 parity fails against it.
+    yield
+    weight_quant = sys.modules.get("core.inference.diffusion_nvfp4_weight_quant")
+    if weight_quant is not None:
+        weight_quant.uninstall_nvfp4_weight_quant_patch()
+
+
+@pytest.fixture(autouse = True)
+def _forget_multigpu_card_names():
+    # probe_devices caches each ordinal's torch.cuda.get_device_name per process. A test that probes on the
+    # CPU runner caches "" for every card, and later tests that fake "Tesla T4" then see a primary and
+    # secondary of different models.
+    def _forget():
+        multigpu = sys.modules.get("core.inference.diffusion_multigpu")
+        if multigpu is not None:
+            multigpu._NAMES.clear()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _forget_hub_unreachable_verdict():
     # Per-process Hub verdict must not leak between tests.
     def _forget():
@@ -392,11 +493,27 @@ def _restore_dynamo_process_knobs():
 
 
 @pytest.fixture(autouse = True)
+def _uninstall_sdpa_align_wrapper():
+    # The DiT trainer's compile step wraps inductor's SDPA layout constraint and appends its cache_key_tag; only the
+    # full run's finally takes it out. A test that called the compile step alone left both on the xdist worker, and
+    # test_diffusion_cache_tag_contexts.py then read "|unsloth_sdpa_align=unguarded;..." for its own tags.
+    yield
+    align = sys.modules.get("core.training.diffusion_sdpa_align")
+    if align is not None and align.installed():
+        align.uninstall_sdpa_align_without_guard()
+
+
+@pytest.fixture(autouse = True)
 def _forget_queued_media_requests():
     def _forget():
         video_routes = sys.modules.get("routes.video")
         if video_routes is not None:
             video_routes._VIDEO_QUEUE.clear()
+            video_routes._page_outcomes.clear()
+            video_routes._admitting.clear()
+        video_queue = sys.modules.get("core.inference.video_queue")
+        if video_queue is not None:
+            video_queue.reset()
         batching = sys.modules.get("core.inference.image_request_batching")
         if batching is not None:
             batching._OPEN.clear()
@@ -786,6 +903,8 @@ def _isolate_wal_keepers():
             rag_db.start_wal_keepers()
         else:
             rag_db.close_wal_keeper()
+        # Per-test homes: drop the reader so handles never pile up (and Windows can delete the folder).
+        studio_db.close_settings_readers()
     finally:
         os.name = patched_os_name
 

@@ -21,7 +21,7 @@ def _reference(text: str) -> str:
         text = lr._strip_ansi(text)
     for pattern, replacement in lr._PATTERNS:
         text = pattern.sub(replacement, text)
-    text = lr._AUTH_HEADER_RE.sub(lr._redact_shaped, text)
+    text = lr._AUTH_HEADER_RE.sub(r"\1\2" + lr.REDACTED, text)
     text = lr._SCHEME_RE.sub(lr._redact_shaped, text)
     text = lr._COOKIE_RE.sub(lr._redact_cookie, text)
     text = lr._KV_RE.sub(lr._redact_kv, text)

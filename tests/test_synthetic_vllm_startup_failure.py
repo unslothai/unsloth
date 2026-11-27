@@ -147,8 +147,7 @@ def test_a_silent_server_raises_on_the_timeout():
 
 
 def test_a_dead_server_is_noticed_long_before_the_timeout():
-    """The old code waited on the readiness event alone, so a server that died
-    in twenty seconds still burned the full twenty-minute default."""
+    """Readiness alone let a server that died early burn the full twenty-minute default."""
     kit = _kit(
         _FakeCapture(ready = False, closed = True),
         _FakeCapture(),
@@ -185,8 +184,7 @@ def test_readiness_arriving_late_is_still_success():
 
 
 def test_readiness_wins_over_a_process_that_then_exits():
-    """The ready line is checked first, so a server that prints it and exits a
-    moment later is not misreported as never having started."""
+    """Ready is checked before exit, so a server that prints it then exits counts as started."""
     kit = _kit(_FakeCapture(ready = True), _FakeCapture(), _FakeProcess(returncode = 1))
     assert kit._await_vllm_server(timeout = 30, poll_interval = 0.01) is None
 
@@ -211,8 +209,7 @@ def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
 
 
 def test_check_vllm_status_swallows_a_read_timeout(monkeypatch):
-    """Only ConnectionError was caught, so a stalled server left the readiness
-    loop as an unrelated traceback."""
+    """Only ConnectionError was caught, so a stalled server's ReadTimeout went uncaught."""
     import requests
 
     def _timeout(*args, **kwargs):
@@ -251,8 +248,7 @@ def test_check_vllm_status_is_false_on_a_non_200(monkeypatch):
 
 
 def test_the_failure_path_is_not_a_bare_return_any_more():
-    """Guards the shape of the bug: printing and returning handed the caller a
-    kit with no server, which is what let the notebook run on for five cells."""
+    """Printing and returning gave a kit with no server; a notebook ran on for five cells."""
     import inspect
 
     source = inspect.getsource(SyntheticDataKit.__init__)
@@ -288,8 +284,7 @@ def test_no_single_wait_outruns_the_callers_timeout():
 
 
 def test_a_short_timeout_returns_promptly():
-    """The wall clock, not just the arithmetic. An uncapped lap waits the whole
-    poll interval, so a long interval keeps the bound far from runner jitter."""
+    """Checks the wall clock, not just arithmetic: an uncapped lap waits a whole poll interval."""
     kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess())
     started = time.monotonic()
     with pytest.raises(RuntimeError):
@@ -309,8 +304,7 @@ def test_the_whole_timeout_is_still_used_when_it_is_long():
 
 
 def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
-    """Each request gets 5 seconds, so counting to 100 with a 1 second sleep
-    spent up to ten minutes against a message promising 100 seconds."""
+    """100 attempts of a 5s request plus a 1s sleep could run ten minutes, not 100 seconds."""
     clock = {"now": 0.0}
     monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
     # each health check burns its full 5s request timeout, then the 1s sleep

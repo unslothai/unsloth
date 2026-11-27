@@ -210,7 +210,10 @@ try {
     Check "torch 2.13 pairs triton-windows 3.7" ((Get-TritonWindowsSpec -TorchVersion "2.13.0+cu130") -eq "triton-windows>=3.7,<3.8")
     Check "torch 2.14 pairs triton-windows 3.8" ((Get-TritonWindowsSpec -TorchVersion "2.14.0+cu130") -eq "triton-windows>=3.8,<3.9")
     Check "unknown torch keeps <3.7" ((Get-TritonWindowsSpec -TorchVersion "") -eq "triton-windows<3.7")
-    Check "Windows on ARM is unchanged" ((Get-TritonWindowsSpec -TorchVersion "2.14.0+cu134" -WinArm64 $true) -eq "triton-windows>=3.8.0.post28")
+    Check "Windows on ARM torch 2.14 keeps the post28 floor under the 3.9 bound" ((Get-TritonWindowsSpec -TorchVersion "2.14.0+cu134" -WinArm64 $true) -eq "triton-windows>=3.8.0.post28,<3.9")
+    Check "Windows on ARM torch 2.15 pairs triton-windows 3.9" ((Get-TritonWindowsSpec -TorchVersion "2.15.0+cu134" -WinArm64 $true) -eq "triton-windows>=3.9,<3.10")
+    Check "Windows on ARM nightly torch 2.16 dev keeps the open post28 floor" ((Get-TritonWindowsSpec -TorchVersion "2.16.0.dev20261126+cu135" -WinArm64 $true) -eq "triton-windows>=3.8.0.post28")
+    Check "Windows on ARM unknown torch keeps the open post28 floor" ((Get-TritonWindowsSpec -TorchVersion "" -WinArm64 $true) -eq "triton-windows>=3.8.0.post28")
 
     Write-Host "=== wiring ==="
     $install = Get-Content -LiteralPath $installPath -Raw

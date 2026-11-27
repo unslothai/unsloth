@@ -183,6 +183,10 @@ def _subdir(tmp_path, name):
     return path
 
 
+# Generous host RAM, so no cell's outcome depends on how much memory the machine running it has free.
+HOST_RAM_MIB = 256 * 1024
+
+
 def cell_backend(
     tmp_path,
     monkeypatch,
@@ -203,6 +207,11 @@ def cell_backend(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: accelerator.apple_budget_bytes),
+    )
+    # The cells are about placement, so host RAM is stated rather than read: the Windows commit pre-check
+    # (ref 19784) refuses a CPU-layer load when the runner itself has little free RAM.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: HOST_RAM_MIB)
     )
     backend, gguf = _backend(tmp_path, vulkan = accelerator.vulkan, memory = list(accelerator.memory))
 

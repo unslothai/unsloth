@@ -163,7 +163,8 @@ def _run(config, mode):
     return ns, model
 
 
-def test_nograd_block_packs_through_routing_noise(big_batches):
+def test_nograd_block_packs_through_routing_noise(big_batches, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "1")
     ns, model = _run(MOE, "routing")
     assert 0.7 <= ns["_pk_diff"] < 1.5
     assert ns["_pk_use"] is True
@@ -314,6 +315,10 @@ def _boundary_namespace(
     ns["_unsloth_grpo_packing_leaks"] = lambda self, unwrapped: False
     packing = types.ModuleType("unsloth.utils.packing")
     packing.packing_boundary_blocker = lambda model, model_types: blocker
+    # No stateful mixers here, so the hybrid boundary shim is never consulted.
+    packing._iter_stateful_mixers = lambda model: []
+    packing._hybrid_varlen_dispatched = lambda module: False
+    packing.patch_hybrid_linear_attention_varlen = lambda model: False
     packing._enable_hf_packed_attention = lambda model = None, trainer = None: calls.append(
         (model, trainer)
     )

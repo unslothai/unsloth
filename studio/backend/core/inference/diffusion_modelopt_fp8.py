@@ -207,9 +207,8 @@ def hub_modelopt_root(
     local_files_only: bool = False,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """The cached snapshot root holding a Hub repo's ModelOpt transformer (its config read first, the shards fetched
-    only when that config is ModelOpt), for a load that was handed a hub id rather than a staged folder. None for a
-    local path, a repo without a ModelOpt transformer, or an unreachable Hub."""
+    """Cached snapshot root of a Hub repo's ModelOpt transformer (config read first, shards fetched
+    only if it is ModelOpt); None for local paths, non-ModelOpt repos or an unreachable Hub."""
     if not repo_id or Path(str(repo_id)).expanduser().exists():
         return None
     try:
@@ -341,14 +340,26 @@ def step_policy_disabled() -> bool:
     return (os.environ.get(STEP_POLICY_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-# device index -> {"static": bool, "dynamic": bool}
+# device index -> {"static": bool, "dynamic": bool, "dynamic_unit_scale": bool, "unit_scale_fp32": bool}
 _GEMM_PROBE: dict = {}
 
 
 def _probe_gemms(index: int) -> dict:
+    """One-off GEMM probe of card ``index``. ``dynamic`` is the row-wise ``_scaled_mm``; where only the tensorwise
+    one runs and the row-wise one raises torch's "not supported" (the Windows wheels), ``dynamic_unit_scale`` routes
+    dynamic activations through the unit-scale fallback (diffusion_fp8_unit_scale): tensorwise GEMM at scale 1, then
+    the per-row and weight scales in an fp32 epilogue. ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE=0`` keeps it off,
+    ``=fallback`` takes it even where the row-wise kernel runs."""
     import torch
 
-    found = {ACT_STATIC: False, ACT_DYNAMIC: False}
+    from . import diffusion_fp8_unit_scale as unit_scale
+
+    found = {
+        ACT_STATIC: False,
+        ACT_DYNAMIC: False,
+        "dynamic_unit_scale": False,
+        "unit_scale_fp32": False,
+    }
     if torch.cuda.get_device_capability(index) < (8, 9) or not hasattr(torch, "_scaled_mm"):
         return found
     dev = f"cuda:{index}"
@@ -357,17 +368,62 @@ def _probe_gemms(index: int) -> dict:
     try:
         one = torch.ones((), device = dev, dtype = torch.float32)
         out = torch._scaled_mm(a, b.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        out = out[0] if isinstance(out, tuple) else out
         found[ACT_STATIC] = bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
     except Exception:  # noqa: BLE001 -- no tensorwise fp8 GEMM on this build / card
         pass
+    rowwise_unsupported = False
     try:
         rows = torch.ones((16, 1), device = dev, dtype = torch.float32)
         cols = torch.ones((1, 16), device = dev, dtype = torch.float32)
         out = torch._scaled_mm(a, b.t(), scale_a = rows, scale_b = cols, out_dtype = torch.bfloat16)
+        out = out[0] if isinstance(out, tuple) else out
         found[ACT_DYNAMIC] = bool(torch.isfinite(out).all().item()) and float(out[0, 0]) == 32.0
-    except Exception:  # noqa: BLE001 -- no rowwise fp8 GEMM on this build / card
-        pass
+    except Exception as exc:  # noqa: BLE001 -- no rowwise fp8 GEMM on this build / card
+        rowwise_unsupported = unit_scale._is_unsupported(exc)
+    mode = unit_scale._mode()
+    if found[ACT_STATIC] and mode != "off":
+        if mode == unit_scale.FALLBACK_WORD or (rowwise_unsupported and not found[ACT_DYNAMIC]):
+            found[ACT_DYNAMIC] = False
+            found["dynamic_unit_scale"] = True
+            found["unit_scale_fp32"] = unit_scale._fp32_out_runs(index)
     return found
+
+
+def _act_runs(probe: Optional[dict], act: str) -> bool:
+    """Whether ``act`` has an fp8 GEMM on a probed card: its own kernel, or (dynamic) the unit-scale fallback."""
+    probe = probe or {}
+    if act == ACT_DYNAMIC:
+        return bool(probe.get(ACT_DYNAMIC) or probe.get("dynamic_unit_scale"))
+    return bool(probe.get(act))
+
+
+def gemm_route(device_index: Optional[int] = None) -> Optional[dict]:
+    """Which W8A8 GEMM a ModelOpt FP8 layer on ``device_index`` runs (status / logs), None before the card was
+    probed. Never raises."""
+    try:
+        if device_index is None:
+            device_index = min(_GEMM_PROBE) if _GEMM_PROBE else None
+        probe = _GEMM_PROBE.get(device_index)
+        if probe is None:
+            return None
+        dynamic = (
+            "rowwise"
+            if probe.get(ACT_DYNAMIC)
+            else "unit_scale_fallback"
+            if probe.get("dynamic_unit_scale")
+            else None
+        )
+        return {
+            "device_index": device_index,
+            "static": "tensorwise" if probe.get(ACT_STATIC) else None,
+            "dynamic": dynamic,
+            "accumulator": ("fp32" if probe.get("unit_scale_fp32") else "bf16")
+            if dynamic == "unit_scale_fallback"
+            else None,
+        }
+    except Exception:  # noqa: BLE001 -- status must never fail
+        return None
 
 
 def fp8_gemm_runs(
@@ -377,7 +433,8 @@ def fp8_gemm_runs(
 ) -> bool:
     """Whether the W8A8 ``torch._scaled_mm`` (tensorwise for ``static``, rowwise for ``dynamic``) runs on the target
     card: CUDA (not ROCm, whose fp8 is the fnuz encoding), sm_89 or newer, bfloat16 compute, and a one-off probe GEMM
-    returns the exact answer."""
+    returns the exact answer. ``dynamic`` also runs where only the tensorwise kernel does (the unit-scale fallback,
+    torch builds without the row-wise kernel)."""
     if gemm_disabled():
         return False
     act = act or act_mode()
@@ -396,7 +453,7 @@ def fp8_gemm_runs(
         index = dev.index if dev.index is not None else torch.cuda.current_device()
         if index not in _GEMM_PROBE:
             _GEMM_PROBE[index] = _probe_gemms(index)
-        return bool(_GEMM_PROBE[index].get(act))
+        return _act_runs(_GEMM_PROBE[index], act)
     except Exception:  # noqa: BLE001
         return False
 
@@ -623,6 +680,7 @@ def fp8_linear_class():
                 bias = nn.Parameter(bias.detach().to(compute_dtype), requires_grad = False)
             self.bias = bias
             self.gemm_calls = 0
+            self.unit_scale_calls = 0
             self.a16_calls = 0
 
         def dequantized_weight(self, dtype: Any) -> Any:
@@ -674,7 +732,25 @@ def fp8_linear_class():
                     return False
                 fp8_gemm_runs(device = x2.device, act = self.act)
                 probe = _GEMM_PROBE.get(x2.device.index)
-            return bool((probe or {}).get(self.act))
+            return _act_runs(probe, self.act)
+
+        def _unit_scale_gemm(self, xq: Any, s_x: Any, s_w: Any, bias: Any) -> Any:
+            """The dynamic W8A8 GEMM without the row-wise kernel: tensorwise at scale 1, then ``acc * s_x * s_w +
+            bias`` in fp32 (diffusion_fp8_unit_scale's epilogue), rounded once to bfloat16."""
+            from .diffusion_fp8_unit_scale import _scale_epilogue
+
+            probe = _GEMM_PROBE.get(xq.device.index) or {}
+            one = torch.ones((), device = xq.device, dtype = torch.float32)
+            acc = torch._scaled_mm(
+                xq,
+                self.weight_q.view(torch.float8_e4m3fn).t(),
+                scale_a = one,
+                scale_b = one,
+                out_dtype = torch.float32 if probe.get("unit_scale_fp32") else torch.bfloat16,
+                use_fast_accum = self.fast_accum,
+            )
+            acc = acc[0] if isinstance(acc, tuple) else acc
+            return _scale_epilogue(acc, s_x, s_w.reshape(1, 1), bias, torch.bfloat16)
 
         def forward(self, x: Any) -> Any:
             shape = x.shape
@@ -703,7 +779,17 @@ def fp8_linear_class():
                 xq, s_x = self._quantize_dynamic(x2)
             else:
                 xq, s_x = self._quantize_static(x2, fast = gemm), self.input_scale.view(torch.float32)
-            if gemm:
+            unit_scale = (
+                gemm
+                and self.act == ACT_DYNAMIC
+                and not (_GEMM_PROBE.get(x2.device.index) or {}).get(ACT_DYNAMIC)
+            )
+            if unit_scale:
+                if not torch.compiler.is_compiling():
+                    self.gemm_calls += 1
+                    self.unit_scale_calls += 1
+                out = self._unit_scale_gemm(xq, s_x, s_w, bias).to(out_dtype)
+            elif gemm:
                 if not torch.compiler.is_compiling():
                     self.gemm_calls += 1
                 rowwise = self.act == ACT_DYNAMIC
@@ -738,8 +824,9 @@ def fp8_linear_class():
 
 
 def fp8_gemm_calls(model: Any) -> dict:
-    """Engagement counters of a ModelOpt FP8 model (eager forwards): ``torch._scaled_mm`` calls and W8A16 calls."""
-    total = {"gemm": 0, "a16": 0}
+    """Engagement counters of a ModelOpt FP8 model (eager forwards): ``torch._scaled_mm`` calls (``unit_scale``: those
+    that ran the unit-scale fallback) and W8A16 calls."""
+    total = {"gemm": 0, "unit_scale": 0, "a16": 0}
     for module in getattr(model, "modules", lambda: ())():
         if (
             hasattr(module, "gemm_calls")
@@ -747,6 +834,7 @@ def fp8_gemm_calls(model: Any) -> dict:
             and hasattr(module, "weight_q")
         ):
             total["gemm"] += int(module.gemm_calls)
+            total["unit_scale"] += int(getattr(module, "unit_scale_calls", 0))
             total["a16"] += int(getattr(module, "a16_calls", 0))
     return total
 

@@ -584,11 +584,12 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # Thirteen re-derivations: sizing, embedding slot clamp, split pricing, fit-time reduction, MoE
-    # expert-spill raise, Inkling 2 resident raise, post-launch record, four drafter-probe steps
-    # (per-slot compute buffer, candidate footprint, one-slot trim, slot commit; ref 8872), slot
-    # restore on GPU abandon, plan repriced on a drafterless retry.
-    assert len(calls) == 13, f"expected thirteen re-derivations, found {len(calls)}"
+    # Sixteen re-derivations: sizing, embedding slot clamp, host-RAM single-slot clamp, split
+    # pricing, fit-time reduction, the cut pin's layer split check, MoE
+    # expert-spill raise, Inkling 2 resident raise, Inkling 2 --fit on regrowth margin, post-launch
+    # record, four drafter-probe steps (per-slot compute buffer, candidate footprint, one-slot trim,
+    # slot commit; ref 8872), slot restore on GPU abandon, plan repriced on a drafterless retry.
+    assert len(calls) == 16, f"expected sixteen re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact

@@ -16,9 +16,10 @@ That column-major weight is kept by ``BACKWARD_WEIGHTS`` while it fits the train
 (``Fp8BackwardWeights``), but keyed by the owning FrozenInt8Linear: an entry is served only while that module's
 weight is still the tensor it was copied from, and a replaced weight rebuilds the module's one entry. int32
 accumulation is exact, so grad_x is bit-identical either way; ``UNSLOTH_DIFFUSION_INT8_BWD_CACHE=0`` keeps the
-inline copy."""
+inline copy.
 
-from __future__ import annotations
+No ``from __future__ import annotations`` here: torch 2.4's custom_op schema inference rejects the postponed
+'torch.Tensor' strings, which silently left the backward cache off."""
 
 import sys
 import weakref
@@ -162,6 +163,9 @@ class FrozenInt8Linear(nn.Module):
         if in_f % 8 or out_f % 8:
             raise ValueError(f"int8 W8A8 needs 8-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
+        # The int8 weight buffer is storage, not the input dtype: callers that cast inputs to a Linear's
+        # weight dtype (MOSS-Image's _compute_dtype) read this instead.
+        self.compute_dtype = linear.weight.dtype
         q, s = quantize_weight(linear.weight.detach())
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
@@ -216,6 +220,9 @@ def convert_frozen_int8(
             old.to(device)
         try:
             new = FrozenInt8Linear(old)
+        except torch.cuda.OutOfMemoryError:
+            # Not a per-layer skip: the caller must see a base that ran out of memory partway.
+            raise
         except (RuntimeError, ValueError):
             failed += 1
             continue

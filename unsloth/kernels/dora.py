@@ -18,7 +18,8 @@ of the forward (magnitude / norm scale, bias, dropout path) is PEFT's own, line 
 
 Anything this does not cover runs PEFT's original forward: float32 / float64 base weights, subclasses (embedding, conv),
 PEFT's eval-time DoRA cache, DTensor / sharded weights, weights on another device (ephemeral offload), non-2D or
-mismatched shapes. UNSLOTH_DORA_FACTORED_NORM=0 turns it off.
+mismatched shapes. UNSLOTH_DORA_FACTORED_NORM=0 turns it off; UNSLOTH_DORA_TRITON=0 keeps the factored norm but
+computes the CUDA cross term with cuBLAS instead of the Triton kernel.
 """
 
 import functools
@@ -71,21 +72,130 @@ def _rank_dtype(device, rank = 0):
     return torch.float32
 
 
+triton = None
+if torch.version.cuda is not None and os.environ.get("UNSLOTH_DORA_TRITON", "1") != "0":
+    try:
+        import triton
+        import triton.language as tl
+        from triton.language.extra.cuda import libdevice
+    except Exception:
+        triton = None
+
+
+if triton is not None:
+    # SPLITS varies per projection shape; unspecialized, so shapes whose sizes share alignment share one variant.
+    @triton.jit(do_not_specialize = ["SPLITS"])
+    def _dora_cross_kernel(
+        A,
+        W,
+        OUT,
+        M,
+        N,
+        K,
+        AM,
+        AK,
+        WN,
+        WK,
+        BM: tl.constexpr,  # adapter rows per dot-product tile
+        BN: tl.constexpr,  # weight rows per dot-product tile
+        BK: tl.constexpr,  # columns accumulated before each separately rounded add
+        SPLITS,  # number of interleaved K partitions in the reduction
+    ):
+        m = (tl.program_id(0) * BM + tl.arange(0, BM)).to(tl.int64)
+        n = (tl.program_id(1) * BN + tl.arange(0, BN)).to(tl.int64)
+        k = (tl.program_id(2) * BK + tl.arange(0, BK)).to(tl.int64)
+        acc = tl.full((BM, BN), 0, tl.float32)
+        for _ in range(tl.cdiv(K, BK * SPLITS)):
+            a = tl.load(
+                A + m[:, None] * AM + k[None, :] * AK, (m[:, None] < M) & (k[None, :] < K), 0
+            )
+            w = tl.load(
+                W + k[:, None] * WK + n[None, :] * WN, (k[:, None] < K) & (n[None, :] < N), 0
+            )
+            a_hi = a.to(w.dtype)
+            part = tl.dot(a_hi, w)
+            if a.dtype != w.dtype:
+                a_lo = (a.to(tl.float32) - a_hi.to(tl.float32)).to(w.dtype)
+                part = libdevice.add_rn(part, tl.dot(a_lo, w))
+            # A plain += lets Triton fold the running sum back into the tensor-core accumulator.
+            acc = libdevice.add_rn(acc, part)
+            k += BK * SPLITS
+        dest = OUT + (tl.program_id(2) * M + m[:, None]) * N + n[None, :]
+        tl.store(dest, acc, (m[:, None] < M) & (n[None, :] < N))
+
+
+_KERNEL_OK = True
+
+
+def _disable_kernel(error):
+    global _KERNEL_OK
+    _KERNEL_OK = False
+    import warnings
+
+    warnings.warn(f"Unsloth: DoRA Triton cross term failed ({error!r}); using cuBLAS from now on.")
+
+
+def _cuda_cross_term(A, weight):
+    m, k = A.shape
+    n = weight.shape[0]
+    if not (m and n and k):
+        return A.new_zeros((m, n), dtype = torch.float32)
+    bm, bn, bk = 16, 64, 32
+    grid_m, grid_n = triton.cdiv(m, bm), triton.cdiv(n, bn)
+    # Small ranks expose few output tiles. Split K only until there are enough blocks to run.
+    splits = min(triton.cdiv(k, bk), triton.cdiv(128, grid_m * grid_n))
+    out = A.new_empty((splits, m, n), dtype = torch.float32)
+    with torch.cuda.device(A.device):
+        _dora_cross_kernel[(grid_m, grid_n, splits)](
+            A,
+            weight,
+            out,
+            m,
+            n,
+            k,
+            *A.stride(),
+            *weight.stride(),
+            bm,
+            bn,
+            bk,
+            splits,
+            enable_fp_fusion = True,
+        )
+    return out.sum(0) if splits > 1 else out[0]
+
+
 def _cross_term_fp32(weight, lora_A_weight):
     """(W A^T)^T as (r, d_out) float32 with float32 accumulation, A at its stored precision.
 
-    A float32 A is split into two 16-bit parts (hi + lo) stacked into one (2r, d_in) operand, so W is read once and
-    every product is exact; the GEMM writes float32, never a rounded 16-bit cross term.
+    Split a float32 adapter into high and low parts so the 16-bit dot products retain its precision.
     """
+    if (
+        _KERNEL_OK
+        and triton is not None
+        and weight.device.type == "cuda"
+        and torch.cuda.get_device_capability(weight.device)[0] >= 8
+    ):
+        if torch.compiler.is_compiling():
+            return _cuda_cross_term(lora_A_weight, weight)
+        try:
+            return _cuda_cross_term(lora_A_weight, weight)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as e:
+            if type(e).__module__.startswith("torch._dynamo"):
+                raise
+            _disable_kernel(e)
     lowp = weight.dtype
     r = lora_A_weight.shape[0]
-    A_hi = lora_A_weight.to(lowp)
     split = lora_A_weight.dtype != lowp
     if split:
-        A_lo = (lora_A_weight.float() - A_hi.float()).to(lowp)
-        A_2 = torch.cat((A_hi, A_lo))
+        # Round to lowp by masking the float32 bits: Inductor elides a lowp -> float32 cast pair, which zeroed A_lo.
+        A_f = lora_A_weight.float()
+        drop = 16 if lowp == torch.bfloat16 else 13
+        hi = ((A_f.view(torch.int32) + (1 << (drop - 1))) & -(1 << drop)).view(torch.float32)
+        A_2 = torch.cat((hi.to(lowp), (A_f - hi).to(lowp)))
     else:
-        A_2 = A_hi
+        A_2 = lora_A_weight.to(lowp)
     if _MM_OUT_DTYPE and weight.is_cuda and not (lowp == torch.float16 and _fp16_accumulation()):
         WA = torch.mm(A_2, weight.t(), out_dtype = torch.float32)
     else:

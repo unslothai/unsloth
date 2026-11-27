@@ -22,8 +22,7 @@ BAT_SCRIPTS = ("studio/setup.bat",)
 ALL_SCRIPTS = PS_SCRIPTS + SH_SCRIPTS + BAT_SCRIPTS
 
 
-# Why the installers look the way they do lives here: AMSI scans the whole script, comments
-# included, so shipped scripts must not explain detections. This file does not ship.
+# Shipped scripts must not explain AV detections: AMSI scans whole scripts, comments included.
 AV_SHAPES_RECORD = r"""
 ## Measured detections
 
@@ -381,8 +380,7 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
 
 # Every native import left in the installers; a new entry needs a reason.
 ALLOWED_PINVOKES = {
-    # Linked-ancestor canonicalisation; no 5.1 equivalent. The mutex name is hashed from this
-    # spelling byte for byte, so a GetFullPath shortcut would break exclusion.
+    # Linked ancestors, no 5.1 equivalent; mutex hashes spelling, so GetFullPath breaks it.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
     # ANSI colour on a real console; skipped when stdout is redirected.
@@ -391,8 +389,7 @@ ALLOWED_PINVOKES = {
     "SetConsoleMode",
     # Per-item icon refresh; ie4uinit -show alone does not recover a stale .lnk.
     "SHChangeNotify",
-    # Names the image behind a pid with LIMITED_INFORMATION only; Process.Path needs VM_READ
-    # and WMI may be broken.
+    # Pid image via LIMITED_INFORMATION only; Process.Path needs VM_READ and WMI may be broken.
     "OpenProcess",
     "QueryFullProcessImageNameW",
     "CloseHandle",
@@ -579,8 +576,7 @@ def test_the_installer_never_runs_the_c_sharp_compiler(name: str) -> None:
             f"{name} declares native imports but no longer emits them. If they are compiled again "
             f"instead, that is csc.exe on 5.1, which is the shape this whole file exists to keep out."
         )
-    # The private-%TEMP% compile retry is gone; scoped to the resolver since
-    # Initialize-StudioTempEnvironment legitimately redirects TEMP.
+    # Scoped to the resolver, since Initialize-StudioTempEnvironment legitimately redirects TEMP.
     if "function Initialize-StudioFinalPathNativeType" not in text:
         return
     start = text.index("function Initialize-StudioFinalPathNativeType")
@@ -878,8 +874,7 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
-    """The listing still reports an uncleaned compile's leftovers, such as a response file beside
-    the assembly; a bare DLL under TEMP is not evidence, since that rule killed the job."""
+    """Leftovers like a response file are still listed; a bare DLL under TEMP is not evidence."""
     action = (
         '$dir = Join-Path $env:TEMP "leftover"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
@@ -967,8 +962,7 @@ def test_the_compiler_window_is_cut_to_size_by_timecreated() -> None:
 
 
 def test_the_path_resolver_still_has_a_lexical_fallback() -> None:
-    """The path resolver keeps its lexical fallback: a host that cannot reach the exact rung must
-    degrade exactly as a host that could not compile already did."""
+    """A host that cannot reach the exact rung degrades lexically, as a non-compiling host did."""
     text = _text("install.ps1")
     assert "Write-StudioFinalPathDegraded" in text
     assert "Get-StudioLexicalPath" in text
@@ -1256,8 +1250,7 @@ def _run_watch_with_failing_watcher(
     compiled: bool = False,
     leftover: bool = False,
 ) -> str:
-    """Runs the real Invoke-WithCompilerWatch, with its watcher reporting an error on the first
-    ``fail_first`` measurements, as a buffer overflow does on a hosted runner."""
+    """Runs real Invoke-WithCompilerWatch; watcher errors on the first fail_first measurements."""
     temp_root = tmp_path / "temp"
     temp_root.mkdir()
     evidence = tmp_path / "evidence"
@@ -1318,8 +1311,7 @@ def test_a_watcher_error_voids_a_single_measurement(tmp_path) -> None:
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_a_watcher_error_is_measured_again_and_only_a_healthy_run_counts(tmp_path) -> None:
-    """A burst of temp writes during the desktop-mode install overflowed the watcher on about a
-    quarter of runs. The void run is not scored; a second complete measurement is."""
+    """Temp-write bursts overflow the watcher: that void run is not scored; measure again."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2)
     assert "RESULT:measured compilers=0 libraries=0" in stdout, stdout
     assert "MEASUREMENTS:2" in stdout, stdout
@@ -1335,8 +1327,7 @@ def test_a_watcher_that_fails_every_attempt_is_still_void(tmp_path) -> None:
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
-    """4688 is authoritative about what ran, so a compile it saw is reported rather than
-    measured away."""
+    """4688 is authoritative about what ran, so a compile it saw is reported rather than measured away."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, compiled = True)
     assert "RESULT:measured compilers=1 " in stdout, stdout
     assert "MEASUREMENTS:1" in stdout, stdout
@@ -1344,8 +1335,7 @@ def test_a_compiler_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path)
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_an_artefact_seen_while_the_watcher_failed_is_a_hit_not_a_retry(tmp_path) -> None:
-    """The artefact half is the detector that survives auditing being overridden, so its hit is
-    reported too; a retry would bury it, since the leftovers join the next attempt's baseline."""
+    """An artefact hit during a watcher failure is still reported; a retry would bury it."""
     stdout = _run_watch_with_failing_watcher(tmp_path, fail_first = 1, attempts = 2, leftover = True)
     assert "RESULT:measured compilers=0 libraries=" in stdout, stdout
     assert "libraries=0" not in stdout, stdout

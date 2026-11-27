@@ -17,8 +17,7 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # ungated on PR refs and evicts main's shared entry.
 PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
-    # Same install as `consolidated`, so it restores that entry read-only and never
-    # saves; see READ_ONLY_BORROWERS in test_pip_cache_naming.py.
+    # Same install as consolidated: restores read-only, never saves (see READ_ONLY_BORROWERS).
     ("consolidated-tests-ci.yml", "consolidated-zoo"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
@@ -27,6 +26,8 @@ PIP_CACHE_JOBS = {
     ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
+    # repo-cpu-tests' multi-rank shards, split out; restores that entry read-only and never saves.
+    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
     ("studio-export-capability-ci.yml", "capability"),
     ("version-compat-ci.yml", "zoo-imports-under-spoof"),
     ("version-compat-ci.yml", "grpo-fake-run"),
@@ -35,9 +36,11 @@ PIP_CACHE_JOBS = {
 # Partial saves on purpose: ccache checksums entries, so a truncated cache only costs misses.
 PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
 
-# Restore another job's pip cache and deliberately save nothing (mirrors
-# READ_ONLY_BORROWERS in test_pip_cache_naming.py, which checks the owner side).
-PIP_CACHE_READ_ONLY_JOBS = {("consolidated-tests-ci.yml", "consolidated-zoo")}
+# Restores another job's pip cache and never saves; mirrors READ_ONLY_BORROWERS (owner side).
+PIP_CACHE_READ_ONLY_JOBS = {
+    ("consolidated-tests-ci.yml", "consolidated-zoo"),
+    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
+}
 
 HEAVY = re.compile(
     r"torch|transformers|trl|peft|vllm|bitsandbytes|sentence-transformers|diffusers"
@@ -115,9 +118,8 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
-# Staging repos (scripts/pr_review/staging_ci.py) open PRs against upstream-main and never push
-# their own main, so a run on that branch seeds their caches; the equality counts only beside an
-# AND-ed guard that excludes this repository, since upstream-main should save nothing.
+# Staging repos never push their own main, so upstream-main seeds their caches; the equality counts
+# only beside an AND-ed guard excluding this repo, where it should save nothing.
 _LEAF_SEED = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/upstream-main['\"]"
     r"|['\"]refs/heads/upstream-main['\"]\s*==\s*github\.ref"
@@ -143,8 +145,7 @@ def _restricted_to_main(expr: str) -> bool:
             return all(restricted(p) for p in ors)
         ands = _split_top(part, "&&")
         if len(ands) > 1:
-            # The staging seed branch is accepted only when a SIBLING of this same AND
-            # excludes this repository; the guard cannot come from an outer level.
+            # The seed branch needs an AND sibling excluding this repo, not an outer guard.
             guarded = any(_NOT_THIS_REPO.fullmatch(strip(p)) for p in ands)
             return any(restricted(p, seed_ok = guarded) for p in ands)
         if re.search(r"!(?!=)", part):
@@ -174,7 +175,6 @@ def _restricted_to_main(expr: str) -> bool:
             "(github.ref == 'refs/heads/main' && failure())",
             True,
         ),
-        # A `||` inside a string is not a split.
         ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
         ("", False),
         # A `||` inside parens is still a `||`.
@@ -192,7 +192,6 @@ def _restricted_to_main(expr: str) -> bool:
         ("contains(github.ref == 'refs/heads/main', 'false')", False),
         ("'refs/heads/main' == github.ref", True),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
-        # The staging seed: upstream-main, and only outside this repository.
         (
             "always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main'"
             " && github.repository != 'unslothai/unsloth')) && x != 'true'",
@@ -545,8 +544,7 @@ def test_every_cache_key_path_resolves_where_the_job_checked_out():
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
-        # A path under another checked-out repository cannot be resolved here, so it is skipped. A
-        # checkout with no `repository:` is this repo.
+        # Foreign-repo paths can't be resolved here, so skip; no `repository:` means this repo.
         own_prefixes, foreign_prefixes = [], []
         for s in steps:
             if "actions/checkout" not in _uses(s):
@@ -636,9 +634,8 @@ def test_local_action_references_use_the_nested_checkout_path():
     )
 
 
-# Playwright browser caches (~470 MB per engine). test_ui_shard_engines.py checks key tokens
-# against shards; this catches two jobs storing identical engines under different keys.
-# Derived from the workflows, so a new consumer with a novel token fails here.
+# Caches are ~470 MB each; test_ui_shard_engines.py checks key tokens against shards, so this
+# catches identical engines under different keys; tokens come from workflows, so new ones fail here.
 
 _PW_EXPR = re.compile(r"\$\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 # `install-deps` cannot match: `install` must be followed by whitespace.

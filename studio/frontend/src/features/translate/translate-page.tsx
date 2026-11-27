@@ -69,7 +69,7 @@ import {
   isExternalModelId,
   parseExternalModelId,
 } from "@/features/chat/external-providers";
-import { useDeviceInventorySources } from "@/features/hub";
+import { useDeviceInventorySources, useInventoryVersion } from "@/features/hub";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
@@ -83,21 +83,29 @@ import { useNativeFileDrop } from "@/features/native-intents";
 import { extractDocumentText } from "@/features/rag/api/rag-api";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ReadAloudIcon } from "@/lib/action-bar-icons";
+import {
+  AUDIO_ACCEPT_EXTENSIONS,
+  AUDIO_ATTACHMENT_ACCEPT,
+  isAudioAttachmentFile,
+} from "@/lib/audio-utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { StopIcon } from "@/lib/media-control-icons";
+import { SwapArrowsIcon } from "@/lib/swap-arrows-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { cn } from "@/lib/utils";
 import {
   AiTranslateIcon,
   ArrowLeft02Icon,
-  ArrowLeftRightIcon,
   Cancel01Icon,
+  Download01Icon,
+  ImageIcon,
   Message01Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -109,6 +117,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  memo,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -122,19 +131,28 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { chatAboutTranslations } from "./chat-handoff";
 import { TranslateHistoryList } from "./history-list";
+import {
+  ImageOverlayDialog,
+  type ImageOverlaySource,
+} from "./image-overlay-dialog";
+import { isImageTextBlock } from "./translate-image-overlay";
+import { transcribeAudioFile } from "./translate-audio";
+import { parseSubtitles, subtitleFileName } from "./translate-subtitles";
 import { detectTranslateLanguage } from "./detect-language";
 import { ICON_ACTION, IconAction } from "./icon-action";
 import {
-  TRANSLATE_LANGUAGES,
   findTranslateLanguage,
   translateLanguageLabel,
+  translateLanguagesFor,
   translateSpeechTag,
+  translatesLanguage,
 } from "./languages";
 import {
   CHAT_TRANSLATE_MODEL,
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
   DEDICATED_TRANSLATE_MODELS,
+  type DedicatedTranslateModel,
   type DownloadedTranslateModel,
   downloadedQuant,
   downloadedTranslateModels,
@@ -143,6 +161,8 @@ import {
   dedicatedTranslateModel,
   formatModelBytes,
   isTranslateModelId,
+  offeredTranslateModelId,
+  offeredTranslateModels,
   translateInstruction,
   translateModelKey,
   translatePromptKind,
@@ -150,6 +170,7 @@ import {
 } from "./models";
 import {
   type TranslatePhase,
+  sharedCachedModelsListing,
   translateModelDownloaded,
 } from "./translate-runner";
 import {
@@ -158,6 +179,7 @@ import {
   customPromptOf,
   languageTabs,
   translatePromptOptions,
+  translatesWithDedicated,
   translationIsStale,
   useTranslateStore,
 } from "./translate-store";
@@ -241,9 +263,26 @@ function serverUpload(file: File): File {
     : file;
 }
 
+// Images a browser canvas can draw, so the translation can be painted over them.
+const OVERLAY_IMAGE = /\.(png|jpe?g|webp|gif|bmp)$/i;
+
+// The STT server decodes the audio track of these containers.
+const VIDEO_FILE_EXTENSIONS = ".mp4,.m4v,.webm,.mkv,.mov";
+
+function isTranscribedFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    isAudioAttachmentFile(file) ||
+    VIDEO_FILE_EXTENSIONS.split(",").some((ext) => name.endsWith(ext))
+  );
+}
+
 const IS_MAC =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad/.test(navigator.platform);
+
+const DROP_ACCEPT = `${OPEN_FILE_EXTENSIONS},${AUDIO_ACCEPT_EXTENSIONS},${VIDEO_FILE_EXTENSIONS}`;
+const PICKER_ACCEPT = `text/*,${OPEN_FILE_EXTENSIONS},${AUDIO_ATTACHMENT_ACCEPT},${VIDEO_FILE_EXTENSIONS}`;
 
 const ACTION_BUTTON = "relative z-10 transition-opacity disabled:opacity-40";
 const GO_BUTTON =
@@ -315,8 +354,12 @@ const MODEL_NOTE: Record<
   (typeof DEDICATED_TRANSLATE_MODELS)[number]["id"],
   TranslationKey
 > = {
-  "hy-mt2-1.8b": "translate.model.fast",
-  "hy-mt2-7b": "translate.model.quality",
+  "hy-mt3-1.8b": "translate.model.fast",
+  "hy-mt3-7b": "translate.model.balanced",
+  "hy-mt3-30b-a3b": "translate.model.quality",
+  "hy-mt3-1.8b-fp8": "translate.model.fast",
+  "hy-mt3-7b-fp8": "translate.model.balanced",
+  "hy-mt3-30b-a3b-fp8": "translate.model.quality",
 };
 
 function LanguagePicker({
@@ -344,13 +387,18 @@ function LanguagePicker({
   const [query, setQuery] = useState("");
   const listFade = useScrollFades();
   const [active, setActive] = useState(value);
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const languages = useMemo(
     () =>
-      TRANSLATE_LANGUAGES.map((language) => ({
-        ...language,
-        label: translateLanguageLabel(language, locale),
-      })).sort((a, b) => a.label.localeCompare(b.label, locale)),
-    [locale],
+      translateLanguagesFor(dedicated)
+        .map((language) => ({
+          ...language,
+          label: translateLanguageLabel(language, locale),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label, locale)),
+    [locale, dedicated],
   );
   const needle = query.trim().toLowerCase();
   const shown = needle
@@ -514,6 +562,9 @@ function LanguageTabs({
       ? findTranslateLanguage(detected)
       : undefined;
   const reduced = useReducedMotion();
+  const dedicated = useTranslateStore((state) =>
+    translatesWithDedicated(state.prefs),
+  );
   const tab = (code: string, name: string) => {
     const active = code === value;
     return (
@@ -567,7 +618,7 @@ function LanguageTabs({
             )}
           {tabs.map((code) => {
             const language = findTranslateLanguage(code);
-            return language
+            return language && translatesLanguage(code, dedicated)
               ? tab(code, translateLanguageLabel(language, locale))
               : null;
           })}
@@ -778,18 +829,21 @@ function pickedModelName(id: string): string {
   return name.replace(/-GGUF$/i, "");
 }
 
-function ModelMenu({
+// Memoized: the page re-renders per keystroke/streamed frame and the picker renders every row.
+const ModelMenu = memo(function ModelMenu({
   value,
   custom,
   onChange,
   onPickCustom,
   downloaded,
+  offered,
 }: {
   value: TranslateModelId;
   custom: CustomTranslateModel | null;
   onChange: (id: TranslateModelId) => void;
   onPickCustom: (model: CustomTranslateModel) => void;
   downloaded: Downloaded;
+  offered: readonly DedicatedTranslateModel[];
 }) {
   const t = useT();
   const busy = useTranslateStore((state) => state.phase !== null);
@@ -902,8 +956,8 @@ function ModelMenu({
     const builtIn = DEDICATED_TRANSLATE_MODELS.find(
       (model) =>
         model.repo.toLowerCase() === id.toLowerCase() &&
-        (variant ?? model.variant).toLowerCase() ===
-          model.variant.toLowerCase(),
+        (variant ?? model.variant ?? "").toLowerCase() ===
+          (model.variant ?? "").toLowerCase(),
     );
     if (builtIn) {
       onChange(builtIn.id);
@@ -953,10 +1007,10 @@ function ModelMenu({
             type="button"
             aria-label={`${t("translate.model.label")}: ${label}`}
             title={t("translate.model.label")}
-            className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger max-w-56 pl-3.5 pr-3"
+            className="unsloth-thinking-pill composer-model-chip unsloth-model-selector-trigger h-[calc(40px*var(--ui-space-scale,1))] max-w-64"
           >
             {preparing && (
-              <Spinner className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0" />
+              <Spinner className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0" />
             )}
             <span className="unsloth-thinking-label composer-model-chip-name truncate">
               {label}
@@ -964,7 +1018,7 @@ function ModelMenu({
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
-              className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+              className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
           </button>
         </DropdownMenuTrigger>
@@ -994,7 +1048,7 @@ function ModelMenu({
             <DropdownMenuLabel>
               {t("translate.model.recommended")}
             </DropdownMenuLabel>
-            {DEDICATED_TRANSLATE_MODELS.map((model) => (
+            {offered.map((model) => (
               <DropdownMenuRadioItem
                 key={model.id}
                 value={model.id}
@@ -1105,7 +1159,7 @@ function ModelMenu({
       </DropdownMenu>
     </div>
   );
-}
+});
 
 function OptionRow({
   label,
@@ -1118,15 +1172,19 @@ function OptionRow({
 }) {
   const id = useId();
   return (
-    <div className="grid gap-2">
-      <FieldLabel
-        htmlFor={id}
-        className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
-      >
-        {label}
+    <div className="flex items-start justify-between gap-4">
+      <div className="grid min-w-0 gap-2">
+        <FieldLabel
+          htmlFor={id}
+          className="text-ui-13 font-medium text-foreground"
+        >
+          {label}
+        </FieldLabel>
+        {description && <p className={HINT}>{description}</p>}
+      </div>
+      <div className="flex h-[1lh] shrink-0 items-center text-ui-13">
         {children(id)}
-      </FieldLabel>
-      {description && <p className={HINT}>{description}</p>}
+      </div>
     </div>
   );
 }
@@ -1150,9 +1208,9 @@ function OptionsPopover() {
           size="icon"
           title={t("translate.options.label")}
           aria-label={t("translate.options.label")}
-          className={ICON_ACTION}
+          className={cn(ICON_ACTION, "size-[calc(36px*var(--ui-space-scale,1))]")}
         >
-          <HugeiconsIcon icon={Settings01Icon} className="size-4" />
+          <HugeiconsIcon icon={Settings01Icon} className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" sideOffset={4} className="w-80 gap-5">
@@ -1231,6 +1289,7 @@ export function TranslatePage() {
       })),
     );
   const attempt = useTranslateStore((state) => state.attempt);
+  const historyUnsaved = useTranslateStore((state) => state.historyUnsaved);
   const {
     setSource,
     setPrefs,
@@ -1255,8 +1314,38 @@ export function TranslatePage() {
     })),
   );
   const navigate = useNavigate();
+  const gpu = useGpuInfo();
+  const offeredModels = useMemo(
+    () => offeredTranslateModels(gpu.checkpointQuantFormats),
+    [gpu.checkpointQuantFormats],
+  );
+  // Only once system info has arrived: until then no device reports FP8.
+  useEffect(() => {
+    if (!gpu.backend) return;
+    const offered = offeredTranslateModelId(
+      prefs.modelId,
+      gpu.checkpointQuantFormats,
+    );
+    if (offered !== prefs.modelId) setPrefs({ modelId: offered });
+  }, [gpu.backend, gpu.checkpointQuantFormats, prefs.modelId, setPrefs]);
+  const pickTranslateModel = useCallback(
+    (modelId: TranslateModelId) => setPrefs({ modelId }),
+    [setPrefs],
+  );
+  const pickCustomTranslateModel = useCallback(
+    (customModel: CustomTranslateModel) =>
+      setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel }),
+    [setPrefs],
+  );
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState<Downloaded>({});
+  // Names a downloaded subtitle file after the one it came from.
+  const [sourceFile, setSourceFile] = useState<string | null>(null);
+  // An image Tesseract read, while the box still holds its text.
+  const [imageSource, setImageSource] = useState<
+    (ImageOverlaySource & { text: string }) | null
+  >(null);
+  const [overlayOpen, setOverlayOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const sourceScrollRef = useRef<HTMLDivElement>(null);
@@ -1266,14 +1355,38 @@ export function TranslatePage() {
   const busy = phase !== null;
   const paneHeight = prefs.showPrompt ? PANE_HEIGHT_WITH_PROMPT : PANE_HEIGHT;
   const canTranslate = source.trim() !== "";
-  const detected = useMemo(
-    () => (prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null),
-    [prefs.from, source],
-  );
+  const dedicatedLanguages = translatesWithDedicated(prefs);
+  const detected = useMemo(() => {
+    const found =
+      prefs.from === AUTO_SOURCE ? detectTranslateLanguage(source) : null;
+    return found && translatesLanguage(found, dedicatedLanguages)
+      ? found
+      : null;
+  }, [prefs.from, source, dedicatedLanguages]);
   const canSwap =
     prefs.from !== AUTO_SOURCE ||
     (detected !== null && detected !== prefs.target);
   const stale = translationIsStale({ result, source, prefs });
+  const subtitleFormat = useMemo(
+    () =>
+      result && !stale && !busy
+        ? (parseSubtitles(output)?.format ?? null)
+        : null,
+    [result, stale, busy, output],
+  );
+  const downloadSubtitles = () => {
+    if (!result || !subtitleFormat) return;
+    const url = URL.createObjectURL(
+      new Blob([output], {
+        type: subtitleFormat === "vtt" ? "text/vtt" : "application/x-subrip",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = subtitleFileName(sourceFile, result.target, subtitleFormat);
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
   const modelKey = translateModelKey(prefs.modelId, prefs.customModel);
   const dedicated = dedicatedTranslateModel(prefs.modelId);
   const modelLabel =
@@ -1295,20 +1408,25 @@ export function TranslatePage() {
   useEffect(() => {
     downloadedRef.current = downloaded;
   }, [downloaded]);
+  // A download finished or a model deleted elsewhere (Hub page, another tab) changes the disk.
+  const inventoryVersion = useInventoryVersion();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `inventoryVersion` is the trigger, not an input.
   useEffect(() => {
     if (busy) return;
     const abort = new AbortController();
-    for (const model of DEDICATED_TRANSLATE_MODELS) {
+    const cachedModels = sharedCachedModelsListing(abort.signal);
+    for (const model of offeredModels) {
       // After every run: the disk shows a finished download, so the Hub is asked only before it is known missing.
       void translateModelDownloaded(model, abort.signal, {
         remote: downloadedRef.current[model.id] !== false,
+        cachedModels,
       }).then((onDisk) => {
         if (onDisk === null || abort.signal.aborted) return;
         setDownloaded((prev) => ({ ...prev, [model.id]: onDisk }));
       });
     }
     return () => abort.abort();
-  }, [busy]);
+  }, [busy, offeredModels, inventoryVersion]);
 
   useEffect(() => {
     if (!prefs.autoTranslate || busy || !canTranslate) return;
@@ -1354,7 +1472,7 @@ export function TranslatePage() {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const loadText = (text: string) => {
+  const loadText = (text: string, fileName: string | null = null) => {
     if (text.includes("\u0000")) {
       toast.error(t("translate.fileNotText"));
       return;
@@ -1367,11 +1485,35 @@ export function TranslatePage() {
       );
     }
     setSource(text);
+    setSourceFile(fileName);
   };
 
   const [readingFile, setReadingFile] = useState<string | null>(null);
+  const audioAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => audioAbort.current?.abort(), []);
+  const openAudio = async (file: File) => {
+    const controller = new AbortController();
+    audioAbort.current = controller;
+    setReadingFile(file.name);
+    const before = useTranslateStore.getState().source;
+    // A video's transcript becomes subtitles when the model times its segments.
+    const video = !isAudioAttachmentFile(file);
+    try {
+      const text = await transcribeAudioFile(file, controller.signal, t, video);
+      if (text && useTranslateStore.getState().source === before) {
+        loadText(text, video ? file.name : null);
+      }
+    } finally {
+      if (audioAbort.current === controller) audioAbort.current = null;
+      setReadingFile(null);
+    }
+  };
   const openFile = async (file: File | undefined) => {
     if (!file) return;
+    if (isTranscribedFile(file)) {
+      await openAudio(file);
+      return;
+    }
     if (isTextFile(file)) {
       let text: string | null;
       try {
@@ -1381,7 +1523,7 @@ export function TranslatePage() {
         return;
       }
       if (text !== null) {
-        loadText(text);
+        loadText(text, file.name);
         return;
       }
     }
@@ -1394,16 +1536,27 @@ export function TranslatePage() {
     // Read-only meanwhile; a swap or history pick still wins.
     const before = useTranslateStore.getState().source;
     try {
-      const { text, warning } = await extractDocumentText(
+      const { text, warning, blocks } = await extractDocumentText(
         upload,
         undefined,
         TRANSLATE_SOURCE_MAX_CHARS,
+        OVERLAY_IMAGE.test(file.name),
       );
       if (useTranslateStore.getState().source !== before) {
         return;
       }
       if (text.trim()) {
         loadText(text);
+        const found = (blocks ?? []).filter(isImageTextBlock);
+        setImageSource(
+          found.length > 0
+            ? {
+                file,
+                blocks: found,
+                text: useTranslateStore.getState().source,
+              }
+            : null,
+        );
         if (warning) toast.warning(warning);
       } else toast.error(t("translate.fileNotText"));
     } catch (error) {
@@ -1436,7 +1589,7 @@ export function TranslatePage() {
     dragHandlers,
   } = useNativeFileDrop({
     onFiles: (files) => void openFile(files[0]),
-    accept: OPEN_FILE_EXTENSIONS,
+    accept: DROP_ACCEPT,
     multiple: false,
     disabled: readingFile !== null,
     disabledReason: readingFile
@@ -1550,14 +1703,14 @@ export function TranslatePage() {
       {...dragHandlers}
       className="translate-page mx-auto flex w-full max-w-[calc(96rem*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-8 font-heading max-sm:px-4 sm:px-8 lg:px-12"
     >
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             {t("translate.title")}
           </h1>
           <Badge
             variant="secondary"
-            className="h-6 -translate-y-0.5 px-2.5 pt-1.5 pb-0.5 text-ui-12 text-muted-foreground"
+            className="h-6 -translate-y-0.5 px-2.5 pt-px pb-0 leading-none text-ui-12 text-muted-foreground"
           >
             {t("shell.beta")}
           </Badge>
@@ -1566,11 +1719,10 @@ export function TranslatePage() {
           <ModelMenu
             value={prefs.modelId}
             custom={prefs.customModel}
-            onChange={(modelId) => setPrefs({ modelId })}
-            onPickCustom={(customModel) =>
-              setPrefs({ modelId: CUSTOM_TRANSLATE_MODEL, customModel })
-            }
+            onChange={pickTranslateModel}
+            onPickCustom={pickCustomTranslateModel}
             downloaded={downloaded}
+            offered={offeredModels}
           />
           <OptionsPopover />
         </div>
@@ -1579,14 +1731,15 @@ export function TranslatePage() {
       <div className="grid gap-2">
         <div className="relative grid grid-cols-1 gap-x-3 gap-y-3 md:grid-cols-2">
           <IconAction
-            icon={ArrowLeftRightIcon}
             label={
               canSwap ? t("translate.swap") : t("translate.swapNeedsSource")
             }
             disabled={!canSwap || busy}
             onClick={() => swap(detected)}
-            className="absolute start-1/2 top-0 z-10 -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
-          />
+            className="absolute start-1/2 top-0 z-10 size-[calc(40px*var(--ui-space-scale,1))] -translate-x-1/2 max-md:hidden rtl:translate-x-1/2"
+          >
+            <SwapArrowsIcon className="size-5.5 -translate-x-[0.5px]" />
+          </IconAction>
           <section
             aria-label={t("translate.sourceLabel")}
             className="relative flex min-w-0 flex-col gap-3"
@@ -1752,7 +1905,7 @@ export function TranslatePage() {
             <input
               ref={fileInput}
               type="file"
-              accept={`text/*,${OPEN_FILE_EXTENSIONS}`}
+              accept={PICKER_ACCEPT}
               className="hidden"
               onChange={(event) => {
                 void openFile(event.target.files?.[0]);
@@ -1779,14 +1932,15 @@ export function TranslatePage() {
               className="md:ps-6"
             >
               <IconAction
-                icon={ArrowLeftRightIcon}
                 label={
                   canSwap ? t("translate.swap") : t("translate.swapNeedsSource")
                 }
                 disabled={!canSwap || busy}
                 onClick={() => swap(detected)}
-                className="ms-auto md:hidden"
-              />
+                className="ms-auto size-[calc(40px*var(--ui-space-scale,1))] md:hidden"
+              >
+                <SwapArrowsIcon className="size-5.5 -translate-x-[0.5px]" />
+              </IconAction>
             </LanguageTabs>
             <div
               className={cn(
@@ -1864,6 +2018,27 @@ export function TranslatePage() {
                       onClick={chatAboutResult}
                     />
                   )}
+                  {result &&
+                    !stale &&
+                    !busy &&
+                    imageSource?.text === source && (
+                      <IconAction
+                        className={FOOTER_ICON}
+                        iconClassName="size-5"
+                        icon={ImageIcon}
+                        label={t("translate.imageOverlay.show")}
+                        onClick={() => setOverlayOpen(true)}
+                      />
+                    )}
+                  {subtitleFormat && (
+                    <IconAction
+                      className={FOOTER_ICON}
+                      iconClassName="size-5"
+                      icon={Download01Icon}
+                      label={t("translate.downloadSubtitles")}
+                      onClick={downloadSubtitles}
+                    />
+                  )}
                   {!busy && (
                     <IconAction
                       icon={ArrowLeft02Icon}
@@ -1902,6 +2077,11 @@ export function TranslatePage() {
             ) : output !== "" && stale ? (
               <p className="text-muted-foreground">{t("translate.stale")}</p>
             ) : null}
+            <p role="status" className="text-muted-foreground">
+              {result !== null && output !== "" && historyUnsaved
+                ? t("translate.history.notSaved")
+                : null}
+            </p>
           </div>
         </div>
       </div>
@@ -1992,6 +2172,12 @@ export function TranslatePage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ImageOverlayDialog
+        source={overlayOpen ? imageSource : null}
+        prefs={prefs}
+        onOpenChange={setOverlayOpen}
+      />
 
       <TranslateHistoryList />
     </main>

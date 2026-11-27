@@ -14,6 +14,25 @@ export function diffusionPipelineLoadTarget(
     : { repoId: model, source: meta.source, onDevice: meta.source === "local" };
 }
 
+/** The repo a staged pick downloads, for its toast. A vendor id is fetched from its unsloth mirror, so the plan's
+ *  entries name the repo actually downloaded: the picked repo when it is fetched itself, else the checkpoint's
+ *  repo, else the largest download. */
+export function stagedDownloadRepoId(
+  entries: readonly { repoId: string; bytes: number; checkpoint?: boolean }[],
+  fallback: string,
+): string {
+  const picked = fallback.trim().toLowerCase();
+  const own = entries.find((e) => e.repoId.toLowerCase() === picked);
+  if (own) return own.repoId;
+  const checkpoint = entries.find((e) => e.checkpoint);
+  if (checkpoint) return checkpoint.repoId;
+  const largest = entries.reduce<(typeof entries)[number] | null>(
+    (best, e) => (best === null || e.bytes > best.bytes ? e : best),
+    null,
+  );
+  return largest?.repoId ?? fallback;
+}
+
 /** A pinned snapshot is already on disk (and its revision may move), so only companions and a hosted denoiser, which it lacks, download. */
 export function diffusionStagingEntries(
   entries: readonly {

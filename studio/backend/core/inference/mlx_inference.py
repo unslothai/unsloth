@@ -1254,7 +1254,13 @@ class VLMPromptCacheSession:
             self._forward.__exit__(*exc)
         return False
 
-    def find_prefix_length(self, token_ids):
+    def find_prefix_length(
+        self,
+        token_ids,
+        *,
+        video_timing = (),
+    ):
+        # mlx-vlm 0.8.1 passes video_timing; always empty here, as video requests get no session.
         token_ids = list(token_ids)
         self._token_ids = token_ids
         rows = len(token_ids) + self._max_new_tokens
@@ -1370,7 +1376,13 @@ class VLMPromptCacheSession:
         except Exception as exc:
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
 
-    def update(self, _token_ids, _cache):
+    def update(
+        self,
+        _token_ids,
+        _cache,
+        *,
+        video_timing = (),
+    ):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
         stops reading early."""
 
@@ -2628,6 +2640,17 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _mlx_unsupported_model_type(model_name, hf_token = None):
+    """The ``model_type`` neither mlx-vlm nor mlx-lm builds, or None (also when the config cannot be read)."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from core.inference.mlx_model_support import unsupported_model_type
+        return unsupported_model_type(_read_raw_config_json(model_name, hf_token))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("MLX architecture support check skipped for %s (%s)", model_name, exc)
+        return None
+
+
 def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
     """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
     try:
@@ -2642,9 +2665,8 @@ def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
 
 
 def _text_load_drops_the_tower(model_name, hf_token = None) -> bool:
-    """Whether a text-only load builds mlx-lm's text model without the vision weights. unsloth-zoo keeps a
-    family whose mlx-lm build strips the tower only in sanitize on mlx-vlm, tower attached, so that one
-    keeps its vision load and only stops reading images."""
+    """Text-only load drops the tower, except families mlx-lm strips only in sanitize on mlx-vlm:
+    those keep the vision load and just stop reading images."""
     try:
         from utils.models.model_config import _read_raw_config_json
         from unsloth_zoo.mlx.loader import _prefer_vlm_loader_for_text
@@ -6554,8 +6576,7 @@ class MLXInferenceBackend:
         markers,
         constraint = None,
     ):
-        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block,
-        and a document-only grammar allows none."""
+        """Reasoning budget, templated replies only; document-only grammars allow none."""
         if not isinstance(prompt, str) or not self._budgets_reasoning():
             return None
         if constraint is not None and not constraint.allows_reasoning:
@@ -6839,9 +6860,6 @@ class MLXInferenceBackend:
             getattr(config, "base_model", None) if is_lora else model_name
         )
         zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
-        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
-            route_config, hf_token
-        )
         # Vision off reads no images. An adapter or audio input keeps the processor it was built for.
         vision_off = bool(
             disable_vision
@@ -6851,6 +6869,9 @@ class MLXInferenceBackend:
         )
         if vision_off and _text_load_drops_the_tower(route_config, hf_token):
             is_vision = zoo_multimodal = False
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
+        )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -6913,6 +6934,12 @@ class MLXInferenceBackend:
                 f"orchestrator -- this fallback indicates a transient HF "
                 f"Hub failure during initial detection. Retry the request."
             )
+
+        # Refused from config.json alone, before the weights download, when neither library has the architecture.
+        unsupported = _mlx_unsupported_model_type(route_config, hf_token)
+        if unsupported is not None:
+            from core.inference.mlx_model_support import unsupported_model_type_message
+            raise ValueError(unsupported_model_type_message(unsupported, model_name))
 
         if hf_token:
             import os
@@ -7073,6 +7100,11 @@ class MLXInferenceBackend:
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
+
+        # Zoo can build a text-only checkpoint with mlx-vlm and return just its tokenizer.
+        if not use_vlm and getattr(model, "_is_vlm_model", None) is True:
+            use_vlm = True
+            tokenizer_or_processor = getattr(model, "_processor", tokenizer_or_processor)
 
         zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
         if zoo_loaded_multimodal:
@@ -8262,6 +8294,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8539,6 +8572,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8670,6 +8704,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                image_marker = _image_placeholder(self._tokenizer, self._processor),
             )
         except Exception as exc:
             if images is None or has_tool_history:
@@ -8892,14 +8927,12 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     preserved_tokens = reasoning_control_tokens(markers),
                 )
+        _continued = bool(continue_final_message and trailing_assistant_text(messages))
         normalizer = (
             make_reasoning_normalizer(
                 markers,
-                in_reasoning = prompt_opens_reasoning_channel(
-                    prompt,
-                    markers,
-                    bool(continue_final_message and trailing_assistant_text(messages)),
-                ),
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, _continued),
+                continued = _continued,
             )
             # The normalizer would rewrite marker text inside the document.
             if markers is not None and (constraint is None or constraint.allows_reasoning)

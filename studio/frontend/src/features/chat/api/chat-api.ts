@@ -1243,6 +1243,7 @@ export interface UpdateChatThreadOptions {
  *  names, for a writer that knows what changed but not what else the row holds. */
 export type ChatThreadWritePatch = Partial<ThreadRecord> & {
   settingsPatch?: ThreadRecord["settings"];
+  settingsDefaults?: ThreadRecord["settings"];
   /** Orders a writer's snapshot writes against its own earlier ones, never across tabs. */
   settingsSeq?: number;
   settingsWriter?: string;
@@ -1690,10 +1691,19 @@ export async function saveChatMessage(
 export async function syncChatMessages(
   threadId: string,
   messages: MessageRecord[],
-  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
+  options: {
+    pruneMissing?: boolean;
+    deletedMessageIds?: string[];
+    echo?: boolean;
+  } = {},
 ): Promise<MessageRecord[]> {
+  // Deletes always echo: publishForkBoundary reads the stored rows back.
+  const skipEcho =
+    options.echo === false &&
+    options.pruneMissing !== true &&
+    (options.deletedMessageIds?.length ?? 0) === 0;
   const response = await threadWriteFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages${skipEcho ? "?echoMessages=false" : ""}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1708,7 +1718,8 @@ export async function syncChatMessages(
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
   // Pruning deletes messages, which other tabs must see immediately, so it does not coalesce.
   notifyChatHistoryUpdated({ coalesce: options.pruneMissing !== true });
-  return data.messages;
+  // An older backend ignores the flag and echoes as before; either answer resolves the same.
+  return skipEcho ? messages : data.messages;
 }
 
 export async function countBackendChats(): Promise<number> {
@@ -1755,18 +1766,52 @@ export async function clearBackendChats(
   };
 }
 
-export async function buildBackendChatExport(): Promise<{
+type BackendChatExport = {
   exportedAt: string;
   version: number;
   threadCount: number;
   projects?: ProjectRecord[];
   threads: ThreadRecord[];
   messages: MessageRecord[];
-}> {
-  const response = await authFetch("/api/chat/export");
-  const data = await parseJsonOrThrow<Awaited<
-    ReturnType<typeof buildBackendChatExport>
-  > | null>(response);
+};
+
+export async function buildBackendChatExport(
+  archived = false,
+): Promise<BackendChatExport> {
+  const response = await authFetch(
+    `/api/chat/export${archived ? "?archived=true" : ""}`,
+  );
+  if (!response.ok) await parseJsonOrThrow(response);
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  const messages: MessageRecord[] = [];
+  let head = null as BackendChatExport | null;
+  let data = null as BackendChatExport | null;
+  let pending: string[] = [];
+  const readLine = (line: string) => {
+    if (head === null) head = JSON.parse(`${line}]}`);
+    else messages.push(JSON.parse(line.endsWith(",") ? line.slice(0, -1) : line));
+  };
+  try {
+    while (reader) {
+      const { done, value } = await reader.read();
+      const text = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      let start = 0;
+      for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+        pending.push(text.slice(start, end));
+        readLine(pending.join(""));
+        pending = [];
+        start = end + 1;
+      }
+      pending.push(text.slice(start));
+      if (done) break;
+    }
+    const last = pending.join("");
+    if (head === null) data = JSON.parse(last);
+    else if (last === "]}") data = { ...head, messages };
+  } catch {
+    data = null;
+  }
   if (!data) throw new Error("The chat export did not download completely.");
   return data;
 }

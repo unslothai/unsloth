@@ -260,9 +260,8 @@ def batch_report_size():
 
 
 def batch_token_counts(inputs):
-    """[slots, real, supervised, rows, longest_row] int64 tensors on the batch device, or None.
-
-    supervised uses shifted labels[..., 1:] != -100 (the loss never sees a row's first label)."""
+    """Returns [slots, real, supervised, rows, longest_row] int64 tensors on the batch device, or
+    None; supervised uses labels[..., 1:] != -100 (the loss never sees a row's first label)."""
     if not hasattr(inputs, "get"):
         return None
     input_ids = inputs.get("input_ids")
@@ -352,6 +351,10 @@ def install_batch_report(trainer):
                 _print_batch_report(trainer, state)
         return original_training_step(model, inputs, *args, **kwargs)
 
+    # Read-only (counts each micro-batch's tokens): layer-major windows may run under it, when it sits directly
+    # over the class method (not over another instance-level wrapper they would bypass).
+    if getattr(original_training_step, "__func__", None) is type(trainer).training_step:
+        training_step._unsloth_layer_major_observer = training_step
     trainer.training_step = training_step
 
     from transformers import TrainerCallback

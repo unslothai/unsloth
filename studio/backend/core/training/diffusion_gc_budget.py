@@ -9,8 +9,8 @@ card idle. Step 1 measures the first block of each class; afterwards free memory
 recompute (same kernels, same inputs, so loss and gradients are unchanged). An out-of-memory error halves the kept set
 (every block checkpointed once nothing is left) and reruns the step from the same inputs.
 
-``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm; ``plain`` checkpoints every block
-and ``partial`` every Nth, as before.
+``UNSLOTH_DIFFUSION_GC_MODE``: unset or ``auto`` uses this plan on CUDA and ROCm (unset leaves it off on a discrete
+Windows ROCm card, see rocm_windows_discrete); ``plain`` checkpoints every block and ``partial`` every Nth, as before.
 
 The blocks that stay checkpointed keep their long attention outputs (a selective checkpoint policy), so the backward
 recompute skips those kernels: a few percent of the card buys most of the attention forward. The plan charges every
@@ -49,12 +49,26 @@ def _mem_get_info() -> tuple[int, int]:
     return trusted_mem_get_info()
 
 
-def _is_rocm() -> bool:
+def rocm_windows_discrete(device = "cuda") -> bool:
+    """A discrete (not APU) Radeon card under Windows ROCm. WDDM shows these budgets the whole card as free (blind to
+    other processes) and satisfies an overflow from host RAM instead of raising, so the OOM step-down never fires;
+    the budgets were measured only on a unified-memory gfx1151. Never raises: unknown answers False."""
+    import sys
+
+    if sys.platform != "win32":
+        return False
     try:
         import torch
-        return bool(getattr(torch.version, "hip", None))
+        from core.inference.rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch):
+            return False
+        from core.inference.host_pinning import device_integrated_status
+
+        # Positive discrete evidence only: an unreadable property must not turn an APU's budgets off.
+        return device_integrated_status(device) is False
     except Exception:  # noqa: BLE001
-        return True
+        return False
 
 
 def _owner(function: Any) -> Any:
@@ -109,8 +123,7 @@ def _attention_ops() -> frozenset:
 
 
 def _attention_bytes(args: tuple) -> int:
-    """Bytes an attention kernel's kept outputs hold: the output (query shape, value head size) and an fp32
-    logsumexp per query row."""
+    """Kept output bytes: query shape with value head size, plus fp32 logsumexp per query row."""
     q = args[0] if args else None
     v = args[2] if len(args) > 2 else None
     if getattr(q, "ndim", 0) < 2:
@@ -147,17 +160,68 @@ def save_attention_context_fn(on_save: Optional[Any] = None) -> Optional[Any]:
     if not ops:
         return None
 
+    def keeps(op: Any, args: tuple) -> bool:
+        if op not in ops:
+            return False
+        key = args[1] if len(args) > 1 else None
+        return getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS
+
     def policy(ctx: Any, op: Any, *args: Any, **kwargs: Any) -> Any:
-        if op in ops:
-            key = args[1] if len(args) > 1 else None
-            if getattr(key, "ndim", 0) >= 2 and key.shape[-2] >= _SAVE_ATTENTION_MIN_KEYS:
-                # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
-                if on_save is not None and not getattr(ctx, "is_recompute", False):
-                    on_save(_attention_bytes(args))
-                return save
+        if keeps(op, args):
+            # torch 2.10 / 2.11 ask again during the recompute: count the first pass only.
+            if on_save is not None and not getattr(ctx, "is_recompute", False):
+                on_save(_attention_bytes(args))
+            return save
         return recompute
 
-    return functools.partial(create, policy)
+    def contexts() -> tuple:
+        forward, recompute_ctx = create(policy)
+        return _private_saved_outputs(forward, keeps), recompute_ctx
+
+    return contexts
+
+
+def _private_saved_outputs(caching: Any, keeps: Any) -> Any:
+    """Hand the caller a copy of each kept output: Inductor reuses the buffer in place, corrupting the cache (pytorch #201158)."""
+    cls = _private_caching_class(type(caching))
+    if cls is None:
+        return caching
+    caching.__class__ = cls
+    caching._unsloth_keeps = keeps
+    return caching
+
+
+@functools.lru_cache(maxsize = None)
+def _private_caching_class(base: type) -> Optional[type]:
+    """Subclass (not a second stacked mode) of torch's caching mode; None if not a TorchDispatchMode."""
+    try:
+        import torch
+        from torch.utils._python_dispatch import TorchDispatchMode
+        if not (isinstance(base, type) and issubclass(base, TorchDispatchMode)):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    def _copy(t: Any) -> Any:
+        # Fake / functional tensors mean compile tracing: nothing is replayed.
+        return t.clone() if type(t) is torch.Tensor else t
+
+    class _PrivateSavedOutputs(base):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
+            out = super().__torch_dispatch__(func, types, args, kwargs)
+            if self._unsloth_keeps(func, args):
+                # Mode is off the stack here, so the copy is not cached.
+                return torch.utils._pytree.tree_map(_copy, out)
+            return out
+
+    _PrivateSavedOutputs.__name__ = base.__name__
+    return _PrivateSavedOutputs
 
 
 class _Checkpoint:
@@ -617,6 +681,11 @@ def enable_budgeted_checkpointing(model: Any, device: str) -> Optional[BudgetedC
     """Install the budgeted checkpoint on a diffusers model; None when the mode, device or model does not allow it
     (the caller then checkpoints every block as before)."""
     if gc_budget_mode() != "auto" or device != "cuda":
+        return None
+    # Off on a discrete Windows ROCm card until measured; UNSLOTH_DIFFUSION_GC_MODE=auto (set explicitly) opts in.
+    if (os.environ.get(GC_MODE_ENV, "") or "").strip().lower() != "auto" and rocm_windows_discrete(
+        device
+    ):
         return None
     enable = getattr(model, "enable_gradient_checkpointing", None)
     if not callable(enable):

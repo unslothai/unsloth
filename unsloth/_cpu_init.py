@@ -33,10 +33,17 @@ from .import_fixes import fix_transformers_quantizer_unquantized_converters
 fix_transformers_quantizer_unquantized_converters()
 del fix_transformers_quantizer_unquantized_converters
 
+# Tokenizer files naming host paths (vocab_file, vocab, merges, ...); the GPU route installs it in _gpu_init.
+from .import_fixes import fix_transformers_tokenizer_config_vocab_file_override
+
+fix_transformers_tokenizer_config_vocab_file_override()
+del fix_transformers_tokenizer_config_vocab_file_override
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
-    f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer. "
+    f"slower than GPU training; supported: text LoRA / full finetuning with SFTTrainer, and "
+    f"DPO / ORPO / KTO / CPO with TRL's trainers. "
     f"Set UNSLOTH_DISABLE_CPU_FALLBACK=1 to raise instead."
 )
 
@@ -79,6 +86,9 @@ class FastLanguageModel(FastCPUModel):
         from .tiling import check_tiling_available, loader_tile_mlp
 
         check_tiling_available(unsloth_tiled_mlp)
+        from ._gguf_load import require_gguf_package
+
+        require_gguf_package(kwargs.get("gguf_file"))
         model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
         loader_tile_mlp(model, unsloth_tiled_mlp)
         _report_cpu_memory("load", model)
@@ -134,6 +144,14 @@ def train_on_responses_only(*args, **kwargs):
 def check_dataset(*args, **kwargs):
     from .chat_templates import check_dataset as _check_dataset
     return _check_dataset(*args, **kwargs)
+
+
+def PatchDPOTrainer():
+    """No-op like the GPU route: TRL's DPO / ORPO / CPO trainers run as is on CPU."""
+
+
+def PatchKTOTrainer():
+    """No-op like the GPU route: TRL's KTO trainer runs as is on CPU."""
 
 
 try:
@@ -378,6 +396,8 @@ __all__ = [
     "standardize_sharegpt",
     "train_on_responses_only",
     "check_dataset",
+    "PatchDPOTrainer",
+    "PatchKTOTrainer",
     "UnslothTrainer",
     "UnslothTrainingArguments",
     "UnslothVisionDataCollator",

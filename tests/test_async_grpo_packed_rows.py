@@ -163,3 +163,25 @@ def test_self_test_restores_training_mode():
     model.model.layers[0].eval()
     ns["_packing_honored"](model.base_model)
     assert model.training and model.model.training and not model.model.layers[0].training
+
+
+class _SyncsOnTrain(torch.nn.Module):
+    """A train() override that keeps its own copy of the mode, as Int4PackedLinear does."""
+
+    def __init__(self):
+        super().__init__()
+        self.synced = self.training
+
+    def train(self, mode = True):
+        self.synced = bool(mode)
+        return super().train(mode)
+
+
+def test_self_test_restores_mode_through_train_overrides():
+    ns = _load()
+    model = _tiny_llama().eval()
+    probe = model.model.layers[0].probe = _SyncsOnTrain()
+    probe.train(False)
+    ns["_packing_honored"](model.base_model)
+    assert not model.training and not probe.training
+    assert probe.synced is False  # the probe's backbone.train() ran it with True

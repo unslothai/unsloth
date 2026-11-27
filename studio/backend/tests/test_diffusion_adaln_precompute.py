@@ -976,3 +976,135 @@ def test_gguf_qwen_edit_streamed_render_matches_stock(monkeypatch, policy, top, 
     assert all(torch.equal(a, b) for a, b in zip(ref, out))
     assert all(torch.equal(a, b) for a, b in zip(ref, [o.cpu() for o in _run(model, calls)]))
     assert ap.installed(model) is not fallback
+
+
+@pytest.mark.parametrize("mid_capture", [False, True])
+def test_uninstall_drops_recorded_graphs_before_their_buffers(mid_capture):
+    """Uninstall resets the pipe's graphs before freeing the buffers they read, deferred past an active capture."""
+    import gc
+    import weakref
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    pipe = _pipe(len(calls))
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    _run(model, calls)
+    st = model.__dict__[ap.STATE_ATTR]
+    bufs = [weakref.ref(buf) for buf, _views in st.layouts.values()]
+    del st
+    assert bufs
+    seen = []
+
+    class _Handle:
+        cache = {}
+
+        def reset(self):
+            gc.collect()
+            seen.append(all(r() is not None for r in bufs))
+
+    pipe._unsloth_cuda_graphs = (_Handle(),)
+    recording = getattr(cg._OUTSIDE_LOCAL, "recording", 0)
+    if mid_capture:
+        cg._OUTSIDE_LOCAL.recording = recording + 1
+    try:
+        assert ap.uninstall(model, reason = "unsupported call: test")
+        if mid_capture:
+            assert seen == []  # nothing dropped while the recording runs
+            gc.collect()
+            assert all(r() is not None for r in bufs)
+    finally:
+        cg._OUTSIDE_LOCAL.recording = recording
+    if mid_capture:
+        cg.drain_deferred_releases()
+    assert seen == [True]
+    gc.collect()
+    assert all(r() is None for r in bufs)
+
+
+def _layout_refs(model):
+    import weakref
+
+    refs = [weakref.ref(buf) for buf, _views in model.__dict__[ap.STATE_ATTR].layouts.values()]
+    assert refs and all(r() is not None for r in refs)
+    return refs
+
+
+@pytest.mark.parametrize("via_hook", [False, True])
+def test_uninstall_from_a_workflow_pipe_resets_the_owner_graphs(via_hook):
+    """A workflow pipe sharing the denoiser lacks the handles; uninstall must still reset the model's graph."""
+    import gc
+    import types
+    from unittest.mock import patch
+
+    from core.inference import diffusion_cuda_graph as cg
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    owner = _pipe(len(calls))
+    owner.transformer = model
+    assert ap.install(model, owner, requested = ap.MODE_ON)
+    _run(model, calls)
+    refs = _layout_refs(model)
+    graph = cg.GraphedForward(model).enable()
+    try:
+        graph.cache["recorded"] = types.SimpleNamespace(pool_token = None, graph = None)
+        owner._unsloth_cuda_graphs = (graph,)
+        workflow = _pipe(len(calls))
+        workflow.transformer = model
+        ap.bind_pipe(workflow)
+        if via_hook:
+            with patch.object(
+                ap, "_serve", side_effect = ap._Unsupported("synthetic unsupported call")
+            ):
+                ap._pre_hook(model, (), {})
+        else:
+            assert ap.uninstall(model, reason = "test")
+        assert not ap.installed(model)
+        assert workflow.transformer.forward is graph
+        assert not graph.cache
+        gc.collect()
+        assert all(r() is None for r in refs)
+    finally:
+        graph.free()
+
+
+def test_standalone_install_keeps_no_buffers_after_uninstall():
+    """``install(model)`` without a pipe: nothing graphs the model, so uninstall frees the layouts at once."""
+    import gc
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    for _cycle in range(2):
+        assert ap.install(model, requested = ap.MODE_ON)
+        _run(model, calls)
+        refs = _layout_refs(model)
+        assert ap.uninstall(model)
+        gc.collect()
+        assert all(r() is None for r in refs)
+
+
+def test_a_graph_that_failed_to_reset_keeps_the_buffers_it_reads():
+    import gc
+
+    model = _flux()
+    calls = _flux_calls(torch.float32)
+    pipe = _pipe(len(calls))
+    assert ap.install(model, pipe, requested = ap.MODE_ON)
+    _run(model, calls)
+    refs = _layout_refs(model)
+
+    class _Stuck:
+        cache = {"recorded": object()}
+
+        def reset(self):
+            raise RuntimeError("reset failed")
+
+    pipe._unsloth_cuda_graphs = (_Stuck(),)
+    assert ap.uninstall(model)
+    gc.collect()
+    assert all(r() is not None for r in refs)
+    pipe._unsloth_cuda_graphs = ()
+    gc.collect()
+    assert all(r() is None for r in refs)

@@ -88,6 +88,9 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
+    # int8 is the W8A8 base or torchao weight-only (UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only): different base math,
+    # one name.
+    ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
 )
@@ -119,6 +122,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
+        "base_int8_kernel",
         "base_dit",
         "base_dit_revision",
     }
@@ -188,6 +192,8 @@ class CheckpointIdentity:
     ema_decay: Optional[str] = None
     # Set by the DiT trainer once it knows whether fp8/mxfp8 took; None elsewhere reads as cannot-tell.
     base_precision_effective: Optional[str] = None
+    # "w8a8" or "weight-only" for an int8 base, set by the DiT trainer; None elsewhere and in older bundles.
+    base_int8_kernel: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
     base_dit: Optional[str] = None
@@ -228,6 +234,7 @@ class CheckpointIdentity:
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
             "base_precision_effective": self.base_precision_effective,
+            "base_int8_kernel": self.base_int8_kernel,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Resolution is a hard identity: trainers crop to it, so loadable tensors alone are not a resume.
@@ -271,6 +278,7 @@ class CheckpointIdentity:
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 ema_decay = _optional_str(data.get("ema_decay")),
                 base_precision_effective = _optional_str(data.get("base_precision_effective")),
+                base_int8_kernel = _optional_str(data.get("base_int8_kernel")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -460,6 +468,11 @@ def with_resolved_base_precision(
     if not value:
         return identity  # nothing resolved; leave it unknown rather than asserting a value
     return replace(identity, base_precision_effective = value)
+
+
+def with_int8_kernel(identity: "CheckpointIdentity", w8a8: bool) -> "CheckpointIdentity":
+    """Records which int8 base trained: a resume must not switch W8A8 and torchao weight-only under one name."""
+    return replace(identity, base_int8_kernel = "w8a8" if w8a8 else "weight-only")
 
 
 _DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}
@@ -1666,6 +1679,28 @@ def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+def recorded_int8_resume_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") a resumed bundle trained on, or None when it is unreadable or
+    did not train int8. A bundle without ``base_precision_effective`` counts as int8 when it requested int8, and one
+    without ``base_int8_kernel`` trained weight-only (both records postdate weight-only int8). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is None:
+                continue
+            effective = (saved.base_precision_effective or "").strip().lower()
+            requested = (saved.base_precision or "").strip().lower()
+            if effective == "int8" or (not effective and requested == "int8"):
+                return saved.base_int8_kernel or "weight-only"
+            return None
+    except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
+        pass
+    return None
+
+
 def recorded_bucketing(path_value: str) -> bool:
     """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:
@@ -1837,7 +1872,25 @@ class LoadedCheckpoint:
         path = self._file(role)
         if path is None:
             return None
+        _refuse_pickle_on_old_torch(torch, path)
         return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
+def _refuse_pickle_on_old_torch(torch: Any, path: Path) -> None:
+    """Same rule as unsloth/import_fixes.py::refuse_pickle_checkpoint_on_old_torch (diffusion never
+    imports unsloth): torch < 2.6 runs code hidden in a .pt even with weights_only = True
+    (CVE-2025-32434), so a resume bundle is refused there instead of loaded."""
+    try:
+        from packaging.version import Version
+        old = Version(str(torch.__version__).split("+")[0]).release[:2] < (2, 6)
+    except Exception:  # noqa: BLE001 -- an unparsable version is a newer build, not an old one
+        return
+    if old:
+        raise ResumeError(
+            f"'{path.name}' is a pickled state file and torch {torch.__version__} can execute code "
+            "hidden in it even with weights_only = True (CVE-2025-32434). Upgrade to torch >= 2.6 "
+            "to resume this run."
+        )
 
 
 def load_checkpoint(path: str | os.PathLike[str]) -> LoadedCheckpoint:

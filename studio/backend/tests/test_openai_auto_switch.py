@@ -778,6 +778,17 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_switch_into_the_primary_counts_as_its_use(monkeypatch):
+    from core.inference import model_slots
+
+    _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert model_slots.primary_last_used > 0.0
+
+
 def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     cancel_event = threading.Event()
@@ -3795,7 +3806,8 @@ def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
     request = LoadRequest(**named, use_saved_settings = True)
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
-    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+    assert (filled.model_path, filled.cache_type_kv) == ("org/A-GGUF", "q8_0")
+    assert filled.gguf_variant == "q4_k_m"
 
 
 def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):
@@ -3858,6 +3870,27 @@ def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
     assert (filled.max_seq_length, filled.cache_type_kv, filled.n_parallel) == (32768, "f16", 2)
     assert "gpu_layers" not in filled.model_fields_set
     assert filled.llama_extra_args == ["-cmoe"]
+
+
+@pytest.mark.parametrize(
+    "saved, sent, context",
+    [
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "auto"}, 4096),
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "manual", "gpu_layers": 20}, 4096),
+        ({}, {"gpu_memory_mode": "manual"}, 0),
+        ({}, {"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "0"]}, 4096),
+        (
+            {},
+            {"gpu_memory_mode": "manual", "gpu_layers": 20, "llama_extra_args": ["-ngl", "auto"]},
+            0,
+        ),
+    ],
+)
+def test_the_saved_context_follows_the_placement_the_load_sent(monkeypatch, saved, sent, context):
+    _saved(monkeypatch, {"max_seq_length": 4096, **saved})
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True, **sent)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.max_seq_length == context
 
 
 @pytest.mark.parametrize(
@@ -12286,6 +12319,33 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
         monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
         monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
     return backend, recorder
+
+
+def test_transformers_auto_switch_registers_image_swap_recipe(monkeypatch):
+    from core.inference import chat_media_swap
+    from models.inference import LoadResponse
+
+    llama, _ = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    orchestrator = inference_route._peek_inference_backend()
+    monkeypatch.setattr(chat_media_swap, "_transformers_load", None)
+    monkeypatch.setenv(chat_media_swap.SWAP_ENV, "1")
+
+    async def load(request, *_args, **_kwargs):
+        llama.is_loaded = False
+        orchestrator.active_model_name = request.model_path
+        orchestrator.models[request.model_path] = {}
+        orchestrator._proc = object()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "Model B", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    _run_hook("org/B-GGUF")
+
+    assert chat_media_swap.chat_can_swap()
+    assert chat_media_swap._transformers_load.launch.model_path == orchestrator.active_model_name
+    assert chat_media_swap._transformers_load.launch._advertised_id == "org/B-GGUF"
+    assert not chat_media_swap._transformers_load.extra["user_loaded"]
 
 
 def _chat_image_request(*urls):

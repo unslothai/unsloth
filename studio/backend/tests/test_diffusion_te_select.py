@@ -271,8 +271,7 @@ def test_flux3_prompt_helper_matches_bitwise():
 
 @pytest.mark.parametrize("indices, last_pre_norm", [((-1,), True), (FLUX3_LAYERS, False)])
 def test_recorded_states_follow_a_boundary_that_moved_the_output(indices, last_pre_norm):
-    """Recorded states land where a multi-GPU boundary moved the output (2x T4: a cuda:1 state met a cuda:0 mask).
-    ``meta`` stands in for home."""
+    """Recorded states land on the device a multi-GPU boundary moved the output to."""
     encoder = _encoder()
     orig = encoder.forward
 

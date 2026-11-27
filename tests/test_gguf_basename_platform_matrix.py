@@ -55,9 +55,6 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
     _GPU_STATE = {"cell": _GPU_CELL, "error": str(exc)}
 
 
-# Lifted without importing unsloth.
-
-
 def _load_helper():
     src = _SAVE_PY.read_text(encoding = "utf-8")
     for node in ast.parse(src).body:
@@ -68,7 +65,6 @@ def _load_helper():
     raise AssertionError("unsloth/save.py defines no _model_basename")
 
 
-# OS flavour -> (path module, a base-model path that OS actually produces)
 _OS_CELLS = {
     "windows": (ntpath, r"D:\Models\Merged Models\MyModel"),
     "linux": (posixpath, "/home/u/models/MyModel"),

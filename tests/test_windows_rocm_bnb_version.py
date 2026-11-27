@@ -42,8 +42,7 @@ def import_fixes():
 
 @pytest.fixture()
 def clean_env(monkeypatch):
-    """Unset the env vars and remove them afterwards; the function writes
-    os.environ directly, which monkeypatch does not auto-revert."""
+    """os.environ is written directly, which monkeypatch does not auto-revert; unset them here."""
     for var in (
         "BNB_ROCM_VERSION",
         "UNSLOTH_SKIP_BNB_ROCM_VERSION",

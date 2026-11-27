@@ -3439,6 +3439,7 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
             functions(
                 SETUP_SRC,
                 "Test-WoaWheelTagsParity",
+                "Test-WoaWheelTagsUsableParity",
                 "Test-WoaPairsWithTorchParity",
                 "Get-WoaCudaWheelVersionParity",
             ),
@@ -4641,7 +4642,7 @@ class TestAnUpdateKeepsTheInstalledPairWhenTheIndexLags:
         return slice_between(
             SETUP_SRC,
             '$WinArm64TorchSpec = "torch>=2.4"',
-            '$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" }',
+            '$_tritonSpec = Get-TritonWindowsSpec -TorchVersion "" -WinArm64 ([bool]$WinArm64Venv)',
         )
 
     @staticmethod

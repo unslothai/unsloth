@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from packaging.version import Version
 
 from ..device_type import DEVICE_TYPE
+from ..import_fixes import _unmask_rows_attending_to_nothing
 from ..models._utils import *
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
@@ -62,16 +63,21 @@ def _compiling():
 
 
 def _xformers_runs_on_device(device = "cuda", supports_bf16 = None) -> bool:
-    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    """One tiny attention forward + backward; True iff both xformers kernels actually run here.
+    A build can ship the forward kernel for a card but not the backward one, which would pass a
+    forward-only probe and then fail on the first training step."""
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel but run xformers fine in
         # float16, so pick the dtype the device supports.
         if supports_bf16 is None:
             supports_bf16 = SUPPORTS_BFLOAT16
         dtype = torch.bfloat16 if supports_bf16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
-        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
-        xformers_attention(q, q, q, attn_bias = attn_bias)
+        # The lazy per-device probe can run during generation, so force autograd on here.
+        with torch.inference_mode(False), torch.enable_grad():
+            q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype, requires_grad = True)
+            attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+            out = xformers_attention(q, q, q, attn_bias = attn_bias)
+            out.backward(torch.ones_like(out))
         # Launches are async, so synchronize or a deferred kernel failure escapes this probe.
         torch.cuda.synchronize(device)
         return True
@@ -89,7 +95,7 @@ def _xformers_disabled_for_capability(
     fa3_enabled = _xformers_fa3_enabled,
 ) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
+    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward + backward to decide.
     # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
     # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
     if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
@@ -1796,17 +1802,60 @@ def _saved_attention_frames_possible() -> bool:
     # a graph break per layer for nothing, Unsupported under a user's fullgraph=True.
     if not _unsloth_checkpoint_installed():
         return False
-    if not torch.compiler.is_compiling():
+    return not torch.compiler.is_compiling() or _in_unsloth_compiled_region()
+
+
+def _may_cross_into_saved_attention() -> bool:
+    # Eager code, Unsloth's own blocks and a compile that may graph break all cross compiler.disable,
+    # so both checkpoint passes route alike even when only one is traced (zoo matches replay calls by
+    # position). Only a compile where a graph break is fatal stays in the graph.
+    if not torch.compiler.is_compiling() or _in_unsloth_compiled_region():
         return True
+    return not _graph_break_is_fatal()
+
+
+def _in_unsloth_compiled_region() -> bool:
+    # Unsloth's own per-layer compile (fullgraph=False, a graph break is legal); not set when the block
+    # is inlined into a user's torch.compile, which may be fullgraph=True.
     flag = getattr(sys.modules.get("unsloth.models._block_compile"), "_IN_COMPILED_REGION", None)
     return bool(flag) and bool(flag[0])
 
 
+def _graph_break_is_fatal_now() -> bool:
+    # The tracing root's fullgraph=True / error_on_graph_break. Unknown (no tracer API): assume fatal.
+    try:
+        from torch._dynamo.symbolic_convert import InstructionTranslator
+        tx = InstructionTranslator.current_tx()
+    except Exception:
+        return True
+    if tx is None:
+        return True
+    return bool(getattr(tx, "one_graph", True)) or bool(getattr(tx, "error_on_graph_break", False))
+
+
+# Read once per traced graph: fullgraph is fixed per torch.compile call.
+_graph_break_is_fatal = _constant_probe(_graph_break_is_fatal_now)
+
+
 def _explicit_saves_attention() -> bool:
-    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. ROCm: zoo makes a frame only for a checkpoint on a device
-    # whose SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead
-    # of crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
-    return not _ROCM_SDPA_GUARD or _saved_attention_active()
+    # UNSLOTH_GC_SAVE_ATTENTION=1 / offload. zoo makes a frame only for a checkpoint on a device whose
+    # SDPA keeps an attention kernel, so a call outside a frame stays in the caller's graph instead of
+    # crossing compiler.disable (Unsupported under fullgraph=True). Dynamo guards on the frame read.
+    # Inside a frame, a fullgraph=True compile stays in the graph (nothing kept for that call).
+    # The in-graph route must fill / take its call's entry so both passes line up whichever route each takes.
+    skip_slot = getattr(
+        sys.modules.get("unsloth_zoo.saved_attention"), "saved_attention_skip_slot", None
+    )
+    if skip_slot is None:
+        # An older zoo: ROCm keeps nothing, so no pass can consume another call's entry; other builds
+        # route every call as before.
+        return not _ROCM_SDPA_GUARD
+    if not _saved_attention_active():
+        return False
+    if _may_cross_into_saved_attention():
+        return True
+    skip_slot()
+    return False
 
 
 def _select_rocm_saved_sdpa(q):
@@ -1836,9 +1885,9 @@ def _load_saved_attention():
         saved_attention_call = sa.saved_attention_call
     except Exception:
         return None, None
+    register = getattr(sa, "register_rocm_saved_attention_selector", None)
     # Older zoo: save_attention_enabled() is the configuration (and keeps ROCm off).
     if getattr(sa, "save_attention_requested", sa.save_attention_enabled)():
-        register = getattr(sa, "register_rocm_saved_attention_selector", None)
         if _ROCM_SDPA_GUARD and register is not None:
             register(_select_rocm_saved_sdpa)
         return saved_attention_call, None
@@ -1849,6 +1898,9 @@ def _load_saved_attention():
         return None, None
     if min_seq is None:
         return None, None
+    # Auto mode on ROCm also needs the selector: zoo keeps calls only where its SDPA kernel is kept.
+    if _ROCM_SDPA_GUARD and register is not None:
+        register(_select_rocm_saved_sdpa)
     return saved_attention_call, min_seq
 
 
@@ -2189,6 +2241,14 @@ def _run_attention(
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
+            # The queries are the last q_len of the context's kv_seq_len filled keys. K can have more
+            # columns than that (a preallocated cache), so K's last q_len columns are not their positions.
+            filled = context.kv_seq_len
+            q_offset_local = (
+                filled - q_len_local
+                if isinstance(filled, (int, torch.SymInt)) and q_len_local <= filled <= k_len_local
+                else k_len_local - q_len_local
+            )
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
                 local_mask = local_mask.to(device = Q.device)
 
@@ -2200,7 +2260,7 @@ def _run_attention(
                         # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
-                    past_len = k_len_local - q_len_local  # works for prefill (0) and decode
+                    past_len = q_offset_local  # works for prefill (0) and decode
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
@@ -2230,8 +2290,22 @@ def _run_attention(
 
                 # Avoid NaNs from fully-masked rows, common with left padding.
                 if local_mask.dtype == torch.bool:
-                    no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
-                    local_mask = local_mask | no_allowed
+                    if context.is_causal:
+                        # Causal: the row attends to its own key only. Every key would let a left pad
+                        # query, whose logits predict the first real token, read that token and later ones.
+                        if local_mask.shape[-2] != q_len_local:
+                            local_mask = local_mask.expand(
+                                *local_mask.shape[:-2], q_len_local, local_mask.shape[-1]
+                            )
+                        local_mask = _unmask_rows_attending_to_nothing(
+                            local_mask,
+                            q_offset = q_offset_local
+                            if local_mask.shape[-1] == k_len_local
+                            else local_mask.shape[-1] - q_len_local,
+                        )
+                    else:
+                        no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
+                        local_mask = local_mask | no_allowed
 
             if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
                 # SDPA's is_causal has no window, so build the windowed mask explicitly.

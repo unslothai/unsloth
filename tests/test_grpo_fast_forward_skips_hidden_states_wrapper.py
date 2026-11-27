@@ -15,6 +15,7 @@ import os
 import pytest
 
 torch = pytest.importorskip("torch")
+from torch.utils._python_dispatch import TorchDispatchMode  # noqa: E402
 
 import unsloth  # noqa: F401,E402  (must be imported before transformers)
 from transformers import MistralConfig, Qwen2Config  # noqa: E402
@@ -204,8 +205,7 @@ def test_native_hidden_states_and_logps_match_the_wrapper(family, grad):
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_return_dict_false_still_returns_hidden_states(family):
-    # The wrapper used to force return_dict = True; without it, a model configured with return_dict = False must
-    # still hand GRPO its hidden states in .logits, the same ones as with return_dict = True.
+    # A return_dict = False model must still return GRPO's hidden states in .logits.
     _, fast = _pair(family)
     ids = torch.randint(
         0, _CONFIG["vocab_size"], (2, 12), generator = torch.Generator().manual_seed(2)
@@ -340,8 +340,7 @@ def test_amp_prepared_fast_forward_keeps_the_bypass():
 
 
 def test_amp_prepared_logits_forward_is_still_wrapped():
-    """The AMP wrappers are followed only to what they really call: a functools.wraps copy under them, or a stock
-    instance behind the gate, still gets the fallback."""
+    """A functools.wraps copy or stock model behind AMP wrappers still gets the fallback."""
     from functools import wraps
 
     pytest.importorskip("accelerate")
@@ -506,3 +505,133 @@ def test_fallback_over_an_unrecognised_wrapper_keeps_its_hidden_states(family):
     assert getattr(fast, "_unsloth_grpo_hidden_states_warning_issued", False) is False
     assert scored.shape == (1, 5, _CONFIG["hidden_size"])
     assert torch.equal(scored, native)
+
+
+class _CountEqual(TorchDispatchMode):
+    """Counts aten::equal: on CUDA each one reads its result back to the host."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def __torch_dispatch__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
+        if func is torch.ops.aten.equal.default:
+            self.calls += 1
+        return func(*args, **(kwargs or {}))
+
+
+def _equal_calls_over_three_scoring_calls(model):
+    ids = torch.arange(10).unsqueeze(0)
+    counter = _CountEqual()
+    with torch.no_grad(), _return_hidden_states("1"):
+        for _ in range(3):
+            with counter:
+                scored = model(input_ids = ids, logits_to_keep = 5).logits
+            assert scored.shape == (1, 5, _CONFIG["hidden_size"])
+    return counter.calls
+
+
+@pytest.mark.parametrize("wrapper", ["verified_stock", "unrecognised_fast"])
+def test_fallback_compares_head_input_once_per_model(wrapper):
+    """Head-input comparison is a per-call host read, skipped once the model has a verdict."""
+    stock, fast = _square_pair()
+    if wrapper == "verified_stock":
+        model = stock
+    else:
+        model = fast
+        original = fast.forward
+
+        def other_forward(*args, **kwargs):
+            return original(*args, **kwargs)
+
+        fast.forward = other_forward
+    assert rl._install_grpo_hidden_states_forward_wrapper(model) is True
+    assert _equal_calls_over_three_scoring_calls(model) == 1
+    assert _unsloth_grpo_hidden_states_signal(model) is True
+    assert getattr(model, "_unsloth_grpo_hidden_states_unsafe", False) is False
+
+
+class _PreHeadScaledLM(torch.nn.Module):
+    """Head input = hidden state * pre_scale, which the head check must catch. ``eval_returns_head_input``
+    makes the forward hand back its own head input in eval mode, as a fast forward behind a wrapper does."""
+
+    def __init__(
+        self,
+        vocab_size,
+        pre_scale,
+        eval_returns_head_input = False,
+    ):
+        super().__init__()
+        self.config = Qwen2Config(**{**_CONFIG, "hidden_size": 4, "vocab_size": vocab_size})
+        self.pre_scale = pre_scale
+        self.eval_returns_head_input = eval_returns_head_input
+        self.lm_head = torch.nn.Linear(4, vocab_size, bias = False)
+        with torch.no_grad():
+            self.lm_head.weight.copy_(torch.arange(4 * vocab_size).reshape(vocab_size, 4) / 8 + 1)
+            if vocab_size == 4:
+                self.lm_head.weight.copy_(torch.eye(4))
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def forward(
+        self,
+        inputs_embeds,
+        logits_to_keep = 0,
+        output_hidden_states = False,
+        return_dict = True,
+    ):
+        from transformers.modeling_outputs import CausalLMOutputWithPast
+
+        hidden = inputs_embeds
+        if self.eval_returns_head_input and not self.training:
+            logits = hidden
+        else:
+            logits = self.lm_head(hidden * self.pre_scale)
+        return CausalLMOutputWithPast(
+            logits = logits[:, -logits_to_keep:],
+            hidden_states = (hidden,) if output_hidden_states else None,
+        )
+
+
+def _scoring_logits(model, embeds):
+    """What the GRPO scorer feeds its log-softmax: the head applied unless the wrapper fell back to logits."""
+    with _return_hidden_states("1"):
+        out = model(inputs_embeds = embeds, logits_to_keep = 1).logits
+    if getattr(model, "_unsloth_grpo_hidden_states_unsafe", False):
+        return out
+    return model.lm_head(out)
+
+
+def test_coincidental_head_input_match_does_not_skip_the_head_check():
+    """A coincidental match on an all-zero row proves nothing, so the next input is checked."""
+    model = _PreHeadScaledLM(vocab_size = 4, pre_scale = 2.0)
+    assert rl._install_grpo_hidden_states_forward_wrapper(model) is True
+    with torch.no_grad():
+        _scoring_logits(model, torch.zeros(1, 2, 4))
+        x = torch.tensor([[[0.0, 1.0, 2.0, 3.0]]])
+        got = _scoring_logits(model, x)
+        want = model.lm_head(x * 2.0)
+    assert getattr(model, "_unsloth_grpo_hidden_states_unsafe", False) is True
+    torch.testing.assert_close(got, want, rtol = 0, atol = 0)
+
+
+def test_head_input_verdict_is_kept_per_train_eval_mode():
+    """A forward that returns its head input in eval only must not exempt its training calls from the check."""
+    model = _PreHeadScaledLM(vocab_size = 6, pre_scale = 2.0, eval_returns_head_input = True)
+    assert rl._install_grpo_hidden_states_forward_wrapper(model) is True
+    x = torch.tensor([[[0.0, 1.0, 2.0, 3.0]]])
+    with torch.no_grad():
+        model.eval()
+        torch.testing.assert_close(_scoring_logits(model, x), model.lm_head(x), rtol = 0, atol = 0)
+        model.train()
+        got = _scoring_logits(model, x)
+        want = model.lm_head(x * 2.0)
+    assert getattr(model, "_unsloth_grpo_hidden_states_unsafe", False) is True
+    torch.testing.assert_close(got, want, rtol = 0, atol = 0)

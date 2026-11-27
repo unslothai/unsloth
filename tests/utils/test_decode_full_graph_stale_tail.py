@@ -6,6 +6,7 @@ row still multiplies its V by 0 (NaN for inf / NaN), so a reused graph KV buffer
 earlier generation's rows into a later one. CPU: the real buffer helpers and attention, by path."""
 
 import ast
+import re
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ def _decode_graphs():
 
 def _attention_functions():
     names = {"_decode_attention_core", "_decode_attention_span", "_gqa_decode_scores",
-             "_gqa_decode_values"}  # fmt: skip
+             "_gqa_decode_values", "_grouped_decode_batched", "_grouped_decode_rule"}  # fmt: skip
     tree = ast.parse((MODELS / "llama.py").read_text(encoding = "utf-8"))
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert {n.name for n in nodes} == names
@@ -40,6 +41,12 @@ def _attention_functions():
         torch_nn_functional_softmax = F.softmax,
         scaled_dot_product_attention = F.scaled_dot_product_attention,
         SDPA_HAS_GQA = True,
+        # Batched grouped-decode gate (module globals of llama.py); no rule off CUDA: SDPA as before.
+        re = re,
+        GROUPED_DECODE = "auto",
+        GROUPED_DECODE_CALLS = [0],
+        _GROUPED_DECODE_MIN_TOKENS = {},
+        _grouped_decode_rules = {},
     )
     exec(compile(ast.Module(nodes, []), str(MODELS / "llama.py"), "exec"), namespace)
     return namespace
@@ -66,7 +73,6 @@ def test_reused_buffer_does_not_leak_an_earlier_generation(dtype, bsz, bad):
     v[:, :, 4, :] = bad
     G.alloc_decode_buffers(attn, k, v, *args)
     first = attn.paged_attention.data_ptr()
-    # A new, short and finite generation reuses the same buffer.
     G.alloc_decode_buffers(attn, k[:, :, :2].nan_to_num(0.0), v[:, :, :2], *args)
     assert attn.paged_attention.data_ptr() == first
 

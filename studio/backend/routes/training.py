@@ -23,6 +23,7 @@ import re
 import sys
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from fastapi import (
@@ -120,6 +121,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    ParallelPlanRequest,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -750,10 +752,15 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     if not dataset_id:
         return
 
+    from core.training.account_jobs import _dataset_builder_name
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
         validate_repo_id(dataset_id)
+        # Well formed, but load_dataset takes its own builder names ahead of the Hub and reads the
+        # worker's cwd with them.
+        if _dataset_builder_name(dataset_id):
+            raise HFValidationError(f"'{dataset_id}' is a datasets builder, not a repository")
     except HFValidationError as error:
         raise _hf_preflight_error(
             400,
@@ -939,11 +946,14 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
         cached_repo_ref_for_path,
         repo_cache_has_usable_snapshot,
     )
+    from hub.services.models import account_access
     from utils.models.model_config import get_base_model_from_lora_identifier
 
+    account_access.require_listed_adapters_access(adapter)
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
         return None
+    account_access.require_adapter_chain_access(base)
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
@@ -1329,6 +1339,15 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
+    if hardware.chat_only_mac_install():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This install was set up without the training stack (Chat only), so training is "
+                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
+                "install in Settings, to enable training."
+            ),
+        )
     if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
         hardware.current_chat_only_verdict()[0]
     ):
@@ -1352,15 +1371,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if hardware.mlx_serves_chat_only():
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "This install was set up without the training stack (Chat only), so training is "
-                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
-                "install in Settings, to enable training."
-            ),
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
@@ -1699,6 +1709,10 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     return {"active": True, **offload}
 
 
+# Own pool: queued 300 s probes must not hold the default executor other routes reach via asyncio.to_thread.
+_drafter_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "drafter-probe")
+
+
 @router.get("/drafter-capability")
 async def get_drafter_capability(
     model_name: str,
@@ -1737,7 +1751,56 @@ async def get_drafter_capability(
     # The caller's own token comes in the header; without one, ambient credentials for the owner
     # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
-    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+    answer = await asyncio.get_running_loop().run_in_executor(
+        _drafter_pool, drafter_capability, name, token
+    )
+    return {**answer, "model_name": shown}
+
+
+@router.get("/parallel/capabilities")
+async def get_parallel_capabilities(current_subject: str = Depends(get_current_subject)):
+    from core.training import parallel_plan
+    from utils.hardware import gpu_query
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(parallel_plan.capabilities)
+
+
+@router.post("/parallel/plan")
+async def plan_parallel_training(
+    request: ParallelPlanRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """A refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
+    from core.training import parallel_plan
+    from models.inference import resolve_inventory_handle
+    from utils.models.model_config import shared_hub_model_info
+
+    values = request.model_dump()
+    values["drafter"] = (
+        values["drafter"] if request.drafter is not None and request.drafter.enabled else None
+    )
+    name = resolve_inventory_handle((request.model_name or "").strip())
+    if not name:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    values["model_name"] = name
+    managed = managed_account()
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+
+    def _plan():
+        sizing = values
+        if managed:
+            # Same rule as the training routes: a managed account reads only Hub ids or its own workspace paths.
+            try:
+                account_path(name, reference = True, shared_cache = True)
+                _authorize_cache_fallback(name)
+            except HTTPException:
+                sizing = {**values, "model_name": None}  # host-only plan, no model facts
+        with shared_hub_model_info():
+            return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
+
+    return await asyncio.to_thread(_plan)
 
 
 @router.get("/hardware/visible")
@@ -1785,6 +1848,10 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
             detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
         ) from exc
     return rows.to_list()
+
+
+# Previews wait on one worker for up to 300 s; queued ones wait here, not on the shared default executor.
+_token_preview_pool = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "token-preview")
 
 
 @router.post("/token-preview")
@@ -1858,7 +1925,9 @@ async def token_preview(
         )
 
     try:
-        return await asyncio.to_thread(_run)
+        return await asyncio.get_running_loop().run_in_executor(
+            _token_preview_pool, contextvars.copy_context().run, _run
+        )
     except TokenPreviewError as exc:
         from hub.utils import download_registry
         detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
@@ -2327,10 +2396,123 @@ async def _admit_training_request(
                 request.model_name,
             )
 
+    if request.parallel_mode is not None or request.parallel_spec:
+        await _plan_parallel_training(request, training_kwargs, hf_token)
+
     return _AdmittedTrainingRequest(
         training_kwargs = training_kwargs,
         hf_token = hf_token,
         resume_run = resume_run,
+    )
+
+
+def _parallel_plan_input(training_kwargs: dict, request) -> dict:
+    keys = (
+        "model_name",
+        "training_type",
+        "load_in_4bit",
+        "batch_size",
+        "max_seq_length",
+        "lora_r",
+        "target_modules",
+        "gradient_checkpointing",
+        "optim",
+        "gpu_ids",
+        "offload_layers",
+        "packing",
+        "is_dataset_image",
+        "is_dataset_audio",
+        "is_embedding",
+        "is_decision",
+        "batch_members",
+        "drafter",
+    )
+    values = {key: training_kwargs.get(key) for key in keys}
+    values["batch_members"] = _PENDING_BATCH.get() is not None
+    values["parallel_mode"] = request.parallel_mode
+    values["parallel_spec"] = request.parallel_spec
+    return values
+
+
+def _parent_mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _parent_visible_gpu_order() -> list:
+    try:
+        from utils.hardware import hardware as hw
+        return list(hw.get_parent_visible_gpu_ids())
+    except Exception:
+        return []
+
+
+async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
+    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400."""
+    from core.training import parallel_plan
+
+    def _plan():
+        # Fresh telemetry, not the capabilities route's cached read.
+        host = parallel_plan.detect_host(max_age_s = 0)
+        plan = parallel_plan.plan_for_request(
+            _parallel_plan_input(training_kwargs, request), hf_token = hf_token, host = host
+        )
+        return plan, len(host.get("gpus") or [])
+
+    try:
+        plan, n_visible = await asyncio.to_thread(_plan)
+    except parallel_plan.ParallelPlanError as exc:
+        raise HTTPException(status_code = 400, detail = exc.payload) from None
+    pin = bool(plan["gpu_ids"])
+    if pin and not _parent_mask_takes_gpu_ids():
+        if len(plan["gpu_ids"]) < n_visible:
+            # A UUID / MIG / tile mask cannot be narrowed by id, so a subset of its GPUs cannot be honored.
+            raise HTTPException(
+                status_code = 400,
+                detail = {
+                    "code": "parallel_gpu_ids",
+                    "mode": plan["mode"],
+                    "message": (
+                        f"{plan['mode']} on GPU(s) {plan['gpu_ids']} needs a subset of the {n_visible} GPUs Studio "
+                        "sees, and this GPU visibility mask (UUID / MIG entries) cannot be narrowed by index."
+                    ),
+                    "alternative": "use every visible GPU, or start Studio with numeric CUDA_VISIBLE_DEVICES",
+                },
+            )
+        pin = False  # every visible GPU, which is what the plan counted
+        if plan["launcher"] == "multi_process":
+            # Rank r runs on the r-th device of the inherited mask: report gpu_ids in that order, or
+            # None when the mask names no telemetry index.
+            order = _parent_visible_gpu_order()
+            plan["gpu_ids"] = order if sorted(order) == sorted(plan["gpu_ids"]) else None
+    training_kwargs["parallel"] = {
+        key: plan[key]
+        for key in (
+            "requested_mode",
+            "mode",
+            "world_size",
+            "gpu_ids",
+            "spec",
+            "launcher",
+            "distributed_backend",
+            "reason",
+            "env",
+        )
+        if key in plan
+    }
+    if pin:
+        # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].
+        training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
+    logger.info(
+        "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
+        plan["mode"],
+        plan["world_size"],
+        plan["gpu_ids"],
+        plan["spec"],
+        plan["reason"],
     )
 
 
@@ -2451,6 +2633,7 @@ async def start_training(
 
         # before_spawn hook: runs only after start_training's guards pass.
         def _free_vram_for_training() -> None:
+            _refuse_a_foreign_export()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -2518,6 +2701,9 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    if (training_kwargs.get("parallel") or {}).get("launcher") == "multi_process":
+                        # Per-card sizing below assumes one process: free resident models rather than guess.
+                        return False, {"mode": "multi_process", "reason": "multi_process"}
                     members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
@@ -2985,7 +3171,11 @@ def _build_training_status(
         error = error_message,
         warnings = warnings,
         details = details,
+        parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
+        memory_peaks = (
+            getattr(progress, "memory_peaks", None) if progress and exposes_owner_state else None
+        ),
     )
 
 
@@ -3176,6 +3366,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                memory_peaks = getattr(progress, "memory_peaks", None) if progress else None,
             )
 
         def format_sse(
@@ -3549,6 +3740,25 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _refuse_a_foreign_export() -> None:
+    """Starting training stops the export worker; another account's running export refuses the start instead."""
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        from core.export import get_export_backend
+        from core.training.account_jobs import job_is_foreign
+
+        exp_backend = get_export_backend()
+        foreign = exp_backend.is_export_active() and job_is_foreign(exp_backend)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check the export worker's account: %s", e)
+        return
+    if foreign:
+        raise ManagedEngineStillRunning(
+            "Another account's export is running. Wait for it to finish, then start training."
+        )
+
+
 def _free_restyle_for_training() -> None:
     """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
     from core.inference import video_restyle
@@ -3567,6 +3777,7 @@ def _free_restyle_for_training() -> None:
 
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
+    _refuse_a_foreign_export()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()
@@ -3843,7 +4054,7 @@ async def start_diffusion_training(
     from core.training.diffusion_train_common import training_precision_preflight_error
 
     _precision_reason = training_precision_preflight_error(
-        normalized_cfg.resolved_family, normalized_cfg.base_precision
+        normalized_cfg.resolved_family, normalized_cfg.base_precision, cfg = normalized_cfg
     )
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)
@@ -5297,10 +5508,22 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
             ],
         )
     )
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    def _in_cache(path: Path) -> Optional[Path]:
+        # Tool sandboxes can write the Hub cache: an entry that leads out of it (a planted link) is skipped.
+        try:
+            return resolved_dataset_snapshot_file(snap, path.relative_to(snap).as_posix())
+        except ValueError:
+            return None
+
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
+        jf = _in_cache(jf)
+        if jf is None:
+            continue
         for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
@@ -5328,8 +5551,11 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     for src in images:
         if written >= cap:
             break
+        resolved = _in_cache(src)
+        if resolved is None:
+            continue
         stem = f"img_{written:04d}"
-        shutil.copyfile(src, dest / f"{stem}{src.suffix.lower()}")
+        shutil.copyfile(resolved, dest / f"{stem}{src.suffix.lower()}")
         cap_text = captions.get(src.name)
         if cap_text:
             (dest / f"{stem}.txt").write_text(cap_text.strip(), encoding = "utf-8")

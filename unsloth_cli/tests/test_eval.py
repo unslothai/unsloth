@@ -145,6 +145,152 @@ def test_local_dataset_scores_literal_answers_and_formats_fewshot(
     assert task.fewshot_context(second, num_fewshot = 1) == f"First? {display_answer}\n\nSecond?"
 
 
+def test_csv_task_preserves_prompt_and_gold_text(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    data.write_text("item code,label,id\n001,007,1\n010,042,2\n011,NA,3\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "item code", "label", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    first, _, last = task.test_docs()
+    assert task.doc_to_text(first) == "001"
+    assert task.doc_to_target(first) == "007"
+    assert task.process_results(first, ["007"])["exact_match"] == 1.0
+    assert task.process_results(first, ["7"])["exact_match"] == 0.0
+    assert task.doc_to_target(last) == "NA"
+    assert first["id"] == 1
+
+
+def test_csv_missing_values_across_reader_chunks(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "codes.csv"
+    # Datasets reads 10,000 rows at a time. The first chunk establishes an integer id.
+    data.write_text("question,answer,id\n" + "001,NA,1\n" * 10_000 + ",,NA\n", encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["codes"]
+    docs = task.test_docs()
+    assert len(docs) == 10_001
+    assert docs[0] == {"question": "001", "answer": "NA", "id": 1}
+    assert docs[-1] == {"question": None, "answer": None, "id": None}
+    assert task.process_results(docs[-1], [""])["exact_match"] == 0.0
+
+
+def _score_generation(tmp_path, rows, generation):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    from lm_eval.api.instance import Instance
+
+    data = tmp_path / "qa.jsonl"
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    doc = task.test_docs()[0]
+    for stop in task.config.generation_kwargs["until"]:
+        generation = generation.split(stop)[0]
+    instance = Instance("generate_until", doc, ("", {}), 0)
+    instance.resps = [generation]
+    for ensemble in task._filters:
+        ensemble.apply([instance])
+    return task.process_results(doc, [instance.filtered_resps["strip"]])["exact_match"]
+
+
+@pytest.mark.parametrize(
+    "answer, generation, score",
+    [
+        ("red\nblue", "red\nblue", 1.0),
+        ("red\nblue", " red\nblue\n\nNext question?", 1.0),
+        ("red\nblue", "red", 0.0),
+        ("red\nblue\n", "red\nblue", 1.0),
+        (["blue\nred\n"], "blue\nred", 1.0),
+        ("    return 2", "return 2", 0.0),
+        ("    return 2", "    return 2", 1.0),
+        ("    return 2", "  return 2", 0.0),
+        ("\n    return 2", "\n    return 2", 1.0),
+        ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
+        (["red\nblue", "blue\nred"], "blue\nred", 1.0),
+        (["2", "two\nlines"], "2\nBecause 1+1 is 2.", 1.0),
+        (["2", "two\nlines"], "two\nlines", 1.0),
+        (["red", None], "None", 0.0),
+        ([2, 3], "3", 1.0),
+        ([["red", "blue"], ["green", "purple"]], "green", 1.0),
+        ([], "[]", 1.0),
+        ([["red"], [None]], "[None]", 0.0),
+        ([[], [None]], "[[], [None]]", 1.0),
+    ],
+)
+def test_local_dataset_scores_multiline_answers(tmp_path, answer, generation, score):
+    # the dataset loader needs one type per column
+    other = answer if isinstance(answer, list) else "2"
+    rows = [{"question": "Colors?", "answer": answer}, {"question": "1+1?", "answer": other}]
+    assert _score_generation(tmp_path, rows, generation) == score
+
+
+@pytest.mark.parametrize("other", ["4", "red\n\nblue"])
+@pytest.mark.parametrize("generation, score", [("2\nBecause 1+1 is 2.", 1.0), ("\n2", 0.0)])
+def test_single_line_answer_still_ends_at_the_first_newline(tmp_path, other, generation, score):
+    rows = [{"question": "1+1?", "answer": "2\n"}, {"question": "2+2?", "answer": other}]
+    assert _score_generation(tmp_path, rows, generation) == score
+
+
+def test_fewshot_examples_end_on_the_stop_sequence(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "First?", "answer": "def f():\n\n    return 1"},
+        {"question": "Second?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    manager = tasks.TaskManager(include_defaults = False, include_path = includes)
+    task = manager.load_task_or_group(names)["qa"]
+    task.set_fewshot_seed(0)
+    context = task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+    (stop,) = task.config.generation_kwargs["until"]
+    assert context == f"First? def f():\n\n    return 1{stop}Second?"
+
+
+def test_fewshot_examples_show_gold_as_written(tmp_path):
+    tasks = pytest.importorskip("lm_eval.tasks")
+    data = tmp_path / "qa.jsonl"
+    rows = [
+        {"question": "def g():", "answer": "\n    return 2"},
+        {"question": "Next?", "answer": "x"},
+    ]
+    data.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding = "utf-8")
+    names, includes = evalmod.resolve_tasks(str(data), "question", "answer", tmp_path / "tasks")
+    task = tasks.TaskManager(include_defaults = False, include_path = includes).load_task_or_group(
+        names
+    )["qa"]
+    task.set_fewshot_seed(0)
+    assert (
+        task.fewshot_context(task.test_docs()[1], num_fewshot = 1)
+        == "def g(): \n    return 2\n\nNext?"
+    )
+
+
+def test_stop_sequence_reads_long_csv_fields_and_unicode_separators(tmp_path):
+    csv_file = tmp_path / "qa.csv"
+    csv_file.write_text(f'question,answer\n"{"x" * 200_000}","red\nblue"\n', encoding = "utf-8")
+    assert evalmod._stop_sequence(csv_file, "answer") == "\n\n"
+    jsonl = tmp_path / "qa.jsonl"
+    # trailing newlines do not widen the stop
+    rows = [{"question": "a\u2028b", "answer": "x\ny\n\n"}, {"question": "c", "answer": "3"}]
+    jsonl.write_text(
+        "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in rows), encoding = "utf-8"
+    )
+    assert evalmod._stop_sequence(jsonl, "answer") == "\n\n"
+
+
+def test_stop_sequence_names_the_bad_jsonl_line(tmp_path):
+    jsonl = tmp_path / "qa.jsonl"
+    jsonl.write_text('{"question": "a", "answer": "b"}\n{"question": oops}\n', encoding = "utf-8")
+    with pytest.raises(ValueError, match = r"qa\.jsonl' line 2 is not valid JSON"):
+        evalmod._stop_sequence(jsonl, "answer")
+
+
 def test_dataset_task_stays_clear_of_names_requested_alongside(tmp_path):
     (tmp_path / "gsm8k.jsonl").write_text("{}\n")
     (tmp_path / "sub").mkdir()
@@ -195,7 +341,7 @@ def test_dataset_task_avoids_explicit_group_name(tmp_path, dataset_first):
     )
     spec = _read_dataset_task(generated / "suite_2.yaml")
     assert spec["task"] == "suite_2"
-    assert spec["dataset_kwargs"] == {"data_files": str(data.resolve())}
+    assert spec["dataset_kwargs"]["data_files"] == str(data.resolve())
 
 
 @pytest.mark.parametrize("dataset_first", [True, False])
@@ -214,7 +360,7 @@ def test_dataset_tasks_avoid_explicit_yaml_numeric_suffixes(tmp_path, dataset_fi
     for name, path in zip(["qa_3", "qa_4"], data):
         spec = _read_dataset_task(tmp_path / "tmp" / "generated" / f"{name}.yaml")
         assert spec["task"] == name
-        assert spec["dataset_kwargs"] == {"data_files": str(path.resolve())}
+        assert spec["dataset_kwargs"]["data_files"] == str(path.resolve())
 
 
 @pytest.mark.parametrize("duplicate", ["yaml", "same_yaml", "plain_first", "plain_last"])
@@ -378,7 +524,7 @@ def env(monkeypatch):
                 get_input_embeddings = lambda: SimpleNamespace(weight = SimpleNamespace(shape = (10, 4))),
                 resize_token_embeddings = lambda n: calls.__setitem__("resized", n),
             )
-            return model, SimpleNamespace(name = "tok")
+            return model, SimpleNamespace(name = "tok", chat_template = calls.get("chat_template"))
 
         @classmethod
         def for_inference(cls, model):
@@ -391,11 +537,17 @@ def env(monkeypatch):
             tokenizer = None,
             batch_size = None,
             max_length = None,
+            enable_thinking = None,
             **kw,
         ):
             calls["hflm"] = dict(
-                kw, pretrained = pretrained, batch_size = batch_size, max_length = max_length
+                kw,
+                pretrained = pretrained,
+                batch_size = batch_size,
+                max_length = max_length,
+                enable_thinking = enable_thinking,
             )
+            self.tokenizer = tokenizer
 
     class _FakeTaskManager:
         def __init__(self, include_path = None):
@@ -475,6 +627,96 @@ def test_eval_dataset_before_yaml_with_same_task_name(env, tmp_path):
     assert result.exit_code == 0, result.output
     assert env["tasks"] == ["qa_2", "qa"]
     assert env["task_managers"] == 1
+
+
+@pytest.mark.parametrize(
+    "template, tasks, flags, expected",
+    [
+        ("{{ messages }}", "qa.jsonl", [], True),
+        ("{{ messages }}", "qa.jsonl,qa.csv", [], True),
+        (None, "qa.jsonl", [], False),
+        ("{{ messages }}", "gsm8k", [], False),
+        ("{{ messages }}", "gsm8k,qa.jsonl", [], False),
+        ("{{ messages }}", "qa.jsonl,gsm8k", [], False),
+        ("{{ messages }}", "qa.jsonl", ["--no-chat-template"], False),
+        ("{{ messages }}", "gsm8k", ["--chat-template"], True),
+        ("{{ messages }}", "mmlu", ["--chat-template"], True),
+    ],
+)
+def test_dataset_tasks_are_prompted_through_the_chat_template(
+    env, tmp_path, template, tasks, flags, expected
+):
+    env["chat_template"] = template
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    (tmp_path / "qa.csv").write_text("question,answer\nq,a\n")
+    tasks = ",".join(t if "." not in t else str(tmp_path / t) for t in tasks.split(","))
+    result = _run("fake/model", "--tasks", tasks, *flags, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["kwargs"]["apply_chat_template"] is expected
+    saved = json.loads((tmp_path / "out" / "results.json").read_text())
+    assert saved["config"]["apply_chat_template"] is expected
+    dataset_only = all(t.endswith((".jsonl", ".csv")) for t in tasks.split(","))
+    assert env["hflm"]["enable_thinking"] is (False if dataset_only else None)
+    assert ("alongside other tasks" in result.output) is (
+        "gsm8k," in tasks or tasks.endswith(",gsm8k")
+    )
+    assert ("prompting with the model's chat template" in result.output) is (expected and not flags)
+
+
+def test_explicit_chat_template_refuses_a_tokenizer_without_one(env, tmp_path):
+    result = _run("fake/model", "--tasks", "gsm8k", "--chat-template", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 2 and "has no chat template" in result.output
+    assert "kwargs" not in env
+
+
+@pytest.mark.parametrize("template, expected", [("t", True), (None, False)])
+def test_hf_backend_reads_chat_template_from_the_tokenizer_lm_eval_loads(
+    env, tmp_path, monkeypatch, template, expected
+):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (adapter / "tokenizer.json").write_text("{}")
+    loaded = []
+    tok = types.ModuleType("transformers")
+    tok.AutoTokenizer = SimpleNamespace(
+        from_pretrained = lambda path, **kw: loaded.append((path, kw))
+        or SimpleNamespace(chat_template = template)
+    )
+    monkeypatch.setitem(sys.modules, "transformers", tok)
+    data = tmp_path / "qa.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+    result = _run(str(adapter), "--tasks", str(data), "--backend", "hf", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert loaded == [(str(adapter), {"trust_remote_code": False})]
+    assert env["kwargs"]["apply_chat_template"] is expected
+    assert env["model_args"]["enable_thinking"] is False
+
+
+@pytest.mark.parametrize("flags, expected", [([], False), (["--chat-template"], True)])
+def test_lm_eval_without_enable_thinking_keeps_datasets_off_the_chat_template(
+    env, tmp_path, flags, expected
+):
+    class _OldHFLM:
+        def __init__(
+            self,
+            pretrained = None,
+            tokenizer = None,
+            **kw,
+        ):
+            env["hflm"] = kw
+            self.tokenizer = tokenizer
+
+    sys.modules["lm_eval.models.huggingface"].HFLM = _OldHFLM
+    env["chat_template"] = "{{ messages }}"
+    data = tmp_path / "qa.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+    result = _run("fake/model", "--tasks", str(data), *flags, "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert env["kwargs"]["apply_chat_template"] is expected and "enable_thinking" not in env["hflm"]
+    assert ("lm-eval 0.4.10" in result.output) is not expected
 
 
 def test_default_output_keeps_every_run(env, tmp_path, monkeypatch):
@@ -700,6 +942,7 @@ def test_hf_backend_cuda_4bit_builds_quantizing_hflm(env, tmp_path):
     assert result.exit_code == 0, result.output
     assert type(env["model"]).__name__ == "_HFLM4bit"
     assert env["hflm"]["load_in_4bit"] is True and env["hflm"]["device"] == "cuda:0"
+    assert env["hflm"]["enable_thinking"] is None
 
 
 def test_hf_backend_adapter_uses_peft_arg(env, tmp_path):
@@ -776,6 +1019,9 @@ def vllm_env(env, monkeypatch):
     sys.modules["torch"].cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 1)
     monkeypatch.setattr(evalmod.sys, "platform", "linux")
     monkeypatch.setattr(evalmod, "version", lambda name: "0.4.13", raising = False)
+    vllm_mod = types.ModuleType("lm_eval.models.vllm_causallms")
+    vllm_mod.VLLM = lambda pretrained = None, enable_thinking = None: None
+    monkeypatch.setitem(sys.modules, "lm_eval.models.vllm_causallms", vllm_mod)
     return env
 
 
@@ -822,6 +1068,65 @@ def test_vllm_backend_serves_adapter_as_lora(vllm_env, tmp_path):
     assert vllm_env["kwargs"]["batch_size"] == 8
 
 
+# vLLM's own MistralTokenizer (tekken.json repos) has no chat_template attribute
+@pytest.mark.parametrize(
+    "tokenizer, tasks, expected",
+    [
+        (SimpleNamespace(chat_template = "t"), "qa.jsonl", True),
+        (SimpleNamespace(chat_template = None), "qa.jsonl", False),
+        (object(), "qa.jsonl", False),
+        (SimpleNamespace(chat_template = "t"), "qa.jsonl,gsm8k", False),
+    ],
+)
+def test_vllm_backend_probes_the_tokenizer_vllm_loads(
+    vllm_env, tmp_path, tokenizer, tasks, expected
+):
+    loaded = []
+    vllm_mod = sys.modules["lm_eval.models.vllm_causallms"]
+    vllm_mod.get_tokenizer = lambda path: loaded.append(path) or tokenizer
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    tasks = tasks.replace("qa.jsonl", str(tmp_path / "qa.jsonl"))
+    result = _run("fake/model", "--tasks", tasks, "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["kwargs"]["apply_chat_template"] is expected
+    assert vllm_env["model_args"].get("enable_thinking") is (None if "," in tasks else False)
+    assert loaded == ([] if "," in tasks else ["fake/model"])
+
+
+def test_vllm_backend_probes_the_adapter_tokenizer(vllm_env, tmp_path):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    (adapter / "tokenizer.json").write_text("{}")
+    loaded = []
+    sys.modules["lm_eval.models.vllm_causallms"].get_tokenizer = lambda path: (
+        loaded.append(path) or SimpleNamespace(chat_template = "t")
+    )
+    data = tmp_path / "qa.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+    result = _run(str(adapter), "-t", str(data), "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert loaded == [str(adapter.resolve())] and vllm_env["kwargs"]["apply_chat_template"] is True
+
+
+@pytest.mark.parametrize(
+    "tokenizer, code", [(SimpleNamespace(chat_template = None), 0), (object(), 2)]
+)
+def test_vllm_explicit_chat_template_refuses_only_mistral_tokenizers(
+    vllm_env, tmp_path, tokenizer, code
+):
+    sys.modules["lm_eval.models.vllm_causallms"].get_tokenizer = lambda path: tokenizer
+    result = _run(
+        "fake/model", "-t", "gsm8k", "--backend", "vllm", "--chat-template", "-o", str(tmp_path)
+    )
+    assert result.exit_code == code, result.output
+    assert code or vllm_env["kwargs"]["apply_chat_template"] is True
+    assert code or "enable_thinking" not in vllm_env["model_args"]
+    assert ("kwargs" in vllm_env) is (code == 0)
+
+
 def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_path):
     adapter = _adapter(tmp_path)
     result = _run(
@@ -840,6 +1145,209 @@ def test_vllm_backend_keeps_default_lora_rank_and_ignores_4bit(vllm_env, tmp_pat
         "max_lora_rank" not in vllm_env["model_args"] and "tokenizer" not in vllm_env["model_args"]
     )
     assert "16-bit" in result.output
+
+
+def _rank_adapter(tmp_path, **config):
+    adapter = tmp_path / "lora"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base", **config})
+    )
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        ({}, None),
+        ({"r": 16}, None),
+        ({"r": 24}, 32),
+        ({"r": 32}, 32),
+        ({"r": 257}, 320),
+        ({"r": 300}, 320),
+        ({"r": 512}, 512),
+    ],
+)
+def test_vllm_backend_rounds_adapter_rank_to_a_supported_value(
+    vllm_env, tmp_path, config, expected
+):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    if expected is None:
+        assert "max_lora_rank" not in vllm_env["model_args"]
+    else:
+        assert vllm_env["model_args"]["max_lora_rank"] == expected
+
+
+@pytest.mark.parametrize(
+    "config, rank",
+    [
+        ({"r": 513}, "513"),
+        ({"r": 1024}, "1024"),
+        ({"r": 16, "rank_pattern": {"down_proj": 640}}, "640"),
+    ],
+)
+def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, config, rank):
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 2, result.output
+    assert f"rank {rank}" in result.output and "512" in result.output
+    assert "--backend unsloth" in result.output and "--backend hf" in result.output
+    assert "--format merged-16bit" in result.output
+    assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, ok",
+    [
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {}, "alpha_pattern": {}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 16}}, True),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            True,
+        ),
+        ({"r": 16, "rank_pattern": {"v_proj": 64}}, True),
+        ({"r": 16, "lora_alpha": 32, "rank_pattern": {"v_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "alpha_pattern": {"q_proj": 64}}, False),
+        ({"r": 16, "lora_alpha": 32, "use_rslora": True, "rank_pattern": {"v_proj": 64}}, False),
+        (
+            {
+                "r": 16,
+                "lora_alpha": 32,
+                "use_rslora": True,
+                "rank_pattern": {"v_proj": 64},
+                "alpha_pattern": {"v_proj": 64},
+            },
+            True,
+        ),
+    ],
+)
+def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, ok):
+    # vLLM applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
+    result = _run(
+        str(_rank_adapter(tmp_path, **config)),
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        "vllm",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output and "--backend hf" in result.output
+        assert "model" not in vllm_env
+
+
+def _write_lora_header(
+    adapter,
+    modules,
+    rank = 1,
+):
+    # safetensors header only: _adapter_module_names / _adapter_rank never read tensor data
+    header = {
+        f"base_model.model.{m}.lora_{ab}.weight": {
+            "dtype": "F32",
+            "shape": [rank, 8] if ab == "A" else [8, rank],
+            "data_offsets": [0, 4],
+        }
+        for m in modules
+        for ab in "AB"
+    }
+    raw = json.dumps(header).encode()
+    (adapter / "adapter_model.safetensors").write_bytes(
+        len(raw).to_bytes(8, "little") + raw + b"\0" * 4
+    )
+
+
+_ATTN = [f"model.layers.{i}.self_attn.{p}" for i in range(2) for p in ("q_proj", "v_proj")]
+
+
+@pytest.mark.parametrize(
+    "patterns, ok",
+    [
+        # PEFT resolves each pattern against the module name, so different suffix keys hit the same module
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"self_attn.v_proj": 128}}, True),
+        (
+            {
+                "rank_pattern": {r"layers\.0\.self_attn\.v_proj": 64},
+                "alpha_pattern": {"v_proj": 128},
+            },
+            False,
+        ),
+        ({"rank_pattern": {"v_proj": 64}, "alpha_pattern": {"mlp.v_proj": 128}}, False),
+        # a pattern no module matches leaves every scale at lora_alpha / r
+        ({"rank_pattern": {"down_proj": 64}}, True),
+    ],
+)
+def test_vllm_backend_resolves_lora_patterns_per_module(vllm_env, tmp_path, patterns, ok):
+    adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, **patterns)
+    _write_lora_header(adapter, _ATTN)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model"] == "vllm"
+    else:
+        assert result.exit_code == 2, result.output
+        assert "rank_pattern / alpha_pattern" in result.output
+        assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "config, header_rank, expected",
+    [
+        # no adapted module matches the pattern: every saved module keeps r
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, 16, None),
+        ({"target_modules": ["q_proj"], "rank_pattern": {"down_proj": 640}}, None, None),
+        # an earlier matching key shadows the higher-rank one, as in PEFT
+        ({"rank_pattern": {"q_proj": 32, "self_attn.q_proj": 640}}, 32, 32),
+        # the saved lora_A rows are what vLLM loads
+        ({"rank_pattern": {"q_proj": 64}}, 64, 64),
+        # a fused-expert A stack has E * r rows (128 experts x r 16): the rank is still r
+        ({"target_modules": ["q_proj"]}, 128 * 16, None),
+        # adapter_model.bin: a regex pattern may match full module names that the short targets do not
+        (
+            {
+                "target_modules": ["q_proj"],
+                "rank_pattern": {r"layers\.\d+\.self_attn\.(q|v)_proj": 64},
+            },
+            None,
+            64,
+        ),
+        # adapter_model.bin: an unescaped dot is a regex wildcard, so "q.proj" matches q_proj as in PEFT
+        ({"target_modules": ["q_proj"], "rank_pattern": {"q.proj": 64}}, None, 64),
+    ],
+)
+def test_vllm_backend_reads_the_saved_lora_rank(vllm_env, tmp_path, config, header_rank, expected):
+    adapter = _rank_adapter(tmp_path, r = 16, **config)
+    if header_rank is not None:
+        _write_lora_header(adapter, [m for m in _ATTN if m.endswith("q_proj")], header_rank)
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
 
 
 def test_vllm_backend_refuses_multi_process(vllm_env, monkeypatch):

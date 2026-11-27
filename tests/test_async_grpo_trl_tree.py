@@ -62,6 +62,13 @@ NAMES = (
     "_hold_peft_requires_grad",
     "_allow_moe_parameter_lora",
     "_check_async_grpo_adapter_servable",
+    "_async_grpo_tensor_save",
+    "_async_grpo_tensor_sync_scope",
+    "_tree_gdn_callers",
+    "_patch_tree_gdn_namespace",
+    "_unsloth_patch_tree_gdn",
+    "_patch_tree_recurrent_namespace",
+    "_unsloth_patch_tree_recurrent",
     "_async_grpo_masked_compute_loss",
     "_import_trl_async_grpo_module",
     "patch_trl_async_grpo",
@@ -152,16 +159,19 @@ def _load():
         "importlib": importlib,
         "warnings": warnings,
         "weakref": __import__("weakref"),
+        "contextvars": __import__("contextvars"),
         "logger": _Logger(),
         "Version": __import__("packaging.version", fromlist = ["Version"]).Version,
         "importlib_version": __import__("importlib.metadata", fromlist = ["version"]).version,
     }
     for node in ast.parse(src).body:
         is_constant = isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id.startswith("_ASYNC_GRPO_") for t in node.targets
+            isinstance(t, ast.Name) and t.id.startswith(("_ASYNC_GRPO_", "_TREE_"))
+            for t in node.targets
         )
         if is_constant or (isinstance(node, ast.FunctionDef) and node.name in NAMES):
             exec(compile(ast.Module([node], []), RL_SOURCE_PATH, "exec"), ns)
+    assert all(n in ns for n in NAMES), [n for n in NAMES if n not in ns]
     ns["_is_unsloth_fast_backbone"] = lambda b: isinstance(b, FakeUnslothBackbone)
     ns["_prefix_grouper_kernel"] = _pg_kernel
     return ns
@@ -203,10 +213,13 @@ def patched(monkeypatch):
         "patch_chunked_lm_head",
         "AsyncRolloutWorker",
         "validate_lora_for_vllm_sync",
+        "save_lora_adapter",
+        "patch_tree_gdn",
+        "patch_tree_recurrent",
     ):
         if hasattr(module, name):
             monkeypatch.setattr(module, name, getattr(module, name))
-    for name in ("__init__", "train"):
+    for name in ("__init__", "train", "_sync_weight_lora"):
         if name in vars(trainer):
             monkeypatch.setattr(trainer, name, vars(trainer)[name])
     ns = _load()
@@ -334,6 +347,15 @@ def _tree_samples():
     return samples
 
 
+def _rollout(sample):
+    # RolloutSample carries numpy arrays (TRL builds them with np.asarray); TRL 1.19's TreeRow walks them with
+    # numpy ops (argmin, concatenate), so a torch tensor fails there. The references below stay in torch.
+    return {
+        key: value.numpy() if isinstance(value, torch.Tensor) else value
+        for key, value in sample.items()
+    }
+
+
 def _tree_kwargs(module, inputs):
     # The tree_* forward kwargs AsyncGRPOTrainer.compute_loss sends: TRL >= 1.17 `unpad_tree`, TRL 1.16 inline.
     if hasattr(module, "unpad_tree"):
@@ -361,7 +383,7 @@ def test_tree_packed_row_matches_unpacked(patched):
     samples = _tree_samples()
     row = module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     assert int((_parents(ns, packed) >= 0).sum()) > 0, "nothing shared"
     assert packed["input_ids"].numel() < sum(len(s["input_ids"]) for s in samples)
@@ -410,7 +432,7 @@ def test_tree_row_gradients_match_unpacked(patched):
     samples = _tree_samples()
     row = module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     inputs = {k: v[None] for k, v in packed.items()}
     weight = model.model.layers[0].self_attn.q_proj.weight
@@ -436,7 +458,7 @@ def _tree_inputs(module):
     row = module.TreeRow()
     samples = _tree_samples()
     for sample in samples:
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     inputs = {k: v[None] for k, v in packed.items()}
     kwargs = dict(
@@ -509,7 +531,7 @@ def test_tree_attention_skips_rows_without_forks(patched, monkeypatch):
         sample["input_ids"] = sample["input_ids"].clone()
         sample["input_ids"][0] = 100 + i  # nothing shared, not even the system prompt
         sample["group_id"] = i
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     assert bool((_parents(ns, packed) < 0).all())
     inputs = {k: v[None] for k, v in packed.items()}
@@ -562,7 +584,7 @@ def test_segment_parents_follow_the_kv_paths(patched):
         pytest.skip("this TRL packs rows without a prefix trie")
     row = module.TreeRow()
     for sample in _tree_samples():
-        row.add(sample)
+        row.add(_rollout(sample))
     packed = row.pack()
     derive = ns["_async_grpo_tree_segment_parents"]
     tree = {key: value for key, value in packed.items() if key != "tree_segment_parents"}

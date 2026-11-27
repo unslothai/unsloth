@@ -406,6 +406,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
     from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
     from utils.datasets.cells import csv_as_text_kwargs
 
+    single_file = True
     if dataset_path.is_dir():
         from utils.paths import dataset_files_in_dir
 
@@ -429,10 +430,12 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
             total_rows = len(dataset)
             preview_slice = dataset.select(range(min(preview_size, total_rows)))
             return preview_slice, total_rows
+        single_file = len(files) == 1
         dataset_path = files[0]
 
     suffix = dataset_path.suffix.lower()
-    # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
+    # Parquet/Arrow give a cheap exact total_rows from their metadata; JSON/JSONL/CSV stream the preview,
+    # then a bounded scan of one file counts its rows (None over the size caps or for several files).
     if suffix == ".parquet":
         if train_split == "train":
             preview = _parquet_preview_slice([dataset_path], preview_size)
@@ -444,18 +447,26 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         return preview_slice, total_rows
 
     if suffix in (".json", ".jsonl", ".csv"):
+        load_kwargs = csv_as_text_kwargs([dataset_path])
+        if "features" in load_kwargs:
+            # String features fix every column type; csv_as_text_kwargs already parsed 10k rows, so bad rows still raise.
+            load_kwargs["chunksize"] = max(1, preview_size)
         preview = _stream_file_preview_slice(
             dataset_path,
             preview_size,
             dates_as_written = True,
-            **csv_as_text_kwargs([dataset_path]),
+            **load_kwargs,
         )
         if preview is None:
             raise HTTPException(
                 status_code = 400,
                 detail = "Dataset appears to be empty or could not be read",
             )
-        return preview
+        preview_slice, total_rows = preview
+        if total_rows is None and single_file and train_split == "train":
+            from hub.services.datasets.row_counts import count_local_file_rows
+            total_rows = count_local_file_rows(dataset_path)
+        return preview_slice, total_rows
 
     raise HTTPException(status_code = 400, detail = f"Unsupported file format: {dataset_path.suffix}")
 

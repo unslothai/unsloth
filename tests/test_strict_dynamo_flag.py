@@ -31,7 +31,6 @@ def test_strict_region_turns_suppress_errors_off(module, monkeypatch):
 
 @pytest.mark.parametrize("module", [BC, PG], ids = ["block_compile", "prefix_grouper"])
 def test_strict_region_runs_without_the_flag(module, monkeypatch):
-    # A config without the flag, whose patch() raises the way torch's does for an unknown key.
     def patch(**changes):
         raise AttributeError(f"torch._dynamo.config.{next(iter(changes))} does not exist")
 

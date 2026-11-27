@@ -135,26 +135,39 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     if arguments.get("width") is not None or arguments.get("height") is not None:
         fields["width"], fields["height"] = _snap_size(arguments, status)
     if arguments.get("seed") is not None:
-        fields["seed"] = int(arguments["seed"])
+        fields["seed"] = arguments["seed"]
     negative = arguments.get("negative_prompt")
     if status.get("supports_negative_prompt") and isinstance(negative, str) and negative.strip():
         fields["negative_prompt"] = negative.strip()
     return DiffusionGenerateRequest(**fields)
 
 
-async def _generate(request, ticket):
+async def _generate(
+    request,
+    ticket,
+    *,
+    swap_holds_admission = False,
+    pinned_resident = None,
+):
     from core.inference import media_keepwarm
+    from core.inference.diffusion_families import pin_checkpoint
     from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from routes.inference import _generate_diffusion_image_core
 
     # The HTTP route is counted by the keep-warm middleware; this path never goes through it.
-    await media_keepwarm.begin_request(DIFFUSION)
+    if not swap_holds_admission:
+        await media_keepwarm.begin_request(DIFFUSION)
     try:
         with generation_ticket(ticket):
-            return await _generate_diffusion_image_core(request)
+            if pinned_resident is None:
+                return await _generate_diffusion_image_core(request)
+            identity, filename = pinned_resident
+            with pin_checkpoint(filename):
+                return await _generate_diffusion_image_core(request, pinned_load = identity)
     finally:
-        media_keepwarm.end_request(DIFFUSION)
+        if not swap_holds_admission:
+            media_keepwarm.end_request(DIFFUSION)
 
 
 def _stop(future, ticket) -> None:
@@ -195,7 +208,7 @@ def _save_to_workdir(image, workdir: str, account) -> dict:
     os.makedirs(workdir, exist_ok = True)
     target = os.path.join(workdir, name)
     shutil.copyfile(source, target)
-    return {"name": name, "size": os.path.getsize(target)}
+    return {"name": name, "size": os.path.getsize(target), "gallery_image_id": image.id}
 
 
 def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) -> str:
@@ -222,6 +235,22 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         if not chat_media_swap.swap_enabled():
             return ERR_NOT_LOADED
         return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
+    from core.inference.chat_media_swap import request_image_model
+
+    pinned_resident = None
+    if selected := request_image_model.get():
+        from core.inference.media_auto_switch import _resolve_pick, _retired_copy_as_base
+        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick, same_identity
+        from routes.inference import _resident_load
+
+        pick = _resolve_pick(DIFFUSION, selected, IMAGE_TASK)
+        if pick is not None:
+            matches = resident_is_pick(status, selected, _retired_copy_as_base(pick))
+        else:
+            matches = same_identity(selected, status.get("repo_id") or "")
+        if not matches:
+            return "Error: a different image model is loaded. Unload it before using the selected generator."
+        pinned_resident = _resident_load(status)
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -237,7 +266,9 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return f"Error: invalid generate_image arguments: {message}"
 
     ticket = GenerationTicket()
-    future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request, ticket)), loop)
+    future = asyncio.run_coroutine_threadsafe(
+        arun_as(account, _generate(request, ticket, pinned_resident = pinned_resident)), loop
+    )
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     deadline = time.monotonic() + limit
     stopped = None
@@ -304,7 +335,7 @@ def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, l
         if should_abort():
             return ERR_STOPPED
         try:
-            response = await _generate(request, ticket)
+            response = await _generate(request, ticket, swap_holds_admission = True)
         except GpuBusyForAnotherAccountError:
             return ERR_OTHER_ACCOUNT
         except HTTPException as exc:

@@ -15,7 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence, Union
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
@@ -210,10 +210,13 @@ class DiffusionFamily:
     supports_torch_compile: bool = True
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
-    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed (major,
-    # minor) archs (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two fields on VideoFamily.
+    # Pin inductor's reduction-config filter on every arch (``filter_reduction_configs``) or only on the listed CUDA
+    # (major, minor) archs / ROCm gfx names (``filter_reduction_configs_archs``); both unset = inductor's pick. Same two
+    # fields on VideoFamily.
     filter_reduction_configs: bool = False
-    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
+    filter_reduction_configs_archs: tuple[Union[tuple[int, int], str], ...] = field(
+        default_factory = tuple
+    )
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -257,6 +260,10 @@ class DiffusionFamily:
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Configs of an ``fp16_incompatible`` family that render clean in MLX float16; others use bfloat16 on M1 / M2.
+    mlx_fp16_configs: tuple[str, ...] = field(default_factory = tuple)
+    # (mflux config, bits): min bits for requantizing dense GGUF tensors; unlisted configs take the 0 / 8 / 4 ladder.
+    mlx_min_dense_bits: tuple[tuple[str, int], ...] = field(default_factory = tuple)
     # Family-specific sd-cli sampler settings so native output matches the model's supported invocation. None leaves
     # sd-cli defaults.
     sd_cpp_sampling_method: Optional[str] = None
@@ -791,6 +798,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
+        # BFL's reference shift; sd.cpp's built-in FLUX.3 default is still 6.93.
+        sd_cpp_flow_shift = 16.0,
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
         # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
@@ -860,8 +869,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # which prequant_repos keeps loadable. sd.cpp detects its layout itself, so no --vae-format.
         sd_cpp_vae = ("unsloth/flux-3-image-klein-FP8", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
-        # sd.cpp's documented invocation (docs/flux3.md). No flow shift: its scheduler already applies FLUX.3's 6.93.
+        # sd.cpp's documented invocation (docs/flux3.md) at BFL's reference shift (sd.cpp's built-in is still 6.93).
         sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 16.0,
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
     ),
@@ -1334,6 +1344,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_guard = "rescale_post_norm",
         mlx_model_config = "z-image-turbo",
         mlx_model_config_by_base = (("Tongyi-MAI/Z-Image", "z-image"),),
+        # Turbo renders clean in MLX float16 on M1 / M2; the undistilled base overflows it (NaN, black image).
+        mlx_fp16_configs = ("z-image-turbo",),
+        # Base requantized to 4-bit gives ~16x too large velocity (uniform cyan grid); Turbo is clean at 4 bits.
+        mlx_min_dense_bits = (("z-image", 8),),
         # Z-Image decodes with the FLUX.1 autoencoder: BFL's ae.safetensors, byte-identical to the repack's file.
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
         # Z-Image's encoder differs from stock Qwen3-4B only in the LAST layer's MLP, which neither diffusers
@@ -1347,6 +1361,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_shift_node = "flux",
         label = "Krea 2",
         pipeline_class = "Krea2Pipeline",
+        # Every arch: a cold compile cache benchmarks near-tied reduction configs and keeps the winner, so fresh Studio
+        # homes rendered one seed two ways (A100 INT8 1024 px, 12 prompts, LPIPS 0.146 mean); the filter pins one.
+        filter_reduction_configs = True,
+        # cudnn.benchmark's per-process VAE conv pick decoded one fixed latent 3 ways over 3 fresh L4 homes; off, all
+        # matched, and the first render skips ~1.5 s of conv benchmarking.
+        cudnn_benchmark = False,
         transformer_class = "Krea2Transformer2DModel",
         base_repo = "krea/Krea-2-Turbo",
         prequant_repos = (
@@ -2113,7 +2133,7 @@ def retired_copy_loads_from_disk(source: Optional[str], *, companion: bool = Fal
             excluded_components = ("transformer",) if companion else (),
             fixed_component_folders = FLUX3_COMPONENT_FOLDERS,
         )
-    except (OSError, StopIteration):
+    except (OSError, UnicodeDecodeError, StopIteration):
         return False
 
 
@@ -2387,15 +2407,13 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
-    # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates 0.11.87): the base t2i and edit templates
-    # run 50 steps at CFG 3.5 (euler / simple), raised from the launch templates' 25, which is also the BFL reference
-    # setting (diffusers' FLUX.3 pipeline defaults: 50 steps, guidance 3.5). Both distilled templates run 16 steps at
-    # CFG 1, as does the BFL reference. Base first.
+    # FLUX.3 Image Klein, BFL reference (flux-3-image-klein 62e90b9278 raised base CFG 3.5 -> 4.0; diffusers and
+    # ComfyUI still say 3.5). Distilled: 16 steps, no CFG. Base first.
     # Every registered alias plus the canonical family names (an opaque path resolves through the family).
-    ("flux.3-klein-base", 50, 3.5),
-    ("flux-3-image-klein-base", 50, 3.5),
-    ("flux3-image-klein-base", 50, 3.5),
-    ("flux3-klein-base", 50, 3.5),
+    ("flux.3-klein-base", 50, 4.0),
+    ("flux-3-image-klein-base", 50, 4.0),
+    ("flux3-image-klein-base", 50, 4.0),
+    ("flux3-klein-base", 50, 4.0),
     ("flux.3-klein", 16, 1.0),
     ("flux-3-image-klein", 16, 1.0),
     ("flux3-image-klein", 16, 1.0),

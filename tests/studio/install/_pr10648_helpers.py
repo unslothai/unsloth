@@ -27,7 +27,6 @@ POSIX_ONLY = pytest.mark.skipif(
     WINDOWS_HOST,
     reason = "mode bits and os.access(X_OK) are POSIX only",
 )
-# root reads and executes regardless of mode bits.
 NOT_ROOT = pytest.mark.skipif(
     IS_ROOT,
     reason = "root bypasses the permission bits this asserts on",

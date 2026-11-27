@@ -109,10 +109,6 @@ KNOWN_DEFAULT = ",".join(
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:type=6" for m in _GLASS_MODES]
-    # Opening Settings restyles elements across the thread, on main too (fresh pages, default
-    # appearance: 1,975 -> 9,721 elements at 40 -> 200 turns, 4.9x). Reduce motion's blanket
-    # transitions used to add ~3,800 elements to the gate's 40 turn reading, which hid the growth.
-    + ["length:settings=5"]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
@@ -553,6 +549,7 @@ NOT_AREAS = {
     "dropdown-menu-trigger:Run settings for this model": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "select-trigger:Inference engine": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "message-timing-trigger:Message timing": "a hover readout on the reply the stream area streamed; the seeded turns carry no timing",
+    "popover-trigger:Files in this chat": "new in #19172, so the base arm has no control to open; its inventory is built in the chat render every area already measures",
 }
 
 # Keyboard shortcuts (features/settings/lib/keyboard-shortcuts.ts): the area that measures what it
@@ -758,6 +755,7 @@ class Api:
                 "is_gguf": False,
             },
             "/api/chat/settings": {"settings": {}},
+            "/api/rag/knowledge-bases": {"knowledgeBases": [], "ragAvailable": True},
         }
 
     def handle(self, route) -> None:

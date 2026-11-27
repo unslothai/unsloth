@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatBytes } from "../hub/lib/format.ts";
 import {
   TRANSLATION_ONLY_REPOS,
   isTranslationOnlyRepo,
@@ -22,40 +23,128 @@ export type TranslateSampling = {
 };
 
 export type DedicatedTranslateModel = {
-  id: "hy-mt2-1.8b" | "hy-mt2-7b";
+  id:
+    | "hy-mt3-1.8b"
+    | "hy-mt3-7b"
+    | "hy-mt3-30b-a3b"
+    | "hy-mt3-1.8b-fp8"
+    | "hy-mt3-7b-fp8"
+    | "hy-mt3-30b-a3b-fp8";
   label: string;
   repo: string;
-  variant: string;
+  variant: string | null;
   sizeBytes: number;
   sampling: TranslateSampling;
+  fp8?: true;
 };
 
-// Sampling is the Hy-MT2 model card's recommendation for the 1.8B and 7B models.
-export const HY_MT2_SAMPLING: TranslateSampling = {
+// Sampling is the Hy-MT3 model card's recommendation: one set for 1.8B and 7B, another for 30B-A3B.
+export const HY_MT_SAMPLING: TranslateSampling = {
   temperature: 0.7,
   top_p: 0.6,
   top_k: 20,
   repetition_penalty: 1.05,
 };
 
+// top_k -1 disables it; left out, the server's default of 20 would apply.
+const HY_MT3_MOE_SAMPLING: TranslateSampling = {
+  temperature: 0.7,
+  top_p: 1,
+  top_k: -1,
+  repetition_penalty: 1,
+};
+
 export const DEDICATED_TRANSLATE_MODELS: readonly DedicatedTranslateModel[] = [
   {
-    id: "hy-mt2-1.8b",
-    label: "Hy-MT2 1.8B",
+    id: "hy-mt3-1.8b",
+    label: "Hy-MT3 1.8B",
     repo: TRANSLATION_ONLY_REPOS[0],
     variant: "Q4_K_M",
-    sizeBytes: 1_133_081_568,
-    sampling: HY_MT2_SAMPLING,
+    sizeBytes: 1_348_432_160,
+    sampling: HY_MT_SAMPLING,
   },
   {
-    id: "hy-mt2-7b",
-    label: "Hy-MT2 7B",
+    id: "hy-mt3-7b",
+    label: "Hy-MT3 7B",
     repo: TRANSLATION_ONLY_REPOS[1],
     variant: "Q4_K_M",
-    sizeBytes: 4_624_650_016,
-    sampling: HY_MT2_SAMPLING,
+    sizeBytes: 5_145_531_232,
+    sampling: HY_MT_SAMPLING,
+  },
+  {
+    id: "hy-mt3-30b-a3b",
+    label: "Hy-MT3 30B-A3B",
+    repo: TRANSLATION_ONLY_REPOS[2],
+    variant: "Q4_K_M",
+    sizeBytes: 19_502_694_048,
+    sampling: HY_MT3_MOE_SAMPLING,
+  },
+  {
+    id: "hy-mt3-1.8b-fp8",
+    label: "Hy-MT3 1.8B FP8",
+    repo: TRANSLATION_ONLY_REPOS[3],
+    variant: null,
+    sizeBytes: 2_038_746_952,
+    sampling: HY_MT_SAMPLING,
+    fp8: true,
+  },
+  {
+    id: "hy-mt3-7b-fp8",
+    label: "Hy-MT3 7B FP8",
+    repo: TRANSLATION_ONLY_REPOS[4],
+    variant: null,
+    sizeBytes: 8_029_904_304,
+    sampling: HY_MT_SAMPLING,
+    fp8: true,
+  },
+  {
+    id: "hy-mt3-30b-a3b-fp8",
+    label: "Hy-MT3 30B-A3B FP8",
+    repo: TRANSLATION_ONLY_REPOS[5],
+    variant: null,
+    sizeBytes: 30_578_801_080,
+    sampling: HY_MT3_MOE_SAMPLING,
+    fp8: true,
   },
 ];
+
+export function offeredTranslateModels(
+  checkpointQuantFormats: readonly string[],
+): readonly DedicatedTranslateModel[] {
+  const fp8 = checkpointQuantFormats.includes("fp8");
+  return DEDICATED_TRANSLATE_MODELS.filter((model) => fp8 || !model.fp8);
+}
+
+export function offeredTranslateModelId(
+  id: TranslateModelId,
+  checkpointQuantFormats: readonly string[],
+): TranslateModelId {
+  const model = dedicatedTranslateModel(id);
+  if (!model?.fp8 || checkpointQuantFormats.includes("fp8")) return id;
+  return (dedicatedTranslateModel(
+    id.replace(/-fp8$/, "") as TranslateModelId,
+  )?.id ?? DEFAULT_TRANSLATE_MODEL) as TranslateModelId;
+}
+
+export function translationSampling(repo: string): TranslateSampling {
+  const wanted = repo.toLowerCase();
+  return (
+    DEDICATED_TRANSLATE_MODELS.find(
+      (model) => model.repo.toLowerCase() === wanted,
+    )?.sampling ?? HY_MT_SAMPLING
+  );
+}
+
+const RENAMED_TRANSLATE_MODELS: Readonly<Record<string, TranslateModelId>> = {
+  "hy-mt2-1.8b": "hy-mt3-1.8b",
+  "hy-mt2-7b": "hy-mt3-7b",
+};
+
+export function migrateTranslateModelId(value: unknown): unknown {
+  return typeof value === "string"
+    ? (RENAMED_TRANSLATE_MODELS[value] ?? value)
+    : value;
+}
 
 /** "chat" translates with whatever model Chat has loaded and downloads nothing. */
 export const CHAT_TRANSLATE_MODEL = "chat";
@@ -107,7 +196,7 @@ export function translatePromptModel(
     : CHAT_TRANSLATE_MODEL;
 }
 
-export const DEFAULT_TRANSLATE_MODEL = "hy-mt2-1.8b" satisfies TranslateModelId;
+export const DEFAULT_TRANSLATE_MODEL = "hy-mt3-1.8b" satisfies TranslateModelId;
 
 export const TRANSLATE_CONTEXT_TOKENS = 8192;
 export const TRANSLATE_MAX_TOKENS = 4096;
@@ -155,11 +244,7 @@ export function translateInstruction(
 }
 
 export function formatModelBytes(bytes: number): string {
-  if (!(bytes > 0)) return "";
-  const gb = bytes / 1000 ** 3;
-  return gb >= 1
-    ? `${gb.toFixed(1)} GB`
-    : `${Math.max(1, Math.round(bytes / 1000 ** 2))} MB`;
+  return bytes > 0 ? formatBytes(bytes) : "";
 }
 
 export type DownloadedTranslateModel = {

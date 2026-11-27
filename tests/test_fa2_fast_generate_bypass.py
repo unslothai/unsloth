@@ -206,6 +206,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "os": os,
         "inspect": inspect,
         "FastBaseModel": FakeFastBaseModel,
+        "_router_logits_off_for_generate": lambda model, kwargs: None,
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),
@@ -293,6 +294,7 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
         "os": os,
         "inspect": inspect,
         "FastBaseModel": SimpleNamespace(for_inference = lambda model: None),
+        "_router_logits_off_for_generate": lambda model, kwargs: None,
         "dtype_from_config": lambda config: "bfloat16",
         "_get_dtype": lambda dtype: dtype,
         "_get_inference_mode_context_manager": lambda model: nullcontext(),
@@ -346,6 +348,10 @@ def test_flash_attention_fallback_pins_a_dynamic_cache():
     fast_generate(Model(), input_ids = input_ids, past_key_values = cache)
     assert "cache_implementation" not in captured
     assert captured["past_key_values"] is cache
+    # transformers 5.24 spells the caller cache `cache=` (past_key_values= is its deprecated alias).
+    fast_generate(Model(), input_ids = input_ids, cache = cache)
+    assert "cache_implementation" not in captured
+    assert captured["cache"] is cache
 
     # LFM3's custom generate lists cache_implementation as unsupported and raises on any value (#16054).
     class CustomGenerateModel(Model):

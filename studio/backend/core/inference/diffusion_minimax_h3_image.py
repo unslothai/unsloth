@@ -18,6 +18,7 @@ uniform knot grid at load, so 20B parameters are left to quantize."""
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import gc
 import hashlib
@@ -35,6 +36,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from loggers import get_logger
+
+from . import diffusion_minimax_h3_image_batch as h3_batch
 
 logger = get_logger(__name__)
 
@@ -143,6 +146,8 @@ VRAM_BUDGET_ENV = "UNSLOTH_H3_IMAGE_VRAM_GB"
 HOST_BUDGET_ENV = "UNSLOTH_H3_IMAGE_HOST_GB"
 # "0": stream from pageable memory (ModuleListStreamer) instead of the pinned prefetch streamer
 PINNED_STREAM_ENV = "UNSLOTH_H3_IMAGE_PINNED_STREAM"
+# "0": the pinned DiT streamer streams the last blocks instead of spacing the streamed ones among the resident ones
+STREAM_SPREAD_ENV = "UNSLOTH_H3_IMAGE_STREAM_SPREAD"
 # "0": run every reference through the VAE encoder on every render (no posterior cache)
 REF_CACHE_ENV = "UNSLOTH_H3_IMAGE_REF_CACHE"
 # "0": keep the allocator blocks the load's staging and lever installs freed reserved on the card
@@ -1239,14 +1244,18 @@ def _h3_image_forward(
     text_embeds: Any = None,
     output_indices: Any = None,
     head: Any = None,
+    lockstep: Any = None,
 ) -> Any:
     """The stock transformer forward plus ``text_embeds`` (refined text rows, computed once per render),
     ``output_indices`` (rows the output norm and head run on) and ``head`` (this step's ``(weight, bias)``, in place
-    of ``pdd_proj_out[pdd_step_index]``)."""
+    of ``pdd_proj_out[pdd_step_index]``). ``lockstep``: the keyword arguments of more images' forwards at the same
+    step; each block then runs every image in turn as its own batch-1 call (``lockstep_blocks``), and the result is
+    one output per image."""
     stock = type(self).forward
     # The fp16 contract (float32 conditioning) needs refined_text's dtype hand-off, which the stock forward lacks.
     if (
-        text_embeds is None
+        not lockstep
+        and text_embeds is None
         and output_indices is None
         and head is None
         and not self.__dict__.get(FP16_CONTRACT_ATTR)
@@ -1264,8 +1273,81 @@ def _h3_image_forward(
             pdd_step_index = pdd_step_index,
             return_dict = return_dict,
         )
-    import torch
     from diffusers.models.modeling_outputs import Transformer2DModelOutput
+
+    first = {
+        "hidden_states": hidden_states,
+        "encoder_hidden_states": encoder_hidden_states,
+        "timestep": timestep,
+        "timestep_indices": timestep_indices,
+        "token_tags": token_tags,
+        "position_ids": position_ids,
+        "image_indices": image_indices,
+        "text_indices": text_indices,
+        "pdd_step_index": pdd_step_index,
+        "text_embeds": text_embeds,
+        "output_indices": output_indices,
+        "head": head,
+    }
+    calls = [first] + [dict(kw) for kw in (lockstep or ())]
+    states = [_h3_image_block_inputs(self, **_call_inputs(kw)) for kw in calls]
+    if lockstep:
+        lockstep_blocks(self, states)
+    else:
+        hidden_states, temb, adaln_indices, rotary_emb = states[0]
+        for block in self.transformer_blocks:
+            if torch_grad_checkpointing(self):
+                hidden_states = self._gradient_checkpointing_func(
+                    block, hidden_states, temb, adaln_indices, rotary_emb
+                )
+            else:
+                hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
+        states[0][0] = hidden_states
+    outputs = [
+        _h3_image_head_rows(self, state[0], state[1], kw) for state, kw in zip(states, calls)
+    ]
+    if lockstep:
+        return tuple(outputs)
+    if not return_dict:
+        return (outputs[0],)
+    return Transformer2DModelOutput(sample = outputs[0])
+
+
+_BLOCK_INPUT_KEYS = (
+    "hidden_states",
+    "encoder_hidden_states",
+    "timestep",
+    "timestep_indices",
+    "token_tags",
+    "position_ids",
+    "image_indices",
+    "text_indices",
+    "text_embeds",
+)
+
+
+def _call_inputs(kw: dict) -> dict:
+    return {key: kw.get(key) for key in _BLOCK_INPUT_KEYS}
+
+
+def torch_grad_checkpointing(transformer: Any) -> bool:
+    import torch
+    return bool(torch.is_grad_enabled() and transformer.gradient_checkpointing)
+
+
+def _h3_image_block_inputs(
+    self: Any,
+    hidden_states: Any,
+    encoder_hidden_states: Any,
+    timestep: Any,
+    timestep_indices: Any,
+    token_tags: Any,
+    position_ids: Any,
+    image_indices: Any,
+    text_indices: Any,
+    text_embeds: Any = None,
+) -> list:
+    """One image's block-stack input: ``[hidden_states, temb, adaln_indices, rotary_emb]``."""
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
@@ -1279,7 +1361,7 @@ def _h3_image_forward(
             f"{list(token_tags.shape)} and {list(timestep_indices.shape)} for seq_len={sequence_length}."
         )
     rotary_emb = self.rope(position_ids)
-    image_embeds = self.proj_in(hidden_states.to(get_parameter_dtype(self.proj_in)))
+    image_embeds = _per_row(self.proj_in, hidden_states.to(get_parameter_dtype(self.proj_in)))
     if text_embeds is None:
         text_embeds = refined_text(self, encoder_hidden_states)
     hidden_states = text_embeds.new_zeros(
@@ -1290,25 +1372,95 @@ def _h3_image_forward(
     temb = self.time_proj(timestep)
     temb = self.time_embedder(temb.to(get_parameter_dtype(self.time_embedder)))
     adaln_indices = timestep_indices * H3_IMAGE_MODALITY_NUM + token_tags
-    for block in self.transformer_blocks:
-        if torch.is_grad_enabled() and self.gradient_checkpointing:
-            hidden_states = self._gradient_checkpointing_func(
-                block, hidden_states, temb, adaln_indices, rotary_emb
-            )
-        else:
-            hidden_states = block(hidden_states, temb, adaln_indices, rotary_emb)
-    proj_out = self.pdd_proj_out[pdd_step_index]
-    rows = image_indices if output_indices is None else output_indices
+    return [hidden_states, temb, adaln_indices, rotary_emb]
+
+
+def _per_row(fn: Callable, x: Any) -> Any:
+    """``fn`` per row at batch 1: keeps batch-1 GEMM roundings (the sampler amplifies a 1e-7 head diff in 6 steps)."""
+    import torch
+
+    if int(x.shape[0]) == 1:
+        return fn(x)
+    return torch.cat([fn(x[b : b + 1]) for b in range(int(x.shape[0]))])
+
+
+def _h3_image_head_rows(self: Any, hidden_states: Any, temb: Any, kw: dict) -> Any:
+    return _per_row(lambda rows: _h3_image_head(self, rows, temb, kw), hidden_states)
+
+
+def _h3_image_head(self: Any, hidden_states: Any, temb: Any, kw: dict) -> Any:
+    """Output norm + this step's head over one image's block-stack output."""
+    import torch
+    from diffusers.models.modeling_utils import get_parameter_dtype
+
+    proj_out = self.pdd_proj_out[kw["pdd_step_index"]]
+    output_indices = kw.get("output_indices")
+    rows = kw["image_indices"] if output_indices is None else output_indices
     hidden_states = self.norm_out(
-        hidden_states.index_select(1, rows), temb, timestep_indices.index_select(0, rows)
+        hidden_states.index_select(1, rows), temb, kw["timestep_indices"].index_select(0, rows)
     ).to(get_parameter_dtype(proj_out))
+    head = kw.get("head")
     if head is not None:
-        output = torch.nn.functional.linear(hidden_states, head[0], head[1])
-    else:
-        output = proj_out(hidden_states)
-    if not return_dict:
-        return (output,)
-    return Transformer2DModelOutput(sample = output)
+        return torch.nn.functional.linear(hidden_states, head[0], head[1])
+    return proj_out(hidden_states)
+
+
+LOCKSTEP_GATE_ATTR = "_unsloth_h3_lockstep_gate"
+
+
+class LockstepGate:
+    """While installed, the DiT streamers' block hooks run once per block of a lockstep forward: the onload before
+    the block's first image, the offload after its last, so every image runs on one upload. Other block hooks run
+    on every call. Outside a lockstep forward (``first`` and ``last`` both True) every hook runs as before."""
+
+    def __init__(self, blocks: Any, handles: Sequence[Any]) -> None:
+        ids = {getattr(h, "id", None) for h in handles} - {None}
+        self.first = True
+        self.last = True
+        self.saved: list = []
+        self.gated = 0
+        for block in blocks:
+            for table, when in (
+                (block._forward_pre_hooks, "first"),
+                (block._forward_hooks, "last"),
+            ):
+                for hid, hook in list(table.items()):
+                    if hid in ids:
+                        self.saved.append((table, hid, hook))
+                        table[hid] = self._gate(hook, when)
+                        self.gated += 1
+
+    def _gate(self, hook: Callable, when: str) -> Callable:
+        def gated(*args: Any) -> Any:
+            if getattr(self, when):
+                return hook(*args)
+            return None
+
+        gated._unsloth_gated = hook
+        return gated
+
+    def remove(self) -> None:
+        for table, hid, hook in self.saved:
+            if hid in table:
+                table[hid] = hook
+        self.saved = []
+        self.first = self.last = True
+
+
+def lockstep_blocks(transformer: Any, states: list) -> None:
+    """Each block runs every image (``states[j][0]`` in place) as its own batch-1 call before the next block, so a
+    streamed block is uploaded once per step for all of them; each image's arithmetic is that of its own forward."""
+    gate = transformer.__dict__.get(LOCKSTEP_GATE_ATTR)
+    last = len(states) - 1
+    try:
+        for block in transformer.transformer_blocks:
+            for j, state in enumerate(states):
+                if gate is not None:
+                    gate.first, gate.last = j == 0, j == last
+                state[0] = block(state[0], state[1], state[2], state[3])
+    finally:
+        if gate is not None:
+            gate.first = gate.last = True
 
 
 def h3_image_forward_active(transformer: Any) -> bool:
@@ -1497,6 +1649,11 @@ def pinned_stream_enabled() -> bool:
     return not _env_off(PINNED_STREAM_ENV)
 
 
+def stream_spread_enabled() -> bool:
+    """Streamed DiT blocks spaced among the resident ones, so their copies overlap resident compute (same weights)."""
+    return not _env_off(STREAM_SPREAD_ENV)
+
+
 def stream_inflight() -> int:
     if not pinned_stream_enabled():
         return 1
@@ -1562,6 +1719,95 @@ def render_resident_blocks(
     if short <= 1e-9:
         return resident
     return max(0, resident - int(math.ceil(short / plan.block_gb - 1e-9)))
+
+
+# "0": the images of one stream-tier request render one after another, each streaming every block itself.
+LOCKSTEP_ENV = "UNSLOTH_H3_IMAGE_LOCKSTEP"
+
+
+def lockstep_enabled() -> bool:
+    """Images of one stream-tier request denoise together: each streamed block is uploaded once per step for all."""
+    return not _env_off(LOCKSTEP_ENV)
+
+
+def lockstep_state_gb(
+    seq: int,
+    text_rows: int,
+    rows: int,
+    row_width: int,
+    hidden: int,
+    rope_width: int,
+    itemsize: int = 2,
+) -> float:
+    """Device memory one more image holds through a lockstep denoise (GB): its block-stack hidden states, refined
+    text, rope tables and indices, and its float32 latent rows and sampler state. Each block's own working set is
+    not counted again: the images run through a block one at a time."""
+    per = (
+        seq
+        * hidden
+        * itemsize
+        * 2  # the hidden states, and a block's output while its input is still held
+        + text_rows * hidden * itemsize
+        + 2 * seq * rope_width * 4
+        + seq * (3 * 8 + 4 * 8)  # float64 positions; tags, indices, timestep and AdaLN indices
+        + rows * row_width * (itemsize + 4 * 3)  # model input rows, x, the scheduler step, velocity
+    )
+    return per / 1e9
+
+
+def _module_gb_off(module: Any, device: Any) -> float:
+    try:
+        import torch
+
+        dev = torch.device(device)
+        total = 0
+        for t in list(module.parameters()) + list(module.buffers()):
+            if t.device.type != dev.type:
+                total += t.numel() * t.element_size()
+        return total / 1e9
+    except Exception:  # noqa: BLE001 - unreadable: no deduction
+        return 0.0
+
+
+def resident_room_gb(device: Any) -> Optional[float]:
+    """GB a resident DiT's device leaves for more images now: CUDA free memory (allocator cache included) less the
+    stream reserve; the host's available RAM on CPU; None elsewhere (not priced)."""
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type == "cuda":
+            free, total = torch.cuda.mem_get_info(dev)
+            cached = torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev)
+            reserve = max(STREAM_RESERVE_GB, STREAM_RESERVE_FRACTION * total / 1e9)
+            return max(0.0, (free + max(0, cached)) / 1e9 - reserve)
+        if dev.type == "cpu":
+            return _host_available_gb()
+    except Exception:  # noqa: BLE001 - unpriced: the images render one after another
+        return None
+    return None
+
+
+def lockstep_room_gb(
+    plan: "H3ImagePlan",
+    width: int,
+    height: int,
+    references: int = 0,
+) -> Optional[float]:
+    """GB the stream plan leaves past one image's priced working set at this canvas; None without measured pricing.
+    The working set is priced from a 4 MP floor; a smaller canvas leaves the floor's per-megapixel share unused."""
+    if (
+        plan is None
+        or plan.placement != PLACE_STREAM
+        or plan.working_gb is None
+        or plan.layout is None
+    ):
+        return None
+    need = stream_working_gb(plan.layout, width, height, references, plan.vram_gb)
+    room = float(plan.working_gb) + max(0.0, float(plan.slack_gb or 0.0)) - need
+    mp = width * height / 1e6 * (1 + max(0, int(references)))
+    room += STREAM_WORKING_GB_PER_MP * max(0.0, H3_IMAGE_MIN_GENERATION_AREA / 1e6 - mp)
+    return max(0.0, room)
 
 
 def dit_gb_for(scheme: Optional[str], table: bool = True) -> float:
@@ -1888,11 +2134,14 @@ class ModuleListStreamer:
         self.handles = []
         self.streamed = 0
         self._host: dict = {}
+        modules = list(modules)
+        # host first: rebuilt after a spread pinned streamer, other blocks become resident, so free before placing
+        for module in modules[max(0, int(resident)) :]:
+            module.to("cpu")
         for index, module in enumerate(modules):
             if index < resident:
                 module.to(self.device)
                 continue
-            module.to("cpu")
             self._host[id(module)] = [
                 (owner, kind, name, tensor)
                 for owner in module.modules()
@@ -2533,7 +2782,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         callback_on_step_end_tensor_inputs: Optional[list] = None,
         min_generation_area: Optional[int] = None,
         max_sequence_length: int = H3_IMAGE_MAX_SEQUENCE_LENGTH,
+        row_images: Any = None,
     ) -> Any:
+        """``row_images``: per-prompt reference image(s) (None = text-to-image), replacing the shared ``image``."""
         import torch
 
         steps = H3_IMAGE_STEPS if num_inference_steps is None else num_inference_steps
@@ -2565,20 +2816,58 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         generators = [generator] * len(jobs) if shared else generator
         if len(generators) != len(jobs):
             raise ValueError(f"got {len(generators)} generators for {len(jobs)} images")
-        vae_refs, vision_refs = self.prepare_references(image)
-        # no size: an edit takes the reference edit size of Picture 1 (as the API and UI); text-to-image 2048x2048
-        if not vae_refs:
-            default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
-        elif source_resize_enabled():
-            first = image[0] if isinstance(image, (list, tuple)) else image
-            default_w, default_h = reference_edit_size(*upright_size(first))
+        if row_images is None:
+            vae_refs, vision_refs = self.prepare_references(image)
+            height, width = self._output_size(image, vae_refs, height, width)
+            per_job = None
         else:
-            default_w, default_h = picture_size(vae_refs[0])
-        height = int(height or default_h)
-        width = int(width or default_w)
+            if image is not None:
+                raise ValueError("MiniMax-H3-Image takes `image` or `row_images`, not both.")
+            row_images = list(row_images)
+            if len(row_images) != len(prompts):
+                raise ValueError(f"got {len(row_images)} row_images for {len(prompts)} prompts")
+            per_prompt = []
+            for refs in row_images:
+                vae_j, vision_j = self.prepare_references(refs)
+                per_prompt.append((vae_j, vision_j, *self._output_size(refs, vae_j, height, width)))
+            n = max(1, int(num_images_per_prompt or 1))
+            per_job = [spec for spec in per_prompt for _ in range(n)]
+            vae_refs, vision_refs, height, width = per_job[0]
         self._interrupt = False
         images = []
+        done = 0
+        refusal = self._together_refusal(len(jobs))
+        if refusal is None:
+            done, finished = self._render_together(
+                jobs,
+                generators,
+                shared,
+                vae_refs,
+                vision_refs,
+                height,
+                width,
+                latents,
+                min_generation_area,
+                steps,
+                callback_on_step_end,
+                callback_on_step_end_tensor_inputs or ["latents"],
+                output_type,
+                per_job = per_job,
+            )
+            images.extend(finished)
+            if done < 0:
+                jobs = []  # interrupted
+        elif len(jobs) > 1:
+            logger.debug(
+                "diffusion.minimax_h3_image: %d images render one after another (%s)",
+                len(jobs),
+                refusal,
+            )
         for index, (text, gen) in enumerate(zip(jobs, generators)):
+            if index < done:
+                continue
+            if per_job is not None:
+                vae_refs, vision_refs, height, width = per_job[index]
             args = (
                 text,
                 vae_refs,
@@ -2614,6 +2903,116 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return (images,)
         return _image_output(images)
 
+    @staticmethod
+    def _output_size(image: Any, vae_refs: list, height: Any, width: Any) -> tuple:
+        """No size: an edit takes Picture 1's reference edit size (as the API and UI); text-to-image 2048x2048."""
+        if not vae_refs:
+            default_w, default_h = H3_IMAGE_DEFAULT_SIZE, H3_IMAGE_DEFAULT_SIZE
+        elif source_resize_enabled():
+            first = image[0] if isinstance(image, (list, tuple)) else image
+            default_w, default_h = reference_edit_size(*upright_size(first))
+        else:
+            default_w, default_h = picture_size(vae_refs[0])
+        return int(height or default_h), int(width or default_w)
+
+    @torch_no_grad
+    def _render_together(
+        self,
+        jobs: list,
+        generators: list,
+        shared: bool,
+        vae_refs: list,
+        vision_refs: list,
+        height: int,
+        width: int,
+        latents: Any,
+        min_generation_area: Optional[int],
+        steps: int,
+        callback: Optional[Callable],
+        callback_inputs: list,
+        output_type: str,
+        per_job: Optional[list] = None,
+    ) -> tuple:
+        """Render ``jobs`` in lockstep groups the plan has room for: ``(images done, their pixels)``, -1 done when
+        interrupted. Jobs are set up one at a time and join the group while the plan has room for every image's
+        state (one that does not fit is set up again for the next group); a group of one, or one that runs out of
+        memory, leaves the rest to separate renders. ``per_job`` overrides the shared refs and size per image."""
+        import torch
+
+        def setup(index: int) -> dict:
+            refs_v, refs_e, out_h, out_w = (
+                (vae_refs, vision_refs, height, width) if per_job is None else per_job[index]
+            )
+            job = self._render_setup(
+                jobs[index],
+                refs_v,
+                refs_e,
+                out_h,
+                out_w,
+                generators[index],
+                latents if index == 0 else None,
+                min_generation_area,
+                steps,
+                index if shared else 0,
+            )
+            # each image steps its own scheduler; the next set-up resets the pipe's
+            job["scheduler"] = copy.deepcopy(self.scheduler)
+            job["out_size"] = (out_h, out_w)
+            return job
+
+        done, out = 0, []
+        while len(jobs) - done >= 2:
+            group: list = []
+            oom = None
+            pixels = None
+            try:
+                # set-up (prompt / reference encode, per-image state) can run out of memory too: same fallback
+                group.append(setup(done))
+                room = self._together_room(group[0])
+                while room is not None and done + len(group) < len(jobs):
+                    nxt = setup(done + len(group))
+                    if not self._lockstep_fits(group + [nxt], room):
+                        del nxt  # over the room: set up again when its turn comes
+                        break
+                    group.append(nxt)
+                if len(group) < 2:
+                    logger.info(
+                        "diffusion.minimax_h3_image: no room to denoise %d images together: one after another",
+                        len(jobs) - done,
+                    )
+                    del group
+                    return done, out
+                pixels = self._render_lockstep(
+                    group,
+                    callback,
+                    callback_inputs,
+                    output_type,
+                    height,
+                    width,
+                    cap = self._batch_cap(group, room),
+                )
+            except torch.OutOfMemoryError as exc:
+                # fall back outside this handler: its traceback holds the failed render's tensors
+                oom = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
+            if oom is not None:
+                count = len(group)
+                del group
+                gc.collect()
+                _empty_cache()
+                logger.warning(
+                    "diffusion.minimax_h3_image: %d images together ran out of GPU memory (%s): rendering them "
+                    "one after another",
+                    count,
+                    oom,
+                )
+                return done, out
+            if pixels is None:
+                return -1, out
+            for one in pixels:
+                out.extend(one)
+            done += len(group)
+        return done, out
+
     @torch_no_grad
     def _render_one(
         self,
@@ -2631,6 +3030,47 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         output_type: str,
         batch_index: int = 0,
     ) -> Optional[list]:
+        job = self._render_setup(
+            prompt,
+            vae_refs,
+            vision_refs,
+            height,
+            width,
+            generator,
+            latents,
+            min_generation_area,
+            steps,
+            batch_index,
+        )
+        transformer = self._enter("transformer")
+        job["t1"] = time.perf_counter()
+        try:
+            self._denoise_setup(job, transformer)
+            for i, t in enumerate(job["timesteps"]):
+                if self.interrupt:
+                    return None
+                velocity = transformer(**self._step_inputs(job, i))[0]
+                self._step_update(job, velocity, i, t)
+                if callback is not None:
+                    callback(self, i, t, self._step_payload(job, callback_inputs))
+        finally:
+            self._leave("transformer")
+        return self._render_finish(job, height, width, output_type)
+
+    def _render_setup(
+        self,
+        prompt: str,
+        vae_refs: list,
+        vision_refs: list,
+        height: int,
+        width: int,
+        generator: Any,
+        latents: Any,
+        min_generation_area: Optional[int],
+        steps: int,
+        batch_index: int = 0,
+    ) -> dict:
+        """One image's render up to its denoise loop: canvas, encode, noise, references, layout, schedule."""
         import torch
 
         stats: dict = {"canvas": None}
@@ -2698,76 +3138,119 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             "image_indices": image_idx.to(device),
             "text_indices": text_idx.to(device),
         }
-        transformer = self._enter("transformer")
-        t1 = time.perf_counter()
-        try:
-            dtype = _module_dtype(transformer, skip_fp32 = True)
-            prompt_embeds = embeds.to(device = device, dtype = dtype)
-            extra: dict = {}
-            ours = h3_image_forward_active(transformer)
-            if ours:
-                if target_head_enabled():
-                    extra["output_indices"] = image_idx[n_ref:].to(device)
-                if refiner_cache_enabled():
-                    # the text rows do not change across steps: refine them once per render
-                    extra["text_embeds"] = refined_text(transformer, prompt_embeds)
-            stats["refiner_cached"] = "text_embeds" in extra
-            stats["steps"] = steps
-            grid = self.scheduler.head_grid
-            sample_sigmas = self.scheduler.sigmas.cpu()
+        return {
+            "stats": stats,
+            "t0": t0,
+            "device": device,
+            "embeds": embeds,
+            "steps": steps,
+            "patch": patch,
+            "channels": channels,
+            "lh": lh,
+            "lw": lw,
+            "rows": rows,
+            "n_ref": n_ref,
+            "ref_images": len(vae_refs),
+            "image_idx": image_idx,
+            "seq": seq,
+            "text_rows": int(text_idx.numel()),
+            "plan": plan,
+            "fields": fields,
+            "timesteps": timesteps,
+            "scheduler": self.scheduler,
+        }
+
+    def _denoise_setup(self, job: dict, transformer: Any) -> None:
+        """The per-render pieces that need the transformer: compute dtype, refined text, the head bank, x."""
+        stats, device, scheduler = job["stats"], job["device"], job["scheduler"]
+        steps, image_idx, n_ref = job["steps"], job["image_idx"], job["n_ref"]
+        dtype = _module_dtype(transformer, skip_fp32 = True)
+        prompt_embeds = job["embeds"].to(device = device, dtype = dtype)
+        extra: dict = {}
+        ours = h3_image_forward_active(transformer)
+        if ours:
+            if target_head_enabled():
+                extra["output_indices"] = image_idx[n_ref:].to(device)
+            if refiner_cache_enabled():
+                # the text rows do not change across steps: refine them once per render
+                extra["text_embeds"] = refined_text(transformer, prompt_embeds)
+        stats["refiner_cached"] = "text_embeds" in extra
+        stats["steps"] = steps
+        grid = scheduler.head_grid
+        sample_sigmas = scheduler.sigmas.cpu()
+        bank = getattr(transformer, PDD_BANK_ATTR, None)
+        if bank is None and steps != H3_IMAGE_STEPS:
+            install_pdd_head_bank(transformer)
             bank = getattr(transformer, PDD_BANK_ATTR, None)
-            if bank is None and steps != H3_IMAGE_STEPS:
-                install_pdd_head_bank(transformer)
-                bank = getattr(transformer, PDD_BANK_ATTR, None)
-            spans = [pdd_head_span(s, sample_sigmas, grid) for s in self.scheduler.model_sigmas]
-            if bank is not None and any(stop - start != 1 for start, stop in spans):
-                bank = tuple(t.to(device) for t in bank)
-            else:
-                # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
-                bank = None
-            if bank is not None and not ours:
-                raise ValueError(
-                    f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
-                    "transformer's forward is wrapped."
-                )
-            stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
-            # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
-            x = rows[n_ref:].clone()
-            for i, t in enumerate(timesteps):
-                if self.interrupt:
-                    return None
-                unique, index = plan[i]
-                start, _stop = spans[i]
-                if bank is not None:
-                    extra["head"] = pdd_head_weights(
-                        bank, self.scheduler.model_sigmas[i], sample_sigmas, grid
-                    )
-                rows[n_ref:] = model_io(x, dtype)
-                velocity = transformer(
-                    hidden_states = rows[None],
-                    encoder_hidden_states = prompt_embeds,
-                    timestep = unique.to(device),
-                    timestep_indices = index.to(device),
-                    pdd_step_index = start,
-                    return_dict = False,
-                    **fields,
-                    **extra,
-                )[0]
-                if "output_indices" not in extra:
-                    velocity = velocity[:, n_ref:]
-                velocity = model_io(velocity[0], dtype).float()
-                x = self.scheduler.step(velocity, t, x)[0]
-                if callback is not None:
-                    view = unpatchify(x, lh, lw, channels, patch)
-                    payload = {"latents": view} if "latents" in callback_inputs else {}
-                    callback(self, i, t, payload)
-        finally:
-            self._leave("transformer")
+        spans = [pdd_head_span(s, sample_sigmas, grid) for s in scheduler.model_sigmas]
+        if bank is not None and any(stop - start != 1 for start, stop in spans):
+            bank = tuple(t.to(device) for t in bank)
+        else:
+            # every step spans one grid interval: pdd_proj_out[k] already is the reference's head for it
+            bank = None
+        if bank is not None and not ours:
+            raise ValueError(
+                f"MiniMax-H3-Image renders {steps} steps through its own forward (blended heads), and this "
+                "transformer's forward is wrapped."
+            )
+        stats["pdd_blended_steps"] = sum(stop - start != 1 for start, stop in spans)
+        # sampler state stays float32 in x; rows = the model input in the compute dtype, as the reference casts it
+        job.update(
+            dtype = dtype,
+            prompt_embeds = prompt_embeds,
+            extra = extra,
+            ours = ours,
+            grid = grid,
+            sample_sigmas = sample_sigmas,
+            bank = bank,
+            spans = spans,
+            x = job["rows"][n_ref:].clone(),
+        )
+
+    def _step_inputs(self, job: dict, i: int) -> dict:
+        """The transformer keyword arguments of step ``i`` (writes this step's model input into the rows)."""
+        unique, index = job["plan"][i]
+        start, _stop = job["spans"][i]
+        extra, device, rows = job["extra"], job["device"], job["rows"]
+        if job["bank"] is not None:
+            extra["head"] = pdd_head_weights(
+                job["bank"], job["scheduler"].model_sigmas[i], job["sample_sigmas"], job["grid"]
+            )
+        rows[job["n_ref"] :] = model_io(job["x"], job["dtype"])
+        return dict(
+            hidden_states = rows[None],
+            encoder_hidden_states = job["prompt_embeds"],
+            timestep = unique.to(device),
+            timestep_indices = index.to(device),
+            pdd_step_index = start,
+            return_dict = False,
+            **job["fields"],
+            **extra,
+        )
+
+    @staticmethod
+    def _step_update(job: dict, velocity: Any, i: int, t: Any) -> None:
+        if "output_indices" not in job["extra"]:
+            velocity = velocity[:, job["n_ref"] :]
+        velocity = model_io(velocity[0], job["dtype"]).float()
+        job["x"] = job["scheduler"].step(velocity, t, job["x"])[0]
+
+    @staticmethod
+    def _step_payload(job: dict, callback_inputs: list) -> dict:
+        if "latents" not in callback_inputs:
+            return {}
+        view = unpatchify(job["x"], job["lh"], job["lw"], job["channels"], job["patch"])
+        return {"latents": view}
+
+    def _render_finish(self, job: dict, height: int, width: int, output_type: str) -> list:
+        import torch
+
+        stats, device = job["stats"], job["device"]
         if device.type == "cuda":
             torch.cuda.synchronize(device)
-        stats["denoise_s"] = time.perf_counter() - t1
+        stats["denoise_s"] = time.perf_counter() - job["t1"]
         t2 = time.perf_counter()
-        final = unpatchify(x, lh, lw, channels, patch)
+        final = unpatchify(job["x"], job["lh"], job["lw"], job["channels"], job["patch"])
         if output_type == "latent":
             self._unsloth_h3_last_stats = stats
             return [final[0]]
@@ -2776,10 +3259,212 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         vae_stats = getattr(self.vae, "__dict__", {}).get("_unsloth_canvas_stats")
         if vae_stats:
             stats["vae"] = dict(vae_stats)
-        stats["total_s"] = time.perf_counter() - t0
+        stats["total_s"] = time.perf_counter() - job["t0"]
         stats["streamers"] = self._streamer_stats()
         self._unsloth_h3_last_stats = stats
         return images
+
+    def _dit_streamer(self) -> Any:
+        return next(
+            (
+                s
+                for s in self._unsloth_h3_streamers
+                if getattr(s, "_unsloth_role", None) == "transformer"
+            ),
+            None,
+        )
+
+    def _lockstep_refusal(self, images: int) -> Optional[str]:
+        """Why ``images`` images of one request cannot share their streamed block uploads; None = they can."""
+        if images < 2:
+            return "one image"
+        if not lockstep_enabled():
+            return f"{LOCKSTEP_ENV}=0"
+        if self._placement() != PLACE_STREAM:
+            return "the DiT is not streamed"
+        streamer = self._dit_streamer()
+        if streamer is None or int(getattr(streamer, "streamed", 0) or 0) <= 0:
+            return "no DiT block streams"
+        if not h3_image_forward_active(self.transformer):
+            return "the transformer's forward is wrapped"
+        if not (
+            target_head_enabled()
+            or refiner_cache_enabled()
+            or self.transformer.__dict__.get(FP16_CONTRACT_ATTR)
+        ):
+            return "the stock forward runs each image"
+        return None
+
+    def _together_refusal(self, images: int) -> Optional[str]:
+        """Why ``images`` images cannot denoise together; None = they can."""
+        if images < 2 or self._placement() == PLACE_STREAM:
+            return self._lockstep_refusal(images)
+        if self._placement() == PLACE_SEQUENTIAL:
+            return self._sequential_refusal()
+        if not h3_batch.batched_forward_enabled():
+            return f"{h3_batch.BATCHED_ENV} is not 1"
+        if self._placement() not in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
+            return "the DiT is offloaded"
+        if not h3_image_forward_active(self.transformer):
+            return "the transformer's forward is wrapped"
+        if not (
+            target_head_enabled()
+            or refiner_cache_enabled()
+            or self.transformer.__dict__.get(FP16_CONTRACT_ATTR)
+        ):
+            return "the stock forward runs each image"
+        if self._compiled_blocks():
+            return "compiled blocks (a new batch would recompile on the request)"
+        return None
+
+    def _sequential_refusal(self) -> Optional[str]:
+        """Sequential tier: why images cannot denoise together (one DiT upload for all); None = they can."""
+        if not lockstep_enabled():
+            return f"{LOCKSTEP_ENV}=0"
+        if not h3_image_forward_active(self.transformer):
+            return "the transformer's forward is wrapped"
+        if not (
+            target_head_enabled()
+            or refiner_cache_enabled()
+            or self.transformer.__dict__.get(FP16_CONTRACT_ATTR)
+        ):
+            return "the stock forward runs each image"
+        return None
+
+    def _compiled_blocks(self) -> bool:
+        return "h3_compiled" in (getattr(self, "_unsloth_h3_speed_levers", None) or ())
+
+    def _together_room(self, job: dict) -> Optional[float]:
+        if self._placement() == PLACE_STREAM:
+            return self._lockstep_room(job)
+        room = resident_room_gb(job["device"])
+        if room is not None and self._placement() == PLACE_SEQUENTIAL:
+            # DiT is on the host now: its room is taken when the denoise brings it in
+            room = max(0.0, room - _module_gb_off(self.transformer, job["device"]))
+        return room
+
+    def _batch_cap(self, jobs: list, room: Optional[float]) -> int:
+        if room is None or len(jobs) < 2 or self._compiled_blocks():
+            return 1
+        if self._placement() == PLACE_SEQUENTIAL and not h3_batch.batched_forward_enabled():
+            return 1
+        config = self.transformer.config
+        hidden = int(getattr(config, "hidden_size", 5376))
+        rope = 6 * int(getattr(config, "rope_freq_dim", 16))
+        state = max(
+            lockstep_state_gb(
+                job["seq"],
+                job["text_rows"],
+                int(job["rows"].shape[0]),
+                int(job["rows"].shape[-1]),
+                hidden,
+                rope,
+            )
+            for job in jobs
+        )
+        heads_dim = int(getattr(config, "num_attention_heads", 0) or 0) * int(
+            getattr(config, "attention_head_dim", 0) or 0
+        )
+        row = max(
+            h3_batch.batched_row_gb(
+                job["seq"],
+                hidden,
+                int(
+                    getattr(config, "ffn_dim", 0)
+                    or getattr(config, "ffn_hidden_size", 0)
+                    or 4 * hidden
+                ),
+                heads_dim or None,
+            )
+            for job in jobs
+        )
+        return h3_batch.batch_cap(len(jobs), room, state, row, max(int(job["seq"]) for job in jobs))
+
+    def _lockstep_room(self, job: dict) -> Optional[float]:
+        """GB the plan leaves for more images beside ``job`` (set up), None = not priced."""
+        canvas_w, canvas_h = job["stats"]["canvas"]
+        # the plan prices whole reference images; n_ref counts their packed patch rows
+        return lockstep_room_gb(self._unsloth_h3_plan, canvas_w, canvas_h, job["ref_images"])
+
+    def _lockstep_fits(self, jobs: list, room: float) -> bool:
+        """Whether every image past the first of ``jobs`` (set up) fits ``room``, each priced as the largest."""
+        config = self.transformer.config
+        each = max(
+            lockstep_state_gb(
+                job["seq"],
+                job["text_rows"],
+                int(job["rows"].shape[0]),
+                int(job["rows"].shape[-1]),
+                int(getattr(config, "hidden_size", 5376)),
+                6 * int(getattr(config, "rope_freq_dim", 16)),
+            )
+            for job in jobs
+        )
+        return (len(jobs) - 1) * each <= float(room)
+
+    @torch_no_grad
+    def _render_lockstep(
+        self,
+        jobs: list,
+        callback: Optional[Callable],
+        callback_inputs: list,
+        output_type: str,
+        height: int,
+        width: int,
+        cap: int = 1,
+    ) -> Optional[list]:
+        """Denoise ``jobs`` together, same-layout images batched up to ``cap`` rows per block call; a streamed block
+        uploads once per step. Callback gets the first image's latents. None = interrupted."""
+        transformer = self._enter("transformer")
+        t1 = time.perf_counter()
+        gate = None
+        batches = [[j] for j in range(len(jobs))]
+        try:
+            streamer = self._dit_streamer()
+            gate = LockstepGate(transformer.transformer_blocks, getattr(streamer, "handles", ()))
+            transformer.__dict__[LOCKSTEP_GATE_ATTR] = gate
+            # The first image steps the pipe's own scheduler (a step callback reads it), freshly set as its copy was.
+            first = jobs[0]
+            self.scheduler.set_timesteps(first["steps"], device = first["device"])
+            first["scheduler"] = self.scheduler
+            for job in jobs:
+                job["t1"] = t1
+                self._denoise_setup(job, transformer)
+            if cap > 1:
+                batches = h3_batch.batch_groups(jobs, cap)
+            statics = None
+            for i, t in enumerate(jobs[0]["timesteps"]):
+                if self.interrupt:
+                    return None
+                calls = [self._step_inputs(job, i) for job in jobs]
+                if statics is None:
+                    statics = [h3_batch.merged_static([calls[j] for j in b]) for b in batches]
+                merged = [
+                    h3_batch.merge_step_calls([calls[j] for j in b], static)
+                    for b, static in zip(batches, statics)
+                ]
+                if len(merged) == 1:
+                    outputs = transformer(**merged[0])
+                else:
+                    outputs = transformer(**merged[0], lockstep = merged[1:])
+                for b, output in zip(batches, outputs):
+                    for j, velocity in zip(b, h3_batch.split_rows(output, len(b))):
+                        self._step_update(jobs[j], velocity, i, t)
+                if callback is not None:
+                    callback(self, i, t, self._step_payload(jobs[0], callback_inputs))
+        finally:
+            transformer.__dict__.pop(LOCKSTEP_GATE_ATTR, None)
+            if gate is not None:
+                gate.remove()
+            self._leave("transformer")
+        out = []
+        shape = [len(b) for b in batches]
+        for job in jobs:
+            job["stats"]["lockstep"] = len(jobs)
+            job["stats"]["batched"] = shape
+            out_h, out_w = job.get("out_size") or (height, width)
+            out.append(self._render_finish(job, out_h, out_w, output_type))
+        return out
 
     def _decode(self, latents: Any, height: int, width: int, output_type: str) -> list:
         import numpy as np
@@ -4408,9 +5093,11 @@ def make_list_streamer(
     max_pin_bytes: Optional[int] = None,
     replaces_counted: bool = False,
     later_host_bytes: int = 0,
+    spread: bool = False,
 ) -> Any:
     """A streamer for ``members[resident:]``: the pinned prefetch one where it fits, else ``ModuleListStreamer``.
-    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it)."""
+    ``later_host_bytes``: host memory the load still takes after this streamer (a split encoder pin leaves it).
+    ``spread``: the pinned streamer spaces as many streamed members among the resident ones instead."""
     streamer = None
     if pinned and pinned_stream_enabled():
         from .diffusion_offload_prefetch import stream_module_list
@@ -4424,6 +5111,7 @@ def make_list_streamer(
             max_pin_bytes = max_pin_bytes,
             replaces_counted = replaces_counted,
             release_after_forward = role == "text_encoder",
+            spread = spread,
         )
     if streamer is None and pinned and role == "text_encoder" and te_partial_pin_enabled():
         streamer = _split_text_encoder_streamer(
@@ -4470,7 +5158,14 @@ def dit_restream_pin_bytes(transformer: Any, plan: "H3ImagePlan", early_streamer
         return 0
     from .diffusion_memory import _storage_nbytes
 
-    blocks = list(transformer.transformer_blocks)[max(0, resident) :]
+    blocks = list(transformer.transformer_blocks)
+    if stream_spread_enabled():
+        from .diffusion_offload_prefetch import spread_stream_indices
+        blocks = [
+            blocks[i] for i in spread_stream_indices(len(blocks), len(blocks) - max(0, resident))
+        ]
+    else:
+        blocks = blocks[max(0, resident) :]
     return int(
         sum(
             sum(_storage_nbytes(t))
@@ -4643,6 +5338,7 @@ def _place_streamed_dit(
         "transformer",
         max_pin_bytes = pin_room_bytes(plan, pinned_already),
         replaces_counted = pins_replace_counted(plan),
+        spread = stream_spread_enabled(),
     )
     streamer._unsloth_resident = resident
     return streamer
@@ -4743,6 +5439,8 @@ def demote_dit_blocks(
                 replaces_counted = pins_replace_counted(plan),
                 reuse = reuse,
                 reuse_arenas = arenas,
+                # spread: the reused (already streamed) blocks stay streamed, the new ones space among the rest
+                spread = bool(getattr(old, "spread", False)),
             )
 
         new = _pinned(keep)

@@ -48,9 +48,9 @@ const RECOVERY_MAX_STATUS_FAILS = 5;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Settle a phase whose POST hit a tunnel timeout by polling status. A record is ours once
- *  the op is inactive and we saw it active or its seq passed `baseline`. */
+/** Settle a phase whose POST hit a tunnel timeout by polling for its operation id. */
 async function recoverViaStatus(
+  opId: string,
   baseline: number | null,
   isCurrent: () => boolean,
 ): Promise<{ outputPath: string | null }> {
@@ -82,8 +82,11 @@ async function recoverViaStatus(
       continue;
     }
 
-    const seq = st.last_op_seq ?? 0;
-    const isOurs = sawActive || (baseline !== null && seq > baseline);
+    // Older backends omit the field. Null on a current backend is an untagged op.
+    const isOurs =
+      st.last_op_id !== undefined
+        ? st.last_op_id === opId
+        : sawActive || (baseline !== null && (st.last_op_seq ?? 0) > baseline);
     if (isOurs) {
       if (st.last_op_status === "success") {
         return { outputPath: st.last_op_output_path ?? null };
@@ -92,11 +95,8 @@ async function recoverViaStatus(
       throw new Error(st.last_op_error || "Export failed");
     }
 
-    // Our op was never observed: the POST likely died first. Fail after a grace window.
     if (Date.now() - start > RECOVERY_GRACE_MS) {
-      throw new Error(
-        "The export request failed before the server started the operation.",
-      );
+      throw new Error("Could not confirm the export operation on the server.");
     }
   }
   throw new Error("Timed out waiting for the export to finish.");
@@ -203,6 +203,7 @@ interface ExportRuntimeState {
   } | null;
   error: string | null;
   cancelRequested: boolean;
+  opId: string | null;
   hasHydrated: boolean;
   backendActive: boolean;
   runId: number;
@@ -275,6 +276,7 @@ const initialState: ExportRuntimeState = {
   result: null,
   error: null,
   cancelRequested: false,
+  opId: null,
   hasHydrated: false,
   backendActive: false,
   runId: 0,
@@ -378,7 +380,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     if (!get().isExporting) return;
     set({ cancelRequested: true });
     try {
-      await cancelExport();
+      // A run attached from another tab has no id of ours: stop whatever is running.
+      await cancelExport(get().ownsRun ? get().opId : null);
     } catch {
       // The in-flight POST still rejects when the worker dies, giving the canceled phase.
     }
@@ -412,6 +415,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       result: null,
       error: null,
       cancelRequested: false,
+      opId: null,
     });
 
     const isCurrent = () => get().runId === runId;
@@ -419,19 +423,24 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
     // Survive a Cloudflare 524 by settling a recoverable failure through status polls.
     const runRecoverableOp = async (
-      post: () => Promise<ExportOperationResponse>,
+      post: (opId: string) => Promise<ExportOperationResponse>,
     ): Promise<{
       outputPath: string | null;
       details?: ExportOperationResponse["details"];
     }> => {
+      // Set before the preflight: the backend refuses an op whose id was cancelled before it began.
+      const opId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      set({ opId });
       let baseline: number | null = null;
       try {
         baseline = (await getExportStatus()).last_op_seq ?? 0;
       } catch {
         baseline = null;
       }
+      if (!isCurrent()) throw new Error("Export run superseded");
+      if (get().cancelRequested) throw new ExportCanceledError();
       try {
-        const resp = await post();
+        const resp = await post(opId);
         return {
           outputPath: resp.details?.output_path ?? null,
           details: resp.details,
@@ -440,7 +449,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isRecoverableTransportError(err)) throw err;
         set({ reconnecting: true });
         try {
-          return await recoverViaStatus(baseline, isCurrent);
+          return await recoverViaStatus(opId, baseline, isCurrent);
         } finally {
           if (isCurrent()) set({ reconnecting: false });
         }
@@ -453,8 +462,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           throw new Error("No checkpoint selected");
         }
         const checkpointPath = params.checkpointPath;
-        await runRecoverableOp(() =>
+        await runRecoverableOp((op_id) =>
           loadCheckpoint({
+            op_id,
             checkpoint_path: checkpointPath,
             trust_remote_code: params.trustRemoteCode,
             approved_remote_code_fingerprint:
@@ -465,8 +475,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           }),
         );
       } else {
-        await runRecoverableOp(() =>
+        await runRecoverableOp((op_id) =>
           loadCheckpoint({
+            op_id,
             checkpoint_path: params.source,
             load_in_4bit: false,
             trust_remote_code:
@@ -492,8 +503,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           if (!isCurrent()) return;
           set({ quantIndex: i });
           const sel = selections[i];
-          const { outputPath, details: mergedDetails } = await runRecoverableOp(() =>
+          const { outputPath, details: mergedDetails } = await runRecoverableOp((op_id) =>
             exportMerged({
+              op_id,
               save_directory: params.saveDirectory,
               format_type: sel.formatType,
               compressed_method: sel.compressedMethod,
@@ -515,8 +527,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       } else if (params.exportMethod === "gguf") {
         // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
         // from that single merge (unsloth save_to_gguf loops internally).
-        const { outputPath, details } = await runRecoverableOp(() =>
+        const { outputPath, details } = await runRecoverableOp((op_id) =>
           exportGGUF({
+            op_id,
             save_directory: params.saveDirectory,
             quantization_method: params.quantLevels,
             push_to_hub: pushToHub,
@@ -550,8 +563,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
-        const { outputPath, details: loraDetails } = await runRecoverableOp(() =>
+        const { outputPath, details: loraDetails } = await runRecoverableOp((op_id) =>
           exportLoRA({
+            op_id,
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
             repo_id: params.repoId,

@@ -65,6 +65,15 @@ def check_auto_env(environ = None):
     environ = os.environ if environ is None else environ
     fsdp2 = str(environ.get("UNSLOTH_FSDP2", "")).strip().lower()
     inherited = str(environ.get(RESOLVED, "")).strip().lower()
+    # Before the inherited return: a parent never sets these, so a child that has one asks for another axis.
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"):
+        if str(environ.get(name, "")).strip() not in ("", "1"):
+            raise ValueError(
+                f"Unsloth: {FLAG}=auto only chooses the data parallel mode (DDP or FSDP2), but "
+                f"{name}={environ.get(name)} asks for another axis. Give the whole layout instead, e.g. "
+                f'{FLAG}="tp=2,fsdp=1".'
+            )
+    # After it: a parent that picked FSDP2 exported UNSLOTH_FSDP2 and accelerate's FSDP env itself.
     if inherited in (DDP, FSDP2) and fsdp2 == ("1" if inherited == FSDP2 else "0"):
         _STATE.update(choice = inherited, reason = f"inherited {RESOLVED}={inherited}")
         return
@@ -73,13 +82,6 @@ def check_auto_env(environ = None):
             f"Unsloth: {FLAG}=auto picks DDP or FSDP2 itself, but UNSLOTH_FSDP2={environ.get('UNSLOTH_FSDP2')} "
             f'already does. Use one of the two: unset UNSLOTH_FSDP2, or set {FLAG}="fsdp=1" / "fsdp=0".'
         )
-    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE"):
-        if str(environ.get(name, "")).strip() not in ("", "1"):
-            raise ValueError(
-                f"Unsloth: {FLAG}=auto only chooses the data parallel mode (DDP or FSDP2), but "
-                f"{name}={environ.get(name)} asks for another axis. Give the whole layout instead, e.g. "
-                f'{FLAG}="tp=2,fsdp=1".'
-            )
     if str(environ.get(BUDGET, "")).strip():
         _parse_budget(environ.get(BUDGET))
     if (
@@ -134,6 +136,52 @@ def _local_cuda_device(torch):
     if local is not None and 0 <= local < torch.cuda.device_count():
         return local
     return torch.cuda.current_device()
+
+
+def _fp8_kept_on_load():
+    """Whether this rank's device keeps FP8 checkpoint weights FP8. A CUDA GPU below compute capability 8.9
+    (and CPU) has transformers dequantize them to 16-bit on load (verify_fp8_support_if_applicable)."""
+    try:
+        import torch
+        if getattr(torch.version, "hip", None) or (
+            hasattr(torch, "xpu") and torch.xpu.is_available()
+        ):
+            return True
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability(_local_cuda_device(torch))
+            return major * 10 + minor >= 89
+    except Exception:
+        pass
+    return False
+
+
+def _fp8_to_nf4_armed(explicit_4bit, config):
+    """Whether a 4bit load of this FP8 checkpoint quantizes it to NF4, by maybe_arm_fp8_to_nf4's checks: an
+    explicit load_in_4bit or UNSLOTH_FP8_TO_NF4=1 (not =0), a block-FP8 config whose experts are not already
+    packed, no Mistral-format view, and the transformers / bitsandbytes it needs. `config` is a thunk."""
+    mode = os.environ.get("UNSLOTH_FP8_TO_NF4", "").strip().lower()
+    if mode in ("0", "false", "off", "no") or not (
+        explicit_4bit or mode in ("1", "true", "on", "yes", "force")
+    ):
+        return False
+    try:
+        from .models.fp8_to_nf4 import (
+            _PACKED_EXPERT_DTYPES,
+            fp8_block_quantization_config,
+            fp8_to_nf4_unavailable_reason,
+        )
+        from .models.mistral_format import mistral_format_conversions_active
+
+        quant = fp8_block_quantization_config(config())
+        if quant is None or mistral_format_conversions_active():
+            return False
+        if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
+            return False
+        return fp8_to_nf4_unavailable_reason() is None
+    except Exception as exc:
+        raise ValueError(
+            f"a 4bit load of an FP8 checkpoint is not sized ({type(exc).__name__}: {exc})"
+        )
 
 
 def _budget(held = 0, held_cuda = 0):
@@ -304,12 +352,23 @@ def _is_quantizable(key, shape):
 
 def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, full_finetuning = False,
                         dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None,
-                        hidden_size = None):  # fmt: skip
+                        hidden_size = None, fp8 = "kept"):  # fmt: skip
     """(weights bytes once loaded, trainable parameter count) for safetensors header entries. Quantizing on
     load needs `skip_modules`, the loader's llm_int8_skip_modules: a linear whose name contains one stays
-    dense (a substring match keeps at least what the loader keeps)."""
+    dense (a substring match keeps at least what the loader keeps). `fp8`, how F8_* weights load: "kept"
+    (1 byte), "dequantized" (model dtype: a 16bit / full finetuning load, or a device without FP8 compute),
+    either way with bitsandbytes off; "nf4" (fp8 -> NF4 while loading, the other linears stay dense) or
+    "nf4_all" (UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT=1: those quantize too)."""
     packed = any(dt in _PACKED for _, dt, _ in tensors)
-    quantize = not packed and not full_finetuning and (load_in_4bit or load_in_8bit)
+    # An FP8 checkpoint keeps its own quantization unless armed for NF4: the loader turns bitsandbytes off.
+    fp8_checkpoint = any(dt.startswith("F8") for _, dt, _ in tensors)
+    fp8_nf4 = fp8_checkpoint and fp8 in ("nf4", "nf4_all")
+    quantize = (
+        not packed
+        and (fp8_nf4 or not fp8_checkpoint)
+        and not full_finetuning
+        and (load_in_4bit or load_in_8bit)
+    )
     if quantize and skip_modules is None:
         raise ValueError("quantizing on load is not sized without the loader's skip modules")
     per_quant = 0.53 if load_in_4bit else 1.03  # packed codes + absmax / scales
@@ -319,25 +378,53 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
         stored = _DTYPE_BYTES.get(dt, 2)
         if dt in _PACKED:
             weights += numel * stored
-            numel_total += 2 * numel  # two 4-bit codes per byte
+            codes = (
+                2 if dt == "U8" else 1
+            )  # bnb 4-bit packs two codes per U8 byte, 8-bit one per I8
+            numel_total += codes * numel
             if key.lower().endswith(".weight") and len(shape) >= 1:
                 # packed [n / 2, 1] = 2n params; one side is hidden_size (square undercounts MLP / GQA).
-                params = 2 * numel
+                params = codes * numel
                 if hidden_size and params % hidden_size == 0:
                     lora += lora_rank * (hidden_size + params // hidden_size)
                 else:
                     lora += lora_rank * 2 * int(math.sqrt(params))
             continue
         # Float weights load in the model dtype; bnb quant state beside packed weights keeps its stored dtype.
-        quant_state = packed and any(
-            t in key for t in ("absmax", "quant_map", "quant_state", "nested_")
+        # So do the block scales of a kept FP8 checkpoint (weight_scale_inv, float32).
+        quant_state = (
+            packed
+            and any(t in key for t in ("absmax", "quant_map", "quant_state", "nested_", ".SCB"))
+        ) or (fp8_checkpoint and fp8 == "kept" and "scale" in key.rsplit(".", 1)[-1].lower())
+        # Kept FP8 weights stay 1 byte (never re-quantized), as the fsdp2 / pp load estimators count them.
+        is_fp8 = dt.startswith("F8")
+        kept_fp8 = is_fp8 and fp8 == "kept"
+        loaded = (
+            dtype_bytes
+            if dt.startswith(("F", "BF")) and not quant_state and not kept_fp8
+            else stored
         )
-        loaded = dtype_bytes if dt.startswith(("F", "BF")) and not quant_state else stored
         numel_total += numel
-        if _is_quantizable(key, shape):
-            lora += lora_rank * (shape[0] + shape[1])
-            module = key[: -len(".weight")]
-            if quantize and not any(m in module for m in skip_modules):
+        # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize on a 4-bit load (bnb 8-bit only
+        # replaces nn.Linear, so it stays dense there), and get_peft_model's target_parameters LoRA is r * E * (in + out).
+        leaf = key.rsplit(".", 1)[-1].lower()  # a stack's quant scales / biases are not linears
+        stacked = (
+            len(shape) == 3
+            and "expert" in key.lower()
+            and not any(t in leaf for t in ("scale", "bias", "zero", "absmax"))
+        )
+        if _is_quantizable(key, shape) or stacked:
+            lora += lora_rank * (
+                shape[0] * (shape[1] + shape[2]) if stacked else shape[0] + shape[1]
+            )
+            module = key[: -len(".weight")] if key.endswith(".weight") else key
+            # fp8 -> NF4 keeps the checkpoint's 16-bit linears dense (fp8_to_nf4._high_precision_linears).
+            dense = (
+                kept_fp8
+                or (stacked and not load_in_4bit)
+                or (fp8_nf4 and fp8 == "nf4" and not is_fp8)
+            )
+            if quantize and not dense and not any(m in module for m in skip_modules):
                 weights += int(numel * per_quant)
                 continue
         weights += numel * loaded
@@ -430,6 +517,12 @@ def resolve_for_load(loader, args, kwargs):
         import inspect
 
         bound = inspect.signature(loader).bind_partial(*args, **kwargs)
+        # load_in_4bit defaults to True: only a passed one is the explicit request fp8 -> NF4 needs.
+        explicit_4bit = bool(
+            bound.arguments.get(
+                "load_in_4bit", (bound.arguments.get("kwargs") or {}).get("load_in_4bit")
+            )
+        )
         bound.apply_defaults()
         call = dict(bound.arguments)
         call.update(call.pop("kwargs", None) or {})
@@ -483,6 +576,12 @@ def resolve_for_load(loader, args, kwargs):
         adapter = []
         base = _peft_base(name, call, revision)
         if base is not None:
+            # Before the base reaches a filesystem probe: a Hub adapter's UNC base, as the loaders refuse it.
+            from types import SimpleNamespace
+
+            from .models.loader import _refuse_network_share_adapter_base
+
+            _refuse_network_share_adapter_base(name, SimpleNamespace(base_model_name_or_path = base))
             # A PEFT adapter: the loaders load peft_config.base_model_name_or_path (mapped, no ref) and the adapter.
             adapter = _checkpoint_tensors(name, token = call.get("token"), revision = revision)
             name, revision = mapped(base, None), None
@@ -513,6 +612,18 @@ def resolve_for_load(loader, args, kwargs):
         if full and any(dt in _PACKED for _, dt, _ in tensors):
             # _dequantize_bitsandbytes_for_full_finetuning turns packed weights dense before training.
             raise ValueError("full finetuning a pre-quantized checkpoint dequantizes it; not sized")
+        fp8 = "kept"
+        if any(dt.startswith("F8") for _, dt, _ in tensors):
+            # fp8 -> NF4 is armed before the device check and needs no FP8 compute.
+            if load_in_16bit or full:
+                fp8 = "dequantized"
+            elif load_in_4bit and _fp8_to_nf4_armed(
+                explicit_4bit, lambda: _config(name, call, revision)
+            ):
+                quantize_all = os.environ.get("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", "")
+                fp8 = "nf4_all" if quantize_all.strip().lower() in _TRUTHY else "nf4"
+            elif not _fp8_kept_on_load():
+                fp8 = "dequantized"
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
@@ -521,6 +632,7 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
             hidden_size = _hidden_size(name, call, revision),
+            fp8 = fp8,
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.

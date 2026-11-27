@@ -159,3 +159,15 @@ def test_compiled_budget_change_does_not_recompile():
     assert all(torch.equal(out[0], g) for g in out[1:])
     assert counters["stats"]["unique_graphs"] == 1
     assert CACHE.hits >= 3
+
+
+def test_the_grad_input_op_annotations_are_runtime_types():
+    """torch 2.4's custom_op infer_schema rejects postponed 'torch.Tensor' strings: the registration raised, was
+    swallowed, and every backward took the inline copy (cache never engaged). The op's signature must hold types."""
+    import __future__
+    import inspect
+
+    assert getattr(i8, "annotations", None) is not __future__.annotations
+    src = inspect.getsource(i8._define_grad_input_op)
+    assert "def grad_input(gq: torch.Tensor, q: torch.Tensor) -> torch.Tensor" in src
+    assert i8._grad_input_mm is not None

@@ -527,6 +527,108 @@ def test_length_dependent_rope_declines():
     assert not rope(NS(rope_scaling = None))
 
 
+_QWEN3_06B = types.SimpleNamespace(
+    hidden_size = 1024,
+    num_attention_heads = 16,
+    num_key_value_heads = 8,
+    head_dim = 128,
+    intermediate_size = 3072,
+)
+
+
+def test_cost_gate_min_saved(monkeypatch):
+    # Qwen3-0.6B: 15.7M weights per layer; 500 us of GEMM time per layer at 300 TFLOP/s = 4769 tokens.
+    lm = torch.nn.Module()
+    lm.config = _QWEN3_06B
+    assert dps._layer_params(lm) == 15_728_640
+    monkeypatch.setattr(dps, "_matmul_flops", lambda device: 300e12)
+    for name in ("MIN_SAVED", "LAYER_US"):
+        monkeypatch.delenv(f"UNSLOTH_DPO_PREFIX_SHARE_{name}", raising = False)
+    device = torch.device("cuda", 0)
+    assert dps._effective_min_saved(lm, device) == 4769
+    # A slower GPU (or a bigger layer) moves the break-even down to the 2048 token floor.
+    lm._unsloth_dpo_prefix_share_cost_min = None
+    monkeypatch.setattr(dps, "_matmul_flops", lambda device: 100e12)
+    assert dps._effective_min_saved(lm, device) == 2048
+    # UNSLOTH_DPO_PREFIX_SHARE_LAYER_US=0 turns the cost gate off; MIN_SAVED set is taken as is.
+    lm._unsloth_dpo_prefix_share_cost_min = None
+    monkeypatch.setattr(dps, "_matmul_flops", lambda device: 300e12)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_LAYER_US", "0")
+    assert dps._effective_min_saved(lm, device) == 2048
+    monkeypatch.delenv("UNSLOTH_DPO_PREFIX_SHARE_LAYER_US")
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "0")
+    assert dps._effective_min_saved(lm, device) == 0
+    # A model it cannot size keeps the token gates only, and never probes the GPU.
+    monkeypatch.delenv("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED")
+    monkeypatch.setattr(dps, "_matmul_flops", lambda device: pytest.fail("probed"))
+    assert dps._effective_min_saved(torch.nn.Linear(2, 2), device) == 2048
+
+
+def test_cost_gate_keeps_small_batches_unshared(monkeypatch):
+    # 4 pairs, 600-token prompts: 2400 saved tokens pass the 2048 floor; on a fast GPU the cost gate
+    # (4769 tokens for this layer size) keeps the forward unshared, on a slower one it shares.
+    for name in ("MIN_SAVED", "LAYER_US", "TOKR"):
+        monkeypatch.delenv(f"UNSLOTH_DPO_PREFIX_SHARE_{name}", raising = False)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_VERIFY", "0")
+    rng = random.Random(11)
+    ids, am, _ = _batch(
+        [_rand_tokens(rng, 600) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+    )
+
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(V, D)
+
+        def forward(
+            self,
+            *,
+            input_ids,
+            attention_mask = None,
+            position_ids = None,
+            prefix_seg_info = None,
+        ):
+            return (self.embed_tokens(input_ids),)
+
+    class CausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+            self.config = _QWEN3_06B
+
+        def get_input_embeddings(self):
+            return self.model.embed_tokens
+
+    lm = CausalLM().eval()
+    backbone = lm.model
+    setattr(backbone, dps._STATE, dps._HookState(lm))
+    backbone.register_forward_pre_hook(dps._pre_hook, with_kwargs = True)
+    backbone.register_forward_hook(dps._post_hook, with_kwargs = True)
+    for flops, shared in ((300e12, False), (100e12, True)):
+        lm._unsloth_dpo_prefix_share_cost_min = None
+        monkeypatch.setattr(dps, "_matmul_flops", lambda device, flops = flops: flops, raising = False)
+        engaged, cost_declined = dps.ENGAGED_COUNT, getattr(dps, "COST_DECLINED_COUNT", 0)
+        with torch.no_grad():
+            out = backbone(input_ids = ids, attention_mask = am)[0]
+        assert out.shape[:2] == ids.shape
+        assert dps.ENGAGED_COUNT - engaged == int(shared), flops
+        assert getattr(dps, "COST_DECLINED_COUNT", 0) - cost_declined == int(not shared), flops
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
+def test_matmul_flops_probe():
+    device = torch.device("cuda", torch.cuda.current_device())
+    dps._MATMUL_FLOPS.pop(str(device), None)
+    rng = torch.cuda.get_rng_state(device)
+    flops = dps._matmul_flops(device)
+    assert flops is not None and 1e12 < flops < 1e17
+    # The probe must not move the training RNG (dropout masks, sampling after a resume).
+    assert torch.equal(torch.cuda.get_rng_state(device), rng)
+    assert dps._matmul_flops(device) == flops  # measured once
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_verify_with_hidden_states_on_another_device(monkeypatch):
     # A model split over GPUs (device_map) returns hidden states on its last block's device while the
@@ -582,3 +684,21 @@ def test_verify_with_hidden_states_on_another_device(monkeypatch):
     assert dps.LAST_VERIFY["max_rel"] == 0.0
     keep = am.to(device = got.device, dtype = torch.bool)
     torch.testing.assert_close(got[keep], want[keep], rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("zero3", [False, True])
+def test_collective_forwards_decline(monkeypatch, zero3):
+    # Under ZeRO-3 a rank-local flex compile failure reruns that rank's forward alone, so its
+    # all-gathers stop lining up with the other ranks'. Decline the shared forward there.
+    import torch.distributed as dist
+    import unsloth_zoo.temporary_patches.utils as zoo_utils
+
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 2)
+    monkeypatch.setattr(zoo_utils, "zero3_partitioned_training", lambda *a, **k: zero3)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE", "1")
+    model = torch.nn.Linear(2, 2)
+    model._unsloth_dpo_prefix_share_eligible = True
+    monkeypatch.setattr(pgk, "_COMPILE_FAILURE", None)
+    assert dps._model_eligible(model, torch.device("cuda", 0)) is (not zero3)

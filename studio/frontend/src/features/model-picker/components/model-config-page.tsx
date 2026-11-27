@@ -137,6 +137,7 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  autoContextQuote,
   fixedLayerContextPin,
   resolveEstimateContext,
   resolveMlxServedWindow,
@@ -249,7 +250,7 @@ import {
   subscribeAdvancedSettingsOpen,
   sameEngramPrecision,
 } from "../model-config/per-model-config";
-import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
+import { type EngramTableDetail, formatBytes, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
@@ -578,6 +579,7 @@ function GgufContextLengthSetting({
   max,
   nativeContextLength,
   activeLoadedContext,
+  refitsLoadedContext = null,
   inputRef,
   onChange,
   renderWarning,
@@ -589,6 +591,7 @@ function GgufContextLengthSetting({
   max: number;
   nativeContextLength: number | null;
   activeLoadedContext: number | null;
+  refitsLoadedContext?: number | null;
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
@@ -635,6 +638,9 @@ function GgufContextLengthSetting({
           {max.toLocaleString()} tokens; larger ones use more memory.
           {isAuto && activeLoadedContext != null
             ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
+            : ""}
+          {isAuto && refitsLoadedContext != null
+            ? ` The loaded ${refitsLoadedContext.toLocaleString()} tokens were fitted to other settings; Auto fits again on load.`
             : ""}
           {nativeContextLength != null
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
@@ -2050,10 +2056,6 @@ type EngramTableListing = {
   supported: boolean | null;
 };
 
-function formatTableSize(bytes: number): string {
-  return `${(bytes / 1e9).toFixed(1)} GB`;
-}
-
 /** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
 function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
   const [listing, setListing] = useState<EngramTableListing | null>(null);
@@ -2117,13 +2119,13 @@ function EngramTableRow({
       ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
       : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
   } else if (swapped && table && !table.downloaded) {
-    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    note = `The next load downloads the ${table.precision} table (${formatBytes(table.size_bytes)}).`;
     if (!ownReady && ownTable) {
-      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+      note += ` The built-in ${own} table (${formatBytes(ownTable.size_bytes)}) is not needed.`;
     }
   } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
     // On disk with another table in place of its own.
-    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+    note = `The next load downloads the built-in ${own} table (${formatBytes(ownTable.size_bytes)}).`;
   }
   return (
     <div className="space-y-1">
@@ -2164,7 +2166,7 @@ function EngramTableRow({
                   <span className="flex min-w-0 flex-1 items-baseline gap-2">
                     <span>{t.precision}</span>
                     <span className="text-ui-12 tabular-nums text-muted-foreground">
-                      {formatTableSize(t.size_bytes)}
+                      {formatBytes(t.size_bytes)}
                       {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
                     </span>
                   </span>
@@ -3596,6 +3598,7 @@ export function ModelConfigPage({
     customContextLength: loadableConfig.customContextLength,
     activeLoadedContext,
   });
+  const autoQuote = autoContextQuote({ atBaseline, activeLoadedContext, fixedLayerPin });
   const runtimeConfig =
     fixedLayerPin != null
       ? { ...loadableConfig, customContextLength: fixedLayerPin }
@@ -4494,7 +4497,7 @@ export function ModelConfigPage({
         remember={remember}
         hasSavedSettings={savedRemember}
       />
-      <div className="space-y-5">
+      <div data-pinned-footer-above={variant === "page" || undefined} className="space-y-5">
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
@@ -4566,7 +4569,8 @@ export function ModelConfigPage({
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}
-              activeLoadedContext={activeLoadedContext}
+              activeLoadedContext={autoQuote.loaded}
+              refitsLoadedContext={autoQuote.refits}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               stacked={variant === "sidebar"}

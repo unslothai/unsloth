@@ -10,6 +10,7 @@ import type {
 } from "../types/api";
 
 import { skillLoadCardEvent } from "./skill-load-event";
+import { notifyChatImageToolSettled } from "./chat-image-tool-events";
 export type ChatGenerationStatus =
   | "queued"
   | "running"
@@ -148,6 +149,9 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Credentials cannot be persisted") ||
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message === "This connection's chat runs use the legacy streaming path") ||
     // A media payload rejection is a policy signal to use the legacy stream, not an error.
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
@@ -448,6 +452,7 @@ async function* streamChatGenerationEvents(
         if (data.length > 0) {
           const event = JSON.parse(data.join("\n")) as ChatGenerationEvent;
           if (event.type === "chunk") {
+            notifyChatImageToolSettled(event.payload);
             event.payload = normalizeChatGenerationChunkPayload(event.payload);
           }
           onActivity?.();

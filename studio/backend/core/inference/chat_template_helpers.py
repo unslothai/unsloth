@@ -29,6 +29,15 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
+_INKLING_THOUGHT_OPEN = "<|content_thinking|>"
+_INKLING_MESSAGE_END = "<|end_message|>"
+_INKLING_TOOL_CALL_OPEN = "<|content_invoke_tool_json|>"
+_INKLING_ROLE_OPEN = "<|message_model|>"
+_INKLING_TEXT_OPEN = "<|content_text|>"
+_INKLING_CONTENT_OPENS = (_INKLING_TEXT_OPEN, _INKLING_THOUGHT_OPEN, _INKLING_TOOL_CALL_OPEN)
+_INKLING_BODY_ENDS = (_INKLING_MESSAGE_END, _INKLING_ROLE_OPEN)
+# A header names at most a tool; a longer held header is content after all.
+_INKLING_HEADER_MAX_LEN = 128
 
 # Both header prefixes occur: the first header arrives without the prompt's "<|start|>assistant".
 _ATEM_REASONING_RECIPIENT = "self"
@@ -1647,6 +1656,8 @@ def _detect_reasoning_channel_markers_from_templates(
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
     if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
         return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
+    if any(_INKLING_THOUGHT_OPEN in template for template in templates):
+        return _INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END
     return None
 
 
@@ -1687,6 +1698,22 @@ def detect_reasoning_channel_markers_from_model_info(
         if markers is not None:
             return markers
     return None
+
+
+def replays_reasoning_content(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+    template = None,
+) -> bool:
+    """Inkling's thought replays as a field; read the rendering template, not the cached native one an override hides."""
+    if template is None and tokenizer is None and isinstance(model_info, dict):
+        template = (model_info.get("chat_template_info") or {}).get("template")
+    if template is not None:
+        markers = detect_reasoning_channel_markers_from_template(template, tools)
+    else:
+        markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    return markers == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END)
 
 
 @dataclass(frozen = True)
@@ -1932,6 +1959,131 @@ class ReasoningChannelNormalizer:
         return output
 
 
+class InklingMessageNormalizer:
+    """Convert Inkling 2's ``[<|message_model|>][name]<|content_KIND|>body<|end_message|>`` messages: headers and
+    text closers go, the first thought becomes ``<think>`` (later ones show as text), and a tool call keeps its
+    opener and closer for the tool-call parser."""
+
+    def __init__(
+        self,
+        *_markers,
+        in_reasoning: bool = False,
+        continued: bool = False,
+    ):
+        self._buffer = ""
+        # Where the prompt left off: an opened thought, a continued message's content, or a header.
+        self._state = "thought" if in_reasoning else "text" if continued else "header"
+        self._thought_seen = in_reasoning
+        self._think_open = False
+        self._in_string = False
+        self._escape = False
+
+    def feed(self, text: str) -> str:
+        self._buffer += text or ""
+        return self._consume(final = False)
+
+    def drain(self) -> str:
+        return self._consume(final = True)
+
+    def finish(self) -> str:
+        output = self.drain()
+        if self._think_open:
+            output += _THINK_CLOSE
+            self._think_open = False
+        return output
+
+    def _consume(self, final: bool) -> str:
+        output: list[str] = []
+        while self._buffer:
+            if self._state == "header":
+                found = [
+                    (self._buffer.find(opener), opener)
+                    for opener in _INKLING_CONTENT_OPENS
+                    if opener in self._buffer
+                ]
+                if not found:
+                    if not final and len(self._buffer) <= _INKLING_HEADER_MAX_LEN:
+                        break
+                    self._state = "text"
+                    continue
+                index, opener = min(found)
+                self._buffer = self._buffer[index + len(opener) :]
+                if opener == _INKLING_TOOL_CALL_OPEN:
+                    output.append(opener)
+                    self._state, self._in_string, self._escape = "tool", False, False
+                elif opener == _INKLING_THOUGHT_OPEN and not self._thought_seen:
+                    self._state, self._thought_seen = "thought", True
+                else:
+                    self._state = "text"
+            elif self._state == "tool":
+                index = self._tool_call_end()
+                if index < 0:
+                    # Only outside a string can the tail be the start of the closer.
+                    held = (
+                        ""
+                        if final or self._in_string
+                        else _split_partial_marker(self._buffer, _INKLING_MESSAGE_END)[1]
+                    )
+                    output.append(self._buffer[: len(self._buffer) - len(held)])
+                    self._buffer = held
+                    break
+                index += len(_INKLING_MESSAGE_END)
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index:]
+                self._state = "header"
+            else:
+                found = [
+                    (self._buffer.find(marker), marker)
+                    for marker in _INKLING_BODY_ENDS
+                    if marker in self._buffer
+                ]
+                if not found:
+                    held = (
+                        ""
+                        if final
+                        else max(
+                            (
+                                _split_partial_marker(self._buffer, marker)[1]
+                                for marker in _INKLING_BODY_ENDS
+                            ),
+                            key = len,
+                        )
+                    )
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    self._buffer = held
+                    break
+                index, marker = min(found)
+                output.append(self._body(self._buffer[:index]))
+                self._buffer = self._buffer[index + len(marker) :]
+                if self._think_open:
+                    output.append(_THINK_CLOSE)
+                    self._think_open = False
+                self._state = "header"
+        return "".join(output)
+
+    def _body(self, text: str) -> str:
+        if self._state == "thought" and text and not self._think_open:
+            self._think_open = True
+            return _THINK_OPEN + text
+        return text
+
+    def _tool_call_end(self) -> int:
+        """Index of the closer outside the call's JSON strings, or -1."""
+        for index, char in enumerate(self._buffer):
+            if self._escape:
+                self._escape = False
+            elif self._in_string:
+                if char == "\\":
+                    self._escape = True
+                elif char == '"':
+                    self._in_string = False
+            elif char == '"':
+                self._in_string = True
+            elif self._buffer.startswith(_INKLING_MESSAGE_END, index):
+                return index
+        return -1
+
+
 class RecipientChannelNormalizer:
     """Convert a recipient-addressed reasoning protocol to ``<think>``.
 
@@ -2102,10 +2254,17 @@ class RecipientChannelNormalizer:
         return output
 
 
-def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = False):
+def make_reasoning_normalizer(
+    markers: tuple[str, ...],
+    *,
+    in_reasoning: bool = False,
+    continued: bool = False,
+):
     if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
         # The generation prompt ends at "<|start|>assistant", so the model always writes its own header.
         return RecipientChannelNormalizer(*markers)
+    if tuple(markers) == (_INKLING_THOUGHT_OPEN, _INKLING_MESSAGE_END):
+        return InklingMessageNormalizer(*markers, in_reasoning = in_reasoning, continued = continued)
     return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
 
 
@@ -2144,6 +2303,7 @@ def normalize_reasoning_snapshots(
     normalizer = make_reasoning_normalizer(
         markers,
         in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+        continued = continued,
     )
     raw_output = ""
     normalized_output = ""
@@ -2494,6 +2654,43 @@ def count_structured_images(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
 
 
+def flatten_part_lists(messages: list, image_marker: Optional[str] = None) -> Optional[list]:
+    """String content for a template that concatenates ``message['content']``: parts in order, an
+    image as ``image_marker``. None when nothing is a part list or a part has nowhere to go."""
+
+    def typed(text):
+        # The template never names the marker, so the sweep left a typed one; only images may mark.
+        if image_marker and isinstance(text, str):
+            return text.replace(image_marker, f"{image_marker[0]} {image_marker[1:]}")
+        return text
+
+    flattened, changed = [], False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            flattened.append(
+                {**message, "content": typed(content)} if isinstance(content, str) else message
+            )
+            continue
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                text = typed(part)
+            elif not isinstance(part, dict):
+                return None
+            elif part.get("type") == "text":
+                text = typed(part.get("text"))
+            elif str(part.get("type", "")).lower() in _STRUCTURED_IMAGE_TYPES and image_marker:
+                text = image_marker
+            else:
+                return None
+            if isinstance(text, str) and text:
+                pieces.append(text)
+        flattened.append({**message, "content": "\n".join(pieces)})
+        changed = True
+    return flattened if changed else None
+
+
 def count_structured_videos(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
@@ -2787,8 +2984,10 @@ def apply_chat_template_for_generation(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     continue_final_message: bool = False,
+    image_marker: Optional[str] = None,
 ) -> str:
-    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
+    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn.
+    A template that cannot take part lists is retried on flattened content, images as ``image_marker``."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
     for template in _selected_chat_template_strings(tokenizer, tools):
@@ -2967,6 +3166,12 @@ def apply_chat_template_for_generation(
             try:
                 # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
                 return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
+        flattened = flatten_part_lists(normalized, image_marker)
+        if flattened is not None:
+            try:
+                return _render_with_fallback(flattened)
             except Exception:
                 pass
         raise

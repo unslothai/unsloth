@@ -42,9 +42,7 @@ EOS, PAD = 2, 0
 
 
 class FakeEngine:
-    """Decodes one token per step per running request; request i stops (EOS) after lengths[i] tokens.
-    Rows in length_stop end at their length without EOS (a length / context limit); same_tokens makes every
-    non-EOS token 7, so different rows can hold the same completion."""
+    """Stops at EOS after lengths[i]; length_stop omits EOS; same_tokens lets rows match."""
 
     def __init__(
         self,
@@ -158,7 +156,6 @@ def test_cut_only_when_every_running_row_is_expendable():
     assert len(out[7].outputs[0].token_ids) == 180
     assert out[7].outputs[0].token_ids[-1] != EOS and out[7].outputs[0].finish_reason == "abort"
     assert engine.steps == 180 < 400
-    # Every other row is untouched.
     for a, b in zip(base, out):
         if a.request_id != "7":
             assert list(a.outputs[0].token_ids) == list(b.outputs[0].token_ids)
@@ -229,8 +226,7 @@ def test_cut_rows_count_as_truncated_and_off_is_unchanged():
     # Called twice per rollout in TRL (metrics, then the mask): the record is not consumed.
     t = _trainer(cut)
     assert is_trunc(t, rows, None, eos_and_pad) == is_trunc(t, rows, None, eos_and_pad)
-    # A rollout that does not line up with the requests flags every row holding a cut row's tokens:
-    # an extra masked row is safe, an unmasked cut row is not.
+    # Misaligned rollouts flag each cut-token row; an extra mask is safe, a missed one is not.
     for record in (_record([(2, (7, 8, 9))], 5), _record([(0, (7, 8, 9))], 4)):
         assert is_trunc(_trainer(record), rows, None, eos_and_pad) == [False, True, True, True]
 

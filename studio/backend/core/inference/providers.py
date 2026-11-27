@@ -695,6 +695,12 @@ _METADATA_IPS = frozenset(
         # metadata.tencentyun.com; listed since the resolved-address check reads this set.
         "169.254.0.23",
         "169.254.10.10",
+        # Oracle, EKS Pod Identity, Scaleway and Akamai IPv6 metadata; Azure's wire server.
+        "fd00:c1::a9fe:a9fe",
+        "fd00:ec2::23",
+        "fd00:42::42",
+        "fd00:a9fe:a9fe::1",
+        "168.63.129.16",
     )
 )
 # Matched as a network so names like 169.254.gateway.example.com are not mistaken.
@@ -919,6 +925,19 @@ def _managed_private_urls_allowed() -> bool:
     return get_managed_private_provider_urls_allowed()
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_LOCAL_NAT64 = ipaddress.ip_network("64:ff9b:1::/48")
+
+
+def _is_public(ip) -> bool:
+    """is_global, judging NAT64 (64:ff9b::/96) by the IPv4 address it carries."""
+    if ip.version == 6 and ip in _LOCAL_NAT64:
+        return False
+    if ip.version == 6 and ip in _NAT64:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF).is_global
+    return ip.is_global
+
+
 def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
@@ -939,7 +958,7 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str
                 raise ValueError("Provider base URL hostname could not be resolved.") from exc
             resolved = tuple(str(info[4][0]) for info in infos)
         addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
-    if not addresses or any(not ip.is_global for ip in addresses):
+    if not addresses or any(not _is_public(ip) for ip in addresses):
         raise ValueError(reason)
 
 
@@ -964,7 +983,7 @@ def public_provider_address(url: str) -> str:
         except (OSError, UnicodeError) as exc:
             raise ValueError("Provider base URL hostname could not be resolved.") from exc
         addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
-    if not addresses or any(not ip.is_global for ip in addresses):
+    if not addresses or any(not _is_public(ip) for ip in addresses):
         raise ValueError(reason)
     return str(addresses[0])
 

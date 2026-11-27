@@ -40,9 +40,17 @@ import {
   normalizeEscapedInlineMath,
 } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { mathSafeRemendOptions } from "@/lib/math-safe-remend";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
-import { backendPathUrl, desktopSignedMediaPath, protectedBackendPath } from "@/lib/api-base";
+import {
+  backendPathUrl,
+  desktopSignedMediaPath,
+  isBackendRouteUrl,
+  isSignedGalleryMediaUrl,
+  protectedBackendMediaPath,
+  protectedBackendPath,
+} from "@/lib/api-base";
 import { openLink } from "@/lib/open-link";
 import { videoMimeForName } from "@/lib/video-utils";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -103,6 +111,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { getCodeFilename } from "./code-filename";
 import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
@@ -245,18 +254,24 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         projectId,
       }) ??
       desktopSignedMediaPath(src) ??
-      protectedBackendPath(src))
+      protectedBackendMediaPath(src))
     : null;
+  // Any other backend route stays unloaded: a plain <img> would still send its query to that route.
+  const otherBackendRoute =
+    file === null && src != null && isBackendRouteUrl(src) && !isSignedGalleryMediaUrl(src);
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src stays absent, never raw, until the authed fetch produces a blob.
   const resolved =
     file === null
-      ? src
+      ? otherBackendRoute
+        ? undefined
+        : src
       : sandbox.state.status === "loaded"
         ? sandbox.state.url
         : undefined;
   const failedNow =
+    otherBackendRoute ||
     (resolved != null && failedSrc === resolved) ||
     (file !== null && sandbox.state.status === "failed");
   const sized = dom.width != null || dom.height != null;
@@ -583,6 +598,12 @@ const STREAMDOWN_COMPONENTS = {
   img: MarkdownMedia,
   table: MarkdownTable,
 };
+const DEFAULT_STREAMDOWN_REMEND = mathSafeRemendOptions();
+const FINISHED_TEXT_STREAMDOWN_REMEND =
+  mathSafeRemendOptions(FINISHED_TEXT_REMEND);
+const LITERAL_LINK_STREAMDOWN_REMEND =
+  mathSafeRemendOptions(LITERAL_LINK_REMEND);
+
 const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
@@ -643,40 +664,6 @@ function mermaidSourceOf(blockContent: string, found: MermaidFence): string | nu
     return source.length > 0 ? source : null;
   }
   return null;
-}
-
-function getCodeFilename(language: string | null) {
-  const extByLanguage: Record<string, string> = {
-    bash: "sh",
-    "c++": "cpp",
-    csharp: "cs",
-    javascript: "js",
-    js: "js",
-    json: "json",
-    jsx: "jsx",
-    markdown: "md",
-    md: "md",
-    python: "py",
-    py: "py",
-    ruby: "rb",
-    rust: "rs",
-    shell: "sh",
-    sh: "sh",
-    sql: "sql",
-    ts: "ts",
-    tsx: "tsx",
-    typescript: "ts",
-    svg: "svg",
-    yaml: "yml",
-    yml: "yml",
-  };
-
-  const normalized = language?.toLowerCase();
-  const fallbackExt = normalized?.replace(/[^a-z0-9]+/g, "-");
-  const ext = normalized
-    ? extByLanguage[normalized] || fallbackExt || "txt"
-    : "txt";
-  return `snippet.${ext}`;
 }
 
 const UNSAFE_SVG_RE =
@@ -1713,10 +1700,10 @@ function MarkdownTextRenderer({
             parseIncompleteMarkdown={!incrementalRender}
             remend={
               !cut
-                ? FINISHED_TEXT_REMEND
+                ? FINISHED_TEXT_STREAMDOWN_REMEND
                 : hasIncompleteLinkRepair(processedText)
-                  ? LITERAL_LINK_REMEND
-                  : undefined
+                  ? LITERAL_LINK_STREAMDOWN_REMEND
+                  : DEFAULT_STREAMDOWN_REMEND
             }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??

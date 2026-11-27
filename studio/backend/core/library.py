@@ -38,7 +38,7 @@ from core.inference.gallery_projects import UNSAFE_NAME_CHARS, _bad_name
 from loggers import get_logger
 from storage import library_db
 from utils.paths import relocations, storage_roots
-from utils.paths.path_utils import is_path_within, same_path
+from utils.paths.path_utils import is_network_or_device_path, is_path_within, same_path
 from utils.paths.storage_roots import account_path
 from utils.scan_memo import in_scan_memo
 
@@ -1427,6 +1427,11 @@ def project_item(item_id: str) -> ItemFile:
     return ItemFile(handle, safe_file_name(name), folder, safe_file_name(name, item_id = item_id))
 
 
+def _foreign_share(path: str) -> bool:
+    """A managed account's share / device path: realpath or exists on it is already an SMB sign-in."""
+    return bool(path) and is_network_or_device_path(path) and not storage_roots.is_owner_context()
+
+
 def local_path(item_id: str) -> Path:
     """Same errors as open_item. Model paths come from the id, so they must sit inside the outputs or exports root."""
     kind, _, ref = item_id.partition(":")
@@ -1447,6 +1452,8 @@ def local_path(item_id: str) -> Path:
     from utils.paths.storage_roots import exports_root, outputs_root
 
     _origin, _, path = ref.partition(":")
+    if _foreign_share(path):
+        raise LookupError(item_id)
     resolved = os.path.realpath(path) if path else ""
     roots = [os.path.realpath(root) for root in (outputs_root(), exports_root())]
     if (
@@ -2244,7 +2251,7 @@ def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:
         deleted = _delete_sandbox_file(ref, fingerprint)
     elif kind == "model":
         _origin, _, path = ref.partition(":")
-        if not path or os.path.exists(path):
+        if not path or _foreign_share(path) or os.path.exists(path):
             raise ValueError("Fine-tuned models are deleted from the model picker.")
         deleted = True
     else:

@@ -175,7 +175,7 @@
       "rule": "dynamic-import",
       "sink": "import_module",
       "digest": "0d420008334333ee",
-      "count": 3,
+      "count": 6,
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
@@ -323,6 +323,14 @@
       "reason": "Job module and target come from Studio's own spawn spec (account_process_spec callers), not a request."
     },
     {
+      "file": "studio/backend/core/training/parallel_plan.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "341bed3c3f0b36ac",
+      "count": 1,
+      "reason": "Loads Unsloth's own installed parallel_env.py and parallel_capabilities.py (fixed file names, located via find_spec('unsloth')) to read the parallel layout parser and capability table without importing unsloth in the server."
+    },
+    {
       "file": "studio/backend/core/training/worker.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -443,6 +451,14 @@
       "reason": "Loads the repo's own scripts/scan_packages.py scanner from this checkout or install."
     },
     {
+      "file": "studio/backend/utils/security/st_config_args.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
+    },
+    {
       "file": "studio/backend/utils/ssm_runtime.py",
       "rule": "dynamic-import",
       "sink": "__import__",
@@ -465,6 +481,14 @@
       "digest": "59e72c01edb14c86",
       "count": 1,
       "reason": "Iterates the fixed _DIFFUSERS_PREWARM_MODEL_MODULES tuple."
+    },
+    {
+      "file": "studio/backend/utils/transformers_backports.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3a02e64348d87116",
+      "count": 1,
+      "reason": "Loads import_fixes.py from the installed unsloth package's own directory (find_spec('unsloth')), never a model or download path."
     },
     {
       "file": "studio/backend/utils/utils.py",
@@ -758,6 +782,14 @@
       "file": "unsloth/models/rl.py",
       "rule": "dynamic-import",
       "sink": "import_module",
+      "digest": "d5aa483b6d3b65d5",
+      "count": 1,
+      "reason": "Imports {prefix}.{module} with prefix in ('trl.kernels', the package of TRL's own patch_tree_recurrent) and module from the fixed _TREE_RECURRENT_OPS table."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
       "digest": "fe73e10b8cc4e18a",
       "count": 1,
       "reason": "Prefix-bounded to trl.trainer.<config module>; name comes from the installed TRL trainer classes."
@@ -769,6 +801,14 @@
       "digest": "180573f5aeefdb98",
       "count": 3,
       "reason": "Gated: classes outside sentence_transformers.* need trust_remote_code; inside it the path must be dotted identifiers resolving to a module class (#12436). The WordEmbeddings tokenizer_class check imports only after the caller refuses anything outside sentence_transformers.* (#14437)."
+    },
+    {
+      "file": "unsloth/models/sentence_transformer.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "Imports sentence_transformers.models and sentence_transformers.sparse_encoder.models from a fixed tuple, to wrap their load_config."
     },
     {
       "file": "unsloth/models/sentence_transformer.py",
@@ -846,9 +886,9 @@
       "file": "unsloth_cli/_npu.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
-      "digest": "20120c388ba71a53",
+      "digest": "a6119de2dc199e0a",
       "count": 1,
-      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False."
+      "reason": "npu_detected() loads Studio's own studio/backend/utils/hardware/npu.py from a fixed path next to this package (Path(__file__).parents[1]); no user, network or checkpoint input chooses the file, and any failure returns False. Only the module name passed to spec_from_file_location changed (#19401)."
     },
     {
       "file": "unsloth_cli/_studio_deps.py",

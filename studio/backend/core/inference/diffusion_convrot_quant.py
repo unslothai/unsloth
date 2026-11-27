@@ -2515,7 +2515,10 @@ def convrot_gelu_act_quant(prefix: Any, gate: Any, group: int, v2: bool) -> Opti
     and its own rotation + quant. Safe inside a traced forward: no host sync, the probe ran at install time."""
     if group != 256 or not gelu_armed(gate.device.index):
         return None
-    rows = _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT)[prefix is None]
+    # an int index: Dynamo 2.10 / 2.11 cannot index a tuple with a bool (fullgraph fails, else a graph break)
+    rows = _GELU_DEVICE_MIN_ROWS.get(gate.device.index, _GELU_MIN_ROWS_DEFAULT)[
+        1 if prefix is None else 0
+    ]
     if rows is None or gate.shape[0] < rows:
         return None
     if not producer_layout_ok(prefix, gate, gate):
@@ -2688,7 +2691,7 @@ def _unlisted_latency(
         for name, fn in fns.items():
             graph = torch.cuda.CUDAGraph()
             # Serialised with Studio's captures and recorded thread_local on this card's own capture stream.
-            with _capturing(), card_graph(graph, index):
+            with _capturing(index), card_graph(graph, index):
                 for _ in range(reps):
                     for x in xs:
                         fn(x)

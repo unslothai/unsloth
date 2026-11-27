@@ -18,6 +18,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.keep_awake import keeps_system_awake
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
@@ -78,6 +79,7 @@ class _DownloadPhaseQueue:
         self.queue.put(event)
 
 
+@keeps_system_awake
 def _run_diffusion_child(
     *,
     event_queue: Any,
@@ -209,7 +211,12 @@ def _resume_fields(
 ) -> dict[str, Any]:
     """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
+        from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
+
+        # The scan probes (and may rename inside) output_dir: keep a managed record in its workspace.
+        account_path(output_dir)
+        account_path(source_checkpoint)
         state = describe_resume_state(
             output_dir,
             status = status,
@@ -648,11 +655,10 @@ class DiffusionTrainingService:
         reason: str,
         timeout: float = 30.0,
     ):
-        """Ask a running trainer to give back the GPU memory it holds only for speed (the DiT nf4 dequant
-        cache) before another Studio model loads on the card; it caches nothing until the block exits,
-        then re-sizes from what is free. Waits at most ``timeout`` for the acknowledgement (the trainer
-        answers between steps) and proceeds either way, as the load did before. Yields True if the
-        trainer acknowledged. No-op when nothing is training."""
+        """Trainer gives back GPU memory held only for speed (DiT nf4 dequant cache) before a model
+        loads; caches nothing until the block exits, then re-sizes from free memory; waits up to
+        timeout for an ack (answered between steps), proceeds either way; yields True if acked;
+        no-op when nothing trains."""
         waiter = self._send_vram_request("lend")
         acked = False
         if waiter is not None:

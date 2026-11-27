@@ -67,7 +67,66 @@ if TORCH_SUPPORTS_PREFIX_GROUPER:
 
 
 # dynamic=True: T changes almost every batch; static recompiles per T (~14 s each).
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
+_flex_attention_dynamic = torch.compile(flex_attention, dynamic = True)
+
+
+def _is_rocm_torch():
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__
+    # (import_fixes._is_rocm_torch; this module also loads standalone, so it keeps its own copy).
+    return bool(getattr(torch.version, "hip", None)) or "rocm" in str(torch.__version__).lower()
+
+
+def _rocm_static_flex_entry(query, key, value, **kwargs):
+    # Its own code object, so static graphs keep their own recompile budget.
+    return flex_attention(query, key, value, **kwargs)
+
+
+# ROCm: flex compiled with a symbolic sequence length returned inf / NaN gradients on gfx1151 (torch 2.11), so
+# calls whose backward runs compile per padded length there. UNSLOTH_ROCM_FLEX_STATIC=0 keeps the dynamic kernel.
+_ROCM_FLEX_STATIC = _is_rocm_torch() and (os.environ.get("UNSLOTH_ROCM_FLEX_STATIC", "1") != "0")
+_flex_attention_static = (
+    torch.compile(_rocm_static_flex_entry, dynamic = False) if _ROCM_FLEX_STATIC else None
+)
+# Inside an enclosing graph the dynamic = False compile above is inlined into the caller's graph, so the padded
+# length would stay symbolic there: unsloth_zoo specializes the Q / K / V sequence sizes at trace time instead.
+_specialize_flex_shapes = None
+if _ROCM_FLEX_STATIC:
+    try:
+        from unsloth_zoo.rocm_flex_static import specialize_flex_shapes as _specialize_flex_shapes
+    except Exception:
+        _specialize_flex_shapes = None
+
+
+def _without_dynamic_marks(tensor):
+    # A caller's mark_dynamic / maybe_mark_dynamic on an input wins over dynamic = False; a view carries no marks.
+    if getattr(tensor, "_dynamo_dynamic_indices", None) or getattr(
+        tensor, "_dynamo_weak_dynamic_indices", None
+    ):
+        return tensor.view_as(tensor)
+    return tensor
+
+
+def _uses_static_flex(query, key, value) -> bool:
+    """ROCm GPU call whose backward runs: compiled per padded length (always False on CUDA builds)."""
+    return (
+        _flex_attention_static is not None
+        and query.device.type == "cuda"
+        and torch.is_grad_enabled()
+        and (query.requires_grad or key.requires_grad or value.requires_grad)
+    )
+
+
+def _flex_attention_compiled(query, key, value, **kwargs):
+    if _uses_static_flex(query, key, value):
+        if torch.compiler.is_compiling():
+            if _specialize_flex_shapes is not None:
+                _specialize_flex_shapes(query, key, value)
+        else:
+            query, key, value = map(_without_dynamic_marks, (query, key, value))
+        return _flex_attention_static(query, key, value, **kwargs)
+    return _flex_attention_dynamic(query, key, value, **kwargs)
+
+
 _create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
 
 # fp32 needs 32/32 for a ~1e-6 floor; bf16 128/64 is ~5x faster; 128/128 OOMs Triton on B200.
@@ -470,6 +529,9 @@ class PrefixGrouperCompileError(RuntimeError):
 _COMPILE_CHECKED: Dict[Tuple, bool] = {}
 # Setups whose 3-stage tiles overflow shared memory (sm86 / sm89 / sm120 on torch 2.7 / 2.8).
 _ONE_STAGE_KEYS: set = set()
+# Setup (key without the padded length) -> one stage, for setups that passed any check: an enclosing graph
+# reuses that verdict for an unseen ROCm padded length, since the eager check cannot run inside it.
+_CHECKED_SETUPS: Dict[Tuple, bool] = {}
 _COMPILE_FAILURE: Optional[str] = None
 _CHECK_ENV = os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_COMPILE_CHECK", "1")
 _COMPILE_CHECK_ON = _CHECK_ENV.lower() not in ("0", "false", "no", "off")
@@ -503,6 +565,12 @@ def _keep_saved(tensor):
     return tensor
 
 
+def _detach_saved(tensor):
+    # Returning the input saves an op's output on its own node, a cycle gc cannot break: a probe whose
+    # backward fails (out of resource retry, compile failure) would keep its Q / K / V copies alive.
+    return tensor.detach()
+
+
 def _record_compile_failure(key, reason):
     global _COMPILE_FAILURE
     _COMPILE_CHECKED[key] = False
@@ -517,7 +585,7 @@ def _record_compile_failure(key, reason):
 def _small_smem_skip_reason(q) -> Optional[str]:
     """NVIDIA small-smem GPU, 16-bit, head_dim >= 128, no opt-in: the default tiles cannot fit, so
     skip the failing compile (about 3 minutes on T4) and keep the packed path."""
-    if _SMALL_SMEM_OPT_IN or torch.version.hip is not None:
+    if _SMALL_SMEM_OPT_IN or _is_rocm_torch():
         return None
     # User tile overrides (PG_FLEX_BF16_BLOCK_M / _N) go through the real compile check instead.
     if (_BF16_BLOCK_M, _BF16_BLOCK_N) != (128, 64):
@@ -543,7 +611,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
                 block_mask = get_block_mask(seg, q.device, compile_mask = True)
             out = _run_flex(q, k, v, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
             # Else inside a non-reentrant checkpoint the backward unpacks through it and stops recompute.
-            own_hooks = torch.autograd.graph.saved_tensors_hooks(_keep_saved, _keep_saved)
+            own_hooks = torch.autograd.graph.saved_tensors_hooks(_detach_saved, _keep_saved)
             with torch.inference_mode(False), torch.enable_grad(), own_hooks:
                 qc, kc, vc = (x.detach().clone().requires_grad_(True) for x in (q, k, v))
                 oc = _run_flex(qc, kc, vc, block_mask, enable_gqa, scale, True, T, T_pad, one_stage)
@@ -574,6 +642,7 @@ def _checked_first_call(q, k, v, seg, block_mask, enable_gqa, scale, T, T_pad, k
         _record_compile_failure(key, reason)
         raise PrefixGrouperCompileError(reason) from None
     _COMPILE_CHECKED[key] = True
+    _CHECKED_SETUPS[key[:6]] = _CHECKED_SETUPS.get(key[:6], False) or key in _ONE_STAGE_KEYS
     return out
 
 
@@ -605,14 +674,31 @@ def flex_shared_prefix_attention(
         if _COMPILE_FAILURE is not None:
             raise PrefixGrouperCompileError(_COMPILE_FAILURE)
         key = (str(device), q.dtype, n_heads, n_kv, q.shape[3], scale)
-        if _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED:
+        # ROCm static flex compiles a new kernel per padded length, each of which can fail and fall back to
+        # eager T x T flex: check every length. The dynamic kernel (CUDA, no-grad calls) is checked once.
+        setup = key
+        if _uses_static_flex(q, k, v):
+            key = key + (T_pad,)
+        needs_check = _COMPILE_CHECK_ON and key not in _COMPILE_CHECKED
+        # The check is Dynamo-disabled, so a fullgraph caller would fail on each new padded length.
+        in_graph_reuse = (
+            needs_check
+            and key != setup
+            and torch.compiler.is_compiling()
+            and setup in _CHECKED_SETUPS
+        )
+        if in_graph_reuse:
+            needs_check = False
+        if needs_check:
             out = _checked_first_call(
                 q, k, v, prefix_seg_info, block_mask, enable_gqa, scale, T, T_pad, key
             )
     if out is None:
         if block_mask is None:
             block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
-        one_stage = compiled and key in _ONE_STAGE_KEYS
+        one_stage = compiled and (
+            key in _ONE_STAGE_KEYS or (in_graph_reuse and _CHECKED_SETUPS[setup])
+        )
         out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad, one_stage)
     return out.transpose(1, 2).contiguous()
 

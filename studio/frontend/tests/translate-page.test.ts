@@ -8,7 +8,9 @@ import {
   TRANSLATE_LANGUAGES,
   suggestedTargetLanguage,
   translateLanguageLabel,
+  translateLanguagesFor,
   translateSpeechTag,
+  translatesLanguage,
 } from "../src/features/translate/languages.ts";
 import {
   CHAT_TRANSLATE_MODEL,
@@ -28,13 +30,13 @@ import {
 } from "../src/features/translate/models.ts";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
-  TRANSLATE_HISTORY_MAX_CHARS,
   TRANSLATE_HISTORY_MAX_ENTRIES,
   TRANSLATE_HISTORY_TOTAL_CHARS,
   addHistoryEntry,
   buildChatHandoff,
   capHistory,
   exportHistory,
+  recentForChat,
   parseHistory,
   searchHistory,
 } from "../src/features/translate/translate-history.ts";
@@ -112,6 +114,42 @@ test("a line longer than a chunk breaks at sentence ends", () => {
   );
 });
 
+test("hard-wrapped text is cut between sentences, not inside one", () => {
+  const words =
+    "the court held that any party may seek relief under applicable law when".split(
+      " ",
+    );
+  const sentence = (i: number) =>
+    `${Array.from({ length: 6 + ((i * 7) % 15) }, (_, j) => words[(i + j) % words.length]).join(" ")}.`;
+  const wrap = (paragraph: string) =>
+    paragraph
+      .split(" ")
+      .reduce((lines, word) => {
+        const last = lines[lines.length - 1];
+        if (last && last.length + word.length < 90)
+          lines[lines.length - 1] = `${last} ${word}`;
+        else lines.push(word);
+        return lines;
+      }, [] as string[])
+      .join("\n");
+  const paragraphs = Array.from({ length: 6 }, (_, p) =>
+    wrap(Array.from({ length: 6 }, (_, s) => sentence(p * 6 + s)).join(" ")),
+  );
+  for (const source of [paragraphs.join("\n\n"), wrap(paragraphs.join(" "))]) {
+    const chunks = splitForTranslation(source);
+    assert.ok(chunks.length > 2);
+    assert.equal(rejoin(source), source);
+    for (const chunk of chunks.slice(0, -1)) {
+      assert.ok(chunk.text.length <= 1000);
+      assert.match(
+        chunk.text,
+        /\.$/,
+        `cut mid-sentence: ...${chunk.text.slice(-40)}`,
+      );
+    }
+  }
+});
+
 test("the translation keeps the source's own surrounding whitespace", () => {
   assert.equal(
     restoreChunkWhitespace({ text: "  Hello ", after: "\n\n" }, "\nBonjour\n"),
@@ -121,18 +159,27 @@ test("the translation keeps the source's own surrounding whitespace", () => {
 
 const auto = { sourceName: null, mode: "automatic", tone: "default" } as const;
 
-test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () => {
-  const [message, ...rest] = translateMessages("hy-mt2-1.8b", "Hello", {
-    ...auto,
-    targetName: "French",
-  });
-  assert.equal(rest.length, 0);
-  assert.equal(message.role, "user");
-  assert.equal(
-    message.content,
-    "Translate the following text into French. Note that you should only output the translated result without any additional explanation:\n\nHello",
-  );
-  const [styled] = translateMessages("hy-mt2-7b", "Hello", {
+test("Hy-MT3 uses the documented prompt for manual and detected source languages", () => {
+  const source = "Bonjour. Salut. Est-ce que tu veux venir avec moi?";
+  const expected = [
+    {
+      role: "user",
+      content: `Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n\n${source}`,
+    },
+  ];
+  const options = { ...auto, targetName: "English" };
+  for (const { id } of DEDICATED_TRANSLATE_MODELS) {
+    assert.deepEqual(
+      translateMessages(id, source, { ...options, sourceName: "French" }),
+      expected,
+      id,
+    );
+    assert.deepEqual(translateMessages(id, source, options), expected, id);
+  }
+});
+
+test("Hy-MT3 uses the documented style prompt with a manual source language", () => {
+  const [styled] = translateMessages("hy-mt3-7b", "Hello", {
     sourceName: "English",
     targetName: "French",
     mode: "literal",
@@ -140,7 +187,7 @@ test("Hy-MT2 gets its model card's prompt: one user turn, no system prompt", () 
   });
   assert.equal(
     styled.content,
-    "Please translate the following text from English into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
+    "Please translate the following text into French. Note that the translation style must strictly conform to [literal, word for word; formal and professional]:\n\nHello",
   );
 });
 
@@ -191,8 +238,8 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   } as const;
   assert.equal(
     translateInstruction(
-      "hy-mt2-1.8b",
-      templateOptions({ ...auto, targetName: "French" }),
+      "hy-mt3-1.8b",
+      templateOptions({ ...auto, sourceName: "English", targetName: "French" }),
     ),
     `Translate the following text into ${TARGET_PLACEHOLDER}. Note that you should only output the translated result without any additional explanation:`,
   );
@@ -202,7 +249,7 @@ test("an edited prompt replaces the built one and keeps its language placeholder
   );
   const custom = `Render this ${SOURCE_PLACEHOLDER} text in ${TARGET_PLACEHOLDER}, as a pirate:`;
   assert.equal(
-    translateMessages("hy-mt2-1.8b", "Hello", { ...options, custom })[0]
+    translateMessages("hy-mt3-1.8b", "Hello", { ...options, custom })[0]
       .content,
     "Render this English text in French, as a pirate:\n\nHello",
   );
@@ -229,14 +276,14 @@ test("a reasoning block that opens the reply is dropped, closed or not", () => {
   );
 });
 
-test("the model list is the two downloads plus the chat model", () => {
+test("the model list is the Hy-MT3 downloads plus the chat model", () => {
   assert.equal(isTranslateModelId(DEFAULT_TRANSLATE_MODEL), true);
   assert.equal(isTranslateModelId(CHAT_TRANSLATE_MODEL), true);
   assert.equal(isTranslateModelId("gpt"), false);
   assert.equal(dedicatedTranslateModel(CHAT_TRANSLATE_MODEL), null);
   assert.deepEqual(
     DEDICATED_TRANSLATE_MODELS.map((model) => model.repo),
-    [...TRANSLATION_ONLY_REPOS],
+    TRANSLATION_ONLY_REPOS.filter((repo) => repo.includes("Hy-MT3")),
   );
 });
 
@@ -256,6 +303,25 @@ test("the first target is the first browser language the model knows", () => {
   assert.equal(suggestedTargetLanguage(["fil-PH"]), "tl");
   assert.equal(suggestedTargetLanguage(["sv-SE"]), "en");
   assert.equal(suggestedTargetLanguage([]), "en");
+  // Hy-MT3, the default model, does not translate Hmong.
+  assert.equal(suggestedTargetLanguage(["hmn", "fr-FR"]), "fr");
+  assert.equal(suggestedTargetLanguage(["sw-KE", "af-ZA"]), "en");
+});
+
+test("Hy-MT2 is offered only the languages on its model card", () => {
+  const hyMt2 = translateLanguagesFor(true).map((language) => language.code);
+  assert.equal(hyMt2.length, 38);
+  assert.deepEqual(
+    TRANSLATE_LANGUAGES.filter((language) => language.chatOnly).map(
+      (language) => language.code,
+    ),
+    ["hmn", "am", "sw", "ha", "yo", "ig", "zu", "af", "so"],
+  );
+  assert.equal(translateLanguagesFor(false), TRANSLATE_LANGUAGES);
+  assert.ok(translatesLanguage("hmn", false));
+  assert.ok(!translatesLanguage("hmn", true));
+  assert.ok(translatesLanguage("fr", true));
+  assert.ok(!translatesLanguage("xx", false));
 });
 
 test("history is newest first, replaces a repeat and stays bounded", () => {
@@ -278,11 +344,6 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
     ["Salut", "Au revoir"],
   );
   assert.equal(addHistoryEntry(history, { ...entry, output: "  " }).length, 2);
-  assert.equal(
-    addHistoryEntry(history, { ...entry, source: "x".repeat(30_000) }).length,
-    2,
-    "a translation too long for localStorage is not kept",
-  );
   for (let i = 0; i < TRANSLATE_HISTORY_MAX_ENTRIES + 5; i += 1) {
     history = addHistoryEntry(
       history,
@@ -297,6 +358,54 @@ test("history is newest first, replaces a repeat and stays bounded", () => {
   );
 });
 
+test("a translated document of several pages is kept in the history", () => {
+  const source = "Page after page of a long document. ".repeat(300);
+  const output = "Page après page d'un long document. ".repeat(320);
+  assert.deepEqual(
+    addHistoryEntry([], {
+      source,
+      output,
+      target: "fr",
+      from: "en",
+      model: "Hy-MT2 1.8B",
+    }).map((item) => item.output),
+    [output],
+  );
+});
+
+test("chat with recent translations stays within a budget, newest first", () => {
+  const entry = (id: string, chars: number) => ({
+    id,
+    at: 0,
+    source: "s".repeat(Math.ceil(chars / 2)),
+    output: "o".repeat(Math.floor(chars / 2)),
+    target: "fr",
+    from: null,
+    model: null,
+  });
+  const ids = (history: ReturnType<typeof entry>[]) =>
+    recentForChat(history).map((item) => item.id);
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e", "f"].map((id) => entry(id, 10))),
+    ["a", "b", "c", "d", "e"],
+  );
+  assert.deepEqual(
+    ids([
+      entry("a", 25_000),
+      entry("b", 50_000),
+      entry("c", 30_000),
+      entry("d", 1),
+    ]),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    ids(["a", "b", "c", "d", "e"].map((id) => entry(id, 20_000))),
+    ["a", "b", "c", "d", "e"],
+    "five entries at the former cap still go together",
+  );
+  assert.deepEqual(ids([entry("a", 250_000), entry("b", 10)]), ["a"]);
+});
+
 test("a damaged saved history is read as far as it is valid", () => {
   assert.deepEqual(parseHistory("nope"), []);
   const good = { id: "a", at: 1, source: "s", output: "o", target: "fr" };
@@ -307,7 +416,7 @@ test("a damaged saved history is read as far as it is valid", () => {
 });
 
 test("history stays under a total size, newest first", () => {
-  const big = "x".repeat(TRANSLATE_HISTORY_MAX_CHARS / 2 - 1);
+  const big = "x".repeat(9_999);
   const entries = Array.from({ length: 80 }, (_, i) => ({
     id: String(i),
     at: 1000 - i,
@@ -437,7 +546,7 @@ test("a stopped download and the chat model's own slot are honoured", () => {
     /\(outcome\) => \{[\s\S]*?if \(outcome === "started" && signal\.aborted\) cancelJob\(\);/,
   );
   const chat = runner.slice(runner.indexOf("async function chatModel"));
-  assert.match(chat, /getInferenceStatus\(signal, picked \|\| undefined\)/);
+  assert.match(chat, /getInferenceStatus\(signal, served \|\| undefined\)/);
   assert.match(chat, /isTranslationHeldSlot\(status\.active_model, picked\)/);
 });
 
@@ -462,13 +571,13 @@ test("a model from the picker keeps its own identity and takes the right prompt"
     translatePromptModel(CUSTOM_TRANSLATE_MODEL, hyMt),
     DEFAULT_TRANSLATE_MODEL,
   );
-  assert.equal(translatePromptModel("hy-mt2-7b", gemma), "hy-mt2-7b");
+  assert.equal(translatePromptModel("hy-mt3-7b", gemma), "hy-mt3-7b");
 
   assert.notEqual(
     translateModelKey(CUSTOM_TRANSLATE_MODEL, gemma),
     translateModelKey(CUSTOM_TRANSLATE_MODEL, hyMt),
   );
-  assert.equal(translateModelKey("hy-mt2-7b", gemma), "hy-mt2-7b");
+  assert.equal(translateModelKey("hy-mt3-7b", gemma), "hy-mt3-7b");
 });
 
 test("read aloud asks for a voice of the translation's language", () => {

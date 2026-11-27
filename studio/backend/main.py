@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -304,6 +313,11 @@ from utils.happy_eyeballs import activate_happy_eyeballs
 activate_native_tls()
 activate_happy_eyeballs()
 
+# accelerate's meta init patches torch process-wide; Studio builds skeletons from several threads at once.
+from utils.meta_init import install_on_import as _install_thread_safe_meta_init
+
+_install_thread_safe_meta_init()
+
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
 
@@ -382,12 +396,15 @@ from utils.sentencepiece_guard import disable_sentencepiece_on_windows as _no_se
 _no_sentencepiece()
 del _no_sentencepiece
 
+import functools
 import hashlib
 import mimetypes
 import re as _re
 import shutil
+import stat as _stat
 import warnings
 from contextlib import asynccontextmanager
+from email.utils import parsedate
 from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import urlparse
 
@@ -430,6 +447,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.staticfiles import NotModifiedResponse
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
@@ -635,6 +653,15 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
         _bin = LlamaCppBackend._find_llama_server_binary()
         _caps = LlamaCppBackend.probe_server_capabilities(_bin)
         app.state.llama_cpp_capabilities = _caps
+        # Warm the --version cache read by the first GGUF load.
+        if _caps.get("found"):
+            try:
+                LlamaCppBackend.probe_build_number(_bin)
+            except Exception as _build_exc:
+                import structlog as _structlog
+                _structlog.get_logger(__name__).debug(
+                    "llama.cpp build probe failed: %s", _build_exc
+                )
         _freshness = check_prebuilt_freshness(_bin)
         app.state.llama_cpp_freshness = _freshness
 
@@ -1383,6 +1410,16 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
+
+
 _CSP_CACHE: dict = {}
 
 
@@ -1811,8 +1848,7 @@ async def _send_411(send) -> None:
 
 
 async def _send_401(send) -> None:
-    # The status and detail the route's own auth check gives an expired or missing token, so the
-    # frontend refreshes its session exactly as it would have.
+    # Same 401 and detail as the route's own auth check, so the frontend refreshes its session.
     payload = _json_for_413.dumps({"detail": "Invalid or expired token"}).encode("utf-8")
     await send(
         {
@@ -2545,6 +2581,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),
@@ -3104,6 +3141,24 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats in ``formats`` that load but run dequantized here. Torch-free."""
+    try:
+        from utils.hardware.nvidia import get_checkpoint_quant_dequant_only
+        return get_checkpoint_quant_dequant_only(formats)
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3268,7 +3323,11 @@ def get_system_info(
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
-        "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
+        "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 
@@ -3602,6 +3661,85 @@ class ImmutableStaticFiles(StaticFiles):
         return response
 
 
+# Build-root files keep their name across builds: without a policy the browser runs a stale boot script.
+_ROOT_SCRIPT_CACHE_CONTROL = "no-cache"
+_ROOT_RESOURCE_CACHE_CONTROL = "public, max-age=86400"
+_ROOT_CODE_SUFFIXES = frozenset((".js", ".mjs", ".css", ".html"))
+_INDEX_ROOT_SCRIPT_SRC = _re.compile(rb'(<script\b[^>]*?\ssrc=")(/(?!/)[^"?#]+)(")', _re.IGNORECASE)
+
+
+def _root_file_version(stat_result: os.stat_result) -> str:
+    # inode + ctime: a same-size copy that restores mtime (cp -p, rsync -a) must still change it.
+    return _root_file_version_of(
+        stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ino, stat_result.st_ctime_ns
+    )
+
+
+@functools.lru_cache(maxsize = 256)
+def _root_file_version_of(size: int, mtime_ns: int, ino: int, ctime_ns: int) -> str:
+    return hashlib.blake2b(
+        f"{size}:{mtime_ns}:{ino}:{ctime_ns}".encode(), digest_size = 6
+    ).hexdigest()
+
+
+def _root_file_cache_control(file_path: Path, stat_result: os.stat_result, version) -> str:
+    if version is not None and version == _root_file_version(stat_result):
+        return _IMMUTABLE_ASSET_CACHE_CONTROL
+    if file_path.suffix.lower() in _ROOT_CODE_SUFFIXES:
+        return _ROOT_SCRIPT_CACHE_CONTROL
+    return _ROOT_RESOURCE_CACHE_CONTROL
+
+
+def _root_file_not_modified(response_headers, request_headers) -> bool:
+    # RFC 9110 13.1.3: If-None-Match decides alone; starlette < 1.0 fell back to If-Modified-Since.
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match:
+        if if_none_match.strip() == "*":
+            return True
+        etag = response_headers["etag"]
+        return etag in (tag.strip().removeprefix("W/") for tag in if_none_match.split(","))
+    since = parsedate(request_headers.get("if-modified-since") or "")
+    last_modified = parsedate(response_headers.get("last-modified") or "")
+    return since is not None and last_modified is not None and since >= last_modified
+
+
+def _root_script_locator(build_path: Path):
+    """Map an index.html script URL to its file in the build root (not /assets), else None."""
+    root = build_path.resolve()
+
+    @functools.lru_cache(maxsize = 64)
+    def _locate(url: bytes) -> Optional[str]:
+        try:
+            target = (build_path / url[1:].decode("utf-8")).resolve()
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        if not target.is_relative_to(root) or target.is_relative_to(root / "assets"):
+            return None
+        return str(target)
+
+    return _locate
+
+
+def _version_root_scripts(html_bytes: bytes, locate) -> bytes:
+    """Append ``?v=<version>`` to index.html's root-level boot scripts (index.html itself is never cached)."""
+
+    def _versioned(match):
+        url = match.group(2)
+        target = locate(url)
+        if target is None:
+            return match.group(0)
+        try:
+            stat_result = os.stat(target)
+        except OSError:
+            return match.group(0)
+        if not _stat.S_ISREG(stat_result.st_mode):
+            return match.group(0)
+        version = _root_file_version(stat_result).encode("ascii")
+        return match.group(1) + url + b"?v=" + version + match.group(3)
+
+    return _INDEX_ROOT_SCRIPT_SRC.sub(_versioned, html_bytes)
+
+
 class _AssetGZipMiddleware(GZipMiddleware):
     """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
 
@@ -3713,12 +3851,15 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
         _match_assets_before_api_routes(app)
 
+    locate_root_script = _root_script_locator(build_path)
+
     def _frontend_request_allowed(request: Request) -> bool:
         return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
+        content = _version_root_scripts(content, locate_root_script)
         # Bootstrap pw only to same-origin direct-loopback (or Colab proxy). Vary: Origin.
         if _should_inject_bootstrap(request):
             content, nonce = _inject_bootstrap(content, app)
@@ -3753,14 +3894,32 @@ def setup_frontend(
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
+        # No asset is this long, and resolving a deep path costs the square of its parts on the event loop.
+        if len(full_path) > 1024:
+            return Response(status_code = 404)
 
-        file_path = (build_path / full_path).resolve()
+        from utils.datasets.remote_images import is_network_share
+
+        joined = build_path / full_path
+        # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+        if is_network_share(full_path) or is_network_share(str(joined)):
+            return Response(status_code = 404)
+        file_path = joined.resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
         if file_path.is_file():
-            return FileResponse(file_path)
+            stat_result = file_path.stat()
+            response = FileResponse(file_path, stat_result = stat_result)
+            # Starlette's ETag is size + mtime only, so a cp -p swap would answer 304 forever.
+            response.headers["etag"] = f'"{_root_file_version(stat_result)}"'
+            if _root_file_not_modified(response.headers, request.headers):
+                response = NotModifiedResponse(response.headers)
+            response.headers["Cache-Control"] = _root_file_cache_control(
+                file_path, stat_result, request.query_params.get("v")
+            )
+            return response
 
         # A non-string type is unsupported too; an unhashable value would raise TypeError and escape as a 500 instead of a clean 400.
         if is_engine_probe_path(full_path):

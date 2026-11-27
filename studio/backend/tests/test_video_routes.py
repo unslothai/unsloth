@@ -19,7 +19,6 @@ import core.inference.video_gallery as gallery_module
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.video_families import (
     VIDEO_CANCELLED_MSG,
-    VIDEO_GENERATION_BUSY_MSG,
     VIDEO_NOT_LOADED_MSG,
 )
 import routes.video as video_routes
@@ -253,6 +252,14 @@ def _pin_video_fetch_to_the_named_repo(monkeypatch):
     swap onto the unsloth mirrors depends on the developer's own HF cache, so it is pinned off here, as the image
     offline-load tests do; tests/test_video_unsloth_mirrors.py covers the swap itself."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+
+
+@pytest.fixture(autouse = True)
+def _ample_cpu_host_ram(monkeypatch):
+    """These route tests are not about host RAM: on a CPU-only runner the CPU video RAM check would read the runner's
+    own memory. Give it a fixed ample budget; tests/test_video_cpu_host_ram.py covers the refusals."""
+    import core.inference.video_cpu_host as video_cpu_host
+    monkeypatch.setattr(video_cpu_host, "cpu_video_host_capacity_mib", lambda *a, **k: 1 << 30)
 
 
 @pytest.fixture(autouse = True)
@@ -737,7 +744,9 @@ def test_generate_value_error_reports_reason(client, monkeypatch):
     assert "not supported" in progress["error"]
 
 
-def test_generate_concurrent_second_returns_409(client, monkeypatch):
+def test_generate_concurrent_second_is_queued_not_refused(client, monkeypatch):
+    import asyncio
+
     backend = video_module.get_video_backend()
     backend.loaded = True
     release = threading.Event()
@@ -748,19 +757,31 @@ def test_generate_concurrent_second_returns_409(client, monkeypatch):
         return real_generate(backend, **kwargs)
 
     monkeypatch.setattr(backend, "generate", _slow)
+    monkeypatch.setattr(video_routes, "_ensure_video_drainer", lambda: None)
     first = client.post("/api/inference/video/generate", json = {"prompt": "a", "seed": 1})
     assert first.status_code == 200 and first.json()["status"] == "started"
+    assert first.json()["video_id"]
 
-    second = client.post("/api/inference/video/generate", json = {"prompt": "b"})
-    assert second.status_code == 409
-    assert second.json()["detail"] == VIDEO_GENERATION_BUSY_MSG
+    second = client.post("/api/inference/video/generate", json = {"prompt": "b", "seed": 3})
+    assert second.status_code == 200, second.json()
+    queued = second.json()
+    assert queued["status"] == "queued" and queued["queue_position"] == 1
+    assert queued["video_id"] and queued["video_id"] != first.json()["video_id"]
+    listed = client.get("/api/inference/video/queue").json()["jobs"]
+    assert [(j["video_id"], j["status"], j["source"]) for j in listed] == [
+        (queued["video_id"], "queued", "page")
+    ]
 
     running = client.get("/api/inference/video/generate-progress").json()
-    assert running["active"] is True
+    assert running["active"] is True and running["video_id"] == first.json()["video_id"]
 
     release.set()
     progress = _wait_terminal(client)
     assert progress["phase"] == "completed" and progress["video"]["seed"] == 1
+    asyncio.run(video_routes._drain_video_queue_once())
+    assert client.get("/api/inference/video/queue").json()["jobs"] == []
+    progress = _wait_terminal(client)
+    assert progress["video"]["seed"] == 3 and progress["video"]["id"] == queued["video_id"]
     assert _generate_and_wait(client, {"prompt": "c", "seed": 2})["seed"] == 2
 
 
@@ -2251,3 +2272,62 @@ def test_video_download_plan_forwards_the_lora_selection(client, monkeypatch):
     assert [dict(s) if isinstance(s, dict) else s.model_dump() for s in seen["loras"]] == [
         {"id": "my-ltx", "weight": 1.0}
     ]
+
+
+def test_download_plan_runs_the_cpu_ram_check_while_training(client, monkeypatch):
+    """Training holds the card, so the plan skips the GPU precision probes; the CPU host-RAM check runs none and still
+    refuses an oversized CPU load before anything is staged."""
+    import core.inference.diffusion_device as devmod
+    import core.inference.video_cpu_host as video_cpu_host
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.video_families import _FAMILIES
+
+    ltx25 = next(f for f in _FAMILIES if f.name == "ltx-2.5")
+    cpu = DiffusionDeviceTarget(
+        device = "cpu",
+        dtype = None,
+        backend = "cpu",
+        vendor = None,
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    monkeypatch.setattr(video_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(devmod, "diffusion_target_is_cpu", lambda: True)
+    monkeypatch.setattr(video_module, "resolve_diffusion_device_target", lambda *a, **k: cpu)
+    monkeypatch.setattr(video_cpu_host, "cpu_video_host_capacity_mib", lambda *a, **k: 24 * 1024)
+    import core.inference.diffusion as diffusion_module
+    import core.inference.diffusion_gguf_mmap as gguf_mmap
+    import core.inference.diffusion_te_prequant as te_prequant
+
+    # Hermetic: the hosted int8 encoder confirmed without the Hub, the GGUF read mapped on every OS.
+    monkeypatch.setattr(te_prequant, "te_prequant_sources_confirmed", lambda *a, **k: True)
+    monkeypatch.setattr(gguf_mmap, "gguf_mmap_enabled", lambda: True)
+    monkeypatch.setattr(diffusion_module, "_hub_file_size", lambda *a, **k: 0)
+    monkeypatch.setattr(
+        video_module,
+        "assert_video_precision_available",
+        lambda *a, **k: pytest.fail("GPU preflight ran"),
+    )
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(backend, "validate_load_request", lambda *a, **k: ltx25, raising = False)
+    planned = []
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: planned.append(1) or {"entries": [], "total_bytes": 0},
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.5-GGUF",
+            "gguf_filename": "distilled/ltx-2.5-22b-distilled-UD-Q4_K_XL.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert "Not enough system RAM to load LTX-2.5" in resp.json()["detail"]
+    assert planned == []

@@ -313,7 +313,8 @@ def _samples(perturb = None):
 def _pack(async_module, samples):
     row = async_module.TreeRow()
     for sample in samples:
-        row.add(sample)
+        # RolloutSample holds numpy arrays; TRL 1.19's TreeRow walks them with numpy ops.
+        row.add({k: v.numpy() if isinstance(v, torch.Tensor) else v for k, v in sample.items()})
     packed = row.pack()
     assert int((packed["tree_segment_parents"] >= 0).sum()) > 0, "nothing shared"
     assert packed["input_ids"].numel() < sum(len(s["input_ids"]) for s in samples)
@@ -350,9 +351,8 @@ def _tree_logps(model, packed, tree):
 
 
 def test_trl_patch_misses_peft_and_compiled_layers(setup, tree_cpu):
-    # The defect: TRL patches sys.modules[type(model).forward.__module__]. A PEFT model names peft.peft_model, so TRL
-    # refuses it; the bare model names transformers' module, so the compiled forward keeps the unpatched kernels and
-    # its scan runs from one branch into the next.
+    # TRL's sys.modules patch refuses PEFT and misses compiled forwards, which keep unpatched
+    # kernels.
     model = _model(setup.modeling, tree_cpu)
     assert setup.trl_patch(model) is False
     base = model.get_base_model()

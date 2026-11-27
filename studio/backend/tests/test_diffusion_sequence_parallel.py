@@ -272,8 +272,7 @@ def test_neither_card_records_or_replays_a_graph_during_a_split(monkeypatch):
 
 
 def test_a_denoiser_with_per_call_activation_scaling_is_not_split_by_tokens():
-    # A dynamic NVFP4 linear takes its global scale from the whole call's activation amax: a token half would take
-    # its own, which is not the one-card computation.
+    # Dynamic NVFP4 linears scale by the whole call's amax, so split tokens would not match.
     class ComfyNVFP4DynamicLinear(torch.nn.Linear):
         pass
 
@@ -302,3 +301,41 @@ def test_a_compile_moved_below_an_offload_hook_is_not_split():
     with torch.no_grad():
         why = sp.refusal(model, 10**6)
     assert why is not None and "below its hooks" in why
+
+
+@pytest.mark.parametrize("query", ["two_models", "unreadable"])
+def test_two_different_cards_still_split_a_wan_call(monkeypatch, query):
+    """Wan keeps the pair rule it shipped with (same device type): two card models, or a card whose properties cannot be
+    read, still split by tokens."""
+    import types
+
+    monkeypatch.delenv(sp.SP_ENV)  # auto: no force to bypass a card check
+    monkeypatch.setattr(sp, "MIN_TOKENS", 1)
+
+    def props(index):
+        if query == "unreadable":
+            raise RuntimeError("no properties")
+        return types.SimpleNamespace(name = f"card {index}", major = 12, minor = int(index))
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    model = _model()
+    router, _ = _router(model)
+    router.primary, router.secondary = torch.device("cuda", 0), torch.device("cuda", 1)
+    router.replica = object()
+    router.worker = types.SimpleNamespace(submit = None)
+    monkeypatch.setattr(router, "_to_replica", lambda value: value)
+    ran = []
+    monkeypatch.setattr(sp, "run", lambda *a, **k: ran.append(k["devices"]) or "split")
+    g = torch.Generator().manual_seed(1)
+    latent = torch.randn(1, 4, FRAMES, HEIGHT, WIDTH, generator = g)
+    kwargs = {
+        "hidden_states": latent,
+        "timestep": torch.full((1,), 900.0),
+        "encoder_hidden_states": torch.randn(1, 7, 16, generator = g),
+        "return_dict": False,
+    }
+    with torch.no_grad():
+        out = router._sequence_split(latent, (), kwargs)
+    assert out == "split" and ran == [(router.primary, router.secondary)], router.stats[
+        "sequence_split_skip"
+    ]

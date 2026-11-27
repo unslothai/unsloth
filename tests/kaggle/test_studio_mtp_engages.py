@@ -22,8 +22,7 @@ def _func(name: str) -> ast.FunctionDef:
 
 
 def test_the_default_chat_model_is_the_mtp_repo():
-    """If this stops being an MTP repo the assertion below becomes vacuous, so
-    it fails here rather than passing silently."""
+    """If this stops being an MTP repo, the assertion below goes vacuous; fail here instead."""
     assert "unsloth/Qwen3.5-2B-MTP-GGUF" in SRC
 
 
@@ -34,8 +33,7 @@ def test_the_status_fields_are_read_from_the_load():
 
 
 def test_a_drafter_that_never_engaged_is_a_failure():
-    """The claim itself. Without this, an MTP repo whose drafter fell back
-    serves ordinary decoding and reports success."""
+    """A drafter that fell back to ordinary decoding must fail, not report success."""
     func = _func("assert_gpu_inference")
     body = ast.unparse(func)
     assert "drafter_kind" in body, "the drafter kind is never compared"
@@ -60,8 +58,7 @@ def test_a_drafter_that_never_engaged_is_a_failure():
 
 
 def test_the_check_is_scoped_to_an_mtp_model():
-    """A leg pointed at a plain GGUF must not go red for not doing MTP: that is
-    the correct behaviour there, and a rule that cannot pass is deleted."""
+    """Only MTP models are checked: a plain GGUF correctly does no MTP and must not go red."""
     func = _func("assert_gpu_inference")
     guards = [
         ast.unparse(node.test)
@@ -75,8 +72,7 @@ def test_the_check_is_scoped_to_an_mtp_model():
 
 
 def test_the_reason_is_reported_and_not_just_the_verdict():
-    """'MTP is off' sends the reader nowhere. The reason distinguishes a build
-    without MTP from a VRAM downgrade, and only one of those is actionable."""
+    """Report the reason, not just 'MTP is off': a build without MTP is not a VRAM drop."""
     func = _func("assert_gpu_inference")
     body = ast.unparse(func)
     assert "fallback_reason" in body
