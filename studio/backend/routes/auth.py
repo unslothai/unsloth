@@ -602,9 +602,7 @@ def proxy_login(request: Request) -> Token:
     logger.info("Signed in %s through the trusted reverse proxy header", account.username)
     return Token(
         access_token = create_access_token(subject = account.username, secret = account.jwt_secret),
-        refresh_token = create_refresh_token(
-            subject = account.username, secret = account.jwt_secret
-        ),
+        refresh_token = create_refresh_token(subject = account.username, secret = account.jwt_secret),
         token_type = "bearer",
         must_change_password = False,
         account_id = _account_id_of(account.username),

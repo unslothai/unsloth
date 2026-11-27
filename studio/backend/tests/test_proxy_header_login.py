@@ -58,9 +58,7 @@ def env(tmp_path, monkeypatch):
     active_generations.reset_for_tests()
     app = _app(tmp_path, monkeypatch)
     # A local proxy: the connection lands on Studio's loopback socket from a loopback peer.
-    with TestClient(
-        app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)
-    ) as client:
+    with TestClient(app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)) as client:
         yield client
     active_generations.reset_for_tests()
     reset_account(token)
@@ -72,7 +70,11 @@ def _owner_headers():
     return {"Authorization": "Bearer " + authentication.create_access_token("unsloth")}
 
 
-def _set_up_account(client, username, password = "permanent-password"):
+def _set_up_account(
+    client,
+    username,
+    password = "permanent-password",
+):
     body = client.post(
         "/api/accounts", headers = _owner_headers(), json = {"username": username}
     ).json()
@@ -126,7 +128,8 @@ def test_nothing_changes_while_the_setting_is_off(env, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "name", ["Authorization", "cookie", "Host", "x-forwarded-for", "x-api-key", "bad header", "x" * 80]
+    "name",
+    ["Authorization", "cookie", "Host", "x-forwarded-for", "x-api-key", "bad header", "x" * 80],
 )
 def test_headers_with_another_meaning_are_never_an_identity(env, monkeypatch, name):
     monkeypatch.setenv(proxy_header.USER_HEADER_ENV, name)
@@ -154,9 +157,7 @@ def test_the_proxy_secret_is_required_when_set(env, monkeypatch):
     monkeypatch.setenv(proxy_header.PROXY_SECRET_ENV, "s3cret-from-the-proxy")
     assert _proxy_login(env, **{"remote-user": "alice"}).status_code == 401
     assert (
-        _proxy_login(
-            env, **{"remote-user": "alice", "x-unsloth-proxy-secret": "wrong"}
-        ).status_code
+        _proxy_login(env, **{"remote-user": "alice", "x-unsloth-proxy-secret": "wrong"}).status_code
         == 401
     )
     response = _proxy_login(
@@ -184,9 +185,7 @@ def test_a_repeated_header_is_refused(env):
 
 def test_deactivated_and_unfinished_accounts_are_refused(env):
     account_id = _set_up_account(env, "alice")
-    env.patch(
-        f"/api/accounts/{account_id}", headers = _owner_headers(), json = {"is_active": False}
-    )
+    env.patch(f"/api/accounts/{account_id}", headers = _owner_headers(), json = {"is_active": False})
     assert _proxy_login(env, **{"remote-user": "alice"}).status_code == 401
     # A pending setup code is finished at the password form, not skipped by the proxy.
     env.post("/api/accounts", headers = _owner_headers(), json = {"username": "carol"})
