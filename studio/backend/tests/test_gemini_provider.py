@@ -1283,6 +1283,21 @@ def _turns_with_image(captured) -> list[bool]:
     ]
 
 
+@pytest.mark.parametrize(
+    "image_sizes, limit",
+    [([8] * 9, "8 images"), ([7_400_000, 7_400_000], "14 MiB")],
+)
+def test_an_over_budget_current_turn_does_not_reach_gemini(monkeypatch, image_sizes, limit):
+    parts = [{"type": "text", "text": "Compare these"}]
+    parts.extend(
+        _image_turns([bytes(size) for size in image_sizes])[i]["content"][1]
+        for i in range(0, len(image_sizes) * 2 - 1, 2)
+    )
+    messages = [{"role": "user", "content": parts}]
+    assert "body" not in _capture_body(monkeypatch, messages = messages)
+    assert any(limit in line for line in _collect(monkeypatch, [], messages = messages))
+
+
 def test_newest_image_survives_the_per_request_image_count_cap(monkeypatch):
     messages = _image_turns([f"JPG{idx}".encode() for idx in range(10)])
     captured = _capture_body(monkeypatch, messages = messages)

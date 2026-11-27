@@ -4188,6 +4188,10 @@ class ExternalProviderClient:
         _remote_image_count = 0
         _remote_image_total_bytes = 0
         _gemini_image_parts: dict[tuple[int, int], dict[str, Any]] = {}
+        latest_user = next(
+            (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+            None,
+        )
         for msg_idx in range(len(messages) - 1, -1, -1):
             msg = messages[msg_idx]
             content = msg.get("content")
@@ -4212,16 +4216,31 @@ class ExternalProviderClient:
                     elif b64data:
                         # data: URLs share the same caps as fetched URLs so inline payloads do not bypass
                         # them.
-                        _data_approx_bytes = (len(b64data) * 3) // 4
-                        if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                        padding = 2 if b64data.endswith("==") else int(b64data.endswith("="))
+                        _data_approx_bytes = (len(b64data) * 3) // 4 - padding
+                        count_exceeded = _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT
+                        bytes_exceeded = (
+                            _remote_image_total_bytes + _data_approx_bytes
+                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                        )
+                        if msg_idx == latest_user and (count_exceeded or bytes_exceeded):
+                            limit = (
+                                f"{_GEMINI_REMOTE_IMAGE_MAX_COUNT} images"
+                                if count_exceeded
+                                else f"{_GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES // (1024 * 1024)} MiB of image data"
+                            )
+                            yield _error_sse_line(
+                                400,
+                                f"Studio sends up to {limit} per request to Gemini. Remove or resize images and try again.",
+                                self.provider_type,
+                            )
+                            return
+                        if count_exceeded:
                             logger.info(
                                 "Gemini inlineData: per-request count cap %d reached, dropping image",
                                 _GEMINI_REMOTE_IMAGE_MAX_COUNT,
                             )
-                        elif (
-                            _remote_image_total_bytes + _data_approx_bytes
-                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                        ):
+                        elif bytes_exceeded:
                             logger.info(
                                 "Gemini inlineData: per-request byte cap reached, dropping image",
                             )
