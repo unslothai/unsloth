@@ -155,14 +155,21 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
             error.errors[0]
           );
         });
-        unansweredVersion.current = undefined;
+        // Only this save or an older one is settled; a newer unanswered save stays a candidate.
+        if ((unansweredVersion.current ?? 0) <= record.updatedAt) {
+          unansweredVersion.current = undefined;
+        }
         if (record.updatedAt >= (editedVersion.current ?? 0)) {
           editedVersion.current = record.updatedAt;
         }
         return { id: record.id, updatedAt: record.updatedAt };
       } catch (error) {
-        unansweredVersion.current =
-          error instanceof RecipeApiError ? undefined : updatedAt;
+        const pending = unansweredVersion.current;
+        if (!(error instanceof RecipeApiError)) {
+          unansweredVersion.current = Math.max(pending ?? 0, updatedAt);
+        } else if (pending === updatedAt) {
+          unansweredVersion.current = undefined;
+        }
         throw error;
       } finally {
         if (inFlightVersion.current === updatedAt) {

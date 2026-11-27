@@ -345,6 +345,10 @@ export function useRecipePersistence({
             drainQueuedUploadCleanups(payload, queued);
           },
           (error: unknown) => {
+            // A newer save already landed, so this content is superseded, not rejected.
+            if (seq < savedRef.current.applied) {
+              return;
+            }
             console.error("Save recipe failed:", error);
             savedRef.current.failed = signature;
             setFailedSignature(signature);

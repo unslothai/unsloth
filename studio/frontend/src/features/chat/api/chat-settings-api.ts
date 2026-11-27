@@ -140,14 +140,19 @@ export async function saveChatSettingsPatch(
   const body = JSON.stringify(patch);
   // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
   const release = options.keepalive ? reserveKeepaliveBody(body) : null;
-  const response = await authFetch("/api/chat/settings", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body,
-    keepalive: options.keepalive ? release !== null : undefined,
-  }).finally(() => release?.());
-  const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
-  return data.settings;
+  try {
+    const response = await authFetch("/api/chat/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: options.keepalive ? release !== null : undefined,
+    });
+    // The browser counts the body until the response has been read to the end.
+    const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
+    return data.settings;
+  } finally {
+    release?.();
+  }
 }
 
 export async function saveChatSettingsPatchIfCurrent(

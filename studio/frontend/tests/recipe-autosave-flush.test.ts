@@ -146,6 +146,8 @@ function fakeServer(initial: Stored) {
   const puts: Put[] = [];
   const queue: (() => void)[] = [];
   const cancels: ((landed: boolean) => void)[] = [];
+  // Applies a PUT now and returns the transport error to deliver later.
+  const lands: (() => { fail: () => void; answer: () => void })[] = [];
   const recipeRequest = (_path: string, init: RequestInit = {}) => {
     if ((init.method ?? "GET") === "GET") return Promise.resolve({ ...stored });
     const put: Put = { body: JSON.parse(String(init.body)), keepalive: init.keepalive };
@@ -154,6 +156,15 @@ function fakeServer(initial: Stored) {
       cancels.push((landed: boolean) => {
         if (landed) apply();
         reject(new TypeError("Failed to fetch"));
+      });
+      lands.push(() => {
+        const ok = apply();
+        const answered = { ...stored };
+        return {
+          fail: () => reject(new TypeError("Failed to fetch")),
+          answer: () =>
+            ok ? resolve(answered) : reject(new RecipeApiError("conflict", 409)),
+        };
       });
       const apply = () => {
         const { baseUpdatedAt, ...record } = put.body;
@@ -187,12 +198,24 @@ function fakeServer(initial: Stored) {
     otherWindowSaves: () => {
       stored = { ...stored, name: "Other window", updatedAt: stored.updatedAt + 5 };
     },
+    landOldestWithoutReply() {
+      queue.shift();
+      cancels.shift();
+      const { fail, answer } = lands.shift()!();
+      const later = (fn: () => void) => async () => {
+        fn();
+        await settle();
+      };
+      return { fail: later(fail), answer: later(answer) };
+    },
     async releaseOldest() {
+      lands.shift();
       cancels.shift();
       queue.shift()?.();
       await settle();
     },
     async cancelOldest(landed: boolean) {
+      lands.shift();
       queue.shift();
       cancels.shift()?.(landed);
       await settle();
@@ -200,8 +223,13 @@ function fakeServer(initial: Stored) {
     async release(order: "fifo" | "lifo" = "fifo") {
       while (queue.length) {
         const run = order === "fifo" ? queue.shift() : queue.pop();
-        if (order === "fifo") cancels.shift();
-        else cancels.pop();
+        if (order === "fifo") {
+          cancels.shift();
+          lands.shift();
+        } else {
+          cancels.pop();
+          lands.pop();
+        }
         run?.();
         await settle();
       }
@@ -720,4 +748,66 @@ test("a chat settings keepalive body shares the budget with recipe saves", async
   held();
   await api.saveChatSettingsPatch({ note: "y".repeat(30 * 1024) }, { keepalive: true });
   assert.deepEqual(sent, [false, true]);
+});
+
+test("an older save's late failure after a newer save landed does not block the content", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  const first = s.server.landOldestWithoutReply();
+  await s.server.release();
+  await first.fail();
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+  assert.deepEqual(s.errors, []);
+});
+
+test("an older save succeeding keeps a newer unanswered version as a candidate", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  const second = s.server.puts[1].body.updatedAt;
+  // The older save lands, the newer copy lands with its answer lost, then the older answers.
+  const first = s.server.landOldestWithoutReply();
+  await s.server.cancelOldest(true);
+  await first.answer();
+  assert.equal(s.server.stored.updatedAt, second);
+  await s.edit({ columns: ["third"] });
+  await s.fire("pagehide");
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["third"] });
+});
+
+test("chat settings hold their keepalive reservation until the response body is read", async () => {
+  let readBody: () => void = () => undefined;
+  const api = loadWithStubs<{
+    saveChatSettingsPatch: (p: object, o: { keepalive?: boolean }) => Promise<unknown>;
+  }>(new URL("../src/features/chat/api/chat-settings-api.ts", import.meta.url), {
+    "@/features/auth": {
+      authFetch: async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: () => new Promise((r) => (readBody = () => r({ settings: {} }))),
+        }) as unknown as Response,
+    },
+    "@/lib/keepalive-budget": keepaliveBudget,
+    "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+    "../utils/settings-retry": {
+      ChatSettingsRequestError: Error,
+      asBodyTransportFailure: (e: unknown) => e,
+      isAbortOrTimeout: () => false,
+    },
+  });
+  const saving = api.saveChatSettingsPatch({ note: "y".repeat(40 * 1024) }, { keepalive: true });
+  await settle();
+  assert.equal(keepaliveBudget.reserveKeepaliveBody("x".repeat(30 * 1024)), null);
+  readBody();
+  await saving;
+  const after = keepaliveBudget.reserveKeepaliveBody("x".repeat(30 * 1024));
+  assert.ok(after);
+  after();
 });
