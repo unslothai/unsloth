@@ -2884,13 +2884,19 @@ function Get-CudaTorchInstallLabel {
     return $CuTag
 }
 
+# Whether this process already runs elevated (an elevated run is never shown a UAC prompt). Its own
+# function so the unattended-UAC tests can pin it: GitHub's Windows runners are elevated.
+function Test-SetupProcessElevated {
+    try {
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return [bool]$_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
 # An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
 function Test-SetupUacUnanswerable {
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
-    try {
-        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
-        if ($_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
-    } catch { }
+    if (Test-SetupProcessElevated) { return $false }
     $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
     if ($opt -in @("1", "true", "yes")) { return $true }
     if ($opt -in @("0", "false", "no")) { return $false }
