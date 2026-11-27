@@ -123,11 +123,14 @@ def test_inactive_source_uses_scoped_online_status(
     )
 
 
-@pytest.mark.parametrize("blob_state", ["complete", "incomplete", "online-only"])
+@pytest.mark.parametrize(
+    "blob_state",
+    ["complete", "incomplete", "online-only", "copy", "copy-no-manifest", "copy-other-revision"],
+)
 def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
     cache_locations, monkeypatch, blob_state
 ):
-    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.download_manifest import ExpectedFile, write_manifest
     from hub.utils.gguf import GgufVariantInfo
     from hub.utils.gguf_plan import plan_from_expected_files
 
@@ -139,9 +142,22 @@ def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
     )
     path.unlink()
     blob = repo / "blobs" / ("a" * 64 + (".incomplete" if blob_state == "incomplete" else ""))
-    blob.parent.mkdir(exist_ok = True)
-    blob.write_bytes(b"GGUF" + bytes(996))
-    path.symlink_to(blob)
+    if blob_state.startswith("copy"):
+        path.write_bytes(b"GGUF" + bytes(996))
+        if blob_state != "copy-no-manifest":
+            assert write_manifest(
+                "model",
+                repo_id,
+                quant,
+                [ExpectedFile(path.name, 1000, "a" * 64)],
+                hub_cache = repo.parent,
+                commit_hash = path.parent.name if blob_state == "copy" else "b" * 40,
+                metadata_derived = True,
+            )
+    else:
+        blob.parent.mkdir(exist_ok = True)
+        blob.write_bytes(b"GGUF" + bytes(996))
+        path.symlink_to(blob)
 
     if blob_state == "online-only":
         original_stat = os.stat
@@ -183,8 +199,8 @@ def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
 
     response = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
     [online] = [item for item in response.variants if item.quant == quant]
-    assert online.downloaded is (blob_state == "complete")
-    assert online.update_available is (blob_state == "complete")
+    assert online.downloaded is (blob_state in {"complete", "copy"})
+    assert online.update_available is (blob_state in {"complete", "copy"})
 
 
 def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):

@@ -2691,22 +2691,48 @@ async def get_gguf_variants_answer(
                     requirement.mmproj_filenames
                 ):
                     continue
-                # Hugging Face publishes an LFS blob under its final SHA only after completing
-                # the download. Require that evidence for each old shard in this snapshot.
-                # A regular file / .incomplete blob still needs the normal size check.
+                # A finalized LFS blob proves completeness in a symlink cache. A copied
+                # snapshot needs the old revision's own manifest and declared sizes.
                 try:
-                    blobs_dir = (snap.parent.parent / "blobs").resolve(strict = True)
+                    snapshot_dir = snap.resolve(strict = True)
+                    blobs_dir = (snap.parent.parent / "blobs").resolve()
+                    copied_sizes = None
                     for name in requirement.main_filenames:
                         cached = snap / name
                         blob = cached.resolve(strict = True)
+                        size = files.get(name.lower(), 0)
                         if (
-                            not cached.is_symlink()
-                            or blob.parent != blobs_dir
-                            or re.fullmatch(r"[0-9a-f]{64}", blob.name) is None
-                            or files.get(name.lower(), 0) < 24
+                            size < 24
+                            or not blob.is_file()
                             or not file_contents_available_locally(blob)
                         ):
                             break
+                        if cached.is_symlink():
+                            if (
+                                blob.parent != blobs_dir
+                                or re.fullmatch(r"[0-9a-f]{64}", blob.name) is None
+                            ):
+                                break
+                        else:
+                            if copied_sizes is None:
+                                manifest = download_manifest.read_manifest(
+                                    "model", repo_id, quant, hub_cache = snap.parent.parent.parent
+                                )
+                                if (
+                                    manifest is None
+                                    or manifest.commit_hash != snap.name
+                                    or not download_manifest.verify_against_disk(manifest, snap).ok
+                                ):
+                                    break
+                                copied_sizes = {
+                                    expected.path: expected.size
+                                    for expected in manifest.expected_files
+                                }
+                            if (
+                                not blob.is_relative_to(snapshot_dir)
+                                or copied_sizes.get(name) != size
+                            ):
+                                break
                         with blob.open("rb") as model_file:
                             if model_file.read(4) != b"GGUF":
                                 break
