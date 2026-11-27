@@ -571,6 +571,9 @@ def test_moss_cuda_sdpa_disables_the_broken_cudnn_backend(monkeypatch):
 
 
 def test_moss_nano_overrides_flash_attention_on_cpu(monkeypatch):
+    # Windows disables SentencePiece by default (utils/sentencepiece_guard.py), which makes the MOSS load refuse
+    # before it reaches the attention kwargs; that refusal has its own test in test_moss_sentencepiece_preflight.py.
+    monkeypatch.delitem(sys.modules, "sentencepiece", raising = False)
     seen = {}
 
     def load_model(*_args, **kwargs):
