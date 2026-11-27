@@ -331,6 +331,23 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
 PRESET_EDITED_KEYS = ("temperature", "topP", "topK", "minP", "presencePenalty", "maxTokens")
 
 
+_MEMORY_PEAK_COLUMNS = (
+    "gpu_peak_allocated_bytes",
+    "gpu_peak_reserved_bytes",
+    "host_peak_rss_bytes",
+    "host_peak_commit_bytes",
+)
+
+
+def _memory_peak_values(memory_peaks: Optional[dict]) -> list[Optional[int]]:
+    values = []
+    for column in _MEMORY_PEAK_COLUMNS:
+        value = (memory_peaks or {}).get(column)
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+        values.append(int(value) if ok else None)
+    return values
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -352,7 +369,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             loss_sparkline TEXT,
             display_name TEXT,
             resume_blocked INTEGER NOT NULL DEFAULT 0,
-            resumed_from_run_id TEXT
+            resumed_from_run_id TEXT,
+            gpu_peak_allocated_bytes INTEGER,
+            gpu_peak_reserved_bytes INTEGER,
+            host_peak_rss_bytes INTEGER,
+            host_peak_commit_bytes INTEGER
         )
         """
     )
@@ -366,6 +387,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Nullable, so older rows stay NULL and fall back to the output_dir heuristic.
     if "resumed_from_run_id" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN resumed_from_run_id TEXT")
+    # Training process memory peaks in bytes; nullable, so rows from before them read as unknown.
+    for column in _MEMORY_PEAK_COLUMNS:
+        if column not in existing_cols:
+            conn.execute(f"ALTER TABLE training_runs ADD COLUMN {column} INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -1695,6 +1720,7 @@ def finish_run(
     clear_output_dir: bool = False,
     resume_blocked: bool = False,
     config_json: Optional[str] = None,
+    memory_peaks: Optional[dict] = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -1704,6 +1730,10 @@ def finish_run(
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
                 duration_seconds = ?, loss_sparkline = ?,
                 config_json = COALESCE(?, config_json),
+                gpu_peak_allocated_bytes = COALESCE(?, gpu_peak_allocated_bytes),
+                gpu_peak_reserved_bytes = COALESCE(?, gpu_peak_reserved_bytes),
+                host_peak_rss_bytes = COALESCE(?, host_peak_rss_bytes),
+                host_peak_commit_bytes = COALESCE(?, host_peak_commit_bytes),
                 output_dir = CASE
                     WHEN resume_blocked = 1 OR ? = 1 THEN NULL
                     WHEN ? IS NOT NULL THEN ?
@@ -1722,6 +1752,7 @@ def finish_run(
                 duration_seconds,
                 loss_sparkline,
                 config_json,
+                *_memory_peak_values(memory_peaks),
                 int(clear_output_dir),
                 output_dir,
                 output_dir,
@@ -1874,6 +1905,8 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
                    r.ended_at, r.total_steps, r.final_step, r.final_loss,
                    r.output_dir, r.duration_seconds, r.error_message,
                    r.loss_sparkline, r.display_name, r.config_json, r.resume_blocked,
+                   r.gpu_peak_allocated_bytes, r.gpu_peak_reserved_bytes,
+                   r.host_peak_rss_bytes, r.host_peak_commit_bytes,
                    CASE
                        WHEN r.status IN ('stopped', 'error')
                             AND r.output_dir IS NOT NULL

@@ -205,8 +205,7 @@ def test_native_hidden_states_and_logps_match_the_wrapper(family, grad):
 
 @pytest.mark.parametrize("family", sorted(FAMILIES))
 def test_return_dict_false_still_returns_hidden_states(family):
-    # The wrapper used to force return_dict = True; without it, a model configured with return_dict = False must
-    # still hand GRPO its hidden states in .logits, the same ones as with return_dict = True.
+    # A return_dict = False model must still return GRPO's hidden states in .logits.
     _, fast = _pair(family)
     ids = torch.randint(
         0, _CONFIG["vocab_size"], (2, 12), generator = torch.Generator().manual_seed(2)
@@ -341,8 +340,7 @@ def test_amp_prepared_fast_forward_keeps_the_bypass():
 
 
 def test_amp_prepared_logits_forward_is_still_wrapped():
-    """The AMP wrappers are followed only to what they really call: a functools.wraps copy under them, or a stock
-    instance behind the gate, still gets the fallback."""
+    """A functools.wraps copy or stock model behind AMP wrappers still gets the fallback."""
     from functools import wraps
 
     pytest.importorskip("accelerate")
@@ -541,8 +539,7 @@ def _equal_calls_over_three_scoring_calls(model):
 
 @pytest.mark.parametrize("wrapper", ["verified_stock", "unrecognised_fast"])
 def test_fallback_compares_head_input_once_per_model(wrapper):
-    """The fallback's head-input comparison is a host read per call; once the model has a verdict
-    (verified head, or a forward that returns the head input itself) later calls must skip it."""
+    """Head-input comparison is a per-call host read, skipped once the model has a verdict."""
     stock, fast = _square_pair()
     if wrapper == "verified_stock":
         model = stock
@@ -613,8 +610,7 @@ def _scoring_logits(model, embeds):
 
 
 def test_coincidental_head_input_match_does_not_skip_the_head_check():
-    """An all-zero row maps to zero through a square head, so native logits equal the hidden state by chance:
-    that call proves nothing, and the next input must still be checked against the head."""
+    """A coincidental match on an all-zero row proves nothing, so the next input is checked."""
     model = _PreHeadScaledLM(vocab_size = 4, pre_scale = 2.0)
     assert rl._install_grpo_hidden_states_forward_wrapper(model) is True
     with torch.no_grad():

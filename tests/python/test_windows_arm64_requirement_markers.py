@@ -85,8 +85,7 @@ def _by_name(reqs: list[Requirement]) -> dict[str, list[Requirement]]:
 
 
 def _multi_row_groups(reqs):
-    """Multi-row groups of one package, skipping groups whose rows differ in extras, which are not
-    splits."""
+    """Multi-row groups per package, skipping groups whose rows differ in extras (not splits)."""
     for name, group in _by_name(reqs).items():
         if len(group) < 2 or len({tuple(sorted(r.extras)) for r in group}) > 1:
             continue
@@ -226,8 +225,7 @@ def _lowest_allowed(req) -> str:
 
 @per_source
 def test_a_selected_row_is_installable_on_the_python_it_was_selected_for(label, reqs):
-    """Splitting on platform is not enough: a row can be live for an interpreter no release in its
-    range supports, and pip reports that as no matching version rather than a marker bug."""
+    """A row live on a Python no release supports gives pip a no-match error, not a marker bug."""
     for plat, py, env in ENVS:
         for req in _live(reqs, env):
             for spec, floor in PACKAGE_PYTHON_FLOORS.get(req.name.lower(), ()):
@@ -296,8 +294,7 @@ def test_a_skipped_package_is_not_left_live_in_an_extra(extra):
 
 @per_extra
 def test_dropping_a_package_on_woa_drops_it_nowhere_else(extra):
-    """A negative ARM64 marker must drop the row only on ARM64; checked as an outcome over the
-    platform table, so a marker also excluding Windows x86 is caught."""
+    """Negative ARM64 markers drop only on ARM64; checked per platform so x86 drops are caught."""
     for req in _pyproject_extras()[extra]:
         if IPS._canonical_dist_name(req.name) not in WOA_SKIPPED or req.marker is None:
             continue

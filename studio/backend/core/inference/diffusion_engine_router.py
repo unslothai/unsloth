@@ -14,6 +14,7 @@ import re
 import platform
 import sys
 import threading
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -685,7 +686,14 @@ def cancel_generation_for_account(account_id: str) -> bool:
     for module_name, attribute in _ENGINE_SINGLETONS:
         module = sys.modules.get(module_name)
         engine = getattr(module, attribute, None) if module is not None else None
-        if engine is None or engine._active_generate_account != account_id:
+        if engine is None:
+            continue
+        # The native engine's card replicas render beside its primary.
+        lanes = getattr(engine, "_replica_backends", None)
+        if engine._active_generate_account != account_id and not any(
+            getattr(lane, "_active_generate_account", None) == account_id
+            for lane in (lanes() if callable(lanes) else ())
+        ):
             continue
         # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
@@ -798,7 +806,10 @@ def _settle_engine_pick_locked() -> None:
     if _pending_engine_pick is None:
         return
     pick, engine, before = _pending_engine_pick
-    current = loaded_state_of(engine)
+    current = getattr(engine, "_state", None)
+    # A dead snapshot means the old state was torn down: any published state is the new load's.
+    if isinstance(before, weakref.ReferenceType):
+        before = before()
     if current is not None and current is not before:
         _engine_pick = pick
         _pending_engine_pick = None
@@ -808,8 +819,17 @@ _NO_SNAPSHOT = object()
 
 
 def loaded_state_of(engine: Any) -> Any:
-    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot."""
-    return getattr(engine, "_state", None)
+    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot.
+
+    Held weakly: the snapshot spans the next load, and a strong one pinned the old pipeline's VRAM past
+    ``_unload_locked``. A state that takes no weakref (test doubles) is kept as is."""
+    state = getattr(engine, "_state", None)
+    if state is None:
+        return None
+    try:
+        return weakref.ref(state)
+    except TypeError:
+        return state
 
 
 def note_engine_pick(

@@ -86,6 +86,15 @@ jobs:
     name: Repo tests (CPU, ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # Fork gloo ranks from a per-worker zygote that already imported unsloth (tests/_shared/rank_zygote.py).
+      # rank_zygote: '0' opts out: fsdp2's ranks skip the conftest so forking gained nothing, and
+      # gloo-tp-env lost a rank at init_process_group in 2 of 8 staging runs with forked ranks.
+      UNSLOTH_TEST_RANK_ZYGOTE: ${{ matrix.rank_zygote || '1' }}
+      # `split: k/n` runs part k of the selection, weighted by tests/_shared/shard_durations.json.
+      UNSLOTH_TEST_SPLIT: ${{ matrix.split || '' }}
+      UNSLOTH_TEST_RANK_ZYGOTE_STATS: /tmp/unsloth_rank_zygote_stats
+      PYTEST_ADDOPTS: --durations=40
     strategy:
       # The multi-rank shards of Backend CI's Repo tests (CPU), moved here unchanged. Together with
       # studio-backend-ci.yml's repo-cpu-tests matrix every tests/ file lands in exactly one shard
@@ -101,14 +110,39 @@ jobs:
           # onwards is about 55% of the measured time, everything else about 45%. Each glob
           # must match a file, or bash hands pytest the literal pattern
           # (tests/test_ci_repo_cpu_shards.py checks both).
-          - shard: fsdp2
+          - shard: fsdp2-1
+            split: 1/2
+            rank_zygote: '0'
             selection: >-
               tests/test_fsdp2_[!n]*.py
               tests/test_fsdp2_n[!a]*.py
               tests/test_fsdp2_native_[abc]*.py
-          - shard: fsdp2-native
+          - shard: fsdp2-2
+            split: 2/2
+            rank_zygote: '0'
             selection: >-
-              tests/test_fsdp2_native_[!abc]*.py
+              tests/test_fsdp2_[!n]*.py
+              tests/test_fsdp2_n[!a]*.py
+              tests/test_fsdp2_native_[abc]*.py
+          # fsdp2-native then ran up to 1752 s of the cap (2026-11-26), so it is split by file name again:
+          # d to r is 46% of its measured test time (881 of 1896 s on 4 workers), s onwards 54%. The
+          # letters are spelled out so the split does not depend on the runner's collation.
+          - shard: fsdp2-native-1
+            split: 1/2
+            selection: >-
+              tests/test_fsdp2_native_[defghijklmnopqr]*.py
+          - shard: fsdp2-native-2
+            split: 2/2
+            selection: >-
+              tests/test_fsdp2_native_[defghijklmnopqr]*.py
+          - shard: fsdp2-native-sz-1
+            split: 1/2
+            selection: >-
+              tests/test_fsdp2_native_[!abcdefghijklmnopqr]*.py
+          - shard: fsdp2-native-sz-2
+            split: 2/2
+            selection: >-
+              tests/test_fsdp2_native_[!abcdefghijklmnopqr]*.py
           # The other multi-rank gloo suites (tensor, pipeline and context parallel, float8 and
           # fp8 under FSDP2) did the same again: with them the catch-all hit the 2100 s cap and was
           # interrupted at 74 to 98% on most runs. Locally on 4 cores they are 578 s of the
@@ -116,32 +150,157 @@ jobs:
           # fsdp2's: an explicit file root cannot be filtered by --ignore, so the split is done in
           # the globs themselves. A *gloo* file starting with d, i, m, s or u is rest-2's
           # (tests/test_[dimsu]*.py), so the first glob leaves those letters out.
-          - shard: gloo
+          # #19527's test_cp_router_aux_gloo.py then made the test_cp_* files 59% of gloo's test time
+          # (1510 of 2573 s measured), and gloo hit the cap at 287 tests on 2026-11-25. They get a
+          # shard of their own; test_c[!p]* keeps test_context_parallel_*, and a test_cp[!_]* gloo
+          # file matches neither and is reported dropped.
+          # Ten expert parallel files and test_layout_portable_resume_gloo.py (2026-11-24 to 26) then
+          # took gloo to its cap again on main (ddfe1bcd97, 70% at 2100 s); its passing runs were up
+          # to 1588 s. They are 959 of the shard's 1889 s measured one file at a time, so they get
+          # gloo-ep. test_lo* stays in gloo; a test_l[!ao]* gloo file matches neither and is reported dropped.
+          - shard: gloo-1
+            split: 1/3
             selection: >-
-              tests/test_[!dfimpstu]*gloo*.py
+              tests/test_[!cdefilmpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
               tests/test_f[!s]*gloo*.py
+              tests/test_lo*gloo*.py
               tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-2
+            split: 2/3
+            selection: >-
+              tests/test_[!cdefilmpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_lo*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-3
+            split: 3/3
+            selection: >-
+              tests/test_[!cdefilmpstu]*gloo*.py
+              tests/test_c[!p]*gloo*.py
+              tests/test_f[!s]*gloo*.py
+              tests/test_lo*gloo*.py
+              tests/test_parallel_[!c]*gloo*.py
+          - shard: gloo-ep-1
+            split: 1/3
+            selection: >-
+              tests/test_e*gloo*.py
+              tests/test_la*gloo*.py
+          - shard: gloo-ep-2
+            split: 2/3
+            selection: >-
+              tests/test_e*gloo*.py
+              tests/test_la*gloo*.py
+          - shard: gloo-ep-3
+            split: 3/3
+            selection: >-
+              tests/test_e*gloo*.py
+              tests/test_la*gloo*.py
+          - shard: gloo-cp-files-1
+            split: 1/2
+            selection: >-
+              tests/test_cp_*gloo*.py
+          - shard: gloo-cp-files-2
+            split: 2/2
+            selection: >-
+              tests/test_cp_*gloo*.py
           # Gloo hit its 2100 s cap after 17886, 17930, DeepSeek-V4.1 tests; non-native TP files
           # split off.
-          - shard: gloo-tp-env
+          - shard: gloo-tp-env-1
+            split: 1/4
+            rank_zygote: '0'
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-2
+            split: 2/4
+            rank_zygote: '0'
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-3
+            split: 3/4
+            rank_zygote: '0'
+            selection: >-
+              tests/test_tp_[!n]*gloo*.py
+          - shard: gloo-tp-env-4
+            split: 4/4
+            rank_zygote: '0'
             selection: >-
               tests/test_tp_[!n]*gloo*.py
           # Issue 16407 grew the cp gloo file to a third of the shard; each gloo test spawns 2 to 8
           # ranks, four at once peaked near 20 GB on a 16 GB runner, so 2 workers; test_p[!ap]*
           # matches no shard.
-          - shard: gloo-cp
+          # gloo-cp then ran up to 1937 s of its 2100 s cap (2026-11-26). Its pipeline parallel tests, 37% of the
+          # file's test time (379 of 1015 s measured with 2 workers), moved to test_parallel_cp_pipeline_gloo.py
+          # and run beside it, also on 2 workers. A test_parallel_c[!p]* or test_parallel_cp_[!cp]* gloo file
+          # matches neither shard and is reported dropped.
+          - shard: gloo-cp-1
+            split: 1/3
             workers: 2
             selection: >-
-              tests/test_parallel_c*gloo*.py
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-2
+            split: 2/3
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-3
+            split: 3/3
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_c*gloo*.py
+          - shard: gloo-cp-pipeline
+            workers: 2
+            selection: >-
+              tests/test_parallel_cp_p*gloo*.py
           # Pipeline parallel growth (15655, 15656, 16167, 16417) hit the 2100 s cap, so TP and PP
           # split; a gloo file named test_t[!p]* or test_tp[!_]* matches no shard and is reported
           # dropped.
-          - shard: gloo-tp
+          - shard: gloo-tp-1
+            split: 1/2
             selection: >-
               tests/test_tp_n*gloo*.py
-          - shard: gloo-pp
+          - shard: gloo-tp-2
+            split: 2/2
             selection: >-
-              tests/test_pp*gloo*.py
+              tests/test_tp_n*gloo*.py
+          # gloo-pp then ran 1324 to 1764 s of its 2100 s cap on a 4 vCPU runner (2026-11-25) and was
+          # interrupted at about 2095 s with some 200 of 223 tests done on slower ones; four workers
+          # spawning 2 to 4 ranks each oversubscribe the runner. test_pp_env_gloo.py is 64% of the
+          # shard's test time (1681 of 2640 s measured), so it gets a runner of its own. Any other
+          # test_pp_e* or test_pp[!_]* gloo file matches neither shard and is reported dropped.
+          - shard: gloo-pp-1
+            split: 1/4
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-2
+            split: 2/4
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-3
+            split: 3/4
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-4
+            split: 4/4
+            selection: >-
+              tests/test_pp_[!e]*gloo*.py
+              tests/test_pp_env_[!g]*gloo*.py
+          - shard: gloo-pp-env-1
+            split: 1/3
+            selection: >-
+              tests/test_pp_env_gloo.py
+          - shard: gloo-pp-env-2
+            split: 2/3
+            selection: >-
+              tests/test_pp_env_gloo.py
+          - shard: gloo-pp-env-3
+            split: 3/3
+            selection: >-
+              tests/test_pp_env_gloo.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -233,11 +392,19 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         # Spoofing and load_freeze files run isolated below: hardware-spoof files mutate module
-        # globals. The outer timeout must fire before the job cap.
+        # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
             -m 'not server and not e2e'
+
+      - name: How the ranks started (forked from the zygote, or spawned again and why)
+        if: always()
+        run: python tests/_shared/rank_zygote.py --summary /tmp/unsloth_rank_zygote_stats
+
+      - name: Processes the kernel killed for memory
+        if: failure()
+        run: sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process" | tail -20 || true
 
       - name: Why a failure here might already be fixed on the base branch
         # Only on failure; the action reports when the base branch moved since the merge ref.

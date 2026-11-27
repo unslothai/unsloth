@@ -134,7 +134,6 @@ def test_full_span_policy(monkeypatch):
     # A window shorter than the cache: the segmented capture slices it eagerly.
     assert G._full_span(model, 10, 8192) is None
     model.config.sliding_window = None
-    # Batched decode keeps the segmented capture unless widened.
     assert G._full_span(model, 10, 512, bsz = 2) is None
     monkeypatch.setattr(G, "FULL_MAX_BSZ", 4)
     assert G._full_span(model, 10, 512, bsz = 4) == 256

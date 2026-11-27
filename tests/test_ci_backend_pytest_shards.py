@@ -137,8 +137,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
     @pytest.mark.parametrize("path", sorted(_NOT_IN_ANY_SHARD))
     def test_the_files_no_shard_runs_are_the_expected_ones(self, path):
-        """Excluded on purpose, and from every shard rather than from one: without this, a
-        dropped file and a deliberately-skipped one look identical to the test above."""
+        """Excluded from every shard on purpose, or a dropped file looks like a planned skip."""
         claiming = _claiming_shards(path, _shards())
         assert (
             claiming == []
@@ -167,8 +166,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
         ],
     )
     def test_a_brand_new_file_is_claimed_by_exactly_one_shard(self, path, expected):
-        """The property the split exists for: a file nobody has heard of yet runs, in one
-        place, without a workflow edit."""
+        """A brand-new test file runs in exactly one shard, with no workflow edit."""
         claiming = _claiming_shards(path, _shards())
         assert claiming == [
             expected
@@ -191,8 +189,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
         ids = ["new-subdir", "existing-subdir", "uppercase", "digit", "underscore-test-suffix"],
     )
     def test_the_names_the_ranges_do_not_describe_land_in_the_catch_all(self, path):
-        """Ranged shards exclude their complement, else odd names like uppercase files are claimed
-        by both."""
+        """Ranged shards exclude their complement, else uppercase files are claimed by both."""
         claiming = _claiming_shards(path, _shards())
         assert claiming == [_CATCH_ALL], (
             f"{path} is not described by any range, so it must land in the "
@@ -200,16 +197,14 @@ class TestEveryTestFileLandsInExactlyOneShard:
         )
 
     def test_a_name_matching_both_discovery_patterns_falls_out_of_every_shard(self):
-        """Names matching both discovery patterns land in no shard; a known limit, forbidden by name
-        below."""
+        """Names matching both patterns land in no shard: a known limit, forbidden by name."""
         assert _claiming_shards("tests/test_api_test.py", _shards()) == [], (
             "this is a known limitation; if it now lands in a shard the patterns have "
             "changed and the naming rule below can be relaxed"
         )
 
     def test_a_subdirectory_named_like_a_test_file_falls_out_of_every_shard(self):
-        """A subdirectory named like a test file falls out of every shard: a known limit, forbidden
-        by name."""
+        """Subdirectory named like a test file is in no shard: a known limit, banned by name."""
         assert _claiming_shards("tests/test_api/test_auth.py", _shards()) == [], (
             "this is a known limitation of the split; if it now lands in a shard the "
             "patterns have changed and the naming rule below can be dropped"
@@ -241,9 +236,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_every_shard_keeps_the_marker_filter(self):
-        """The one environment-specific deselection: a real llama.cpp process, which a
-        GPU-less runner does not have. The filter is on the shared step rather than per
-        shard, so it is checked there."""
+        """The shared -k filter drops the live llama.cpp test, which GPU-less runners lack."""
         run = _shared_pytest_step()["run"]
         assert (
             "not llama_cpp_load_progress_live" in run
@@ -272,11 +265,11 @@ class TestTheSplitKeepsTheSelectionItInherited:
         run = _shared_pytest_step()["run"]
         assert "--timeout=330" in run
         assert "timeout --signal=INT --kill-after=60" in run
+        # SIGALRM cannot interrupt a test blocked in C code; only the thread method names it.
+        assert "--timeout-method=thread" in run
 
     def test_the_serial_files_are_ignored_by_every_shard(self):
-        """The twelve cannot share a worker, and sharding does not change that: four
-        runners are still four workers each. They are held out by the shared --ignore list
-        on the step, so this asks the question of the shard AND the step together."""
+        """The twelve cannot share a worker, even sharded; the shared --ignore list holds them out."""
         run = _shared_pytest_step()["run"]
         shards = _shards()
         for path in _serial_paths():
@@ -290,8 +283,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
             ), f"{path} is rerun by the serial step and shard(s) {claiming} collect it too"
 
     def test_the_serial_step_runs_in_one_process_in_one_shard(self):
-        """Splitting it would put its relative timings back on two machines, and running it
-        on every shard would run it four times."""
+        """Its relative timings must stay on one machine; every shard would run it four times."""
         for step in _job()["steps"]:
             if step.get("name") != _SERIAL_STEP:
                 continue
@@ -307,8 +299,7 @@ class TestTheSplitKeepsTheSelectionItInherited:
         raise AssertionError(f"the {_SERIAL_STEP!r} step is gone")
 
     def test_the_serial_step_runs_exactly_the_files_the_parallel_run_ignores(self):
-        """The serial step includes timing-sensitive R1 parser regressions; it is checked against
-        the parallel step's ignores, not a count, so edit both lists together."""
+        """Timing-sensitive R1 parser regressions run here; match the parallel step's ignores."""
         paths = _serial_paths()
         assert len(set(paths)) == len(paths), f"the serial step names a file twice: {paths}"
         assert "tests/test_pr5624_regressions.py" in paths
@@ -337,14 +328,12 @@ class TestTheGuardIsNotVacuous:
         assert _claiming_shards("tests/multi_account/test_alice_bob_matrix.py", broken) == []
 
     def test_an_overlap_is_reported(self):
-        """The mistake the ranges are written to avoid: shard 1 excluding `l-z` rather than
-        excluding `not a-k`, which leaves every name outside a-z owned by both."""
+        """Shard 1 excluding `l-z`, not `not a-k`, leaves names outside a-z owned by both."""
         broken = {
             "a-k": (["tests/"], [], ["tests/*/*", "tests/test_[l-z]*.py"]),
             "l-r": (["tests/"], [], ["tests/*/*", "tests/test_[a-k]*.py", "tests/test_[s-z]*.py"]),
             _CATCH_ALL: (["tests/"], [], ["tests/test_[a-r]*.py"]),
         }
-        # A name outside a-z falls into the catch-all as well, while a-z still partitions correctly.
         assert _claiming_shards("tests/test_Zebra.py", broken) == ["a-k", "l-r", _CATCH_ALL]
         assert _claiming_shards("tests/test_apple.py", broken) == ["a-k"]
         assert _claiming_shards("tests/test_monkey.py", broken) == ["l-r"]

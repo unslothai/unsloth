@@ -71,8 +71,7 @@ def test_a_combined_install_and_import_cell_gets_its_sidecar(compat):
 
 
 def test_the_marker_only_hook_would_have_missed_it(compat):
-    """Non-vacuity. Reproduces the OLD hook body against the same cell: if this ever
-    activates, the test above proves nothing about the change."""
+    """Old marker-only hook must not activate here; if it did, this test would prove nothing."""
     v = compat.requested_version()
     assert v is None, "no previous cell has installed anything yet"
     if v and "transformers" not in sys.modules:
@@ -112,8 +111,7 @@ def test_the_cell_pin_outranks_a_stale_marker(compat, sidecar_root, tmp_path):
     ],
 )
 def test_a_cell_that_installs_nothing_activates_nothing(compat, cell):
-    """A wrong sidecar is unrecoverable once transformers is imported, while no sidecar
-    only means the base venv, so anything ambiguous has to lose."""
+    """A wrong sidecar is unrecoverable once transformers imports; unsure cases get no sidecar."""
     assert _fire(compat, cell) is None
 
 
@@ -141,8 +139,7 @@ def test_nothing_happens_once_transformers_is_imported(compat, capsys, monkeypat
 
 
 def test_a_hook_call_with_no_info_is_harmless(compat):
-    """IPython has passed the event object for a long time, but the parameter was
-    optional here before and a bare call must not raise."""
+    """A bare hook call with no event must not raise, since the event parameter is optional."""
     compat._pre_run_cell()
     compat._pre_run_cell(SimpleNamespace())
 
@@ -188,8 +185,7 @@ def test_ipython_really_hands_the_hook_the_cell_source():
 
 
 def test_unsloth_run_scans_with_the_very_same_functions(compat, monkeypatch):
-    """One scanner, not two. unsloth_run used to own these, and a copy in each module
-    would let the headless kernel and the in-notebook hook pick different sidecars."""
+    """A single scanner keeps unsloth_run and the hook from picking different sidecars."""
     monkeypatch.setitem(sys.modules, "unsloth_nb_compat", compat)
     spec = importlib.util.spec_from_file_location("unsloth_run_same_scanner", RUN_PATH)
     run = importlib.util.module_from_spec(spec)
@@ -220,8 +216,7 @@ def test_every_spelling_the_shim_drops_is_a_pin(compat, spec):
 
 
 def test_the_shim_and_the_scanner_agree_on_the_name(compat):
-    """The shim and the scanner must agree on the canonical name; the test reads the shim's own
-    canonicaliser rather than restating its rule, so a change fails loudly."""
+    """Shim and scanner must agree on the canonical name; the test uses the shim's function."""
     shim_path = REPO_ROOT / "docker" / "unsloth_pip_shim.py"
     spec = importlib.util.spec_from_file_location("unsloth_pip_shim_names", shim_path)
     shim = importlib.util.module_from_spec(spec)
@@ -245,8 +240,7 @@ def test_the_shim_and_the_scanner_agree_on_the_name(compat):
     ],
 )
 def test_a_different_distribution_is_not_the_pin(compat, spec):
-    """Non-vacuity and the blast radius: matching the name loosely must not start
-    reading somebody else's version as the transformers pin."""
+    """Loose name matching must not read another package's version as the transformers pin."""
     assert compat.pin_in_cell("%pip install " + spec) is None
 
 
@@ -283,8 +277,7 @@ def test_a_false_environment_marker_is_not_a_pin(compat, cell, expected):
 
 
 def test_the_marker_veto_survives_without_packaging(compat, monkeypatch):
-    """packaging is optional in this module, as it already is for version ordering, so
-    losing it must fall back to the old behaviour rather than raise."""
+    """Without packaging the marker veto falls back to the old behaviour rather than raising."""
     import builtins
 
     real_import = builtins.__import__

@@ -3,6 +3,7 @@
 
 import __future__
 import ast
+import importlib.util
 import inspect
 import fnmatch
 import os
@@ -61,6 +62,26 @@ def _loader_utils_functions(
     return [
         defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
     ]
+
+
+def _real_function(path, name):
+    """One self-contained function compiled from its module's source, so the fixture runs the real code without
+    importing the module (unsloth.models._utils pulls in torch)."""
+    node = next(
+        n
+        for n in ast.parse(path.read_text(encoding = "utf-8")).body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    namespace = {}
+    exec(compile(ast.Module([node], type_ignores = []), str(path), "exec"), namespace)
+    return namespace[name]
+
+
+def _gguf_load_module(path):
+    spec = importlib.util.spec_from_file_location("_unsloth_gguf_load_for_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _module_definitions(tree):
@@ -154,7 +175,14 @@ def loader():
         _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
         # #19464: from_pretrained starts every load with a backend switch that needs a real torch.
         _unsloth_load_begins = lambda: None,
+        # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
+        gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
     )
+    # #19947: from_pretrained imports its GGUF checks from unsloth/_gguf_load.py. That module needs only the stdlib,
+    # so the fixture loads all of it (helpers added there later included) instead of stubbing one name at a time.
+    for name, value in vars(_gguf_load_module(path.parent.parent / "_gguf_load.py")).items():
+        if callable(value) and not name.startswith("__"):
+            env.setdefault(name, value)
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))

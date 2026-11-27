@@ -41,14 +41,12 @@ def test_it_runs_after_the_ui_phase_has_stopped_the_server():
 
 
 def test_it_uses_its_own_port():
-    """The first server's port may still be in TIME_WAIT, and a bind failure
-    there would read as a broken CLI."""
+    """The first port may be in TIME_WAIT, so a bind failure would read as a broken CLI."""
     assert "port = self.args.port + 1" in _body()
 
 
 def test_no_public_url_is_ever_opened_from_ci():
-    """--secure implies a Cloudflare quick tunnel that publishes the server to the internet from CI,
-    so --no-cloudflare is passed explicitly rather than trusting a default."""
+    """--secure implies a public Cloudflare tunnel, so pass --no-cloudflare explicitly in CI."""
     body = "".join(_body().split())  # formatter-proof; see the cloudflare guards
     assert '"--no-cloudflare",' in body
     assert '"--secure"' not in body
@@ -85,8 +83,7 @@ def test_gpu_use_is_measured_and_an_unmeasurable_reading_is_a_failure():
 
 
 def test_a_corrupted_key_must_be_refused():
-    """Without this, a server ignoring the Authorization header entirely
-    satisfies the claim that the minted key authenticated."""
+    """A corrupted key must be refused, or a server ignoring the Authorization header passes."""
     func = _func("assert_cli_run")
     guarded = [
         n
@@ -99,8 +96,7 @@ def test_a_corrupted_key_must_be_refused():
 
 
 def test_the_child_is_always_torn_down():
-    """A `unsloth run` left alive holds a card and a port for the rest of the
-    session, and the kernel's next phase reads that as its own failure."""
+    """A `unsloth run` left alive holds a card and a port; teardown must sit in a finally."""
     func = _func("assert_cli_run")
     tries = [n for n in ast.walk(func) if isinstance(n, ast.Try) and n.finalbody]
     assert tries, "the teardown must be in a finally, or a raised assertion leaks the server"
@@ -141,16 +137,14 @@ def test_a_co_tenant_freeing_memory_does_not_read_as_a_CPU_fallback():
 
 
 def test_a_co_tenant_ALREADY_on_the_card_cannot_satisfy_the_claim():
-    """Counting every process would pass on a card a training leg is using and
-    a server that never left the CPU. Only pids that APPEARED count."""
+    """Counting all processes lets a co-tenant pass; only pids that APPEARED count."""
     failure, detail = _verdict()({99: 12000}, {99: 12000}, 100.0, 100.0)
     assert failure and "served from the CPU" in failure
     assert detail["process_vram_mib"] == 0
 
 
 def test_a_real_cpu_fallback_still_fails():
-    """The case the assertion exists for: the launch answered, and no process
-    of its own ever appeared on the GPU."""
+    """The launch answered but no process of its own appeared on the GPU: a real CPU fallback."""
     failure, _ = _verdict()({99: 12000}, {99: 12000, 4242: 3}, 100.0, 101.0)
     assert failure and "served from the CPU" in failure
 
@@ -166,8 +160,7 @@ def test_a_unified_memory_part_that_cannot_attribute_is_judged_on_the_device_del
 
 
 def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
-    """An nvidia-smi that answers a total but cannot enumerate apps still gets a
-    verdict rather than a silent pass."""
+    """If nvidia-smi cannot enumerate apps, the device delta gives a verdict, not a pass."""
     verdict = _verdict()
     assert verdict(None, None, 100.0, 4000.0)[0] is None
     failure, _ = verdict(None, None, 100.0, 110.0)
@@ -178,8 +171,7 @@ def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
 
 
 def test_the_before_sample_is_taken_before_the_launch():
-    """An `apps_before` read after the server started would contain the server,
-    so nothing would ever have `appeared` and every run would fail."""
+    """An apps_before read taken after server start contains the server, so every run fails."""
     body = _body()
     # One listing call, so the attributed mapping and the listed pids describe the same moment.
     assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(

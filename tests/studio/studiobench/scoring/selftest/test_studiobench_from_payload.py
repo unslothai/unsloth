@@ -477,8 +477,7 @@ def test_a_completed_retry_still_supersedes_the_attempt_that_died():
 
 
 def test_a_payload_with_no_session_ids_is_kept_whole():
-    """A payload from before the recorder stamped sessions cannot be split into attempts, and
-    dropping it would lose the run."""
+    """Payloads without session ids cannot be split into attempts, so they are kept whole."""
 
     records = [_cell("c1"), _action("c1", "keystroke", timings = {"p95_ms": 40.0})]
 

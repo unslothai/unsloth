@@ -23,7 +23,7 @@ _REFUSERS = [
     ("diffusion.py", "_apply_loras"),
     ("diffusion.py", "_adjust_baked_loras"),
     ("diffusion.py", "_check_h3_image_loras"),
-    ("sd_cpp_backend.py", "generate"),
+    ("sd_cpp_backend.py", "_generate_impl"),  # generate() routes to it or to the card replicas
 ]
 
 

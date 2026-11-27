@@ -93,8 +93,7 @@ def test_a_tight_disk_frees_the_intermediate_merge(tmp_path, monkeypatch, save_m
 
 
 def test_a_roomy_disk_keeps_everything(tmp_path, monkeypatch, save_mod):
-    """The property that stops this from being a surprise. A user who asked for
-    a 16-bit merge and a GGUF on a machine with room for both gets both."""
+    """A user who asked for a 16-bit merge and a GGUF gets both when there is room for both."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 500)
     assert _reclaim(save_mod, merge, gguf, bases) == 0
@@ -102,8 +101,7 @@ def test_a_roomy_disk_keeps_everything(tmp_path, monkeypatch, save_mod):
 
 
 def test_config_and_tokenizer_survive(tmp_path, monkeypatch, save_mod):
-    """Later steps still read them, so deleting the directory outright would
-    trade one failure for another."""
+    """Later steps still read config and tokenizer, so deleting the whole directory is wrong."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
     _reclaim(save_mod, merge, gguf, bases)
@@ -136,8 +134,7 @@ def test_a_missing_directory_is_not_an_error(tmp_path, monkeypatch, save_mod):
 
 
 def test_an_unreadable_disk_declines_rather_than_deleting(tmp_path, monkeypatch, save_mod):
-    """If we cannot tell whether the room is there, the safe answer is to leave
-    the user's files alone."""
+    """If free space cannot be read, the safe answer is to leave the user's files alone."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
 
     def boom(*_a, **_k):
@@ -154,9 +151,8 @@ def _save_to_gguf_source(save_mod):
 
 
 def test_the_disk_message_is_not_gated_on_kaggle(save_mod):
-    """The Nemotron run was on Colab and was told to rebuild llama.cpp, which
-    fixes nothing and costs a long compile. Asserted against the source because
-    the alternative is driving a 30B export to reproduce one string."""
+    """The disk message must not be gated on Kaggle: a Colab run was told to rebuild llama.cpp,
+    which fixes nothing; reproducing needs a 30B export, so the check reads source."""
     source = _save_to_gguf_source(save_mod)
     disk_branch = source.index("elif _gguf_failure_looks_like_disk")
     build_advice = source.index("make clean && make all -j")
@@ -167,8 +163,7 @@ def test_the_disk_message_is_not_gated_on_kaggle(save_mod):
 
 
 def test_the_helper_is_called_before_quantizing(save_mod):
-    """A helper nothing calls is the same as no fix. Ordering matters too: it
-    has to run after the base GGUF exists and before llama-quantize starts."""
+    """Uncalled it is no fix; it must run after the base GGUF exists, before llama-quantize."""
     source = _save_to_gguf_source(save_mod)
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
@@ -236,8 +231,7 @@ def test_a_small_output_with_modest_free_space_is_not_called_a_full_disk(save_mo
 
 
 def test_an_explicit_enospc_is_a_full_disk_whatever_the_size(save_mod):
-    """The message and errno signals are independent of the arithmetic, so a
-    real ENOSPC is still a full disk even when the output would have fit."""
+    """ENOSPC or a disk-full message means a full disk, even when the output would fit."""
     failure = OSError(28, "No space left on device")
     assert save_mod._gguf_failure_looks_like_disk(failure, ".", needed_bytes = 1)
 
@@ -361,14 +355,12 @@ def test_the_non_peft_branch_marks_the_checkpoint_as_not_disposable(
     checkpoint.mkdir()
     model = _FakeModel(str(checkpoint))
     seen = _run_export(monkeypatch, save_mod, tmp_path, model)
-    # Converted from a staged copy inside the GGUF folder, still never reclaimable.
     assert os.path.dirname(seen["model_directory"]) == str(tmp_path / "export" / "model_gguf")
     assert seen["merge_is_disposable"] is False
 
 
 def test_a_merge_this_export_wrote_is_disposable(tmp_path, monkeypatch, save_mod):
-    """The other side of the same branch. Nothing local to reuse, so the export
-    writes the weights itself and owns them."""
+    """Nothing local to reuse, so the export writes the weights itself and owns them."""
     model = _FakeModel("some-org/some-model")
     seen = _run_export(monkeypatch, save_mod, tmp_path, model)
     assert seen["model_directory"] == str(tmp_path / "export" / "model")
@@ -404,8 +396,7 @@ def test_a_caller_can_keep_a_directory_it_owns(tmp_path, monkeypatch, save_mod):
 
 
 def test_the_sentence_transformer_export_keeps_its_module_directory(monkeypatch, tmp_path):
-    """It writes the module in step 1 and uploads the folder in step 7, so
-    reclaiming `0_Transformer` would return a folder that no longer loads."""
+    """0_Transformer is written in step 1 and uploaded in step 7, so it must not be reclaimed."""
     st = pytest.importorskip("unsloth.models.sentence_transformer")
     seen = {}
 
@@ -437,8 +428,7 @@ def test_a_separate_output_filesystem_is_left_alone(tmp_path, monkeypatch, save_
     merge_real = os.path.realpath(merge)
 
     def stat_on_another_device(path, *args, **kwargs):
-        """Returns a real stat_result with one field changed; os.path.isdir uses the same os.stat,
-        so st_mode and the other fields must stay intact for the device comparison to be reached."""
+        """Only one stat field changes; os.path.isdir still passes so the device check runs."""
         st = real_stat(path, *args, **kwargs)
         if os.path.realpath(path) != merge_real:
             return st
@@ -454,8 +444,7 @@ def test_a_separate_output_filesystem_is_left_alone(tmp_path, monkeypatch, save_
 def test_an_unreadable_merge_directory_declines_rather_than_raising(
     tmp_path, monkeypatch, save_mod
 ):
-    """The helper never raises: a failing directory listing must end the reclamation, not the
-    export, since llama-quantize no longer needs that directory and would have succeeded."""
+    """The helper never raises: a failed directory listing ends reclamation, not the export."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
 
@@ -559,8 +548,7 @@ def test_a_stale_safetensors_index_does_not_widen_the_deletion(tmp_path, monkeyp
 
 
 def test_an_index_missing_shards_it_names_is_not_trusted(tmp_path, monkeypatch, save_mod):
-    """`of-00003` promises three shards. Two means this is not that set, so the
-    naming convention decides and the odd stem is left alone."""
+    """A set named of-00003 with two of three shards is not trusted, so the odd stem stays."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "leftover-00001-of-00003.safetensors"
     theirs.write_bytes(b"one shard of a set that is no longer whole")
@@ -602,8 +590,7 @@ def test_a_checkpoint_in_the_other_serialization_is_not_the_merge(tmp_path, monk
 
 
 def test_a_stale_sharded_bin_checkpoint_is_left_alone(tmp_path, monkeypatch, save_mod):
-    """The sharded form of the same thing. Its index is not this merge's index,
-    and reading it would hand the shards it names to the deletion."""
+    """Its index is not this merge's, so reading it would hand its named shards to deletion."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = [Path(merge) / f"pytorch_model-0000{i}-of-00002.bin" for i in (1, 2)]
     for shard in theirs:
@@ -643,7 +630,6 @@ def test_each_quant_is_priced_by_its_own_width(save_mod):
     assert 4.5 / 16 < ratio("q4_k_m") < 8.0 / 16
     assert 8.5 / 16 < ratio("q8_0") < 1.0
     assert ratio("iq2_xxs") < ratio("iq4_xs") < ratio("q8_0")
-    # An unrecognised method is still charged a whole copy of the base.
     assert ratio("something_new") == 1.0
 
 
@@ -657,8 +643,7 @@ def test_a_q8_0_base_is_not_priced_as_sixteen_bit(save_mod):
 
 
 def test_the_vlm_projector_is_not_charged_to_every_quant(tmp_path, monkeypatch, save_mod):
-    """llama-quantize copies the -mmproj projector rather than quantizing it, so it is not part of
-    what each pass writes; charging it per quant would call a roomy disk tight."""
+    """llama-quantize copies the -mmproj projector, so it is not charged to each quant."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 30)
     mmproj = Path(gguf) / "model.BF16-mmproj.gguf"
     with open(mmproj, "wb") as fh:

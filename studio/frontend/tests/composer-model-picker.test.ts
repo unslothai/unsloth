@@ -28,7 +28,6 @@ import {
   pickerSide,
   pickerWidth,
   pickerZoomOut,
-  pinCoversId,
   repoSection,
   sectionsHaveRows,
   sliderLevels,
@@ -136,13 +135,6 @@ test("an on-device model also lists under its maker's tab", () => {
     filterRows(rows, DEVICE_TAB, "", none).map((r) => r.key),
     ["g", "q", "s"],
   );
-});
-
-test("favorites read the header picker's keys: a repo or any of its quants", () => {
-  const pinned = ["unsloth/gemma-4-E2B-it-GGUF::UD-Q4_K_XL", "org/plain-model"];
-  assert.equal(pinCoversId(pinned, "unsloth/gemma-4-E2B-it-GGUF"), true);
-  assert.equal(pinCoversId(pinned, "org/plain-model"), true);
-  assert.equal(pinCoversId(pinned, "unsloth/gemma-4-E2B"), false);
 });
 
 test("rows dedupe by id, first wins", () => {

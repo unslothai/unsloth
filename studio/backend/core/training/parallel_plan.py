@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 import threading
 import time
@@ -217,12 +218,22 @@ def detect_host(max_age_s: float = 5.0) -> dict:
         "multi_process_reason": reason,
         "gpus": gpus,
         "core": core_axes(),
+        # False on a UUID / MIG mask: /start refuses a plan that pins a subset of it.
+        "pins_gpu_ids": _mask_takes_gpu_ids(),
         "transformers": _transformers_version(),
         "torch": _torch_version(),
     }
     with _HOST_LOCK:
         _HOST_CACHE.update(at = time.monotonic(), value = host)
     return host
+
+
+def _mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001 -- the same default as the /start check
+        return True
 
 
 def _torch_version() -> tuple:
@@ -321,6 +332,14 @@ def model_facts(
         facts["family"] = str(getattr(config, "model_type", "") or "")
         facts["multimodal"] = getattr(config, "vision_config", None) is not None
         facts.update(_config_traits(config))
+        text = (
+            config.get_text_config()
+            if callable(getattr(config, "get_text_config", None))
+            else config
+        )
+        experts = getattr(text, "num_local_experts", None) or getattr(text, "num_experts", None)
+        if isinstance(experts, int):
+            facts["num_experts"] = experts
     return facts
 
 
@@ -373,6 +392,11 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
     return str(custom or "").strip()
 
 
+def _spec_example(world: int) -> str:
+    """dp over every GPU: a hint every run accepts (a tp axis is refused for some models)."""
+    return f"dp={max(world, 1)}"
+
+
 def _parse_spec(raw: str, world: int) -> dict:
     env = _core_module("parallel_env")
     if env is None:
@@ -381,7 +405,9 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     if not raw:
         raise ParallelPlanError(
-            "parallel_bad_spec", CUSTOM, 'Custom layout needs a parallel_spec such as "dp=2,tp=2".'
+            "parallel_bad_spec",
+            CUSTOM,
+            f'Custom layout needs a layout such as "{_spec_example(world)}".',
         )
     ep_requested = any(
         part.split("=", 1)[0].strip().lower() in ("ep", "ep_size")
@@ -398,7 +424,9 @@ def _parse_spec(raw: str, world: int) -> dict:
         )
     if not spec:
         raise ParallelPlanError(
-            "parallel_bad_spec", CUSTOM, 'Custom layout needs a parallel_spec such as "dp=2,tp=2".'
+            "parallel_bad_spec",
+            CUSTOM,
+            f'Custom layout needs a layout such as "{_spec_example(world)}".',
         )
     sizes = {k: int(spec.get(k, 1)) for k in ("tp", "pp", "cp")}
     sizes["ep"] = int(spec.get("ep", 1)) if not isinstance(spec.get("ep"), bool) else 1
@@ -444,7 +472,21 @@ def _core_check(
     ep_blocker = model.get("ep_blocker")
     if ep_blocker is None and ep > 1 and callable(getattr(caps, "_ep_blocker", None)):
         # Only the model_type is known here: Core's table of families expert parallel cannot shard.
-        ep_blocker = caps._ep_blocker(str(model.get("family") or ""), ep)
+        # A 4-bit load can change the experts layout (gpt-oss: per-expert Linear4bit lists).
+        family = str(model.get("family") or "")
+        four_bit = model.get("mode") == "qlora" or (
+            model.get("mode") != "full"
+            and "bnb-4bit" in str(request.get("model_name") or "").lower()
+        )
+        try:
+            ep_blocker = caps._ep_blocker(
+                family, ep, load_in_4bit = four_bit, experts = model.get("num_experts")
+            )
+        except TypeError:  # a Core before the load_in_4bit / experts arguments
+            try:
+                ep_blocker = caps._ep_blocker(family, ep, load_in_4bit = four_bit)
+            except TypeError:
+                ep_blocker = caps._ep_blocker(family, ep)
     values = {
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
@@ -474,10 +516,40 @@ def _core_check(
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
+        layout = text.rsplit(" (layout ", 1)[1] if " (layout " in text else ""
         alternative = alternative.rsplit(" (layout", 1)[0].strip().rstrip(".") or None
+        if _REASON_BELOW in message:
+            # Core names the model's own reason only in its layout tail ("...; models/tp_native.py: <why>)").
+            tail = layout[:-1] if layout.endswith(")") else layout
+            detail = tail.rsplit("; ", 1)[-1].partition(": ")[2].strip()
+            if not detail and ep > 1 and ep_blocker and message.startswith("Unsloth: ep x model:"):
+                detail = str(ep_blocker).strip().rstrip(".")
+            message = message.split(": models/", 1)[0] + (f": {detail}." if detail else ".")
         raise ParallelPlanError(
-            "parallel_unsupported", request.get("parallel_mode"), message.strip(), alternative
+            "parallel_unsupported",
+            request.get("parallel_mode"),
+            _plain_core_message(message),
+            alternative,
         )
+
+
+_REASON_BELOW = "(its reason follows the layout below)"
+# Core's rule prefix ("Unsloth: pp x packing: ..."), dropped from the Train page message.
+_CORE_RULE_PREFIX = re.compile(r"^(?:Unsloth:\s*)?(?:[a-z0-9_]+(?: x [a-z0-9_]+)+:\s*)?")
+
+
+def _plain_core_message(message: str) -> str:
+    text = _CORE_RULE_PREFIX.sub("", message.strip(), count = 1)
+    return text[:1].upper() + text[1:] if text else message.strip()
+
+
+def _too_big(need: float, largest: dict, host: dict) -> str:
+    """Why a run that DDP could not take is sharded, claiming only what was checked: the freest card."""
+    if not _fits(need, [largest]):
+        return "more than any one GPU has room for"
+    if not host.get("pins_gpu_ids", True):
+        return "and not every GPU has room for a full copy, while this GPU mask cannot keep a run to one card"
+    return "and not every GPU has room for a full copy"
 
 
 def _fits(need_gb: Optional[float], gpus: list) -> bool:
@@ -567,6 +639,16 @@ def _estimate_row(model: dict, n: int) -> dict:
     return {"single": single, "ddp": single, "fsdp2": sharded, "layer_split": sharded}
 
 
+def _gpus_differ(gpus: list) -> bool:
+    return len({(g["name"], round(g["total_gb"])) for g in gpus}) > 1
+
+
+def _mixed_gpu_note(mode: str) -> str:
+    if mode in (DDP, FSDP2, EP):
+        return "These GPUs differ; data parallel runs at the pace of the slowest."
+    return "These GPUs differ; every GPU holds an equal share, so the slowest and smallest set the pace and the limit."
+
+
 def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     requested = request.get("parallel_mode") or None
     if requested is not None and requested not in MODES:
@@ -586,6 +668,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     gpus = _usable_gpus(host, gpu_ids)
     model = model or {}
     warnings: list = []
+    notes: list = []  # host facts, shown muted; warnings are risks of this run
     feature = _single_process_feature(request)
     multi_reason = host.get("multi_process_reason") or (
         f"{feature} train in one process." if feature else None
@@ -600,8 +683,20 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
     ) -> dict:
         multi = mode in MULTI_PROCESS_MODES
         n = len(chosen)
-        if multi and len({(g["name"], round(g["total_gb"])) for g in chosen}) > 1:
-            warnings.append("These GPUs differ; data parallel runs at the pace of the slowest.")
+        if multi and _gpus_differ(chosen):
+            notes.append(_mixed_gpu_note(mode))
+        env: dict = {}
+        sizes = None
+        if mode == FSDP2:
+            sizes = {"fsdp": True}
+        elif mode == CUSTOM and spec:
+            try:
+                sizes = _parse_spec(spec, n)
+            except ParallelPlanError:
+                sizes = None
+        if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
+            # Core keeps FSDP2 blocks gathered when the weights alone fit a card, ignoring optimizer state.
+            env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,
@@ -614,8 +709,10 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
+            "notes": notes,
             "modes": _mode_rows(host, model or None, request, gpus),
             "error": None,
+            "env": env if multi else {},
         }
 
     def _legacy(why: str) -> dict:
@@ -638,26 +735,10 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if multi_reason:
             return _legacy(multi_reason)
         core = host.get("core") or {}
-        # EP needs fused expert stacks; transformers 4.x leaves most families unfused (refused at load).
-        if (
-            model.get("is_moe")
-            and core.get(EP)
-            and tuple(host.get("transformers") or (5, 0)) >= (5, 0)
-        ):
-            try:
-                _core_check(
-                    _sizes_for(EP, len(gpus)), model, host, {**request, "parallel_mode": EP}, gpus
-                )
-                return _result(
-                    EP,
-                    gpus,
-                    "Mixture-of-experts model: its experts are split across the GPUs (expert parallel).",
-                    _spec_for(EP, len(gpus), None),
-                )
-            except ParallelPlanError:
-                pass
         if need is None:
             return _legacy("The model size could not be estimated, so Studio keeps one process.")
+        # Never auto-pick expert parallel: DDP has no per-layer all-to-all (OLMoE-1B-7B, 2 GPUs: DDP 240 s,
+        # ep 570 s), and only Core knows what an ep rank holds, while FSDP2 shards any model.
         if _fits(need, gpus) and core.get(DDP):
             try:
                 _core_check(
@@ -671,6 +752,16 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 )
             except ParallelPlanError:
                 pass
+        # Multi-process layouts give equal shares, so the smallest card caps them: train on the largest alone.
+        largest = max(gpus, key = lambda g: (g["free_gb"], -g["index"]))
+        if host.get("pins_gpu_ids", True) and _fits(need, [largest]):
+            return _result(
+                SINGLE,
+                [largest],
+                f"The model needs about {need:.1f} GB"
+                + ("" if _fits(need, gpus) else ", and not every GPU has room for a full copy")
+                + f"; GPU {largest['index']} ({largest['name']}) holds it whole, so it trains there alone.",
+            )
         shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
@@ -684,7 +775,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 return _result(
                     FSDP2,
                     gpus,
-                    f"The model needs about {need:.1f} GB, more than one GPU holds; sharded over {len(gpus)} GPUs it needs about {shard:.1f} GB each (FSDP2).",
+                    f"The model needs about {need:.1f} GB, {_too_big(need, largest, host)}; sharded over "
+                    f"{len(gpus)} GPUs it needs about {shard:.1f} GB each (FSDP2).",
                     _spec_for(FSDP2, len(gpus), None),
                 )
             except ParallelPlanError:
