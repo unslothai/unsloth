@@ -20,6 +20,7 @@ if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import dataclasses  # noqa: E402
+import importlib.metadata  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -266,6 +267,18 @@ def _packed_oracle(model, batch):
 def _full(t):
     from torch.distributed.tensor import DTensor
     return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().cpu().clone()
+
+
+def _disable_use_cache(model):
+    try:
+        from unsloth_zoo.training_utils import disable_use_cache
+    except ImportError:
+        for module in model.modules():
+            config = getattr(module, "config", None)
+            if getattr(config, "use_cache", None):
+                config.use_cache = False
+        return
+    disable_use_cache(model)
 
 
 def _block_compile_on_cpu(model):
@@ -577,6 +590,9 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    # As for_training / get_peft_model: transformers 4.x builds a KV cache from the config's use_cache = True,
+    # and block compile runs a layer handed a cache eager (the one-process reference compiled nothing).
+    _disable_use_cache(model)
     cpu_chunked_ce = False
     if eval_only:
         from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
@@ -917,6 +933,10 @@ def _case_train(
         "dataset_rows": len(data),
         "ga": ga,
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
+        # Layers whose compiled region ran (a layer handed a KV cache stays eager).
+        "blocks_compiled": sum(
+            1 for m in trainer.model.modules() if m.__dict__.get("_unsloth_block_checked")
+        ),
         "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(
             trainer.model
         ),
@@ -1223,15 +1243,18 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
     assert (
         single["compiled_classes"] == ["LlamaDecoderLayer"]
         and single["compile"]["unique_graphs"] > 0
-    )
+        and single["blocks_compiled"] == N_LAYERS
+    ), single["blocks_compiled"]
     _close(single, eager, what = "one process compiled")
     for rank, res in enumerate(
         _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True)
     ):
         assert "error" not in res, (rank, res.get("trace"))
         assert (
-            res["compiled_classes"] == ["LlamaDecoderLayer"] and res["compile"]["unique_graphs"] > 0
-        )
+            res["compiled_classes"] == ["LlamaDecoderLayer"]
+            and res["compile"]["unique_graphs"] > 0
+            and res["blocks_compiled"] == N_LAYERS
+        ), (rank, res["blocks_compiled"])
         assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res[
             "seen_lengths"
         ]
@@ -1381,15 +1404,25 @@ def test_dense_qwen3_under_cp_matches_one_process():
         _close(res, ref, what = ("qwen3", rank))
 
 
+# transformers 4.x builds Qwen3-MoE experts as per-expert modules: the cp model check refuses them (only routed
+# experts run, so unused ones would stall the gradient reduction). test_moe_with_router_aux_loss_under_cp_is_refused
+# checks that refusal; the MoE x cp parity / compile cells need the fused expert stacks of transformers >= 5.
+_TRANSFORMERS_MAJOR = int(importlib.metadata.version("transformers").split(".")[0])
+_cp_moe_needs_fused_experts = pytest.mark.skipif(
+    _TRANSFORMERS_MAJOR < 5,
+    reason = "Ulysses cp refuses per-expert MoE modules (transformers 4.x); fused experts need transformers >= 5",
+)
+
+
 @pytest.mark.parametrize(
     "mode, world, env, cp",
     [
         ("lora", 2, {}, 1),
         ("lora", 2, {"UNSLOTH_FSDP2": "1"}, 1),
-        ("lora", 2, {}, 2),
-        ("lora", 4, {"UNSLOTH_FSDP2": "1"}, 2),
+        pytest.param("lora", 2, {}, 2, marks = _cp_moe_needs_fused_experts),
+        pytest.param("lora", 4, {"UNSLOTH_FSDP2": "1"}, 2, marks = _cp_moe_needs_fused_experts),
         ("full", 2, {"UNSLOTH_FSDP2": "1"}, 1),
-        ("full", 2, {}, 2),
+        pytest.param("full", 2, {}, 2, marks = _cp_moe_needs_fused_experts),
     ],
     ids = ["lora-ddp", "lora-fsdp2", "lora-cp2", "lora-fsdp2_cp2", "full-fsdp2", "full-cp2"],
 )
@@ -1437,6 +1470,7 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
 # ParametrizedQwen3MoeTopKRouter type guards recompile more than one process once the router capture hooks are
 # installed before the first block compiles.
 @needs_block_compile_torch
+@_cp_moe_needs_fused_experts
 @pytest.mark.parametrize("mode", ["full"])
 def test_moe_block_compile_under_cp_is_compile_clean(mode):
     from unsloth.utils.compile_counters import not_above
@@ -1459,7 +1493,8 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
 )
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
-    """UNSLOTH_CP_ROUTER_AUX=0: refused before the split, also via TRL's default router_aux_loss_coef."""
+    """UNSLOTH_CP_ROUTER_AUX=0: refused before the split, also via TRL's default router_aux_loss_coef. On
+    transformers 4.x the per-expert modules are refused first when the config itself keeps the aux loss off."""
     for res in _spawn(
         "train",
         2,
@@ -1471,6 +1506,11 @@ def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
         trl_aux = True,
     ):
         error = res.get("error") or ""
+        if _TRANSFORMERS_MAJOR < 5 and not config_flag:
+            assert "does not support sparse MoE layers with per-expert modules" in error, (
+                error or res["losses"]
+            )
+            continue
         assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (
             error or res["losses"]
         )
@@ -1527,7 +1567,9 @@ def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
     # The baseline runs under 1-rank DDP, which refuses reentrant checkpointing ("marked ready twice"), so
     # path A is compared to the compiled run without checkpointing.
     single = _ref(ref_bs, compile = True, gc = "none" if gc == "unsloth" else gc)
-    assert single["compile"]["unique_graphs"] > 0
+    assert single["compile"]["unique_graphs"] > 0 and single["blocks_compiled"] == N_LAYERS, single[
+        "blocks_compiled"
+    ]
     if gc != "unsloth":
         _checkpoint_engaged(single, gc)
     _close(single, eager, what = ("one process compiled", gc))
@@ -1539,6 +1581,7 @@ def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
         assert res["compiled_classes"] == ["LlamaDecoderLayer"] and res["seen_lengths"] == [
             SEQ // 2
         ]
+        assert res["blocks_compiled"] == N_LAYERS, (rank, res["blocks_compiled"])
         _checkpoint_engaged(res, gc)
         assert not not_above(res["compile"], single["compile"]), (
             rank,
@@ -1567,6 +1610,7 @@ def test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process(env,
         _close(res, ref, what = (env, gc, rank))
 
 
+@_cp_moe_needs_fused_experts
 @_UNSLOTH_GC
 @pytest.mark.parametrize(
     "mode, world, env",
@@ -1590,6 +1634,7 @@ def test_moe_under_cp_with_unsloth_checkpointing_matches_one_process(mode, world
 
 
 @needs_block_compile_torch
+@_cp_moe_needs_fused_experts
 @_UNSLOTH_GC
 def test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean(gc):
     from unsloth.utils.compile_counters import not_above
