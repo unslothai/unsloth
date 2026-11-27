@@ -2798,6 +2798,16 @@ def _remove_empty_directory(directory):
         pass
 
 
+def _partial_gguf_path(final):
+    """Sibling to write `final` under before `_place_gguf_output` moves it in; a short name when `.tmp` would pass NAME_MAX or Windows MAX_PATH."""
+    head, name = os.path.split(final)
+    if len(os.fsencode(name)) + 4 <= 255 and not (
+        IS_WINDOWS and len(os.path.abspath(final)) + 4 > _WINDOWS_MAX_PATH_CHARS
+    ):
+        return final + ".tmp"
+    return os.path.join(head, f"~{os.urandom(4).hex()}.tmp")
+
+
 def _place_gguf_output(src, dst):
     """`os.replace` is a rename that also overwrites on Windows; anything it refuses (cross-device, directory at `dst`, held file) falls back to `shutil.move`."""
     if os.path.abspath(src) == os.path.abspath(dst):
@@ -3147,7 +3157,7 @@ def save_to_gguf(
             output_location = os.path.join(
                 gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
             )
-            partial_location = output_location + ".tmp"
+            partial_location = _partial_gguf_path(output_location)
             try:
                 if quant_method == "q2_k_l":
                     _quantize_q2_k_l(
@@ -6654,7 +6664,7 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        partial_gguf = out_gguf + ".tmp"
+        partial_gguf = _partial_gguf_path(out_gguf)
         converter_input = lora_dir
         if is_inkling2_config(getattr(model, "config", None)):
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.

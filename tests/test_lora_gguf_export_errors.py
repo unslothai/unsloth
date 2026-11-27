@@ -90,6 +90,8 @@ def _writer(
         "sys": sys,
         "tempfile": tempfile,
         "Path": pathlib.Path,
+        "IS_WINDOWS": False,
+        "_WINDOWS_MAX_PATH_CHARS": 259,
     }
     names = {
         "_unsloth_save_lora_gguf",
@@ -98,6 +100,7 @@ def _writer(
         "_lora_gguf_conversion_error",
         "_local_base_config_dir",
         "_place_gguf_output",
+        "_partial_gguf_path",
     }
     exec(compile(ast.Module(_load(names), []), str(_SAVE), "exec"), namespace)
     loader = _SAVE.parent / "models" / "loader_utils.py"

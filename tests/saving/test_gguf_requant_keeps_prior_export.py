@@ -90,3 +90,34 @@ def test_a_successful_requant_replaces_the_prior_gguf(monkeypatch, tmp_path):
     assert output.read_bytes() == b"GGUF partial q4_k_m"
     assert str(output) in files
     assert sorted(os.listdir(gguf_directory)) == ["MyModel.Q4_K_M.gguf"]
+
+
+def test_a_near_limit_name_still_requantizes(monkeypatch, tmp_path):
+    # 240 + ".Q4_K_M.gguf" is 252 bytes: a ".tmp" suffix would pass NAME_MAX.
+    gguf_directory, _ = _export(tmp_path, monkeypatch, [], set(), False)
+    name = "M" * 240
+    (gguf_directory / f"{name}.Q4_K_M.gguf").write_bytes(PRIOR_BYTES)
+    save_mod.save_to_gguf(
+        model_name = name,
+        model_type = "llama",
+        model_dtype = "bfloat16",
+        model_directory = str(tmp_path / "model"),
+        quantization_method = ["q4_k_m"],
+        gguf_directory = str(gguf_directory),
+    )
+    assert (gguf_directory / f"{name}.Q4_K_M.gguf").read_bytes() == b"GGUF partial q4_k_m"
+    assert sorted(os.listdir(gguf_directory)) == [f"{name}.Q4_K_M.gguf"]
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_partial_name_is_a_short_sibling_near_path_limits(monkeypatch, windows):
+    monkeypatch.setattr(save_mod, "IS_WINDOWS", windows)
+    short = os.path.join("out", "MyModel.Q4_K_M.gguf")
+    assert save_mod._partial_gguf_path(short) == short + ".tmp"
+    finals = [os.path.join("out", "M" * 240 + ".Q4_K_M.gguf")]
+    if windows:
+        finals.append(os.path.join("D" * 200, "E" * 40, "MyModel.Q4_K_M.gguf"))
+    for final in finals:
+        partial = save_mod._partial_gguf_path(final)
+        assert os.path.dirname(partial) == os.path.dirname(final)
+        assert len(os.path.basename(partial)) < 16
