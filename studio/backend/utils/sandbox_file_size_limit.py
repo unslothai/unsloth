@@ -13,7 +13,6 @@ FILE_SIZE_LIMIT_SETTING_KEY = "sandbox_file_size_limit_mb"
 # 100 MB until #19853: debug builds (swift build, cargo, C++) link binaries past it.
 DEFAULT_FILE_SIZE_LIMIT_MB = 4096
 MIN_FILE_SIZE_LIMIT_MB = 1
-# 1 TiB: past this a build has bigger problems than the sandbox.
 MAX_FILE_SIZE_LIMIT_MB = 1024 * 1024
 _BYTES_PER_MB = 1024 * 1024
 

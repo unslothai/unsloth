@@ -919,7 +919,6 @@ function OsSandboxSections() {
                 ) : null}
                 {status.fileSize ? (
                   <FileSizeLimitRow
-                    // A saved or reloaded value resets the draft.
                     key={`${status.fileSize.savedMb}:${status.fileSize.limitMb}`}
                     fileSize={status.fileSize}
                     saving={saving}

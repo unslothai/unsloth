@@ -101,7 +101,6 @@ def _proc(returncode):
         (1, "bash: line 1: ulimit: file size: cannot modify limit: Operation not permitted\n"),
         (-_SIGXFSZ, ""),
         (128 + _SIGXFSZ, ""),
-        # The killed write was not the last command: exit 0, truncated file.
         (0, "bash: line 1:  42 File size limit exceeded head -c 157286400 /dev/zero > big.bin\n"),
     ],
 )
