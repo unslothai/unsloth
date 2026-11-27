@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Qwen-Image-2.1 denoiser forward with per-step token layout built once, bit-identical; kill switch
-UNSLOTH_DIFFUSION_Q21_FAST_STEP=0. Rows of different prompt lengths in one batch get their own RoPE positions (each
-row's solo table; stock lays every row out from row 0), kill switch UNSLOTH_DIFFUSION_Q21_ROW_LAYOUT=0"""
+UNSLOTH_DIFFUSION_Q21_FAST_STEP=0. Mixed prompt lengths get per-row RoPE (stock uses row 0's), kill switch
+UNSLOTH_DIFFUSION_Q21_ROW_LAYOUT=0"""
 
 from __future__ import annotations
 
@@ -24,9 +24,8 @@ COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 SHARED_PREFIX_KV_ENV = "UNSLOTH_DIFFUSION_Q21_SHARED_PREFIX_KV"
 ROW_LAYOUT_ENV = "UNSLOTH_DIFFUSION_Q21_ROW_LAYOUT"
 MIXED_BATCH_ENV = "UNSLOTH_DIFFUSION_Q21_MIXED_BATCH"
-# Batch sizes whose mixed-length signature (per-row RoPE + text key mask) the compiled blocks already hold.
+# Batch sizes whose mixed-length signature the compiled blocks already hold.
 MIXED_WARM_ATTR = "_unsloth_q21_mixed_warm"
-# Set by an off-request warm (an idle worker / the batching race): mixed lengths may compile inside it.
 _MIXED_WARMING = contextvars.ContextVar("unsloth_q21_mixed_warming", default = False)
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
@@ -110,8 +109,7 @@ class _Layout:
 
 
 class _Rows:
-    """Per-row RoPE of a batch whose rows pad their prompts differently: ``(batch, total, dim / 2)``, each row's
-    valid positions holding that row's solo table (padded positions keep the shared table; they are masked keys)."""
+    """Per-row RoPE ``(batch, total, dim / 2)``: each row's solo table at its valid positions."""
 
     __slots__ = ("rotary_emb", "tails", "__weakref__")
 
@@ -153,9 +151,7 @@ def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
 
 
 def row_layout_supported(pipe_or_model: Any) -> bool:
-    """Whether one forward lays out rows of different prompt lengths each on its own: the fast step is installed
-    on the denoiser's class and the module's RoPE takes per-row tables. Stock diffusers lays every row out from
-    row 0, so without this rows of different lengths must render in separate calls."""
+    """Whether one forward can lay out rows of different prompt lengths (stock uses row 0's layout for all)."""
     model = getattr(pipe_or_model, "transformer", pipe_or_model)
     if type(model).__name__ != _CLASS or fast_step_disabled() or row_layout_disabled():
         return False
@@ -167,8 +163,6 @@ def row_layout_supported(pipe_or_model: Any) -> bool:
 
 
 def _blocks_compiled(model: Any) -> bool:
-    """Whether the denoiser runs compiled code: a regional compile sets ``_compiled_call_impl`` on the blocks, and
-    Studio's compile marks / a compiled forward below an offload hook cover the streamed loads that clear it."""
     if model is None:
         return False
     blocks = getattr(model, "transformer_blocks", None) or ()
@@ -182,8 +176,6 @@ def _blocks_compiled(model: Any) -> bool:
 
 
 def mixed_graph_warm(pipe_or_model: Any, rows: int) -> bool:
-    """Whether a mixed-length batch of ``rows`` rows runs on graphs the compiled blocks already hold (always True
-    for eager blocks): its first call on a user request then compiles nothing."""
     model = getattr(pipe_or_model, "transformer", pipe_or_model)
     if not _blocks_compiled(model):
         return True
@@ -192,8 +184,7 @@ def mixed_graph_warm(pipe_or_model: Any, rows: int) -> bool:
 
 @contextlib.contextmanager
 def warming_mixed_lengths():
-    """Off a user request (an idle worker, the batching race): mixed-length batches run, and compile, inside this
-    scope, so later requests of that batch size reuse the graph (``mixed_graph_warm``)."""
+    """Off-request scope where mixed-length batches may compile, so later requests reuse the graph."""
     token = _MIXED_WARMING.set(True)
     try:
         yield
@@ -208,12 +199,8 @@ def _note_mixed_forward(model: Any, rows: int) -> None:
 
 
 def mixed_lengths_batch(pipe: Any, rows: Optional[int] = None) -> bool:
-    """Whether rows of different prompt lengths should share one call (they can when ``row_layout_supported``).
-    Padded rows need a key mask, which keeps attention off the int8 kernel: on an A100-80 at Auto (int8, 1024 px,
-    25 steps) a mixed batch of 4 took 0.75x the time of 4 solos resident but 2.12x when streamed. So by default
-    only a denoiser that streams any weights batches mixed lengths; UNSLOTH_DIFFUSION_Q21_MIXED_BATCH=1 / 0
-    forces it on / off. Compiled blocks batch mixed lengths only at a size an off-request warm
-    (``warming_mixed_lengths``) already ran, so no user request compiles the mixed signature."""
+    """Whether mixed prompt lengths share one call. The key mask keeps attention off the int8 kernel (A100-80,
+    batch 4: 0.75x of 4 solos resident, 2.12x streamed), so default only when streamed; MIXED_BATCH=1/0 forces."""
     if not row_layout_supported(pipe):
         return False
     forced = (os.environ.get(MIXED_BATCH_ENV) or "").strip().lower()
@@ -228,16 +215,14 @@ def mixed_lengths_batch(pipe: Any, rows: Optional[int] = None) -> bool:
         return False
     if not (counts is not None and counts[1] > 0 and counts[0] < counts[1]):
         return False
-    # A mixed batch is a new signature for compiled blocks (per-row RoPE, the text key mask): never compile it on a
-    # user request. Until an off-request warm ran it at this size, rows of different lengths render apart.
+    # Never compile the mixed signature on a user request: split until an off-request warm ran this size.
     if _MIXED_WARMING.get() or not _blocks_compiled(getattr(pipe, "transformer", None)):
         return True
     return rows is not None and mixed_graph_warm(pipe, rows)
 
 
 def _layout_keys(pipe: Any, jobs: list) -> Optional[list]:
-    """One key per ``(prompt, seed)`` job, equal keys = one exact batched layout; None when every job may share
-    one call (not Qwen-Image-2.1, one prompt, or mixed lengths batch). A ``None`` key (unknown length) matches nothing."""
+    """Per-job layout key (None key matches nothing); None when all jobs may share one call."""
     if len(jobs) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
         return None
     if all(job[0] == jobs[0][0] for job in jobs) or mixed_lengths_batch(pipe, len(jobs)):
@@ -254,10 +239,7 @@ def layout_key(
     prompt: str,
     rows: Optional[int] = None,
 ) -> Any:
-    """What two Qwen-Image-2.1 rows of one call must share beyond canvas, condition images, steps and guidance:
-    nothing (``()``) when mixed lengths batch (``mixed_lengths_batch`` for a call of ``rows`` rows; unknown rows on
-    compiled blocks counts as not warm), else the templated prompt token length (None: unknown, so it batches with
-    nothing). Either way a batch is exact per row (G2a)."""
+    """Batching key for a row: ``()`` when mixed lengths batch, else the prompt token length (None batches alone)."""
     if type(getattr(pipe, "transformer", None)).__name__ != _CLASS or mixed_lengths_batch(
         pipe, rows
     ):
@@ -267,9 +249,7 @@ def layout_key(
 
 
 def layout_groups(pipe: Any, jobs: list) -> list:
-    """Indices of ``(prompt, seed)`` jobs grouped by equal layout over the WHOLE list (not only neighbours):
-    groups in order of first appearance, indices ascending inside a group, every index exactly once. Render
-    ``[jobs[i] for g in groups for i in g]`` and put output ``k`` back at position ``order[k]``."""
+    """Job indices grouped by layout over the WHOLE list (not only neighbours), in first-appearance order."""
     keys = _layout_keys(pipe, jobs)
     if keys is None:
         return [list(range(len(jobs)))] if jobs else []
@@ -287,8 +267,7 @@ def layout_groups(pipe: Any, jobs: list) -> list:
 
 
 def text_length_runs(pipe: Any, chunk: list) -> list:
-    """Split ``(prompt, seed)`` jobs into runs of consecutive equal layout. When mixed lengths batch
-    (``mixed_lengths_batch``) every prompt length shares one run; otherwise each run has one prompt token length."""
+    """Split ``(prompt, seed)`` jobs into runs of consecutive equal layout."""
     keys = _layout_keys(pipe, chunk)
     if keys is None:
         return [chunk]
@@ -365,7 +344,6 @@ def _layout_for(
 
 
 def _row_table(model: Any, lay: _Layout, shapes: list, joint_valid: Any, device: Any) -> Any:
-    """Row RoPE: its solo table (``pos_embed`` over the layout minus its padded text) at its valid positions."""
     table = lay.rotary_emb.clone()
     table[joint_valid] = model.pos_embed(shapes, lay.image_pad_mask[joint_valid], device = device)
     return table
@@ -381,8 +359,7 @@ def _rows_for(
     *,
     reuse_identity: bool = False,
 ) -> Optional[_Rows]:
-    """Per-row RoPE when the rows' text masks differ, else None (every row has row 0's layout). A cached step finds
-    the prefill's answer by mask identity (no host sync); others read the mask's content once."""
+    """Per-row RoPE when the rows' text masks differ, else None; cached steps match by mask identity (no sync)."""
     import torch
 
     mask = encoder_hidden_states_mask
@@ -402,7 +379,6 @@ def _rows_for(
         distinct = not bool((valid == valid[:1]).all())
         from .diffusion_qwenimage21_rope import rows_ready
 
-        # Rows also differing in img_mask (condition images) have no shared layout to lay out per row.
         if distinct and rows_ready() and bool((img_mask == img_mask[:1]).all()):
             vlm_text = _vlm_text(lay, valid.shape[1])
             tables: dict = {}
@@ -664,7 +640,7 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
         return None
     rotary_emb, modulation_mask = _tails(lay)
     if mask is not None and mask.shape[0] > 1 and not row_layout_disabled():
-        # The prefill's per-row answer, found by mask identity (no sync); a mask it never saw runs eager.
+        # A mask the prefill never saw runs eager.
         known = [
             rows
             for ref, key, rows in lay._rows_recent
@@ -1112,7 +1088,6 @@ def install(logger: Any = None) -> bool:
 
 
 def _install_rows(logger: Any = None) -> bool:
-    """Per-row RoPE tables for mixed prompt lengths; on failure batches split by prompt length (row_layout_supported)."""
     if row_layout_disabled():
         return False
     try:

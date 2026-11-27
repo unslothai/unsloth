@@ -143,15 +143,13 @@ def _inductor_emulates() -> bool:
     return bool(getattr(config, "emulate_precision_casts", False))
 
 
-# Qwen-Image-2.1 batches of mixed prompt lengths pass one RoPE table per row; ``_ARMED`` is the real arithmetic
-# ``install`` turned on, ``_ROWS`` keeps the wrapper in place for the per-row tables alone.
+# ``_ARMED``: real arithmetic on; ``_ROWS``: wrapper kept for per-row tables alone.
 _ARMED = [False]
 _ROWS = [False]
 
 
 def rows_rope(x: Any, freqs_cis: Any) -> Any:
-    """``apply_rotary_emb_qwen(x, freqs, use_real=False)`` with a ``(batch, seq, dim / 2)`` table: row ``b`` is the
-    stock complex multiply of ``x[b]`` by ``freqs[b]``, element for element."""
+    """Stock complex RoPE with a per-row ``(batch, seq, dim / 2)`` table."""
     import torch
 
     x_rotated = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
@@ -243,9 +241,7 @@ def install(logger: Any = None, device: Any = None) -> bool:
 
 
 def probe_split_cards(cards: Any) -> tuple:
-    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
-    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
-    card (the patch is not in use). Returns the cards whose probe passed."""
+    """Probe each unprobed card of a layer split (no-op when the patch is unused); returns cards that passed."""
     if real_rope_disabled() or not _FUSION:
         return ()
     import torch
@@ -283,8 +279,7 @@ def uninstall() -> None:
 
 
 def install_rows(logger: Any = None) -> bool:
-    """Make the module's ``apply_rotary_emb_qwen`` take per-row ``(batch, seq, dim / 2)`` tables, leaving 2-D tables
-    on their current path (stock complex form, or real arithmetic when ``install`` armed it). Idempotent."""
+    """Make ``apply_rotary_emb_qwen`` accept per-row tables; 2-D tables keep their current path. Idempotent."""
     try:
         import importlib
         mod = importlib.import_module(_MODULE)
@@ -314,7 +309,6 @@ def uninstall_rows() -> None:
 
 
 def rows_ready() -> bool:
-    """The module global takes per-row tables (every wrapper ``_make_rope`` builds does)."""
     try:
         import importlib
         mod = importlib.import_module(_MODULE)

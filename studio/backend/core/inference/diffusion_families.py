@@ -205,8 +205,7 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
-    # True when the family's list call runs several images in ONE denoiser forward with each row its own computation
-    # (proved by the neighbour-invariance gates), False when it never does; None = not stated (the default rules).
+    # True: list calls batch rows in ONE forward, each row independent (neighbour-invariance gates); None = default.
     batched_forward: Optional[bool] = None
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
@@ -1127,7 +1126,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
         label = "Qwen-Image-2.1",
-        # Per-row RoPE: prompts of other lengths share one denoiser call where it pays (diffusion_qwenimage21).
         batched_forward = True,
         profile = FamilyProfile(
             # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so

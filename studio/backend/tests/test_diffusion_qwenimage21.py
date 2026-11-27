@@ -121,8 +121,7 @@ CASES = [
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("cache", [True, False])
 def test_fast_step_is_bit_identical_to_the_stock_forward(case, cache, monkeypatch):
-    # Rows padded differently get their own RoPE (test_diffusion_qwenimage21_row_layout); stock lays them out from
-    # row 0, which the kill switch keeps.
+    # Stock lays padded rows out from row 0; the kill switch keeps that.
     monkeypatch.setenv(q.ROW_LAYOUT_ENV, "0")
     m = _model()
     inp = _inputs(**case)

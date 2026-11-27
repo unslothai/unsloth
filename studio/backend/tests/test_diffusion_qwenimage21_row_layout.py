@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 batches of different prompt lengths: per-row RoPE in one forward, neighbour invariance, grouping
-over the whole job list. CPU fp32, tiny real-architecture transformer; skipped without Qwen-Image 2.1 in diffusers."""
+"""Qwen-Image-2.1 mixed prompt lengths: per-row RoPE, neighbour invariance, grouping. CPU fp32, tiny model."""
 
 from __future__ import annotations
 
@@ -69,8 +68,7 @@ def _inputs(
     cond = None,
     longest = None,
 ):
-    """Rows as QwenImage21Pipeline lays out a prompt list: each prompt right-padded to the longest, the pad masked;
-    an edit puts the shared condition image's slots ahead of the prompt text, at the same place in every row."""
+    """Rows laid out as QwenImage21Pipeline does: right-padded, pad masked, condition slots ahead of text."""
     longest = longest or max(t.shape[0] for t in texts)
     batch = len(texts)
     lead = 3 if cond is not None else 0
@@ -139,8 +137,7 @@ def _psnr(a, b):
 @pytest.mark.parametrize("cache", [True, False])
 @pytest.mark.parametrize("cond", [None, (4, 4)])
 def test_stock_lays_a_short_row_out_like_the_long_one_and_per_row_layout_fixes_it(cache, cond):
-    """Failing first: stock (and the kill switch) give the short row row 0's padded layout; per-row RoPE gives each
-    row its lone render to fp32 rounding. The equal-length control is exact on every path."""
+    """Stock gives the short row row 0's layout; per-row RoPE matches each lone render (fp32 rounding)."""
     m = _model()
     short, short2, long = _texts(5, 5, 13)
     lat = _latents(2)
@@ -209,7 +206,6 @@ def test_per_row_tables_are_each_rows_solo_table():
     ]
     assert torch.equal(rows.rotary_emb[1][valid], solo_lay.rotary_emb)
     assert torch.equal(rows.tails, rows.rotary_emb[:, lay.prefix_len :])
-    # Uniform rows keep the shared table (and the bit-identical fast step).
     uniform = _inputs([short, short], _latents(2), (4, 4))
     uniform["encoder_hidden_states_mask"] = torch.ones(
         2, uniform["img_mask"].shape[1] - 6, dtype = torch.long
@@ -276,8 +272,7 @@ def test_uniform_batches_stay_bit_identical_to_the_stock_forward():
 
 
 def test_graph_plan_replays_the_per_row_decode_bit_identically():
-    """A decode step of a mixed batch plans with the prefill's per-row tails (found by mask identity, no sync); a
-    mask the prefill never saw runs eager."""
+    """A decode step reuses the prefill's per-row tails; an unseen mask runs eager."""
     assert q.install()
     m = _model()
     inp = _inputs(_texts(5, 13), _latents(2))
@@ -347,7 +342,6 @@ def test_layout_groups_merge_equal_lengths_across_the_whole_list():
     order = [i for g in groups for i in g]
     assert sorted(order) == list(range(len(jobs)))
     rendered = [jobs[i] for i in order]
-    # Chunked in that order, every consecutive run is one layout: one call per distinct length.
     assert q.text_length_runs(pipe, rendered) == [rendered[:3], rendered[3:]]
     restored = [None] * len(jobs)
     for k, i in enumerate(order):
@@ -397,9 +391,7 @@ def test_mixed_lengths_share_one_call_when_streamed_or_forced(monkeypatch):
 
 
 def test_compiled_blocks_batch_mixed_lengths_only_on_a_warm_graph(monkeypatch):
-    """A mixed-length batch is a new signature for compiled blocks (per-row RoPE, the text key mask): a user request
-    never compiles it. Until an off-request warm ran a mixed batch of that size the rows render apart; after it, a
-    new mix at that size reuses the graph (no new dynamo graph)."""
+    """A user request never compiles the mixed signature; after an off-request warm, that size reuses the graph."""
     from torch._dynamo.utils import counters
 
     from core.inference import diffusion_memory
@@ -447,9 +439,7 @@ def test_eager_blocks_need_no_warm(monkeypatch):
 
 
 def test_a_compile_below_the_offload_hooks_still_needs_a_warm(monkeypatch):
-    """A streamed load moves the compile below the group-offload hooks, which clears the blocks'
-    ``_compiled_call_impl``; Studio's compile mark on the denoiser still counts as compiled (on a GPU run the
-    first mixed batch there compiled 3 new graphs when only the blocks were read)."""
+    """Streamed loads clear ``_compiled_call_impl``; Studio's compile mark still counts as compiled."""
     from core.inference import diffusion_memory
 
     assert q.install()
