@@ -1450,6 +1450,9 @@ class DiffusionTrainableFamily(BaseModel):
     default_base: str
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
+    # {steps, items, batch_size}: the step count a sweep measured for this family and the dataset size it ran on, so
+    # the panel scales it to the user's set; null where no step sweep exists (the generic hint applies).
+    step_guidance: Optional[dict] = None
     vram_note: str = ""
     # vram_note's facts as fields. Empty when this host cannot train the family.
     params: str = ""

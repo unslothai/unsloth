@@ -2,10 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /** Loaded build row for the backend's `lora_fuse` status: whether the attached LoRA set is folded into the weights. */
+// Folding rounds the merged weights once to the denoiser's dtype, so the output is close to, not bit for bit, the
+// unfused one.
+const FUSED_DIFFERS =
+  "Fused and unfused output can differ slightly, since the merged weights are rounded once to the model's precision.";
+
 const LORA_FUSE_LABELS: Record<string, { label: string; detail: string }> = {
   fused: {
     label: "Fused",
-    detail: "The LoRA set is folded into the denoiser weights, so renders skip the adapter math.",
+    detail: `The LoRA set is folded into the denoiser weights, so renders skip the adapter math. ${FUSED_DIFFERS}`,
+  },
+  // Video: every LoRA merges into the bf16 denoiser at load.
+  baked: {
+    label: "Fused at load",
+    detail: `The LoRA set was merged into the bf16 denoiser weights at load, before any quantization or compile, so renders skip the adapter math. ${FUSED_DIFFERS}`,
   },
   pending: {
     label: "Not fused yet",

@@ -8550,6 +8550,11 @@ class VideoStatusResponse(BaseModel):
         default_factory = list,
         description = "The baked adapters as the load requested them, [{id, weight}]; empty when none",
     )
+    lora_fuse: Optional[str] = Field(
+        None,
+        description = "Whether the load's LoRA set is folded into the denoiser weights, as the images status reports "
+        "it: baked (merged into the bf16 denoiser at load, the only video LoRA path); null without LoRAs",
+    )
     lora_refusal: Optional[str] = Field(
         None,
         description = "Why a reload of this model with VideoLoadRequest.loras would be refused (GGUF or "
@@ -8560,6 +8565,13 @@ class VideoStatusResponse(BaseModel):
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
         "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
         "keep-bf16 schedule is reported as the fp8 it fell back to.",
+    )
+    fp8_gemm: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Which fp8 GEMM an fp8 load runs: path 'torchao_rowwise', or 'unit_scale_fallback' when this "
+        "torch build has no row-wise fp8 kernel on the card (Windows wheels), plus the per-card probe verdict and "
+        "eager call counts; a ModelOpt FP8 denoiser adds modelopt {runtime, route, calls}. null for a load without "
+        "fp8.",
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"

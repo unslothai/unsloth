@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``video_wan_fused.py``: the fused Wan block forward engages only for an fp16 Wan load (bf16 / fp32 keep
-the stock forward), is bit-identical to the stock block on a real GPU, survives group-offload hooks, falls back to
+"""Tests for ``video_wan_fused.py``: the fused Wan block forward engages for an fp16 or bf16 Wan load (fp32 keeps the
+stock forward; UNSLOTH_DIFFUSION_WAN_FUSED_BF16=0 keeps bf16 on stock), is bit-identical to the stock block on a real GPU, survives group-offload hooks, falls back to
 stock on a self-check mismatch, and is restored on teardown."""
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ needs_cuda = pytest.mark.skipif(not _CUDA, reason = "needs an NVIDIA GPU")
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(wf.WAN_FUSED_ENV, raising = False)
+    monkeypatch.delenv(wf.WAN_FUSED_BF16_ENV, raising = False)
     wf.uninstall()
     stock = WanTransformerBlock.forward
     yield
@@ -51,11 +52,26 @@ def test_stock_block_matches_the_fingerprint():
     assert _digest(WanTransformerBlock.forward) in wf._FINGERPRINTS
 
 
-@pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
-def test_bf16_and_fp32_loads_keep_the_stock_forward(dtype):
+def test_fp32_load_keeps_the_stock_forward():
     stock = WanTransformerBlock.forward
-    assert wf.install(getattr(torch, dtype), "cuda") is False
+    assert wf.install(torch.float32, "cuda") is False
     assert WanTransformerBlock.forward is stock and not wf.is_installed()
+
+
+def test_bf16_load_installs(monkeypatch):
+    _fake_kernels(monkeypatch)
+    assert wf.install(torch.bfloat16, "cuda") is True
+    assert wf.is_installed()
+
+
+@pytest.mark.parametrize("value", ["0", "off", "false", "no"])
+def test_bf16_kill_switch_keeps_fp16(monkeypatch, value):
+    _fake_kernels(monkeypatch)
+    monkeypatch.setenv(wf.WAN_FUSED_BF16_ENV, value)
+    stock = WanTransformerBlock.forward
+    assert wf.install(torch.bfloat16, "cuda") is False
+    assert WanTransformerBlock.forward is stock and not wf.is_installed()
+    assert wf.install(torch.float16, "cuda") is True
 
 
 def test_cpu_load_keeps_the_stock_forward():
@@ -168,19 +184,19 @@ def _inputs(
 
 
 @needs_cuda
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 @pytest.mark.parametrize("per_token", [True, False], ids = ["temb_per_token", "temb_per_sample"])
 @pytest.mark.parametrize("cross_attn_norm", [True, False], ids = ["norm2_affine", "norm2_identity"])
 @pytest.mark.parametrize("batch", [1, 2])
-def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm, batch):
+def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm, batch, dtype):
     D = 256
-    blk = _block(
-        dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16, cross_attn_norm = cross_attn_norm
-    )
-    x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", torch.float16, per_token = per_token)
+    dt = getattr(torch, dtype)
+    blk = _block(dim = D, ffn = 512, heads = 4, device = "cuda", dtype = dt, cross_attn_norm = cross_attn_norm)
+    x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", dt, per_token = per_token)
     x[0, :3, :5] = 300.0
     with torch.no_grad():
         want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
-        assert wf.install(torch.float16, "cuda") is True
+        assert wf.install(dt, "cuda") is True
         got = blk(x, enc, temb, rot)
         direct = wf._fused_forward(blk, x, enc, temb, rot)
     assert torch.equal(want, got)
@@ -189,15 +205,17 @@ def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm
 
 
 @needs_cuda
-def test_fused_kernels_match_the_stock_op_chain_elementwise():
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_fused_kernels_match_the_stock_op_chain_elementwise(dtype):
     """Each kernel against the exact stock expression, on Wan2.2-TI2V-5B's width (3072)."""
     import torch.nn.functional as F
 
+    dt = getattr(torch, dtype)
     B, L, D = 1, 512, 3072
     g = torch.Generator(device = "cpu").manual_seed(3)
-    x = (torch.randn(B, L, D, generator = g) * 8).half().cuda()
-    a = (torch.randn(B, L, D, generator = g) * 3).half().cuda()
-    t = (torch.randn(B, L, 6, D, generator = g) * 0.5).half().cuda()
+    x = (torch.randn(B, L, D, generator = g) * 8).to(dt).cuda()
+    a = (torch.randn(B, L, D, generator = g) * 3).to(dt).cuda()
+    t = (torch.randn(B, L, 6, D, generator = g) * 0.5).to(dt).cuda()
     tbl = (torch.randn(1, 6, D, generator = g) / D**0.5).cuda()
     k = wf._kernels()
     sh, sc, gate, csh, csc, cgate = (tbl.unsqueeze(0) + t.float()).chunk(6, dim = 2)

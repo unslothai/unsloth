@@ -332,6 +332,14 @@ def model_facts(
         facts["family"] = str(getattr(config, "model_type", "") or "")
         facts["multimodal"] = getattr(config, "vision_config", None) is not None
         facts.update(_config_traits(config))
+        text = (
+            config.get_text_config()
+            if callable(getattr(config, "get_text_config", None))
+            else config
+        )
+        experts = getattr(text, "num_local_experts", None) or getattr(text, "num_experts", None)
+        if isinstance(experts, int):
+            facts["num_experts"] = experts
     return facts
 
 
@@ -471,9 +479,14 @@ def _core_check(
             and "bnb-4bit" in str(request.get("model_name") or "").lower()
         )
         try:
-            ep_blocker = caps._ep_blocker(family, ep, load_in_4bit = four_bit)
-        except TypeError:  # a Core before the load_in_4bit argument
-            ep_blocker = caps._ep_blocker(family, ep)
+            ep_blocker = caps._ep_blocker(
+                family, ep, load_in_4bit = four_bit, experts = model.get("num_experts")
+            )
+        except TypeError:  # a Core before the load_in_4bit / experts arguments
+            try:
+                ep_blocker = caps._ep_blocker(family, ep, load_in_4bit = four_bit)
+            except TypeError:
+                ep_blocker = caps._ep_blocker(family, ep)
     values = {
         "trainer": model.get("trainer", "sft"),
         "family": model.get("family", ""),
