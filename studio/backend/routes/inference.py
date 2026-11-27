@@ -30680,6 +30680,46 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
     return {id(messages[start])} | {id(m) for m in messages[latest:]}
 
 
+def _shorten_turn_tool_results(
+    messages: list[dict],
+    branch: Optional[list[dict]],
+    target: int,
+    count: Callable[[list[dict]], int],
+) -> set[int]:
+    anchors = (
+        _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
+    )
+    start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
+    # The newest call's results stay whole even under a trailing assistant prefill.
+    newest = next(
+        (
+            i
+            for i in range(len(messages) - 1, start, -1)
+            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+        ),
+        len(messages),
+    )
+    for message in messages[start + 1 : newest]:
+        if message.get("role") != "tool" or id(message) in anchors:
+            continue
+        if count(messages) <= target:
+            break
+        content = message.get("content")
+        # In place: the loop's later passes must send the results cut too.
+        if isinstance(content, str):
+            message["content"] = _shorten_tool_result(content)
+        elif isinstance(content, list):
+            message["content"] = [
+                {**part, "text": _shorten_tool_result(part["text"])}
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+                else part
+                for part in content
+            ]
+    return {id(message) for message in messages[start:]}
+
+
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
     """The cached checkpoint fit plus the loop's new turns, or None when ``messages`` diverged.
 
@@ -30785,6 +30825,18 @@ def _clip_text(text: str, keep: int) -> str:
     return (
         f"{text[:half]}\n\n[... {len(text) - 2 * half:,} characters of this result were cut to fit "
         f"the context window ...]\n\n{text[len(text) - half :]}"
+    )
+
+
+_OVERFLOW_TOOL_RESULT_CHARS = 200
+
+
+def _shorten_tool_result(text: str) -> str:
+    if len(text) <= 2 * _OVERFLOW_TOOL_RESULT_CHARS:
+        return text
+    return (
+        text[:_OVERFLOW_TOOL_RESULT_CHARS]
+        + f"\n\n... (truncated to fit the context window, {len(text)} chars total)"
     )
 
 
@@ -31114,6 +31166,7 @@ async def _finish_external_compaction(
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
         retrieval_budget,
     )
     from core.inference.llama_cpp import _archive_and_recall
@@ -31212,11 +31265,19 @@ async def _finish_external_compaction(
     refusal = None
     max_tokens = plan.max_tokens
     fit_payload = payload if plan.auto else None
-    if plan.force == "overflow" and not summarised_now:
-        # The provider counted more than the estimate allowed for: evict down to half of it.
-        fit_payload = payload.model_copy(
-            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
-        )
+    turn_ids: set[int] = set()
+    if plan.force == "overflow":
+        # Provider counted more than estimated: aim for half, shortening this turn's tool results.
+        half = max(1, count(current) // 2)
+        target = prompt_budget(half, _effective_max_tokens(payload))
+        turn_ids = _shorten_turn_tool_results(current, branch, target, count)
+        if count(current) > target:
+            # Shortening fell short: leave the turn's older exchanges evictable.
+            turn_ids = set()
+        if not summarised_now:
+            fit_payload = payload.model_copy(
+                update = {"compaction_threshold": half, "context_window": None}
+            )
     if fit_payload is not None:
         fitted, evicted, max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -31225,7 +31286,7 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            keep_ids = cloud_compaction.summary_turn_ids(current),
+            keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
             unsummarised = plan.messages,
         )
         current = fitted
@@ -32291,7 +32352,8 @@ async def _proxy_to_external_provider(
             force = "manual"
         _manual_summary_pending = False
         if force == "overflow":
-            refused = _last_fit if _last_fit is not None else messages
+            # Unfitted rounds send the live conversation; _last_fit is then a stale earlier fit.
+            refused = _last_fit if _fit_active and _last_fit is not None else messages
             refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
@@ -32376,20 +32438,15 @@ async def _proxy_to_external_provider(
 
     async def _external_overflow_refit(messages, tools = _external_fit_tools):
         """The provider refused the prompt as too long: summarise everything before the newest
-        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        turn. ``(None, None, None)`` when the refit is no smaller, so the refusal stands."""
         nonlocal _external_truncation
         earlier, _external_truncation = _external_truncation, None
         async for step in _external_fit_steps(messages, tools, force = "overflow"):
             if isinstance(step, str):
                 yield step
                 continue
-            truncation = _external_truncation or {}
-            changed = (
-                truncation.get("checkpoint_started")
-                or (truncation.get("dropped_messages") and not truncation.get("summarized"))
-                or _overflow_shrunk
-            )
-            if not changed:
+            changed = _overflow_shrunk
+            if not changed or _external_truncation is None:
                 _external_truncation = earlier
             yield step if changed else (None, None, None)
 
@@ -46589,6 +46646,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            tools = payload.tools,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -47005,7 +47063,10 @@ async def _anthropic_messages_via_connection(
     # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
     # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+        preserve_thinking = True,
+        tools = payload.tools,
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {
@@ -47163,6 +47224,7 @@ async def anthropic_count_tokens(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
@@ -47943,6 +48005,7 @@ async def anthropic_messages(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.

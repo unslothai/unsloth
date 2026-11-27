@@ -185,6 +185,12 @@ export function useMissingHubPageBase(): string | null {
   return useStore(store, missingHubPageBase);
 }
 
+/** Browser origin for a Hugging Face repository, including when API requests use a relay. */
+export function getHubWebEndpoint(): string {
+  if (getHubSource() === "modelscope" || missingHubPageBase()) return DEFAULT_HF_ENDPOINT;
+  return hubWebUrl(getHfEndpoint());
+}
+
 export function getHfEndpoint(): string {
   return store.getState().endpoint;
 }

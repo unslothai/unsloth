@@ -3,6 +3,7 @@
 
 import { PICKER_FOCUS_VISIBLE_CLASS } from "@/components/resource-picker/picker-focus";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -24,13 +25,38 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import {
   type DatasetUploads,
   TRAINING_UPLOAD_ACCEPT,
   TRAINING_UPLOAD_LABEL,
 } from "./use-dataset-uploads";
+
+function DatasetImportOption({
+  label,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <label htmlFor={id} className="flex w-fit items-center gap-2 text-xs text-muted-foreground">
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(value) => onChange(value === true)}
+      />
+      {label}
+    </label>
+  );
+}
 
 export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
   const t = useT();
@@ -94,6 +120,18 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
       <p className="truncate text-ui-10 text-muted-foreground">
         {TRAINING_UPLOAD_LABEL}
       </p>
+      <DatasetImportOption
+        label={t("studio.dataset.importPandasJson")}
+        checked={uploads.pandasJson}
+        disabled={uploads.isUploading}
+        onChange={uploads.setPandasJson}
+      />
+      <DatasetImportOption
+        label={t("studio.dataset.importSemicolonCsv")}
+        checked={uploads.semicolonCsv}
+        disabled={uploads.isUploading}
+        onChange={uploads.setSemicolonCsv}
+      />
       <input
         ref={fileInputRef}
         type="file"
@@ -182,6 +220,18 @@ export function EvaluationDatasetUpload({
           <p className="text-ui-10 text-muted-foreground/80">
             {t("studio.dataset.evalDatasetDescription")}
           </p>
+          <DatasetImportOption
+            label={t("studio.dataset.importPandasJson")}
+            checked={uploads.pandasEvalJson}
+            disabled={uploads.isUploading}
+            onChange={uploads.setPandasEvalJson}
+          />
+          <DatasetImportOption
+            label={t("studio.dataset.importSemicolonCsv")}
+            checked={uploads.semicolonEvalCsv}
+            disabled={uploads.isUploading}
+            onChange={uploads.setSemicolonEvalCsv}
+          />
         </div>
       )}
       <input

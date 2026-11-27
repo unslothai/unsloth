@@ -103,6 +103,10 @@ export function recipeWorkflowLabel(workflow: string | null | undefined): string
   return BACKEND_WORKFLOW_RECIPE_LABELS[workflow] ?? workflow;
 }
 
+export function recipeWorkflowTab(workflow: string | null | undefined): WorkflowId {
+  return WORKFLOW_TABS.find((t) => t.requires === workflow)?.id ?? "create";
+}
+
 export const WORKFLOW_EXAMPLE_PROMPTS: Record<WorkflowId, string> = {
   create:
     "A cozy wooden cabin on a snowy mountain at dusk, warm light glowing from the windows, pine trees and gently falling snow. Cinematic photo, soft golden light.",

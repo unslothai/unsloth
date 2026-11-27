@@ -4006,7 +4006,7 @@ def test_an_orphan_user_row_does_not_lend_its_seat_to_a_later_turn(conn):
         {"role": "assistant", "content": "done, ZQXVARA123 is 1"},
     ]
 
-    positions = conversation_archive._transcript_positions(THREAD)
+    positions, _ = conversation_archive._transcript_positions(THREAD)
     assert conversation_archive._occurrences(positions, answered) == [1]
 
     written = [
@@ -4055,7 +4055,7 @@ def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
         {"role": "user", "content": "turn 3 about ZQXVARA123"},
         {"role": "assistant", "content": "answer 3"},
     ]
-    positions = conversation_archive._transcript_positions(THREAD)
+    positions, _ = conversation_archive._transcript_positions(THREAD)
 
     assert len(positions) == 3, positions
     assert conversation_archive._occurrences(positions, live[2:4]) == [1]
@@ -4177,7 +4177,7 @@ def test_turns_differing_only_in_case_do_not_share_a_seat(conn):
     upper = _turn("set key FOO", "done")
     _save_thread(THREAD, lower + upper)
 
-    positions = conversation_archive._transcript_positions(THREAD)
+    positions, _ = conversation_archive._transcript_positions(THREAD)
     assert conversation_archive._occurrences(positions, lower) == [0]
     assert conversation_archive._occurrences(positions, upper) == [1]
 
@@ -4255,7 +4255,7 @@ def test_positions_follow_the_request_branch_not_the_newest_stored_row(conn):
     """Seed the walk from the request's branch, not the newest stored row, which may be abandoned."""
     live = _branch_switch_thread()
 
-    positions = conversation_archive._transcript_positions(THREAD, branch = live)
+    positions, _ = conversation_archive._transcript_positions(THREAD, branch = live)
 
     assert len(positions) == 3, positions
     assert conversation_archive._occurrences(positions, live[2:4]) == [1]
@@ -4266,8 +4266,8 @@ def test_the_branch_seed_falls_back_when_nothing_matches(conn):
     """No branch, or one matching nothing, must fall back to the newest row, not empty every seat."""
     _branch_switch_thread()
 
-    seeded = conversation_archive._transcript_positions(THREAD)
-    unmatched = conversation_archive._transcript_positions(
+    seeded, _ = conversation_archive._transcript_positions(THREAD)
+    unmatched, _ = conversation_archive._transcript_positions(
         THREAD, branch = [{"role": "user", "content": "nothing in this thread says this"}]
     )
 
@@ -4731,7 +4731,7 @@ def test_a_turn_that_returned_pictures_still_finds_its_transcript_seat(conn):
     """Transcript seats are matched on stored rows, so the image envelope must be unwrapped there too."""
     _persist_image_search_turn()
 
-    positions = conversation_archive._transcript_positions(THREAD)
+    positions, _ = conversation_archive._transcript_positions(THREAD)
 
     assert len(positions) == 2, positions
     assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1]
@@ -4757,7 +4757,7 @@ def test_a_reply_that_shows_the_picture_still_finds_its_transcript_seat(conn):
     answer = "%s\n\n[[img:%s]]" % (_ANSWER, _IMAGE_ID)
     _persist_image_search_turn(answer = answer)
 
-    positions = conversation_archive._transcript_positions(THREAD)
+    positions, _ = conversation_archive._transcript_positions(THREAD)
 
     assert conversation_archive._occurrences(positions, _IMAGE_SEARCH_WIRE[1:]) == [1], positions
 
@@ -4825,7 +4825,7 @@ def test_the_branch_seed_scores_an_in_order_run_not_a_set(conn):
         {"role": "user", "content": "B"},
         {"role": "assistant", "content": "b1"},
     ]
-    positions = conversation_archive._transcript_positions(THREAD, branch = branch)
+    positions, _ = conversation_archive._transcript_positions(THREAD, branch = branch)
 
     assert len(positions) == 3, positions
     assert conversation_archive._occurrences(positions, branch[2:4]) == [1, 2]
@@ -4873,8 +4873,8 @@ def test_a_system_prompt_does_not_stall_the_branch_seed(conn):
     live = _branch_switch_thread()
     with_system = [{"role": "system", "content": "You are a helpful assistant."}] + live
 
-    plain = conversation_archive._transcript_positions(THREAD, branch = live)
-    seeded = conversation_archive._transcript_positions(THREAD, branch = with_system)
+    plain, _ = conversation_archive._transcript_positions(THREAD, branch = live)
+    seeded, _ = conversation_archive._transcript_positions(THREAD, branch = with_system)
 
     assert len(plain) == 3, plain
     assert seeded == plain
@@ -4897,7 +4897,7 @@ def test_the_branch_seed_reaches_a_leaf_older_than_the_retry_pile(conn):
             }
         )
 
-    positions = conversation_archive._transcript_positions(THREAD, branch = live)
+    positions, _ = conversation_archive._transcript_positions(THREAD, branch = live)
 
     assert len(positions) == 3, positions
     assert conversation_archive._occurrences(positions, live[4:6]) == [2]
@@ -5282,3 +5282,232 @@ def test_deleting_a_thread_scans_the_fts_table_once_not_once_per_turn(conn, monk
     assert removed == archived
     assert conversation_archive.has_archive(thread) is False
     assert sum("DELETE FROM chunks_fts" in s for s in statements) == 1
+
+
+@pytest.mark.parametrize("full_copy_first", [False, True])
+@pytest.mark.parametrize("lexical_only", [False, True])
+@pytest.mark.parametrize("page_shape", ["sections", "repeated", "gaps", "batched", "long_url"])
+def test_direct_web_read_tail_is_searchable_after_rearchiving(
+    conn, monkeypatch, lexical_only, page_shape, full_copy_first
+):
+    from core.inference import tools
+    from storage import studio_db
+
+    url = "https://example.com/report"
+    arguments = {"url": url + "?page=" + "a" * 1050 if page_shape == "long_url" else url}
+    marker = "NIGHTORCHID"
+    page = (
+        "\n\n".join(
+            f"Section {index} describes the standard procedure for supplies and planning."
+            for index in range(67)
+        )
+        + f"\n\nThe budget authorization code is {marker}.\n"
+    )
+    if page_shape != "sections":
+        paragraph = "Every department follows standard procedure for supplies and planning. " * 8
+        separator = "\n\n" if page_shape == "gaps" else ""
+        page = separator.join([paragraph] * 8) + f"\n\nThe budget authorization code is {marker}.\n"
+    monkeypatch.setattr(tools, "_download_page", lambda *_a, **_kw: ("text", url, page))
+    delivered = tools.execute_tool(
+        "web_search", arguments, context_tokens = 8192, result_budget_tokens = 3500
+    )
+    assert delivered.index(marker) > 4000
+    calls = [("c1", arguments, delivered)]
+    if page_shape == "batched":
+        calls.insert(0, ("search", {"query": "report"}, "Search results include the report."))
+    assistant = _assistant_call("web_search", json.dumps(arguments))
+    assistant["tool_calls"] = [
+        {"id": call_id, "function": {"name": "web_search", "arguments": json.dumps(args)}}
+        for call_id, args, _ in calls
+    ]
+    group = [
+        assistant,
+        *[
+            {"role": "tool", "tool_call_id": call_id, "content": result}
+            for call_id, _, result in calls
+        ],
+    ]
+
+    _save_thread(THREAD, [])
+    studio_db.upsert_chat_message(
+        {
+            "id": "direct-web-read",
+            "threadId": THREAD,
+            "role": "assistant",
+            "createdAt": 2,
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": call_id,
+                    "toolName": "web_search",
+                    "args": args,
+                    "result": result,
+                }
+                for call_id, args, result in calls
+            ],
+        }
+    )
+    if lexical_only:
+        _fail_embedder(monkeypatch)
+
+    if full_copy_first:
+        assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
+    with monkeypatch.context() as old_archive:
+        old_archive.setattr(conversation_archive, "_is_direct_web_read", lambda _args: False)
+        assert conversation_archive.archive_turns(THREAD, group, branch = group) == 1
+    assert conversation_archive.archive_turns(THREAD, group, branch = group) == (not full_copy_first)
+    assert conversation_archive.archive_turns(THREAD, group, branch = group) == 0
+
+    scope = store.conversation_archive_scope(THREAD)
+    rows = conn.execute("SELECT id FROM documents WHERE scope = ?", (scope,)).fetchall()
+    assert len(rows) == 1
+    found = conversation_archive.recall(THREAD, marker, branch_messages = group)
+    assert found and marker in found[0]
+    saved = conversation_archive.recall(THREAD, marker)
+    assert saved and marker in saved[0]
+    abandoned = [*group[:-1], {**group[-1], "content": delivered.replace(marker, "REPLACEMENT")}]
+    stale = conversation_archive.recall(THREAD, marker, branch_messages = abandoned)
+    assert not stale or marker not in stale[0]
+
+
+@pytest.mark.parametrize("lexical_only", [False, True])
+def test_expanding_a_web_read_preserves_the_clipped_copy_on_a_retry_sibling(
+    conn, monkeypatch, lexical_only
+):
+    from core.inference import tools
+    from storage import studio_db
+
+    _save_thread(THREAD, [])
+    user = {"role": "user", "content": "Read the report"}
+    studio_db.upsert_chat_message({**user, "id": "request", "threadId": THREAD, "createdAt": 1})
+    arguments = {"url": "https://example.com/report"}
+    marker = "FROSTWILLOW"
+    prefix = f"The authorization code is {marker}. " + (
+        "Every department follows standard procedure for supplies and planning. " * 65
+    )
+    branches = []
+    for index, tail in enumerate(("ORCHID", "PETUNIA"), start = 2):
+        page = f"{prefix}\n\nFinal approval is {tail}."
+        monkeypatch.setattr(
+            tools, "_download_page", lambda *_a, **_kw: ("text", arguments["url"], page)
+        )
+        delivered = tools.execute_tool(
+            "web_search", arguments, context_tokens = 8192, result_budget_tokens = 3500
+        )
+        assert delivered.index(tail) > 4000
+        answer = "I read the report."
+        studio_db.upsert_chat_message(
+            {
+                "id": tail,
+                "parentId": "request",
+                "threadId": THREAD,
+                "role": "assistant",
+                "createdAt": index,
+                "content": [
+                    {
+                        "type": "tool-call",
+                        "toolCallId": "c1",
+                        "toolName": "web_search",
+                        "args": arguments,
+                        "result": delivered,
+                    },
+                    {"type": "text", "text": answer},
+                ],
+            }
+        )
+        branches.append(
+            [
+                user,
+                _assistant_call("web_search", json.dumps(arguments)),
+                {"role": "tool", "tool_call_id": "c1", "content": delivered},
+                {"role": "assistant", "content": answer},
+            ]
+        )
+    if lexical_only:
+        _fail_embedder(monkeypatch)
+    first, retry = branches
+    with monkeypatch.context() as old_archive:
+        old_archive.setattr(conversation_archive, "_is_direct_web_read", lambda _args: False)
+        assert conversation_archive.archive_turns(THREAD, first[1:], branch = first) == 1
+    assert marker in conversation_archive.recall(THREAD, marker, branch_messages = first)[0]
+    assert conversation_archive.archive_turns(THREAD, retry[1:], branch = retry) == 1
+    assert "PETUNIA" in conversation_archive.recall(THREAD, "PETUNIA", branch_messages = retry)[0]
+    found = conversation_archive.recall(THREAD, marker, branch_messages = first)
+    assert found and marker in found[0]
+
+
+@pytest.mark.parametrize("tool_name", ["web_search", "terminal"])
+def test_non_url_tool_output_keeps_the_generic_archive_cap(tool_name):
+    group = [
+        _assistant_call(tool_name, '{"query": "planning"}'),
+        {"role": "tool", "tool_call_id": "c1", "content": "A" * 4200 + " keyword tail"},
+    ]
+    archived = conversation_archive.render_turn(group)
+    assert archived.endswith(" ...")
+    assert "keyword tail" not in archived
+
+
+def test_a_capped_web_read_is_archived_exactly_as_delivered(monkeypatch):
+    from core.inference import tools
+
+    url = "https://example.com/long"
+    monkeypatch.setattr(tools, "_download_page", lambda *_a, **_kw: ("text", url, "word " * 40000))
+    delivered = tools.execute_tool("web_search", {"url": url}, context_tokens = 131072)
+    assert len(delivered) > tools._MAX_PAGE_CHARS
+    group = [
+        _assistant_call("web_search", json.dumps({"url": url})),
+        {"role": "tool", "tool_call_id": "c1", "content": delivered},
+    ]
+    assert conversation_archive.render_turn(group).endswith(f"tool result: {delivered.strip()}")
+
+
+def test_a_web_read_that_clips_to_itself_has_no_legacy_copy():
+    group = [
+        _assistant_call("web_search", json.dumps({"url": "https://example.com/a"})),
+        {"role": "tool", "tool_call_id": "c1", "content": "A" * 4000 + " ..."},
+    ]
+    text, legacy_hash = conversation_archive._render_turn(group)
+    assert text.endswith("A ...") and legacy_hash is None
+
+
+def test_a_paragraph_inserted_into_a_long_web_read_leaves_the_old_copy_off_branch(conn):
+    paragraphs = [f"Paragraph {i} " + " ".join(f"w{i}x{j}" for j in range(250)) for i in range(8)]
+
+    def read(page):
+        return [
+            _assistant_call("web_search", json.dumps({"url": "https://example.com/r"})),
+            {"role": "tool", "tool_call_id": "c1", "content": page},
+        ]
+
+    from storage import studio_db
+
+    _save_thread(THREAD, [])
+    page = "\n\n".join(paragraphs)
+    studio_db.upsert_chat_message(
+        {
+            "id": "read",
+            "threadId": THREAD,
+            "role": "assistant",
+            "createdAt": 1,
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "web_search",
+                    "args": {"url": "https://example.com/r"},
+                    "result": page,
+                }
+            ],
+        }
+    )
+    original = read(page)
+    assert conversation_archive.archive_turns(THREAD, original, branch = original) == 1
+    (document_id,) = [r["id"] for r in conn.execute("SELECT id FROM documents").fetchall()]
+
+    def on_branch(group):
+        transcript = conversation_archive.branch_message_texts(group)
+        return conversation_archive._document_on_live_branch(conn, document_id, transcript, {})
+
+    assert on_branch(original)
+    edited = paragraphs[:5] + ["A correction was issued."] + paragraphs[5:]
+    assert not on_branch(read("\n\n".join(edited)))

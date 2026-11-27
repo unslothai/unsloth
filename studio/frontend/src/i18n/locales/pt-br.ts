@@ -4479,6 +4479,8 @@ export const ptBR = {
       unsupportedFileType: "Tipo de arquivo não suportado",
       uploadOneFileType: "Envie um arquivo do tipo {types}.",
       datasetUploaded: "Dataset enviado",
+      importPandasJson: "Importar .json como colunas do pandas",
+      importSemicolonCsv: "Usar ponto e vírgula como delimitador para .csv",
       evalDatasetUploaded: "Dataset de validação enviado",
       uploadOneFileAtATime: "Envie um arquivo por vez",
       uploadSingleFileDescription:

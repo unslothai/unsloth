@@ -286,7 +286,7 @@ test("Vary runs the selected image's recipe, not the current form", async () => 
   assert.match(src, /if \(!varyQueued \|\| busy !== null\) return;\n\s+setVaryQueued\(false\);\n\s+void handleGenerate\(\);/);
   assert.match(src, /canVaryImage\(selected, status\?\.display_repo_id \?\? status\?\.repo_id \?\? null\)/);
   // The Vary restore is silent, and the import path reports what was not applied itself.
-  assert.match(src, /if \(via === "vary"\) return;/);
+  assert.match(src, /if \(via === "vary"\) return true;/);
   assert.match(src, /false,\n\s+"import",\n\s+\);/);
 });
 

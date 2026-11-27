@@ -185,6 +185,7 @@ import {
   WORKFLOW_EXAMPLE_PROMPTS,
   WORKFLOW_TABS,
   recipeWorkflowLabel,
+  recipeWorkflowTab,
   type WorkflowId,
 } from "./workflows";
 import {
@@ -3186,7 +3187,15 @@ export function ImagesPage({
   );
 
   // `via`: "import" names what was not applied in its own toast; "vary" restores silently for the Vary run.
-  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore") => {
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" | "vary" = "restore"): boolean => {
+    // An unsupported tab would fall back to Create and pair these settings with Create's draft.
+    const reopened = recipeWorkflowTab(image.workflow);
+    if (!isWorkflowEnabled(reopened, supported)) {
+      toast.warning(`This image was made with ${recipeWorkflowLabel(image.workflow)}, which the loaded model cannot run`, {
+        description: "Load a model that supports it, then restore its settings again.",
+      });
+      return false;
+    }
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0 (the base pass's, or Hires CFG's for the refine pass); do not
     // restore a hidden value.
@@ -3245,11 +3254,6 @@ export function ImagesPage({
     if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
     if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
     if (maskOptions.padding !== undefined) setInpaintPadding(maskOptions.padding);
-    // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
-    // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
-    // replaying as text-to-image; the others return to Create.
-    const reopened: WorkflowId =
-      image.workflow === "edit" ? "edit" : image.workflow === "reference" ? "reference" : "create";
     setWorkflow(reopened);
     // An enhanced run restores the user's prompt with Enhance prompt on, or (exactCaption) the caption it ran with
     // the toggle off. Records without an outcome leave the toggle alone.
@@ -3276,7 +3280,7 @@ export function ImagesPage({
         : undefined;
     const conditioned =
       restoreInputsNote(image) ?? CONDITIONED_WORKFLOW_INPUTS[image.workflow ?? ""];
-    if (via === "vary") return;
+    if (via === "vary") return true;
     if (conditioned) {
       toast.success(`Settings restored. Add ${conditioned} again to reproduce this image.`, rescaled);
     } else {
@@ -3300,7 +3304,8 @@ export function ImagesPage({
         description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
-  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, detailerReady, cfgIntervalSupported]);
+    return true;
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setDetailerOptions, setEnhanceOverride, setPromptFor, setShiftValue, setFastCfgOn, setWorkflow, sizeLimits, status, supported, detailerReady, cfgIntervalSupported]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -3373,7 +3378,7 @@ export function ImagesPage({
           : recipe;
       const settings = recipeSettings(merged, { width, height, steps, guidance });
       const localized = settings.localized_edit;
-      restoreSettings(
+      const restoredOk = restoreSettings(
         {
           ...settings,
           id: "",
@@ -3386,6 +3391,7 @@ export function ImagesPage({
         false,
         "import",
       );
+      if (!restoredOk) return false;
       if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
       // A variation seed this model or workflow cannot apply is named below, not left armed (the backend refuses it).
       if (!variationApplies(merged, sdCaps))

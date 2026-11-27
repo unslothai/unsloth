@@ -318,6 +318,7 @@ _OS_SANDBOX_CONTAINED_COMMANDS = frozenset(
 # The sandbox shares the host network, so these get only the per-call proxy that refuses metadata addresses.
 _OS_SANDBOX_PROXIED_COMMANDS = frozenset({"curl", "wget"})
 _OS_SANDBOX_BACKENDS = frozenset({"bubblewrap", "macos-seatbelt"})
+_MXC_BACKENDS = frozenset({"mxc-processcontainer"})
 _CHMOD_MODE_RE = re.compile(r"[0-7]{3,4}|[ugoa]*[-+=][rwxXst]*(,[ugoa]*[-+=][rwxXst]*)*")
 _CHMOD_OPTION_RE = re.compile(r"-[vcf]+")
 _SHELL_ASSIGNMENT_RE = re.compile(r"[A-Za-z_]\w*\+?=")
@@ -573,6 +574,8 @@ _DOWNLOAD_OPERATORS = frozenset(
 
 
 _DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "pwd", "test", "[", "true", "false", "fi", "done"})
+_CMD_DOWNLOAD_BUILTINS = frozenset({"cd", "echo", "mkdir"})
+_WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS = (".EXE", ".COM")
 
 
 def _on_safe_path(name: str) -> bool:
@@ -651,8 +654,11 @@ def _plain_download_args(name: str, words: "list[tuple[str, str]]") -> bool:
     return True
 
 
-def _is_plain_download(command: str) -> bool:
+def _is_plain_download(command: str, *, windows_cmd: bool = False) -> bool:
     """Every curl/wget is a plain download at command position: allowlisted options, http(s) URLs, no expansions."""
+    builtins = _CMD_DOWNLOAD_BUILTINS if windows_cmd else _DOWNLOAD_BUILTINS
+    companions = _CMD_DOWNLOAD_BUILTINS if windows_cmd else _DOWNLOAD_COMPANIONS
+    on_safe_path = _on_cmd_isolated_path if windows_cmd else _on_safe_path
     # No $ (but $?) or backticks anywhere: a variable name built at run time could unset CURL_HOME.
     if _DOWNLOADER_CONFIG_NAMES_RE.search(command) or set(command.replace("$?", "")) & set("$`"):
         return False
@@ -706,18 +712,18 @@ def _is_plain_download(command: str) -> bool:
             return False
         if (
             at_start
-            and (token in _DOWNLOAD_COMPANIONS or token in ("curl", "wget"))
-            and token not in _DOWNLOAD_BUILTINS
-            and not _on_safe_path(token)
+            and (token in companions or token in ("curl", "wget"))
+            and token not in builtins
+            and not on_safe_path(token)
         ):
             return False
         name = token
         if not (at_start and name in ("curl", "wget")):
-            is_prefix = command[start:end_offset] in _SHELL_COMMAND_PREFIXES
+            is_prefix = not windows_cmd and command[start:end_offset] in _SHELL_COMMAND_PREFIXES
             # No assignments (PATH=. picks another curl); check the command word only (jq's . is not bash's .).
             if at_start and (
                 _SHELL_ASSIGNMENT_RE.match(token) is not None
-                or (not is_prefix and token not in _DOWNLOAD_COMPANIONS)
+                or (not is_prefix and token not in companions)
             ):
                 return False
             at_start = at_start and is_prefix
@@ -760,23 +766,52 @@ def _is_plain_download(command: str) -> bool:
     return seen > 0 and not {"curl", "wget"} & _find_blocked_commands("".join(rest))
 
 
+# Where cmd and the lexer above part ways: ^ % ! ' ; and a backslash before a quote, space or operator.
+_CMD_PLAIN_DOWNLOAD_UNREADABLE_RE = re.compile(r"""[\^%!'`;|]|\\(?:[\s"&<>()]|$)""")
+
+
+def _on_cmd_isolated_path(name: str) -> bool:
+    # Match the launch PATH before session packages are appended. Host shutil.which also uses cwd and PATHEXT.
+    path, git_ext = _safe_path("cmd_isolated")
+    directories = path.split(os.pathsep)
+    if not all(os.path.isabs(directory) for directory in directories):
+        return False
+    for directory in directories:
+        for extension in _windows_pathext(git_ext):
+            if os.path.isfile(os.path.join(directory, name + extension)):
+                return extension in _WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS
+    return False
+
+
+def _is_plain_cmd_download(command: str) -> bool:
+    return not _CMD_PLAIN_DOWNLOAD_UNREADABLE_RE.search(command) and _is_plain_download(
+        command, windows_cmd = True
+    )
+
+
 # Without these the model reads the block as final and gives up on the download.
 _PLAIN_DOWNLOAD_HINT = (
     "In the OS sandbox curl and wget run only as a plain download: common options, http(s) URLs, "
     "no $ or globs, piped only into head, tail, jq, grep, wc, cat or a checksum tool. "
     "Run the download as its own command, then unpack or run it in the next one."
 )
+_PLAIN_CMD_DOWNLOAD_HINT = (
+    "In the isolated Terminal curl and wget run only as a plain download: common options, http(s) "
+    "URLs, double quotes only, no %, ^, !, ; or pipe, so a URL containing % cannot be fetched "
+    "here. Use curl -L for HTTP(S) redirects. Run the download as its own command, then unpack "
+    "or run it in the next one."
+)
 _PLAIN_CHMOD_HINT = (
     "In the OS sandbox chmod runs only as a plain `chmod MODE FILE...`: no -R, globs, $ or xargs."
 )
 
 
-def _runs_in_os_sandbox(prepared) -> bool:
+def _runs_in_os_sandbox(prepared, backends = _OS_SANDBOX_BACKENDS) -> bool:
     record = getattr(prepared, "execution_record", None)
     return bool(
         record is not None
         and record.os_isolation
-        and getattr(prepared, "backend", None) in _OS_SANDBOX_BACKENDS
+        and getattr(prepared, "backend", None) in backends
     )
 
 
@@ -9881,6 +9916,13 @@ _ISOLATED_CMD_GIT_ENV = {
 }
 
 
+def _windows_pathext(git_ext: str) -> tuple[str, ...]:
+    extensions = _WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS
+    if git_ext and git_ext not in extensions:
+        return (*extensions, git_ext)
+    return extensions
+
+
 def _safe_path(shell: "str | None" = None) -> "tuple[str, str]":
     # (PATH, the trusted Windows git's extension); every entry is read-only inside the sandbox.
     exe_dir = os.path.dirname(sys.executable)
@@ -9949,11 +9991,7 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
         env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
-        pathext = ".EXE;.COM"
-        if git_ext and git_ext not in (".EXE", ".COM"):
-            # Keep the host git launcher (e.g. a .CMD shim) resolvable.
-            pathext += ";" + git_ext
-        env["PATHEXT"] = pathext
+        env["PATHEXT"] = ";".join(_windows_pathext(git_ext))
         # Disable cwd-before-PATH lookup on Windows so a workdir rg.exe or git.exe cannot shadow auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
         if shell == "cmd_isolated":
@@ -16076,6 +16114,80 @@ def build_rag_autoinject(
         )
 
 
+_ATTACHMENT_OVERVIEW = re.compile(
+    r"^\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?"
+    r"(?:summari[sz]e|compare|contrast|review|analy[sz]e)\s+"
+    r"(?:(?P<quantifier>all|both|each)(?: of)?(?: the| these| my)? |"
+    r"(?:these |the |my )?(?P<two>two) |"
+    # A bare "the documents" may mean knowledge-base or project files.
+    r"these |my |the (?=attached |attachments\b))(?:attached )?"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\b"
+    r"(?=\s*(?:[.!?]?\s*$|(?:on|about|regarding|in|with respect to|and)\b))"
+    r"|^\s*what\s+are\s+(?:these|my|the attached)\s+"
+    r"(?:files|docs|documents|attachments|pdfs|reports)\s+about\s*\??\s*$",
+    re.IGNORECASE,
+)
+_ATTACHMENT_OVERVIEW_EXCLUSION = re.compile(
+    r"(?:[.!?;\n]\s*|\band\s+)(?:please\s+)?"
+    r"(?:ignore|exclude|omit|skip|leave out|do not (?:include|cover))\b"
+    r"|\b(?:except|excluding|other than)\b",
+    re.IGNORECASE,
+)
+
+
+def _cover_thread_attachments(
+    query,
+    thread_id,
+    thread_docs,
+    hits,
+    top_k,
+    document_opening,
+    ranked_thread_lead = None,
+):
+    """Keep one hit per attachment and preserve any project hits."""
+    if not thread_docs or not 1 < len(thread_docs) <= top_k:
+        return None
+    request = _ATTACHMENT_OVERVIEW.match(query)
+    if (
+        not request
+        or _ATTACHMENT_OVERVIEW_EXCLUSION.search(query)
+        or (
+            len(thread_docs) != 2
+            and (request.group("two") or (request.group("quantifier") or "").lower() == "both")
+        )
+    ):
+        return None
+    if ranked_thread_lead is not None:
+        lead_id = ranked_thread_lead.get("chunkId")
+        if lead_id is not None:
+            for i, hit in enumerate(hits):
+                if hit.get("chunkId") == lead_id:
+                    # Opening chunks can have overlap stripped against preceding chunks.
+                    hits = [ranked_thread_lead, *hits[:i], *hits[i + 1 :]]
+                    break
+    covered = set()
+    required, extra = [], []
+    for hit in hits:
+        document = hit.get("documentId")
+        if document in covered:
+            extra.append(hit)
+        else:
+            required.append(hit)
+            if document in thread_docs:
+                covered.add(document)
+    missing = thread_docs - covered
+    if not missing or len(required) + len(missing) > max(top_k, len(hits)):
+        return None
+    for document in sorted(missing):
+        opening = document_opening(scope_thread_id = thread_id, document_id = document)
+        if not opening:
+            return None
+        required.append(opening[0])
+    remaining = max(top_k, len(hits)) - len(required)
+    # render_sources renumbers citations in place. The ranked fallback must remain intact.
+    return [dict(hit) for hit in required + extra[:remaining]], len(required)
+
+
 def _build_rag_autoinject(
     conversation: list[dict],
     rag_scope: dict | None,
@@ -16181,8 +16293,10 @@ def _build_rag_autoinject(
 
     thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
     opening_ids: set = set()
+    ranked_thread_lead = None
 
     def retrieve_thread_unfloored(*, max_tokens = None):
+        nonlocal ranked_thread_lead
         # Lexical-only misses generic requests ("summarize this"), so retry with the dense leg.
         if thread_docs is not None and not thread_docs:
             return None
@@ -16215,6 +16329,7 @@ def _build_rag_autoinject(
             # render_sources renumbered these hits in place for the merged list.
             return render_sources(found[1]), found[1]
         opening_ids.update(seen)
+        ranked_thread_lead = dict(found[1][0])
         return kept
 
     def _strong_thread_match() -> bool:
@@ -16295,6 +16410,30 @@ def _build_rag_autoinject(
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
+        try:
+            covered = _cover_thread_attachments(
+                query,
+                thread_id,
+                thread_docs,
+                found[1] if found else [],
+                top_k,
+                document_opening,
+                ranked_thread_lead,
+            )
+        except Exception:
+            logger.warning("RAG attachment coverage failed", exc_info = True)
+            covered = None
+        if covered:
+            candidates, keep_first = covered
+            found = (
+                _trim(
+                    render_sources(candidates),
+                    candidates,
+                    budget if not enabled else None,
+                    keep_first = keep_first,
+                )
+                or found
+            )
         if not found:
             logger.info("RAG auto-inject: no matching passage; skipping")
             return None
@@ -24727,7 +24866,13 @@ def _bash_exec(
             if profile in _CMD_PROFILES or not _is_approvable_rm(command):
                 return _APPROVED_RM_REFUSED
             blocked = set()
-        if sys.platform != "win32" and profile not in _CMD_PROFILES:
+        if profile == "cmd_isolated":
+            contained = blocked & _OS_SANDBOX_PROXIED_COMMANDS
+            if contained and not _is_plain_cmd_download(command):
+                contained = set()
+                hints.append(_PLAIN_CMD_DOWNLOAD_HINT)
+            blocked -= contained
+        elif sys.platform != "win32" and profile not in _CMD_PROFILES:
             # Decided at launch: allowed only if this call really runs inside the OS sandbox.
             contained = blocked & _OS_SANDBOX_CONTAINED_COMMANDS
             if "chmod" in contained and not _is_plain_chmod(command):
@@ -24834,7 +24979,15 @@ def _bash_exec(
                 host_access_approved = host_reach_approved,
                 user_folder = chosen_folder,
             )
-            if contained and (chosen_folder or not _runs_in_os_sandbox(prepared)):
+            in_mxc = profile == "cmd_isolated"
+            if contained and (
+                chosen_folder
+                # An MXC launch in auto replays on the host when the container fails to start.
+                or (in_mxc and requested_mode != "required")
+                or not _runs_in_os_sandbox(
+                    prepared, _MXC_BACKENDS if in_mxc else _OS_SANDBOX_BACKENDS
+                )
+            ):
                 return _truncate(f"Blocked command(s) for safety: {', '.join(sorted(contained))}")
             proxied = contained & _OS_SANDBOX_PROXIED_COMMANDS
             if proxied and not prepared.egress_proxy:

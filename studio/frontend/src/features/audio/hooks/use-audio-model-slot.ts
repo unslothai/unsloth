@@ -21,6 +21,8 @@ import {
   fetchSttStatus,
   sttEngineStatusFor,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import { shouldRestorePreviousModel } from "@/features/chat/lib/restore-previous-model";
+import type { LoadModelRequest } from "@/features/chat/types/api";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import type {
@@ -45,6 +47,7 @@ import {
 import {
   audioCppRuntimeProblem,
   audioModelToReplace,
+  audioRestoreRequest,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -236,6 +239,7 @@ export function useAudioModelSlot({
   >(async () => {});
   // Repeats the last successful load, so a generation failure's "Load into CPU RAM" reloads the resident model.
   const lastTtsLoad = useRef<((device: "cpu") => Promise<void>) | null>(null);
+  const lastTtsLoadRequest = useRef<LoadModelRequest | null>(null);
 
   const loadTtsModel = useCallback(
     async (
@@ -336,6 +340,7 @@ export function useAudioModelSlot({
         !useChatRuntimeStore.getState().keepModelsLoaded &&
         !statusRef.current?.is_audio &&
         (statusRef.current?.serving?.length ?? 0) > 0;
+      let restore: { label: string; request: LoadModelRequest } | null = null;
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`, {
         description: replacesChat
           ? "Keep multiple models loaded is Off, so this unloads the chat model."
@@ -380,45 +385,57 @@ export function useAudioModelSlot({
                 model_path: audioSlotRoutingId(previous) ?? previous,
               })
           : undefined;
-        const res = await loadModel(
-          {
-            model_path: loadId || repoId,
-            load_request_id: loadRequestId,
-            force_cancel_active: stopDecision.forceCancelActive,
-            hf_token: hfToken,
-            max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
-            load_in_4bit: false,
-            is_lora: false,
-            gguf_variant: ggufFilename ?? null,
-            trust_remote_code: trustRemoteCode,
-            approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
-            // The server ignores this under Off.
-            alongside: true,
-            audio_device: wantsCpu ? "cpu" : "auto",
-            // GGUF ignores audio_device; an absent speculative_type means auto, which may attach a GPU drafter.
-            ...(wantsCpu && isGgufLoad
-              ? // biome-ignore lint/style/useNamingConvention: API schema
-                {
-                  gpu_memory_mode: "manual" as const,
-                  gpu_layers: 0,
-                  speculative_type: "off" as const,
-                }
-              : {}),
-          },
-          {
-            signal: controller.signal,
-            runtime: "tts",
-            beforeRequest: replacePrevious,
-            onRequestStart: () => {
-              pending.requestStarted = true;
-              // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
-              if (!keepsChat) {
-                cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-                requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+        if (previous && statusRef.current)
+          restore = {
+            label: audioModelLabel(previous),
+            request: audioRestoreRequest(
+              statusRef.current,
+              audioSlotRoutingId(previous) ?? previous,
+              lastTtsLoadRequest.current,
+              {
+                hf_token: hfToken,
+                max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
+                audio_device: audioDevice === "cpu" ? "cpu" : "auto",
+              },
+            ),
+          };
+        const request: LoadModelRequest = {
+          model_path: loadId || repoId,
+          load_request_id: loadRequestId,
+          force_cancel_active: stopDecision.forceCancelActive,
+          hf_token: hfToken,
+          max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
+          load_in_4bit: false,
+          is_lora: false,
+          gguf_variant: ggufFilename ?? null,
+          trust_remote_code: trustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+          // The server ignores this under Off.
+          alongside: true,
+          audio_device: wantsCpu ? "cpu" : "auto",
+          // GGUF ignores audio_device; an absent speculative_type means auto, which may attach a GPU drafter.
+          ...(wantsCpu && isGgufLoad
+            ? // biome-ignore lint/style/useNamingConvention: API schema
+              {
+                gpu_memory_mode: "manual" as const,
+                gpu_layers: 0,
+                speculative_type: "off" as const,
               }
-            },
+            : {}),
+        };
+        const res = await loadModel(request, {
+          signal: controller.signal,
+          runtime: "tts",
+          beforeRequest: replacePrevious,
+          onRequestStart: () => {
+            pending.requestStarted = true;
+            // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
+            if (!keepsChat) {
+              cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+              requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+            }
           },
-        );
+        });
         if (!isCurrent()) return;
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
           const offloadNotice = offloadWarning(offloadCountsFrom(res));
@@ -442,6 +459,7 @@ export function useAudioModelSlot({
           resyncEvicted(evicted, "audio");
           // Only on success: a failed attempt leaves the previous model resident.
           lastTtsLoad.current = retryLoad;
+          lastTtsLoadRequest.current = request;
           const loadedWorkflow = workflowForLoadedModel({
             current: useAudioWorkspaceStore.getState().workflow,
             audioWorkflows: res.audio_workflows,
@@ -498,6 +516,44 @@ export function useAudioModelSlot({
           );
         } else {
           toast.dismiss(toastId);
+        }
+        if (
+          restore &&
+          pending.requestStarted &&
+          isCurrent() &&
+          shouldRestorePreviousModel(error)
+        ) {
+          const restoreToastId = toast.loading(`Reloading ${restore.label}…`);
+          // Registered as the pending attempt, so hiding the page cancels the rollback too.
+          const rollback = {
+            ...pending,
+            loadTarget: restore.request.model_path,
+            loadRequestId: restore.request.load_request_id ?? loadRequestId,
+            controller: new AbortController(),
+            requestStarted: false,
+          };
+          pendingTtsLoad.current = rollback;
+          try {
+            await loadModel(restore.request, {
+              signal: rollback.controller.signal,
+              runtime: "tts",
+              onRequestStart: () => {
+                rollback.requestStarted = true;
+              },
+            });
+            if (isCurrent())
+              toast.success(`${restore.label} is loaded again`, {
+                id: restoreToastId,
+              });
+            else toast.dismiss(restoreToastId);
+          } catch (restoreError) {
+            if (isCurrent())
+              modelErrorToast(
+                `Could not reload ${restore.label}: ${restoreError instanceof Error ? restoreError.message : "Model load failed."}`,
+                { id: restoreToastId },
+              );
+            else toast.dismiss(restoreToastId);
+          }
         }
       } finally {
         if (pendingTtsLoad.current?.generation === generation)
