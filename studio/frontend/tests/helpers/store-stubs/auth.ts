@@ -19,6 +19,10 @@ export function authFetch(input: string, init?: RequestInit): Promise<Response> 
   return Promise.resolve(handler(input, init));
 }
 
+export function getAuthSessionEpoch(): number {
+  return 0;
+}
+
 export async function prepareHfTokenForUse(): Promise<null> {
   return null;
 }

@@ -584,3 +584,9 @@ def test_mention_survives_a_real_call_quoting_a_backticked_tag():
     stream = _StreamingDisplayStrip(auto_heal_tool_calls = True, enabled_tool_names = NAMES)
     for i in range(len(sentence), len(text) + 1):
         assert stream.strip(_hold_pending_mention(text[:i], True)).startswith(sentence), i
+
+
+@pytest.mark.parametrize("collect", [_messages_stream_text, _messages_reduced_text])
+@pytest.mark.parametrize("text", ["Use `search[AR", "Use `search[ARGS]{", "Use `search[ARGS]{} x"])
+def test_messages_api_releases_a_held_rehearsal_at_the_end(collect, text):
+    assert collect(_turn_events(text)) == _guard_full(text)

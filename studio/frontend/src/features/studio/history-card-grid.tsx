@@ -329,8 +329,10 @@ export function HistoryCardGrid({
   const visibleCount = runs.length;
   useEffect(() => {
     if (!hasRunningRun) return;
-    const timer = setInterval(async () => {
+    let lastPollAt = 0;
+    const poll = async () => {
       if (manualFetchInFlight) return;
+      lastPollAt = Date.now();
       pollControllerRef.current?.abort();
       const controller = new AbortController();
       pollControllerRef.current = controller;
@@ -344,9 +346,22 @@ export function HistoryCardGrid({
       } catch {
         // ignore; poll will retry
       }
+    };
+    const timer = setInterval(() => {
+      if (!document.hidden) void poll();
     }, RUNNING_POLL_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (
+        !document.hidden &&
+        Date.now() - lastPollAt >= RUNNING_POLL_INTERVAL_MS
+      ) {
+        void poll();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       pollControllerRef.current?.abort();
     };
   }, [hasRunningRun, visibleCount, manualFetchInFlight]);

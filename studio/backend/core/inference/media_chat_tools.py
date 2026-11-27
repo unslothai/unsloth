@@ -13,8 +13,7 @@ MEDIA_CHAT_TOOLS = frozenset({"generate_image", "generate_video"})
 
 _TOOL_TASKS = (("generate_image", "text-to-image"), ("generate_video", "text-to-video"))
 
-# The server's event loop. The tools run on a worker thread inside the chat tool loop and
-# hand the generation coroutine to this loop, never to a loop of their own.
+# The server's event loop; tools hand generation coroutines to it, never to their own loop.
 _server_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
@@ -58,6 +57,10 @@ def offered_media_chat_tools(enabled_tools) -> list[dict]:
             continue
         status = media_chat_status(task)
         if status is None:
+            if name == "generate_image":
+                from core.inference.chat_media_swap import chat_can_swap
+                if chat_can_swap():
+                    tools.append(generate_image_schema({}))
             continue
         if name == "generate_image":
             if offers_txt2img(status):

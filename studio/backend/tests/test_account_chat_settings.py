@@ -284,7 +284,9 @@ def test_cancel_route_scopes_same_id_in_two_accounts(client):
 def test_create_refuses_a_foreign_supervisor_slot_before_writing(client, monkeypatch):
     seed_chat(ALICE)
     monkeypatch.setattr(
-        chat_generation_runs, "_sanitize_request", lambda payload: payload.requestPayload
+        chat_generation_runs,
+        "_sanitize_request",
+        lambda payload, request = None: payload.requestPayload,
     )
     body = {
         "runId": "same",
@@ -359,6 +361,8 @@ OWNER_PATHS = [
     for path, methods in {
         "/hugging-face-cache": ("GET", "PUT"),
         "/llama-cpp-path": ("GET", "PUT"),
+        "/offline-docs": ("GET", "PUT"),
+        "/offline-docs/refresh": ("POST",),
         "/upload-limit": ("PUT",),
         "/tool-result-limit": ("PUT",),
         "/ml-warmup": ("PUT",),

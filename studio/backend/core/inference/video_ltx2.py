@@ -273,9 +273,7 @@ def _checkpoint_stamp(checkpoint_path: Path | str) -> Optional[tuple]:
 
 
 def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
-    """True when the checkpoint carries the 9-row LTX-2.3 modulation tables (2.0 has 6-row
-    per-block scale/shift tables; 2.3 widens them to 9). An unreadable header returns False so the
-    caller falls back to the stock 2.0 path."""
+    """True for 9-row LTX-2.3 modulation tables (2.0 has 6 rows); an unreadable header gives False."""
     stamp = _checkpoint_stamp(checkpoint_path)
     if stamp is not None:
         with _LTX23_VERDICTS_LOCK:
@@ -342,9 +340,7 @@ def _to_plain_dtype(state: dict[str, Any], torch_dtype: Any) -> dict[str, Any]:
 
 
 def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Partition a combined LTX checkpoint into per-component state dicts. Handles both layouts: the
-    official combined single file (``vae.*`` / ``audio_vae.*`` / ``vocoder.*`` / DiT + projections)
-    and transformer-only GGUFs (bare DiT + connector keys)."""
+    """Splits a combined LTX file (vae.*, audio_vae.*, vocoder.* keys) or a bare-DiT GGUF by key prefix."""
     groups: dict[str, dict[str, Any]] = {
         "dit": {},
         "connectors": {},
@@ -709,9 +705,8 @@ def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]
 
 
 def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
-    """``"distilled"`` / ``"dev"`` from the checkpoint's CONTENT (a 128-value bias fingerprint), or None when the file
-    is not on disk, unreadable, or not a known LTX-2.3 release (a finetune): callers then fall back to the name. Reads
-    the header plus 256 bytes; cached on (path, size, mtime)."""
+    """Distilled or dev from the checkpoint content (128-value bias fingerprint); None if
+    unreadable, missing or a finetune, and callers then fall back to the name"""
     if not checkpoint_path:
         return None
     path = str(checkpoint_path)
@@ -1180,6 +1175,373 @@ def install_stg_compile_adapter(transformer: Any) -> int:
     return count
 
 
+# LTX-2.x text masks: the connectors replace padding with learned registers and return an all-ones mask, which the DiT
+# turns into an all-zero additive bias. That bias is a no-op, but it sends every text cross-attention to the
+# mem-efficient kernel, and Inductor materialises it at [batch, heads, video tokens, text tokens] (0.9 GB per call at
+# 1280x704x121). Dropping an all-ones mask keeps the maths and lets SDPA pick flash. =0 keeps the mask.
+LTX2_FULL_MASK_ENV = "UNSLOTH_LTX2_DROP_FULL_TEXT_MASK"
+_LTX2_TRANSFORMER_CLS = "LTX2VideoTransformer3DModel"
+_LTX2_MASK_KEYS = ("encoder_attention_mask", "audio_encoder_attention_mask")
+_LTX2_MASK_MEMO = "_unsloth_full_mask_memo"
+_LTX2_MASK_HOOK = "_unsloth_full_mask_hook"
+_LTX2_MASK_DROPS = "_unsloth_full_mask_drops"
+
+
+def ltx2_full_mask_drop_disabled() -> bool:
+    raw = (os.environ.get(LTX2_FULL_MASK_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no")
+
+
+def _ltx2_mask_all_ones(module: Any, mask: Any) -> bool:
+    """Whether a 2-D multiplicative text mask is 1 everywhere, memoised per tensor and version (one host read per
+    render: the pipeline passes the same mask to every step)."""
+    import torch
+
+    version = "inference" if mask.is_inference() else mask._version
+    memo = module.__dict__.setdefault(_LTX2_MASK_MEMO, [])
+    for held, held_version, verdict in memo:
+        if held is mask and held_version == version:
+            return verdict
+    verdict = bool(mask.numel() > 0 and bool(torch.all(mask == 1).item()))
+    memo.insert(0, (mask, version, verdict))
+    del memo[4:]
+    return verdict
+
+
+def _ltx2_full_mask_pre_hook(module: Any, args: Any, kwargs: dict) -> Any:
+    """Replace an all-ones text mask by None; any other mask, or a positional one, is passed through unchanged."""
+    try:
+        import torch
+
+        dropped = 0
+        for key in _LTX2_MASK_KEYS:
+            mask = kwargs.get(key)
+            # 2-D only: that is the multiplicative mask the DiT turns into a bias; 3-D+ is already a bias.
+            if torch.is_tensor(mask) and mask.dim() == 2 and _ltx2_mask_all_ones(module, mask):
+                kwargs[key] = None
+                dropped += 1
+        if dropped:
+            setattr(module, _LTX2_MASK_DROPS, getattr(module, _LTX2_MASK_DROPS, 0) + dropped)
+        return args, kwargs
+    except Exception:  # noqa: BLE001 - optimisation only; never break the forward
+        return None
+
+
+def install_ltx2_full_mask_drop(pipe: Any, logger: Any = None) -> int:
+    """Hook every LTX-2.x DiT of ``pipe`` once; returns the DiTs hooked (0 when switched off or not LTX-2.x)."""
+    if ltx2_full_mask_drop_disabled():
+        return 0
+    try:
+        from .diffusion_autoopt.targets import denoiser_dits
+        dits = denoiser_dits(pipe)
+    except Exception:  # noqa: BLE001
+        dits = [getattr(pipe, "transformer", None)]
+    count = 0
+    for dit in dits:
+        if dit is None or type(dit).__name__ != _LTX2_TRANSFORMER_CLS:
+            continue
+        if getattr(dit, _LTX2_MASK_HOOK, None) is None:
+            try:
+                handle = dit.register_forward_pre_hook(_ltx2_full_mask_pre_hook, with_kwargs = True)
+                setattr(dit, _LTX2_MASK_HOOK, handle)
+            except Exception:  # noqa: BLE001 - optimisation only
+                continue
+        count += 1
+    if count and logger is not None:
+        logger.info(
+            "video.ltx2: all-ones text masks dropped, text cross-attention runs without a bias"
+        )
+    return count
+
+
+# LTX-2.3 / 2.5 connectors: diffusers keeps the masked norm and both scaled copies ([B, 1024, 49 * 3840], 368 MiB each
+# in bf16) alive while the 1.44 GiB video projection onloads; the lean forward builds each input when its projection
+# runs and frees it after (same ops, bit-identical). =0 keeps the diffusers forward.
+LTX2_LEAN_CONNECTOR_ENV = "UNSLOTH_LTX2_LEAN_CONNECTOR_FEATURES"
+_LTX2_CONNECTORS_CLS = "LTX2TextConnectors"
+_LTX2_LEAN_CONNECTOR_ATTR = "_unsloth_lean_connector_features"
+# sha256 of ``inspect.getsource(LTX2TextConnectors.forward)`` this copy matches (diffusers 0.42.1); any other source
+# keeps the diffusers forward.
+_LTX2_CONNECTORS_FORWARD_SHA256 = frozenset(
+    {"9764cf89cec9603d1190a95d5e3daa95cde08eb567ce19e2eee31644ed15f6dd"}
+)
+
+
+def ltx2_lean_connector_disabled() -> bool:
+    raw = (os.environ.get(LTX2_LEAN_CONNECTOR_ENV) or "").strip().lower()
+    return raw in ("0", "off", "false", "no")
+
+
+def _ltx2_connectors_forward_matches(cls: Any) -> bool:
+    try:
+        import hashlib
+        import inspect
+        source = inspect.getsource(cls.forward)
+    except Exception:  # noqa: BLE001 - unreadable source: keep the diffusers forward
+        return False
+    return hashlib.sha256(source.encode()).hexdigest() in _LTX2_CONNECTORS_FORWARD_SHA256
+
+
+def _ltx2_lean_connectors_forward(
+    self: Any,
+    text_encoder_hidden_states: Any,
+    attention_mask: Any,
+    padding_side: str = "left",
+    scale_factor: int = 8,
+) -> Any:
+    """``LTX2TextConnectors.forward`` (diffusers 0.42.1) with the per-modality inputs built one at a time."""
+    import math
+
+    import torch
+    from diffusers.pipelines.ltx2.connectors import per_token_rms_norm
+
+    if not self.config.per_modality_projections:
+        return type(self).forward(
+            self,
+            text_encoder_hidden_states,
+            attention_mask,
+            padding_side = padding_side,
+            scale_factor = scale_factor,
+        )
+    if text_encoder_hidden_states.ndim == 3:
+        text_encoder_hidden_states = text_encoder_hidden_states.unflatten(
+            2, (self.config.caption_channels, -1)
+        )
+    keep = attention_mask.bool().unsqueeze(-1)
+
+    def scaled_input(hidden_dim: int) -> Any:
+        # torch.where(keep, norm, 0) * scale, in place on the norm this call owns
+        features = per_token_rms_norm(text_encoder_hidden_states).flatten(2, 3)
+        features.masked_fill_(keep.logical_not(), 0.0)
+        return features.mul_(math.sqrt(hidden_dim / self.config.caption_channels))
+
+    features = scaled_input(self.config.video_hidden_dim)
+    video_text_emb_proj = self.video_text_proj_in(features)
+    del features
+    features = scaled_input(self.config.audio_hidden_dim)
+    audio_text_emb_proj = self.audio_text_proj_in(features)
+    del features
+    if not torch.compiler.is_compiling():
+        # eager-only engagement count: a traced attribute write would add a Dynamo guard and a recompile
+        self.__dict__["_unsloth_lean_connector_runs"] = (
+            self.__dict__.get("_unsloth_lean_connector_runs", 0) + 1
+        )
+
+    text_dtype = video_text_emb_proj.dtype
+    attention_mask = (attention_mask.to(torch.int64) - 1).to(text_dtype)
+    attention_mask = attention_mask.reshape(
+        attention_mask.shape[0], 1, -1, attention_mask.shape[-1]
+    )
+    add_attn_mask = attention_mask * torch.finfo(text_dtype).max
+
+    video_text_embedding, video_attn_mask = self.video_connector(video_text_emb_proj, add_attn_mask)
+
+    binary_attn_mask = (video_attn_mask < 1e-6).to(torch.int64)
+    binary_attn_mask = binary_attn_mask.reshape(
+        video_text_embedding.shape[0], video_text_embedding.shape[1], 1
+    )
+    video_text_embedding = video_text_embedding * binary_attn_mask
+
+    audio_text_embedding, _ = self.audio_connector(audio_text_emb_proj, add_attn_mask)
+
+    return video_text_embedding, audio_text_embedding, binary_attn_mask.squeeze(-1)
+
+
+def install_ltx2_lean_connector_features(pipe: Any, logger: Any = None) -> bool:
+    """Give ``pipe.connectors`` the lean forward, before any offload hook wraps it. False (diffusers forward kept)
+    when switched off, not per-modality connectors, a diffusers forward this copy does not match, or a forward
+    already wrapped on the instance (an offload hook would be bypassed)."""
+    if ltx2_lean_connector_disabled():
+        return False
+    connectors = getattr(pipe, "connectors", None)
+    if connectors is None or type(connectors).__name__ != _LTX2_CONNECTORS_CLS:
+        return False
+    if getattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, False):
+        return True
+    try:
+        if not bool(getattr(connectors.config, "per_modality_projections", False)):
+            return False
+        if "forward" in connectors.__dict__ or not _ltx2_connectors_forward_matches(
+            type(connectors)
+        ):
+            return False
+        import types
+
+        connectors.forward = types.MethodType(_ltx2_lean_connectors_forward, connectors)
+        setattr(connectors, _LTX2_LEAN_CONNECTOR_ATTR, True)
+    except Exception:  # noqa: BLE001 - memory lever only; the diffusers forward stays
+        return False
+    if logger is not None:
+        logger.info(
+            "video.ltx2: connector inputs built one at a time (two fewer prompt-sized copies held)"
+        )
+    return True
+
+
+# Streamed tiers: text-to-video never runs the LTX-2 VAE encoder (612 MiB on LTX-2.5), so it waits on the host and
+# joins the card only for ``vae.encode``. =0 keeps it on the card.
+LTX2_PARK_VAE_ENCODER_ENV = "UNSLOTH_LTX2_PARK_VAE_ENCODER"
+_LTX2_VAE_CLS = "AutoencoderKLLTX2Video"
+_LTX2_ENCODER_HOME = "_unsloth_encoder_home"
+_LTX2_ENCODE_WRAPPED = "_unsloth_parked_encode"
+# the tiers whose decoders stay resident on the card (not hooked per call)
+_LTX2_PARK_TIERS = ("group", "streaming")
+
+
+def ltx2_vae_encoder_parks(vae: Any, offload_policy: Any) -> bool:
+    """Whether ``vae``'s encoder waits on the host under ``offload_policy``."""
+    if (os.environ.get(LTX2_PARK_VAE_ENCODER_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return False
+    return (
+        str(offload_policy) in _LTX2_PARK_TIERS
+        and type(vae).__name__ == _LTX2_VAE_CLS
+        and getattr(vae, "encoder", None) is not None
+    )
+
+
+def _module_device(module: Any) -> Any:
+    first = next(iter(module.parameters()), None)
+    return None if first is None else first.device
+
+
+def _module_devices(module: Any) -> set:
+    """Every device ``module``'s submodules hold parameters on: a move that failed partway leaves more than one."""
+    devices = set()
+    for sub in module.modules():
+        own = next(iter(sub.parameters(recurse = False)), None)
+        if own is None:
+            own = next(iter(sub.buffers(recurse = False)), None)
+        if own is not None:
+            device = _module_device(sub)
+            devices.add(own.device if device is None else device)
+    return devices
+
+
+def park_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """Move the LTX-2 VAE encoder to the host and give ``vae.encode`` a wrapper that brings it back for the call.
+    Idempotent (a later ``vae.to(device)`` is undone on the next call); bytes moved off the card, else 0."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    try:
+        import torch
+
+        encoder = vae.encoder
+        home = _module_device(getattr(vae, "decoder", None) or vae)
+        if home is None or home.type == "cpu" or getattr(vae, "_hf_hook", None) is not None:
+            return 0
+        if not vae.__dict__.get(_LTX2_ENCODE_WRAPPED, False):
+            inner = vae.encode
+
+            def encode(*args: Any, **kwargs: Any) -> Any:
+                target = vae.__dict__.get(_LTX2_ENCODER_HOME)
+                devices = _module_devices(encoder)
+                # parked (or split by a failed move): onto the card for the call, back to the host after
+                moved = target is not None and bool(devices) and devices != {target}
+                try:
+                    if moved:
+                        encoder.to(target)
+                    return inner(*args, **kwargs)
+                finally:
+                    if moved:
+                        # also after a partial onload: the whole encoder goes back to the host
+                        encoder.to("cpu")
+
+            vae.encode = encode
+            vae.__dict__[_LTX2_ENCODE_WRAPPED] = True
+        vae.__dict__[_LTX2_ENCODER_HOME] = home
+        if _module_devices(encoder) == {torch.device("cpu")}:
+            return 0
+        moved = sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        encoder.to("cpu")
+    except Exception:  # noqa: BLE001 -- memory lever only: the encoder stays where it was
+        return 0
+    if moved and logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) waits on the host; it joins the card only to encode an image",
+            moved >> 20,
+        )
+    return moved
+
+
+def unpark_ltx2_vae_encoder(
+    pipe: Any,
+    offload_policy: Any,
+    logger: Any = None,
+) -> int:
+    """For an image-conditioned request: bring a parked encoder back to the card for the whole request (it encodes in
+    both stages, so per-call moves would copy it four times), and return its MiB for the floor; 0 when it does not
+    park. The next unconditioned request parks it again."""
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not ltx2_vae_encoder_parks(vae, offload_policy):
+        return 0
+    encoder = vae.encoder
+    mib = (
+        sum(
+            int(t.numel()) * int(t.element_size())
+            for t in list(encoder.parameters()) + list(encoder.buffers())
+        )
+        >> 20
+    )
+    home = vae.__dict__.get(_LTX2_ENCODER_HOME)
+    if home is None or _module_devices(encoder) in (set(), {home}):
+        return mib
+    try:
+        encoder.to(home)
+    except Exception:  # noqa: BLE001 -- e.g. an OOM partway: the whole encoder back on the host, moved per call
+        try:
+            encoder.to("cpu")
+        except Exception:  # noqa: BLE001
+            pass
+        return mib
+    if logger is not None:
+        logger.info(
+            "video.ltx2: VAE encoder (%d MiB) on the card for an image-conditioned request", mib
+        )
+    return mib
+
+
+def ltx2_memory_levers(pipe: Any, offload_policy: Any) -> str:
+    """The memory levers engaged on ``pipe`` ("" when none): part of the measured-peak key, so a peak recorded with a
+    lever on never lowers the headroom of a load or request running with it off."""
+    levers = []
+    try:
+        if getattr(getattr(pipe, "connectors", None), _LTX2_LEAN_CONNECTOR_ATTR, False):
+            levers.append("lean_connectors")
+        from .video_ltx25 import compact_conditioning_enabled, release_prompt_rows_enabled
+
+        from .video_ltx25 import prompt_rows_release_supported, two_stage_enabled
+
+        if (
+            getattr(pipe, "_unsloth_ltx25_encoder", None) is not None
+            and not bool(getattr(pipe, "_unsloth_ltx25_dev", False))
+            and two_stage_enabled()
+            and release_prompt_rows_enabled()
+            and compact_conditioning_enabled()
+            and prompt_rows_release_supported()
+        ):
+            # only the two-stage render releases them (CFG, which batches the rows, has its own key entry)
+            levers.append("released_prompt_rows")
+        vae = getattr(pipe, "vae", None)
+        if vae is not None and ltx2_vae_encoder_parks(vae, offload_policy):
+            levers.append("parked_vae_encoder")
+    except Exception:  # noqa: BLE001
+        pass
+    return ",".join(levers)
+
+
 def ltx23_verbatim_sigmas(pipe: Any) -> Any:
     """Disable scheduler sigma rewrites (dynamic shift, terminal stretch) so sigmas pass through intact."""
     import contextlib
@@ -1259,6 +1621,8 @@ def load_ltx23_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    nvfp4_backend: Optional[str] = None,
+    mxfp8_backend: Optional[str] = None,
     fp8_storage: Optional[bool] = None,
     fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
@@ -1285,6 +1649,8 @@ def load_ltx23_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        nvfp4_backend = nvfp4_backend,
+        mxfp8_backend = mxfp8_backend,
         fp8_storage = fp8_storage,
         fp8_widen_chosen = fp8_widen_chosen,
         family = family,
@@ -1326,6 +1692,13 @@ def load_ltx23_transformer(
     # The load plan's commit for that hub-id config (absent for an unpinned load).
     kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
+        from .diffusion_gguf_exact import install_exact_dequant
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        from .diffusion_gguf_mmap import install_gguf_mmap
+
+        install_lowbit_iq()
+        install_exact_dequant()
+        install_gguf_mmap()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         # Else the meta load copies every tensor back to the host.
@@ -1419,7 +1792,358 @@ def load_ltx23_audio_vae_and_vocoder(
     with init_empty_weights():
         vocoder = LTX2VocoderWithBWE.from_config(_VOCODER_CONFIG)
     vocoder.load_state_dict(vocoder_state, strict = True, assign = True)
-    return audio_vae, vocoder.to(torch_dtype)
+    vocoder = vocoder.to(torch_dtype)
+    install_vocoder_fp32_forward(vocoder)
+    return audio_vae, vocoder
+
+
+# Lightricks' LTX-2.3+ VocoderWithBWE runs its whole forward in float32 on bf16 weights (autocast on CUDA, weights
+# upcast for the call elsewhere): bf16 accumulation through BigVGAN's ~108 convs degrades mel / MRSTFT error 40-90%.
+# diffusers' LTX2VocoderWithBWE has no upcast. "0" runs the stored dtype again.
+VOCODER_FP32_ENV = "UNSLOTH_LTX_VOCODER_FP32"
+_STORED_FILTER = "_unsloth_stored_filter"
+
+
+def vocoder_fp32_enabled() -> bool:
+    return (os.environ.get(VOCODER_FP32_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+# cuDNN's atomic transposed-conv algos make the waveform vary per process; CUDA only (MIOpen lacks the flag). "0" = off.
+VOCODER_DETERMINISTIC_ENV = "UNSLOTH_LTX_VOCODER_DETERMINISTIC"
+
+
+def vocoder_deterministic_enabled() -> bool:
+    return (os.environ.get(VOCODER_DETERMINISTIC_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+# The flag is process-global, so overlapping scopes share it: the first entry saves it, the last exit restores it.
+_DETERMINISTIC_LOCK = threading.Lock()
+_deterministic_depth = 0
+_deterministic_saved = False
+
+
+@contextlib.contextmanager
+def _deterministic_cudnn(mel_spec: Any) -> Iterator[None]:
+    global _deterministic_depth, _deterministic_saved
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+
+    cudnn = torch.backends.cudnn
+    if (
+        getattr(getattr(mel_spec, "device", None), "type", None) != "cuda"
+        or is_rocm_torch(torch)  # AMD SDK / Radeon wheels leave torch.version.hip unset
+        or _is_compiling()
+        or not vocoder_deterministic_enabled()
+    ):
+        yield
+        return
+    with _DETERMINISTIC_LOCK:
+        if _deterministic_depth == 0:
+            _deterministic_saved = bool(cudnn.deterministic)
+            cudnn.deterministic = True
+        _deterministic_depth += 1
+    try:
+        yield
+    finally:
+        with _DETERMINISTIC_LOCK:
+            _deterministic_depth -= 1
+            if _deterministic_depth == 0:
+                cudnn.deterministic = _deterministic_saved
+
+
+def _is_compiling() -> bool:
+    try:
+        import torch
+        check = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+        return bool(check()) if check is not None else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _no_autocast(device_type: str) -> Any:
+    """The caller's autocast switched off for ``device_type``: the float32 pass must not be re-lowered."""
+    import torch
+    try:
+        return torch.autocast(device_type = device_type, enabled = False)
+    except Exception:  # noqa: BLE001 -- a backend without autocast has none to override
+        return contextlib.nullcontext()
+
+
+def _stage_fp32(module: Any) -> list:
+    """Float32 copies of every floating parameter / buffer not already float32, as (owner, name, is_param, copy).
+    Allocates only: the module is untouched, so an out-of-memory here leaves nothing to roll back."""
+    import torch
+
+    staged = []
+    for owner in module.modules():
+        for name, p in owner._parameters.items():
+            if p is not None and p.is_floating_point() and p.dtype != torch.float32:
+                staged.append((owner, name, True, p.detach().float()))
+        for name, b in owner._buffers.items():
+            if b is not None and b.is_floating_point() and b.dtype != torch.float32:
+                staged.append((owner, name, False, b.float()))
+    return staged
+
+
+@contextlib.contextmanager
+def _swapped_in(staged: list) -> Iterator[None]:
+    """Point the module at the staged float32 tensors for the call and back after. Reference swaps only (``.data``
+    on the existing Parameters, buffer dict entries): nothing allocates, so the restore cannot fail half way."""
+    saved = []
+    try:
+        for owner, name, is_param, copy in staged:
+            if is_param:
+                p = owner._parameters[name]
+                saved.append((owner, name, True, p.data))
+                p.data = copy
+            else:
+                saved.append((owner, name, False, owner._buffers[name]))
+                owner._buffers[name] = copy
+        yield
+    finally:
+        for owner, name, is_param, old in reversed(saved):
+            if is_param:
+                owner._parameters[name].data = old
+            else:
+                owner._buffers[name] = old
+
+
+def _fp32_resampler_filter(vocoder: Any) -> Any:
+    """The BWE skip resampler's sinc filter rebuilt in float32, or None. It is a non-persistent buffer, so no
+    checkpoint holds it: the reference builds it in float32 beside bf16 weights, while a bf16 load either rounds it
+    (``.to(bf16)``) or computes it in bf16 (diffusers' from_pretrained sets the default dtype). Returned only when it
+    matches the stored filter to bf16 accuracy, so a changed upstream filter is left alone."""
+    import torch
+
+    res = getattr(vocoder, "resampler", None)
+    stored = getattr(res, "_buffers", {}).get("filter") if res is not None else None
+    if (
+        stored is None
+        or "filter" not in res._non_persistent_buffers_set
+        or stored.dtype == torch.float32
+    ):
+        return None
+    with torch.device("cpu"):
+        fresh = type(res)(
+            ratio = res.ratio,
+            window_type = "hann",
+            padding_mode = getattr(res, "padding_mode", "replicate"),
+            persistent = False,
+        ).filter.float()
+    old = stored.detach().float().cpu()
+    if fresh.shape != old.shape or not torch.allclose(
+        fresh, old, rtol = 0, atol = 0.02 * float(fresh.abs().max())
+    ):
+        return None
+    return fresh
+
+
+def _install_fp32_filter(res: Any, fp32_filter: Any) -> None:
+    """The float32 filter becomes the resampler's ``filter`` buffer (so the float32 forward reads it with no swap and
+    stays traceable); the loaded one is kept beside it as a buffer for the stored-dtype path."""
+    stored = res._buffers["filter"]
+    res.register_buffer(_STORED_FILTER, stored, persistent = False)
+    res.register_buffer("filter", fp32_filter.to(stored.device), persistent = False)
+
+
+@contextlib.contextmanager
+def _stored_filter(res: Any) -> Iterator[None]:
+    """The filter the vocoder was loaded with, for a stored-dtype (main) call: that path stays bit-identical."""
+    stored = getattr(res, "_buffers", {}).get(_STORED_FILTER) if res is not None else None
+    if stored is None:
+        yield
+        return
+    current = res._buffers["filter"]
+    res._buffers["filter"] = stored
+    try:
+        yield
+    finally:
+        res._buffers["filter"] = current
+
+
+def _refresh_fp32_filter(res: Any, fp32_filter: Any) -> None:
+    """A cast of the whole pipe (``.to(bf16)``) rounds the float32 filter: put the exact one back (eager only)."""
+    import torch
+
+    current = res._buffers.get("filter")
+    if current is not None and current.dtype != torch.float32:
+        res._buffers["filter"] = fp32_filter.to(current.device)
+
+
+# Extra peak of the float32 forward over bf16, measured on an L4 (LTX-2.5 vocoder, 5.04 s clip = 501 mel frames):
+# +104.5 MiB, linear in the clip length. Below it (with margin) free on the card, the call runs the stored dtype.
+_FP32_EXTRA_MIB_PER_MEL_FRAME = 105.0 / 501
+_FP32_MARGIN = 1.5
+_FP32_MARGIN_MIB = 64
+_fallback_logged = [False]
+# Stored-dtype fallbacks taken so far: a request whose vocoder fell back records no float32 render peak.
+_fallbacks = [0]
+
+
+def vocoder_fallback_count() -> int:
+    return _fallbacks[0]
+
+
+def vocoder_precision(vocoder: Any) -> Optional[str]:
+    """The precision this vocoder decodes in, for the render-peak calibration key: "fp32" (the float32 pass is on, or
+    the weights are float32), "stored" (switched off), None for any other vocoder."""
+    if not getattr(vocoder, "_unsloth_fp32_forward", False):
+        return None
+    try:
+        param = next(vocoder.parameters(), None)
+        if param is not None and str(param.dtype) == "torch.float32":
+            return "fp32"
+    except Exception:  # noqa: BLE001
+        return None
+    return "fp32" if vocoder_fp32_enabled() else "stored"
+
+
+def vocoder_fp32_extra_bytes(mel_spec: Any) -> int:
+    """Bytes the float32 forward needs beyond the bf16 one for this mel input, margin included."""
+    frames = int(mel_spec.shape[-2]) if getattr(mel_spec, "dim", lambda: 0)() >= 2 else 0
+    batch = int(mel_spec.shape[0]) if getattr(mel_spec, "dim", lambda: 0)() >= 4 else 1
+    mib = _FP32_EXTRA_MIB_PER_MEL_FRAME * frames * batch * _FP32_MARGIN + _FP32_MARGIN_MIB
+    return int(mib * (1 << 20))
+
+
+def _cuda_room(device: Any) -> Optional[int]:
+    """Free bytes on ``device``: the driver's free memory plus the caching allocator's unused reserve."""
+    try:
+        import torch
+        free, _ = torch.cuda.mem_get_info(device)
+        return (
+            int(free)
+            + int(torch.cuda.memory_reserved(device))
+            - int(torch.cuda.memory_allocated(device))
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    import torch
+
+    oom = getattr(torch, "OutOfMemoryError", None) or getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom is not None and isinstance(exc, oom):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _note_fallback(reason: str) -> None:
+    _fallbacks[0] += 1
+    if not _fallback_logged[0]:
+        _fallback_logged[0] = True
+        logger.warning(
+            "LTX vocoder: %s; this decode runs in the stored dtype (bf16) instead of float32",
+            reason,
+        )
+
+
+def install_vocoder_fp32_forward(vocoder: Any) -> None:
+    """Run this vocoder instance's forward in float32 and return a float32 waveform; idempotent, never raises.
+
+    Eager calls never fail a render: short of room on the card, or out of memory (while staging float32 weights or
+    in the pass), the call runs the stored dtype on an unchanged module. Under torch.compile the forward is a plain
+    traceable graph: CUDA autocast in float32, or the stored dtype where float32 needs eager-only weight staging."""
+    try:
+        import torch
+        import types
+
+        if getattr(vocoder, "_unsloth_fp32_forward", False):
+            return
+        inner = vocoder.forward
+        fp32_filter = _fp32_resampler_filter(vocoder)
+        res = getattr(vocoder, "resampler", None)
+        if fp32_filter is not None:
+            try:
+                _install_fp32_filter(res, fp32_filter)
+            except Exception as exc:  # noqa: BLE001 -- the loaded filter stays: float32 weights, rounded filter
+                logger.debug("LTX vocoder float32 filter not installed: %s", exc)
+                fp32_filter = None
+
+        def stored_call(self, mel_spec, args, kwargs):
+            if _is_compiling():
+                return inner(mel_spec, *args, **kwargs)
+            with _stored_filter(self.resampler if fp32_filter is not None else None):
+                return inner(mel_spec, *args, **kwargs)
+
+        def fallback(self, mel_spec, args, kwargs, reason):
+            _note_fallback(reason)
+            if mel_spec.device.type == "cuda":
+                torch.cuda.empty_cache()
+            return stored_call(self, mel_spec, args, kwargs)
+
+        def forward(self, mel_spec, *args, **kwargs):
+            with _deterministic_cudnn(mel_spec):
+                return fp32_forward(self, mel_spec, *args, **kwargs)
+
+        def fp32_forward(self, mel_spec, *args, **kwargs):
+            param = next(self.parameters(), None)
+            compiling = _is_compiling()
+            if (
+                param is None
+                or not torch.is_floating_point(mel_spec)
+                or (not compiling and not vocoder_fp32_enabled())
+            ):
+                return stored_call(self, mel_spec, args, kwargs)
+            device_type = mel_spec.device.type
+            if param.dtype == torch.float32:
+                with _no_autocast(device_type):
+                    return inner(mel_spec.float(), *args, **kwargs)
+            if compiling:
+                if device_type == "cuda":
+                    with torch.autocast(device_type = "cuda", dtype = torch.float32):
+                        return inner(mel_spec.float(), *args, **kwargs)
+                return inner(mel_spec, *args, **kwargs)
+            if fp32_filter is not None:
+                _refresh_fp32_filter(self.resampler, fp32_filter)
+            if device_type == "cuda":
+                room = _cuda_room(mel_spec.device)
+                need = vocoder_fp32_extra_bytes(mel_spec)
+                if room is not None and room < need:
+                    return fallback(
+                        self,
+                        mel_spec,
+                        args,
+                        kwargs,
+                        f"{room >> 20} MiB free, the float32 pass needs about {need >> 20} MiB",
+                    )
+                failed = False
+                try:
+                    # CUDA (and ROCm) autocast upcasts bf16 weights per op: bit-equal to a float32 build, at a
+                    # fraction of the memory of .float(). It overrides an enclosing autocast.
+                    with torch.autocast(device_type = "cuda", dtype = torch.float32):
+                        return inner(mel_spec.float(), *args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_oom(exc):
+                        raise
+                    failed = True
+                if (
+                    failed
+                ):  # outside the except block, so the failed pass's tensors are released first
+                    return fallback(
+                        self, mel_spec, args, kwargs, "out of memory in the float32 pass"
+                    )
+            # Other backends refuse float32 autocast: float32 copies of the weights for the call, staged before the
+            # module is touched and swapped by reference, so any failure leaves the stored weights in place.
+            failed = False
+            try:
+                staged = _stage_fp32(self)
+                with _swapped_in(staged), _no_autocast(device_type):
+                    return inner(mel_spec.float(), *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not _is_oom(exc):
+                    raise
+                failed = True
+            staged = None
+            if failed:
+                return fallback(self, mel_spec, args, kwargs, "out of memory in the float32 pass")
+
+        vocoder.forward = types.MethodType(forward, vocoder)
+        vocoder._unsloth_fp32_forward = True
+    except Exception as exc:  # the render keeps the stored-dtype vocoder
+        logger.debug("LTX vocoder float32 forward not installed: %s", exc)
 
 
 PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"
@@ -1628,6 +2352,14 @@ def _assemble_ltx23_pipeline(
     if state is None and transformer_override is not None and not is_gguf:
         state = _load_checkpoint_without_dit(checkpoint_path)
     if state is None:
+        if is_gguf:
+            from .diffusion_gguf_exact import install_exact_dequant
+            from .diffusion_gguf_lowbit import install_lowbit_iq
+            from .diffusion_gguf_mmap import install_gguf_mmap
+
+            install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
+            install_exact_dequant()
+            install_gguf_mmap()
         state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
     del state

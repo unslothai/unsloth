@@ -83,6 +83,13 @@ def load_whisper(
 ) -> tuple:
     """Loads Whisper from the local Hub cache; local_files_only keeps the Model Hub the only download path, and a cache miss raises SttModelNotDownloadedError."""
     import torch
+
+    _ensure_backend_on_path()
+    from utils.transformers_backports import install as guard_transformers_parsing
+
+    # This child never imports unsloth: install its tokenizer / config back-ports before the
+    # repo's tokenizer files are parsed, so they cannot name a host file as the vocabulary.
+    guard_transformers_parsing()
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     dtype = getattr(torch, dtype_name, None) or torch.float32

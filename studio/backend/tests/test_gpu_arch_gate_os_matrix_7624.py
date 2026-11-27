@@ -66,9 +66,7 @@ def _device(
 
 
 class _Props:
-    """hipDeviceProp_t / cudaDeviceProp stand-in. Only the arch attribute the
-    device asks for is set, so the AMD SDK wheels that populate none of the
-    canonical spellings can be reproduced."""
+    """Stand-in for hipDeviceProp_t / cudaDeviceProp that sets only the arch attribute asked for."""
 
     def __init__(self, spec):
         self.name = spec["name"]
@@ -144,8 +142,7 @@ def _apply_os(
     *,
     is_rocm = False,
 ):
-    """Pin the simulated host OS. ``IS_ROCM`` is the backend's own detection
-    flag and gates the Windows free-VRAM cap, so it travels with the vendor."""
+    """Pins the host OS; IS_ROCM gates the Windows free-VRAM cap, so it is set per vendor."""
     platform_name, system_name = _OS_CELLS[os_key]
     monkeypatch.setattr(llama_cpp.sys, "platform", platform_name)
     monkeypatch.setattr(hw.sys, "platform", platform_name)
@@ -336,8 +333,7 @@ class TestOsVendorMatrix:
     def test_cpu_only_host_without_torch_is_empty_and_quiet(
         self, os_key, tmp_path, monkeypatch, probe_env, marker_spy
     ):
-        """CPU-only with no torch installed at all: no GPU, no traceback,
-        empty list (the import failure is swallowed by the probe)."""
+        """No torch installed: the probe swallows the import error and returns an empty list."""
         _apply_os(monkeypatch, os_key, is_rocm = False)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         monkeypatch.setitem(sys.modules, "torch", None)
@@ -419,9 +415,7 @@ class TestAmdCoverageCases:
     def test_every_device_uncovered_empties_the_pool(
         self, os_key, tmp_path, monkeypatch, probe_env
     ):
-        """A marker that covers none of the present cards leaves the llama-server
-        probe with nothing. Pinned deliberately: this is the input to the
-        downstream behaviour asserted in TestEveryDeviceUncoveredDownstream."""
+        """A marker covering no present card leaves the probe empty; pinned as downstream test input."""
         _apply_os(monkeypatch, os_key, is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX120X})
         _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd")
@@ -429,9 +423,8 @@ class TestAmdCoverageCases:
         assert LlamaCppBackend._get_gpu_free_memory() == [(0, 12049), (1, 12176)]
 
     def test_amd_sdk_wheel_is_gated_on_every_os(self, tmp_path, monkeypatch, probe_env):
-        """AMD SDK / Radeon wheels leave ``version.hip`` unset and only encode
-        "rocm" in ``__version__``; a bare ``version.hip`` test would skip the
-        gate on exactly the hosts #7624 was reported from."""
+        """AMD SDK wheels leave version.hip unset, so a version.hip check would skip the gate for
+        issue 7624."""
         _apply_os(monkeypatch, "windows", is_rocm = True)
         _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
         _install_torch(monkeypatch, _gfx103x_pair(), vendor = "amd_sdk")
@@ -439,9 +432,7 @@ class TestAmdCoverageCases:
 
 
 class TestWslIsNotWindows:
-    """ROCm under WSL reports through the same torch path as native Linux, but
-    ``sys.platform`` is "linux", so the Windows-only free-VRAM cap (#8403) must not
-    engage: same arch gate, different memory accounting."""
+    """ROCm under WSL reports linux, so the Windows-only free-VRAM cap (issue 8403) must not engage."""
 
     def _probe(self, monkeypatch, tmp_path, os_key):
         _apply_os(monkeypatch, os_key, is_rocm = True)
@@ -472,9 +463,7 @@ class TestWslIsNotWindows:
 
 
 class TestVisibilityMaskMapping:
-    """The gate keys on PHYSICAL ids while torch enumerates visible ordinals.
-    Every case below is built so that confusing the two drops the wrong card,
-    rather than merely relabelling the surviving one."""
+    """Gate keys on physical ids, torch on visible ordinals; mixing them drops the wrong card."""
 
     def test_hip_mask_reversing_the_order_drops_the_right_card(
         self, tmp_path, monkeypatch, probe_env
@@ -772,9 +761,7 @@ def _visibility(env):
 
 
 class TestEveryDeviceUncoveredDownstream:
-    """What the gate emptying the pool does to a load. Mock-based (no ROCm here).
-    The comparison case is the #7624 shape, one covered card surviving; the case
-    under test is the same host with a marker covering neither."""
+    """Mock-based. The issue 7624 shape keeps one covered card; a marker covering neither empties it."""
 
     def test_one_covered_device_is_pinned(self, tmp_path, monkeypatch, probe_env):
         """Auto placement pins only the covered dGPU; the iGPU's shared RAM would otherwise outrank it."""
@@ -833,8 +820,7 @@ class TestEveryDeviceUncoveredDownstream:
         }
 
     def test_the_forced_cpu_server_reports_zero_vram(self, tmp_path, monkeypatch, probe_env):
-        """A masked-off server must report VRAM flag exactly False, since training_vram checks is
-        not False."""
+        """Masked-off server reports exactly False VRAM: training_vram checks is not False."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         capture: dict = {}
@@ -846,8 +832,7 @@ class TestEveryDeviceUncoveredDownstream:
         assert capture["backend"]._gpu_offload_active is False
 
     def test_a_covered_host_still_classifies_normally(self, tmp_path, monkeypatch, probe_env):
-        """The zero-VRAM verdict is the gate's doing, not a blanket False: a host
-        the build covers keeps the counted classifier's answer."""
+        """Only the gate forces zero VRAM; a covered host keeps the classifier's answer."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(
             [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
@@ -858,9 +843,7 @@ class TestEveryDeviceUncoveredDownstream:
         assert capture["backend"]._gpu_offload_active is not False
 
     def test_all_uncovered_names_the_devices_in_the_warning(self, tmp_path, monkeypatch, probe_env):
-        """The CPU fallback is a large, silent-looking performance cliff, so the
-        log has to say why: which devices are present, and that the installed
-        build covers none of them (#7624)."""
+        """CPU fallback warning must list present devices and that the build covers none (issue 7624)."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         # structlog, so caplog cannot see these records.
@@ -878,9 +861,7 @@ class TestEveryDeviceUncoveredDownstream:
     def test_partial_coverage_never_reaches_the_cpu_fallback(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """The normal #7624 host (one covered card) must be untouched by the CPU
-        fallback: it still pins the survivor, and never pays for the second,
-        ungated probe the fallback needs to tell "all gated out" from "no GPU"."""
+        """A normal issue 7624 host still pins its survivor and skips the CPU fallback's ungated probe."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         _ungated = []
@@ -901,8 +882,7 @@ class TestEveryDeviceUncoveredDownstream:
     def test_a_model_too_large_to_pin_still_masks_the_uncovered_card(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """A too-large model must still get the uncovered card masked, or the child enumerates it
-        and dies."""
+        """Too-large models still mask the uncovered card, or the child dies enumerating it."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(_gfx103x_pair(), vendor = "amd")
         launches = _run_auto_load(
@@ -921,9 +901,7 @@ class TestEveryDeviceUncoveredDownstream:
     def test_full_coverage_leaves_a_fit_owned_launch_unmasked(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """The same unpinned arm on a host the build fully covers writes no mask
-        at all, so the pin is the gate's doing and not a blanket change to every
-        `--fit on` launch."""
+        """Fully covered hosts write no mask on the unpinned --fit arm, so the pin is the gate's doing."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(
             [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
@@ -943,9 +921,8 @@ class TestEveryDeviceUncoveredDownstream:
         assert _visibility(env) == {}
 
     def test_cuda_host_with_no_gpu_does_not_reprobe(self, tmp_path, monkeypatch, probe_env):
-        """The GPU-less path is the common case, so the ROCm guard has to come
-        BEFORE the ungated re-probe: on a CUDA or CPU-only host an empty probe
-        just means "no GPU", and probing again would cost every such load."""
+        """The ROCm guard precedes the ungated re-probe, since on CUDA or CPU hosts it would cost
+        every load."""
         _apply_os(monkeypatch, "linux", is_rocm = False)
         torch = _fake_torch([], vendor = "nvidia")
         _probes = []
@@ -1023,9 +1000,7 @@ class TestArchCrashRetryEnv:
     def test_a_user_set_unified_memory_value_survives_the_retry(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """The first spawn uses setdefault, so a value already in env is the
-        user's. Popping unconditionally would clobber it; ownership is tracked
-        instead, and only a value this launch set is withdrawn."""
+        """setdefault keeps a pre-existing env value; on retry only what this launch set is withdrawn."""
         torch = self._apu_then_dgpu(monkeypatch)
         monkeypatch.setenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
         launches = _run_auto_load(
@@ -1126,9 +1101,8 @@ class TestArchCrashRetryEnv:
     def test_a_narrowed_retry_that_fits_keeps_the_mode_it_was_given(
         self, tmp_path, monkeypatch, probe_env, extra_args
     ):
-        """The control. Same crash and same narrowing, on a model the 4000 MiB survivor
-        plus a 20 GB host holds comfortably: no shortfall, so both argvs keep the
-        unmapped mode the user chose."""
+        """Control: a 4000 MiB survivor and 20 GB host hold the model, so both argvs keep the
+        unmapped mode."""
         capture = {}
         first, retry = self._arch_retry_launches(
             tmp_path,
@@ -1213,8 +1187,7 @@ class TestManualSplitLaunchesRespectTheGate:
     def test_the_dropped_ratio_is_recorded_for_the_duplicate_load_check(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """Record a dropped split ratio, or the duplicate-load check respawns the same server on
-        every Apply."""
+        """Record a dropped split ratio, or the duplicate check respawns the server on Apply."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1231,9 +1204,8 @@ class TestManualSplitLaunchesRespectTheGate:
         assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
 
     def test_a_covered_host_records_no_drop(self, tmp_path, monkeypatch, probe_env):
-        """The record is the gate's doing. With every card covered the ratio is
-        still live, so nothing may be recorded as dropped -- that entry is what
-        excuses a mismatch, and an unearned one would dedupe a genuine change."""
+        """Recorded only when the gate drops a card; a covered host keeps the ratio live and records
+        nothing."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1300,8 +1272,7 @@ class TestManualSplitLaunchesRespectTheGate:
         assert backend._arch_gate_dropped_tensor_parallel is True
 
     def test_a_covered_host_records_no_mode_drop(self, tmp_path, monkeypatch, probe_env):
-        """The record excuses a mismatch, so an unearned one would dedupe a genuine
-        layer-to-tensor change away."""
+        """An unearned mode-drop record would dedupe a genuine layer-to-tensor change away."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1318,9 +1289,8 @@ class TestManualSplitLaunchesRespectTheGate:
         assert capture["backend"]._arch_gate_dropped_tensor_parallel is False
 
     def test_a_forced_cpu_launch_records_both_drops(self, tmp_path, monkeypatch, probe_env):
-        """The forced-CPU arm strips the mode AND the ratio, so it records both: it is
-        the one arm that normalizes a manual tensor request all the way down to a server
-        with no visible device."""
+        """The forced-CPU arm strips mode and ratio, so it records both drops; no other arm goes
+        that far."""
         capture: dict = {}
         self._manual_split(
             monkeypatch,
@@ -1405,8 +1375,7 @@ class TestForcedCpuDropsTensorMode:
         assert capture["backend"]._tensor_parallel is False
 
     def test_a_covered_host_keeps_tensor_mode(self, tmp_path, monkeypatch, probe_env):
-        """The normalisation is the gate's doing, not a blanket drop of tensor
-        mode from every manual launch."""
+        """Only the gate normalises tensor mode; manual launches are not blanket-dropped."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(
             [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
@@ -1429,8 +1398,7 @@ class TestForcedCpuDropsTensorMode:
 
 
 class TestGatedNarrowingDropsUnifiedMemory:
-    """Unified memory is decided on the whole host, so a discrete-only survivor mask still gets it
-    wrongly."""
+    """Unified memory is decided host-wide, so a discrete-only survivor mask must drop it."""
 
     def _apu_and_dgpu(self, monkeypatch):
         _apply_os(monkeypatch, "linux", is_rocm = True)
@@ -1464,8 +1432,7 @@ class TestGatedNarrowingDropsUnifiedMemory:
         assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
 
     def test_an_inherited_user_value_still_stands(self, tmp_path, monkeypatch, probe_env):
-        """Ownership, not presence: the withdrawal only takes back what this
-        launch set, so a deliberate user value survives the narrowing."""
+        """Withdrawal takes back only what this launch set, so a user's own value survives."""
         torch = self._apu_and_dgpu(monkeypatch)
         launches = _run_auto_load(
             monkeypatch,
@@ -1480,8 +1447,7 @@ class TestGatedNarrowingDropsUnifiedMemory:
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
 
     def test_a_surviving_apu_keeps_it(self, tmp_path, monkeypatch, probe_env):
-        """The withdrawal is scoped to a narrowing that leaves only discrete
-        cards; an APU that survives the gate still wants the shared pool."""
+        """Only a narrowing to discrete cards drops unified memory; a surviving APU keeps it."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
@@ -1557,8 +1523,7 @@ class TestGatedNarrowingDropsDeadTensorMode:
         assert capture["backend"]._tensor_parallel is False
 
     def test_two_survivors_keep_it(self, tmp_path, monkeypatch, probe_env):
-        """Scoped to a narrowing that leaves ONE card, not to every narrowing:
-        two survivors still split by tensor."""
+        """Two surviving cards still split by tensor; a one-card narrowing drops tensor mode."""
         capture: dict = {}
         launches = self._narrowed_tensor_load(
             monkeypatch,
@@ -1631,8 +1596,7 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
     def test_a_surviving_apu_still_warns(self, tmp_path, monkeypatch, probe_env):
-        """The waiver is scoped to survivors that are all discrete. A build
-        covering both cards leaves the APU in play, so the warning stands."""
+        """The waiver needs every survivor discrete; an APU left in play keeps the warning."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -1651,8 +1615,7 @@ class TestGatedNarrowingRechecksTheApuRamGuard:
         assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
     def test_the_forced_cpu_host_still_warns(self, tmp_path, monkeypatch, probe_env):
-        """Every card gated out means the weights load into system RAM after all, so
-        the guard the gate has no survivor to answer with still prices it."""
+        """Gated-out cards mean RAM-resident weights; the shortfall warning still prices them."""
         torch = self._apu_and_dgpu(monkeypatch)
         calls: list = []
         capture: dict = {}
@@ -2140,9 +2103,8 @@ class TestArchCrashRetryDropsDeadTensorMode:
             assert "tensor" not in _modes, f"the narrowed respawn kept tensor mode: {cmd}"
 
     def test_the_retry_records_what_it_normalized(self, tmp_path, monkeypatch, probe_env):
-        """The reactive path keeps the same record the proactive gate does: a markerless
-        build only ever reaches the gate reactively, so without it every identical Apply
-        reads the normalized server as new."""
+        """The reactive retry records what it normalized, or every identical Apply reads the server
+        as new."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
@@ -2219,8 +2181,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
         assert "only about 8 GB" in (capture["backend"].last_load_warning or "")
 
     def test_a_model_that_fits_still_retries_onto_the_apu(self, tmp_path, monkeypatch, probe_env):
-        """The guard warns on a shortfall, it does not block the fallback. With
-        room to spare the retry runs exactly as before."""
+        """A shortfall warns but never blocks the retry; a model that fits retries as before."""
         torch = self._dgpu_then_apu(monkeypatch)
         calls: list = []
 
@@ -2295,8 +2256,7 @@ class TestArchCrashRetryRechecksTheApuRamGuard:
     def test_without_the_opt_out_the_retrys_advisory_still_names_the_override(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """The control. Nothing silenced, so the same respawn warns as before and the
-        override is named in the text the route hands back."""
+        """The control: without the opt-out, the respawn still warns and names the override."""
         monkeypatch.delenv("UNSLOTH_ALLOW_HOST_OFFLOAD", raising = False)
         capture: dict = {}
 
@@ -2343,8 +2303,7 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         self, tmp_path, monkeypatch, probe_env
     ):
         torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
-        # Auto now pins a dGPU that holds the model before the APU; drop that tier so
-        # the crashed-APU-first selection whose verdict is under test still happens.
+        # Auto pins a dGPU that holds the model; drop that tier so the APU-first case runs.
         _select = LlamaCppBackend._select_gpus
         monkeypatch.setattr(
             LlamaCppBackend,
@@ -2375,9 +2334,8 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
     def test_a_shortfall_that_still_stands_survives_the_retry(
         self, tmp_path, monkeypatch, probe_env
     ):
-        """Scoped: clearing the dead verdict must not silence a live one. The respawn
-        prices the same weights against a NARROWER pool, so a real spill is re-warned.
-        """
+        """Clearing the dead verdict must not silence a live one; a narrower respawn re-warns a real
+        spill."""
         torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 4000)
         capture: dict = {}
         launches = _run_auto_load(
@@ -2455,8 +2413,7 @@ class TestAnInstallFromBeforeThisPr:
         ) == [(0, 12049), (1, 11152)]
 
     def test_the_launch_is_not_masked_onto_the_cpu(self, tmp_path, monkeypatch, probe_env):
-        """The failure that would matter most: an old install that used to run
-        on the GPU being gated to CPU by a marker the gate cannot read."""
+        """An old GPU install must not be gated to CPU by a marker the gate cannot read."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -2565,9 +2522,8 @@ class TestTheForcedCpuFlagIsNotSticky:
         )
 
     def test_a_covered_load_after_a_gated_one_clears_it(self, tmp_path, monkeypatch, probe_env):
-        """The llama.cpp-update shape: the SAME backend instance loads again on
-        a build that now covers the dGPU, with no unload in between (load_model
-        phase 1 only kills the process)."""
+        """Same instance reloads on a build that covers the dGPU with no unload; the gated flag must
+        clear."""
         gated: dict = {}
         self._load(monkeypatch, tmp_path, GFX103X, gated)
         assert gated["backend"]._arch_gate_forced_cpu is True
@@ -2582,8 +2538,7 @@ class TestTheForcedCpuFlagIsNotSticky:
         assert backend.holds_no_vram is False
 
     def test_the_publish_overwrites_a_stale_true(self, tmp_path, monkeypatch, probe_env):
-        """The mutation the class exists for, on one instance: pre-set the flag,
-        run a covered load, and the launch must publish False over it."""
+        """A covered launch must publish False over a stale True left on the same instance."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -2601,8 +2556,7 @@ class TestTheForcedCpuFlagIsNotSticky:
         assert covered["backend"].holds_no_vram is False
 
     def test_the_diffusion_state_path_clears_it(self):
-        """A diffusion runner does hold VRAM, and its state block already resets
-        the sibling chat fields for exactly this reason."""
+        """A diffusion runner holds VRAM, so its state block must reset the gate flag."""
         source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
@@ -2610,8 +2564,7 @@ class TestTheForcedCpuFlagIsNotSticky:
         assert "self._arch_gate_forced_cpu = False" in block
 
     def test_the_flag_is_published_not_only_set(self):
-        """Source-level, because the miss was structural: a branch that only
-        assigns True can never clear a previous launch's value."""
+        """A branch that only assigns True can never clear a previous launch's value."""
         source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
@@ -2673,8 +2626,7 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         assert "--split-mode" not in cmd
 
     def test_the_narrowed_pin_clears_both(self, tmp_path, monkeypatch, probe_env):
-        """A survivor pin re-indexes the visible devices, so an inherited
-        positional ratio would land on the wrong card."""
+        """Survivor pins re-index devices, so an inherited positional ratio hits a wrong card."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -2696,8 +2648,7 @@ class TestInheritedSplitEnvGoesWithTheArgvStrip:
         assert "LLAMA_ARG_TENSOR_SPLIT" not in env
 
     def test_an_ordinary_load_keeps_them(self, tmp_path, monkeypatch, probe_env):
-        """Only the gate's own branches clear these. An unrelated launch must
-        not lose an inherited setting the existing reconciliation allows."""
+        """Only the gate's branches clear these; an ordinary launch keeps inherited settings."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
@@ -2762,8 +2713,7 @@ class TestTheForcedCpuLaunchAppliesThePageLock:
         assert capture["backend"]._memory_mlock_applicable is True
 
     def test_a_covered_host_still_skips_it(self, tmp_path, monkeypatch, probe_env):
-        """The recompute is the gate's doing. With the cards covered the launch really
-        is fully offloaded, so the pre-existing skip has to stand."""
+        """Covered cards mean a fully offloaded launch, so the existing skip must stand."""
         launches, capture = self._run(tmp_path, monkeypatch, targets = GFX103X)
         assert launches
         cmd, env = launches[0]
@@ -2799,14 +2749,12 @@ class TestForcedCpuNeedsRealArchEvidence:
         return capture["backend"]
 
     def test_a_transient_probe_failure_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
-        """The marker covers the only card, so nothing was filtered: an empty gated
-        result here is the probe, not the gate."""
+        """Nothing was filtered, so an empty gated result is the probe, not the gate."""
         backend = self._run(tmp_path, monkeypatch, targets = GFX103X, flaky = True)
         assert backend._arch_gate_forced_cpu is False
 
     def test_an_unmarked_install_does_not_force_cpu(self, tmp_path, monkeypatch, probe_env):
-        """No marker at all means unknown coverage, which the filter fails open on, so
-        the gate cannot have emptied anything."""
+        """No marker means unknown coverage; the fail-open filter cannot empty anything."""
         backend = self._run(tmp_path, monkeypatch, targets = None, flaky = True)
         assert backend._arch_gate_forced_cpu is False
 

@@ -32,8 +32,7 @@
     "Send message",
   ];
 
-  // Progress hooks: data-status on text parts and aria-busy on reasoning content, named once so
-  // the streaming scan and its control cannot drift apart.
+  // Progress hooks named once so the streaming scan and its control cannot drift apart.
   const STATUS_HOOK = '[data-status], [data-slot="reasoning-content"][aria-busy]';
 
   const byName = (sel, name, root) =>
@@ -62,16 +61,14 @@
     queueButton() {
       return q('button[aria-label="Queue message"]');
     },
-    // Rendered under isQueueRunning && !thread.isRunning, where neither stopButton() nor
-    // queueButton() matches; without it that transient looks like a settled Send arm.
+    // Under isQueueRunning with an idle thread, stop and queue both miss; not a settled Send.
     stopQueuedButton() {
       return q('button[aria-label="Stop queued message"]');
     },
     isRunning() {
       return Boolean(D.stopButton() || D.queueButton());
     },
-    // Exactly one run-state control renders at a time and each is a different subtree, so arms
-    // showing different tokens differ in the scaffold for that reason.
+    // One run-state control renders at a time, each a different subtree, so scaffolds differ.
     runStateControl() {
       for (const name of RUN_STATE_CONTROLS) {
         if (byName("button", name)) return name;
@@ -82,8 +79,7 @@
     promptQueue() {
       return q('[aria-label^="Prompt queue,"]', D.threadRoot());
     },
-    // Narrower than isRunning(): "Queue message" also renders while a queued prompt waits on an idle
-    // thread. Research runs are deliberately invisible here; the seeder cannot start one.
+    // Narrower than isRunning: idle queued prompts show Queue; research runs are never seeded.
     generating() {
       if (D.stopButton()) return true;
       if (!D.queueButton()) return false;
@@ -96,8 +92,7 @@
         (m) => m.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
       );
     },
-    // Tells a renamed data-status hook (blind probe) apart from an unmounted row or a row with no
-    // parts yet. data-status is rendered for complete parts too.
+    // Tells a renamed hook from unmounted or empty rows; data-status marks complete parts too.
     statusHookPresent() {
       return D.assistantMessages().some((m) => m.querySelector(STATUS_HOOK) !== null);
     },
@@ -111,8 +106,7 @@
     messageCount() {
       return qa("[data-role]").length;
     },
-    // Thread length, not mounted count: differs once an arm windows. Read from aria-setsize, where
-    // WAI-ARIA requires a windowed list to publish it.
+    // Thread length, not mounted count: a windowed list must publish it as aria-setsize.
     threadTotal() {
       // The ordinal may sit on the message or on the virtualizer's row wrapper (same walk as readiness.py).
       const first = q("[data-role]");
@@ -134,8 +128,7 @@
       return all.length ? all[all.length - 1] : null;
     },
 
-    // Hidden with `invisible` when the app's autoscroll considers itself at the bottom, so the
-    // harness and the app cannot disagree about pinning.
+    // Hidden (`invisible`) when the app is at bottom, so harness and app agree on pinning.
     jumpToBottomButton() {
       return q(".aui-thread-scroll-to-bottom");
     },
@@ -159,8 +152,7 @@
     reasoningOpenCount() {
       return qa('[data-slot="reasoning-root"][data-state="open"]').length;
     },
-    // Collapsed content stays mounted until animationend/transitionend, so a collapse is settled
-    // only once the content is gone.
+    // Collapsed content stays mounted until its transition ends, so a collapse settles late.
     reasoningContentMounted() {
       return qa('[data-slot="reasoning-content"]').filter((el) => !el.hasAttribute("hidden"))
         .length;
@@ -227,8 +219,7 @@
       const menu = D.openMenu();
       return menu ? byName(".aui-action-bar-more-item", name, menu) : null;
     },
-    // Radix opens on pointerdown, so click() leaves the menu shut. The portaled menu is looked up
-    // only when body's children change, not per paint.
+    // Radix opens on pointerdown, not click; the portal is searched only on body changes.
     async openMenuAndFind(trigger, name, waitMs) {
       const pointer = { bubbles: true, cancelable: true, composed: true, button: 0,
                         pointerId: 1, pointerType: "mouse", isPrimary: true };
@@ -283,15 +274,16 @@
       return q('[data-testid="settings-tab-' + id + '"]');
     },
 
+    // Chat's picker is the composer chip; Images and the other pages keep the header picker.
     modelTrigger() {
-      return q("button.unsloth-model-selector-trigger");
+      return q('button[data-tour="chat-model-selector"]') || q("button.unsloth-model-selector-trigger");
     },
     modelMenu() {
-      return q(".unsloth-model-selector-menu");
+      return q("[data-composer-model-picker]") || q(".unsloth-model-selector-menu");
     },
     modelOptions() {
       const menu = D.modelMenu();
-      return menu ? qa("button[data-model-picker-option]", menu) : [];
+      return menu ? qa("[data-model-picker-option]", menu) : [];
     },
     currentModelLabel() {
       const t = D.modelTrigger();
@@ -334,8 +326,7 @@
         code_blocks: qa("pre").length,
         // Field capture density was ~5.6 characters per Shiki span; the fixture must reproduce it.
         highlight_spans: qa("pre span").length,
-        // Collapsed reasoning panes unmount children, so span location matters. Tools have two
-        // renderers (tool-group-root and tool-fallback-root), so count both.
+        // Tools have two renderers, count both; collapsed reasoning panes unmount children.
         tool_groups: qa('[data-slot="tool-group-root"]').length
                    + qa('[data-slot="tool-fallback-root"]').length,
         tool_groups_open: qa('[data-slot="tool-group-content"]').length
@@ -403,12 +394,10 @@
   const FOLLOW_TICK_MS = 250;
   // Generous because a virtualizer with estimated heights can sit short of the bottom; under two lines.
   const FOLLOW_TOLERANCE_PX = 64;
-  // Two phases: attached (does it follow, gated) and detached after a deliberate scroll (it must
-  // not be yanked back, recorded separately). One number cannot score both.
+  // Attached (gated follow) and detached after scroll (must not be yanked) are scored apart.
   let detached = false;
   let suspended = 0;
-  // A run started after the gesture is a fresh intent to be at the end; re-attach only when such
-  // a run is seen at the bottom, since the film's scroll gesture never ends at the bottom.
+  // Re-attach only if a run started after the gesture is at bottom; gestures never end there.
   let runSeq = 0;
   let wasRunning = false;
   let detachedAtRun = 0;
@@ -458,8 +447,7 @@
     suspend() { suspended += 1; detached = true; detachedAtRun = runSeq; },
     resume() {
       suspended = Math.max(0, suspended - 1);
-      // Re-attach if the gesture ended at the bottom; only checked on gesture exit, so the app pulling
-      // the viewport down on its own still counts as a yank.
+      // Re-attach on exit if the gesture ended at bottom; app-driven scrolls count as yanks.
       if (suspended === 0 && detached) {
         const app = D.appSaysAtBottom();
         const distance = D.distanceFromBottom();

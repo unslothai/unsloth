@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -29,6 +30,7 @@ from models.inference import (
     LoadRequest,
     LoadResponse,
     UnloadRequest,
+    ValidateModelRequest,
 )
 from routes import training_vram
 from state import active_generations
@@ -119,6 +121,34 @@ def test_a_safetensors_slot_is_served_by_its_own_orchestrator(backends):
         return slot, inf.get_llama_cpp_backend().is_loaded, inf.get_inference_backend()
 
     assert asyncio.run(run()) == (safetensors, False, safetensors.orchestrator)
+
+
+def _serving(info):
+    return SimpleNamespace(active_model_name = "org/Audio", models = {"org/Audio": info})
+
+
+_MUSIC, _SPEECH = {"audio_music": {"modes": []}}, {"is_audio": True, "audio_type": "csm"}
+
+
+@pytest.mark.parametrize(
+    "workflow, primary, kept",
+    [
+        ("separate", None, [_SPEECH, {"is_audio": True, "audio_workflows": ["separate"]}]),
+        ("music", None, [_SPEECH, _MUSIC]),
+        ("music", _MUSIC, [_MUSIC]),  # the primary runs it: stays there
+    ],
+)
+def test_omitted_audio_model_routes_to_the_kept_one(backends, monkeypatch, workflow, primary, kept):
+    if primary:
+        monkeypatch.setattr(orchestrator, "_inference_backend", _serving(primary))
+    model_slots.slots[:] = [model_slots.ExtraSlot(FakeLlama(), _serving(i), "owner") for i in kept]
+
+    async def run():
+        await inf._route_to_kept_audio_model(workflow)
+        return inf.get_inference_backend()
+
+    want = orchestrator._inference_backend if primary else model_slots.slots[-1].orchestrator
+    assert asyncio.run(run()) is want
 
 
 def test_loaded_models_lists_every_backend(backends):
@@ -277,6 +307,21 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
     assert status.serving == ["org/A-GGUF", "org/B-GGUF"] and "org/held-hf" in status.loaded
     monkeypatch.setattr(model_slots, "slots", [])
     assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
+
+
+def test_a_status_read_does_not_count_as_use_for_eviction(backends, monkeypatch):
+    # The Loaded models poll sizes every kept model by name; that must not reorder the LRU.
+    _, extra = backends
+    extra.last_used = 1.0
+
+    async def slot_status(subject):
+        return InferenceStatusResponse(active_model = inf.get_llama_cpp_backend().model_identifier)
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    named = asyncio.run(inf.get_status("s", model = "org/B-GGUF"))
+    assert named.active_model == "org/B-GGUF"
+    assert extra.last_used == 1.0
+    assert _routed("org/B-GGUF")[0] is extra and extra.last_used > 1.0
 
 
 def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(backends, monkeypatch):
@@ -478,6 +523,42 @@ def test_a_model_that_fits_nowhere_beside_the_others_replaces_the_active_one(bac
     assert response.evicted == ["org/B-GGUF:Q8_0", "org/A-GGUF"]
     assert model_slots.slots == [] and not extra.llama.is_active
     assert primary.model_identifier == "org/C-GGUF" and primary.is_loaded
+
+
+BESIDE_ONLY = AccountContext("owner", "o", "owner", via_api_key = True, load_policy = "beside_only")
+
+
+@pytest.mark.parametrize("alongside, short_fits", [(True, [1, 1]), (False, [])])
+def test_a_beside_only_load_unloads_nothing(backends, monkeypatch, alongside, short_fits):
+    a, b = backends
+    b.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = short_fits)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = alongside)
+    with pytest.raises(HTTPException) as exc:
+        run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s"))
+    assert exc.value.headers["X-Unsloth-Problem"].startswith("needs_user_load kind=llm")
+    assert a.is_loaded and a.model_identifier == "org/A-GGUF" and model_slots.slots == [b]
+
+
+def test_a_beside_only_load_into_an_empty_primary_frees_only_media(backends, monkeypatch):
+    backends[0].unload_model()
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: "fit")
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    monkeypatch.setattr(inf, "_free_for_chat", free := AsyncMock(return_value = []))
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    run_as(BESIDE_ONLY, asyncio.run, inf.load_model_gated(request, None, "s", background = True))
+    assert [call.kwargs["media_only"] for call in free.await_args_list] == [True]
+
+
+def test_beside_only_and_measured_always_refusals_unload_nothing_and_name_no_model():
+    # The beside-only refusal comes before vLLM or SGLang retires every kept model.
+    source = inspect.getsource(inf._load_model_impl)
+    refuse = source.index("_require_load_keeps_chat(fastapi_request, request)")
+    assert refuse < source.index("_gate_kept_models(request, cancel = False)")
+    # No kind: it would read as the model to unload, but an image or video model may hold the GPU.
+    source = inspect.getsource(inf.load_model_gated)
+    assert "raise MultiModelAlwaysRefusal(str(exc)) from exc" in source
 
 
 def _short_load_fakes(monkeypatch, errors):
@@ -844,13 +925,206 @@ def test_training_frees_the_kept_models_before_the_active_one(backends, monkeypa
     assert model_slots.slots == [] and primary.is_active
 
 
-def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends):
+def test_another_quant_of_a_loaded_model_loads_beside_it_when_models_are_kept(
+    backends, monkeypatch
+):
     _, extra = backends
     primary_quant = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
-    assert _selected(primary_quant) is None
+    assert _selected(primary_quant) not in (None, extra)
     slot_quant = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
-    assert _selected(slot_quant) is extra
+    assert _selected(slot_quant) not in (None, extra)
+    assert _selected(primary_quant.model_copy(update = {"alongside": False})) is None
     assert _selected(slot_quant.model_copy(update = {"alongside": False})) is extra
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
+    assert _selected(primary_quant) is None
+    assert _selected(slot_quant) is extra
+
+
+def test_two_loaded_quants_of_one_repo_are_each_named_and_reached(backends, monkeypatch):
+    primary, _ = backends
+    twin = model_slots.ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
+    model_slots.slots.append(twin)
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    assert _routed("org/A-GGUF:Q8_0") == (twin, twin.llama)
+    assert _routed("org/A-GGUF") == (twin, twin.llama)
+    assert _routed("org/A-GGUF:Q4_K_M") == (None, primary)
+    assert _routed("org/A-GGUF") == (None, primary)
+
+    async def slot_status(subject):
+        llama = inf.get_llama_cpp_backend()
+        return InferenceStatusResponse(
+            active_model = llama.model_identifier,
+            model_identifier = llama.model_identifier,
+            gguf_variant = llama.hf_variant,
+        )
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    status = asyncio.run(inf.get_status("s", model = "org/A-GGUF:Q8_0"))
+    assert status.model_identifier == "org/A-GGUF:Q8_0"
+    assert status.serving == ["org/A-GGUF", "org/A-GGUF", "org/B-GGUF"]
+    assert status.serving_checkpoints == ["org/A-GGUF:Q8_0", "org/A-GGUF:Q4_K_M", "org/B-GGUF"]
+    assert status.serving_quants == ["Q8_0", "Q4_K_M", "Q8_0"]
+    listed = [entry["id"] for entry in inf._openai_model_objects()]
+    assert listed == ["org/A-GGUF", "org/B-GGUF", "org/A-GGUF:Q8_0"]
+    model_slots.slots.remove(twin)
+    alone = asyncio.run(inf.get_status("s"))
+    assert alone.model_identifier == "org/A-GGUF"
+    assert alone.serving_checkpoints == ["org/A-GGUF", "org/B-GGUF"]
+
+
+def test_a_load_or_validate_naming_its_own_quant_names_the_repo():
+    named = {"model_path": "org/A-GGUF:Q8_0", "gguf_variant": "Q8_0"}
+    assert LoadRequest(**named).model_path == "org/A-GGUF"
+    assert ValidateModelRequest(**named).model_path == "org/A-GGUF"
+    assert LoadRequest(model_path = "org/A-GGUF:q8_0", gguf_variant = "Q8_0").model_path == "org/A-GGUF"
+    other = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q4_K_M")
+    assert other.model_path == "org/A-GGUF:Q8_0"
+    listed = LoadRequest(model_path = "org/A-GGUF:Q8_0")
+    assert (listed.model_path, listed.gguf_variant) == ("org/A-GGUF", "Q8_0")
+    tagged = LoadRequest(model_path = "ollama/qwen3:8b")
+    assert (tagged.model_path, tagged.gguf_variant) == ("ollama/qwen3:8b", None)
+
+
+@pytest.mark.parametrize("cancel_as", ["org/A-GGUF:Q8_0", "org/A-GGUF"])
+def test_a_scoped_cancel_reaches_a_load_named_with_its_own_quant(cancel_as):
+    from models.inference import UnloadRequest
+
+    load = LoadRequest(model_path = "org/A-GGUF:Q8_0", gguf_variant = "Q8_0", load_request_id = "q8")
+    attempt = inf._begin_load_attempt(load, "tester")
+    try:
+        cancel = UnloadRequest(model_path = cancel_as, cancel_load_request_id = "q8")
+        found, _ = inf._cancel_scoped_load_attempt(cancel, "tester")
+        assert found is attempt and attempt.cancel_event.is_set()
+    finally:
+        inf._finish_load_attempt(attempt)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ollama/llama3:8b",
+        "ollama-manifest:library/qwen3:Q8_0",
+        "hf.co/org/A-GGUF:Q8_0",
+        "llama3:Q8_0",
+        "/models/org/A-GGUF:Q8_0",
+        "C:\\models\\A:Q8_0",
+        "/models/a.Q8_0.gguf",
+        "/hub/models--org--A-GGUF/snapshots/abc123",
+    ],
+)
+def test_only_a_hub_repo_loses_a_named_quant(name):
+    for model in (LoadRequest, ValidateModelRequest):
+        assert model(model_path = name, gguf_variant = "Q8_0").model_path == name
+        assert model(model_path = name).model_path == name
+
+
+def _other_quant(
+    monkeypatch,
+    short_fits,
+    model = "org/A-GGUF",
+    variant = "Q8_0",
+):
+    def never(*args, **kwargs):
+        raise AssertionError("another model was unloaded to keep two quants of one repo")
+
+    for name in ("evict_these", "eviction_victims"):
+        monkeypatch.setattr(model_slots, name, never)
+    loaded = LoadResponse.model_construct(status = "loaded", model = model, display_name = "A")
+    _gated_load_fakes(monkeypatch, short_fits = short_fits, response = loaded)
+    request = LoadRequest(model_path = model, gguf_variant = variant, alongside = True)
+    return asyncio.run(inf.load_model_gated(request, None, "s"))
+
+
+def _loaded():
+    return [(s.llama.model_identifier, s.llama.hf_variant) for s in model_slots.slots]
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_another_quant_that_fits_stays_beside_its_repo(backends, monkeypatch, mode):
+    primary, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    _other_quant(monkeypatch, short_fits = [])
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q4_K_M")
+    assert _loaded() == [("org/B-GGUF", "Q8_0"), ("org/A-GGUF", "Q8_0")]
+    _other_quant(monkeypatch, short_fits = ["capped"], model = "org/B-GGUF", variant = "Q4_K_M")
+    assert _loaded()[2] == ("org/B-GGUF", "Q4_K_M") and model_slots.slots[2].request.force_alongside
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_another_quant_that_does_not_fit_replaces_its_repo_and_nothing_else(
+    backends, monkeypatch, mode
+):
+    primary, extra = backends
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    _other_quant(monkeypatch, short_fits = [1])
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q8_0")
+    assert model_slots.slots == [extra, older] and extra.llama.is_active and older.llama.is_active
+    _other_quant(monkeypatch, short_fits = [1], model = "org/B-GGUF", variant = "Q4_K_M")
+    assert model_slots.slots == [extra, older] and older.llama.is_active
+    assert _loaded()[0] == ("org/B-GGUF", "Q4_K_M")
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q8_0")
+
+
+def test_a_fallback_onto_a_served_quant_keeps_one_copy(backends, monkeypatch):
+    primary, extra = backends
+    loaded = LoadResponse.model_construct(status = "loaded", model = "org/A-GGUF", display_name = "A")
+    _gated_load_fakes(monkeypatch, short_fits = [], response = loaded)
+    fake = inf._run_tracked_load_model_impl
+
+    async def low_disk(request, *args, **kwargs):
+        return await fake(request.model_copy(update = {"gguf_variant": "Q4_K_M"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", low_disk)
+    request = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
+    asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert model_slots.slots == [extra] and _loaded() == [("org/B-GGUF", "Q8_0")]
+    assert (primary.model_identifier, primary.hf_variant) == ("org/A-GGUF", "Q4_K_M")
+
+    async def onto_the_kept_copy(request, *args, **kwargs):
+        return await fake(request.model_copy(update = {"gguf_variant": "Q8_0"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", onto_the_kept_copy)
+    primary._loaded_by_user_action = extra.llama._loaded_by_user_action = False
+    request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q4_K_M", alongside = True)
+    stamped = []
+    monkeypatch.setattr(keepwarm, "_note_activity", lambda: stamped.append(True))
+    extra.last_used = 0.0
+    asyncio.run(inf.load_model_gated(request, None, "s", user_initiated = True))
+    assert stamped
+    assert model_slots.slots == [extra] and extra.llama._loaded_by_user_action
+    assert not primary._loaded_by_user_action and extra.last_used > 0.0
+
+    lower, upper, twin = (_slot(p, "Q8_0") for p in ("/m/b.gguf", "/m/B.gguf", "/m/b.gguf"))
+    model_slots.slots += [lower, upper, twin]
+    assert inf._served_twice(upper) == (False, None)
+    assert inf._served_twice(twin) == (True, lower)
+    twin.llama._gguf_load_identity = ("/m/b.gguf", 2)
+    assert inf._served_twice(twin) == (False, None)
+    twin.llama._gguf_load_identity = None
+    lower.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 4096)
+    twin.llama.last_load_intent = llama_cpp.GgufLoadIntent("/m/b.gguf", n_ctx = 32768)
+    assert inf._served_twice(twin) == (False, None)
+    twin.llama.last_load_intent = llama_cpp.GgufLoadIntent(
+        "/m/b.gguf", n_ctx = 4096, refuse_partial_gpu_fit = True, gpu_ids = (1,)
+    )
+    assert inf._served_twice(twin) == (True, lower)
+
+
+def test_a_fallback_copy_a_request_already_reached_is_kept(backends, monkeypatch):
+    primary, extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+    fake = inf._run_tracked_load_model_impl
+
+    async def reached_then_fell_back(request, *args, **kwargs):
+        model_slots.reserve(inf.routed_slot.get())
+        return await fake(request.model_copy(update = {"gguf_variant": "Q4_K_M"}), *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", reached_then_fell_back)
+    request = LoadRequest(model_path = "org/A-GGUF", gguf_variant = "Q8_0", alongside = True)
+    asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert len(model_slots.slots) == 2 and model_slots.slots[1].llama.is_active
 
 
 def test_an_alongside_load_counts_as_activity(backends, monkeypatch):
@@ -1096,10 +1370,23 @@ def test_a_slot_load_during_a_llama_update_is_refused(backends, monkeypatch):
     assert seen == [True, True, False]
 
 
+def _npu_model(**overrides):
+    """The real NpuModel: a stub drifts each time the class grows (display_name / answers_to, #18147)."""
+    fields = dict(
+        id = "qwen3-0.6b-FLM",
+        checkpoint = "qwen3-0.6b-FLM",
+        size_gb = 0.5,
+        downloaded = True,
+        labels = (),
+        max_context_length = 4096,
+    )
+    return npu_backend.NpuModel(**{**fields, **overrides})
+
+
 def test_a_resident_npu_model_keeps_to_the_primarys_seat(backends, monkeypatch):
     primary, extra = backends
     primary.unload_model()
-    npu_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM")
+    npu_model = _npu_model()
     npu = SimpleNamespace(is_loaded = True, loaded_model = npu_model, resident = lambda: None)
     monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
 
@@ -1117,14 +1404,7 @@ def test_the_loaded_models_list_names_the_npu_model_once(backends, monkeypatch):
     model_slots.slots.append(
         model_slots.ExtraSlot(FakeLlama("org/D-GGUF"), FakeOrchestrator(), "owner")
     )
-    npu_model = SimpleNamespace(
-        model_path = "lemonade:qwen3-0.6b-FLM",
-        id = "qwen3-0.6b-FLM",
-        vision = False,
-        max_context_length = 4096,
-        reasoning = False,
-        tools = False,
-    )
+    npu_model = _npu_model()
     resident = SimpleNamespace(model = npu_model, context_length = 4096)
     npu = SimpleNamespace(is_loaded = True, loaded_model = npu_model, resident = lambda: resident)
     monkeypatch.setattr(npu_backend, "peek_npu_backend", lambda: npu)
@@ -1141,7 +1421,7 @@ def test_a_load_over_a_streaming_npu_model_asks_before_stopping_it(monkeypatch, 
 
     npu = SimpleNamespace(
         is_loaded = True,
-        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        loaded_model = _npu_model(),
         resident = lambda: None,
         unload = lambda: None,
     )
@@ -1294,7 +1574,11 @@ def test_a_transformers_install_stops_the_workers_of_models_kept_alongside(backe
     monkeypatch.setattr(keepwarm, "other_inference_request_count", lambda **kwargs: 0)
     alive_at_swap = []
 
-    def install(version, before_swap, *args):
+    real_install = transformers_latest.install_latest_transformers
+
+    # Bound to the real signature, so a new parameter cannot break the stub.
+    def install(*args, **kwargs):
+        before_swap = inspect.signature(real_install).bind(*args, **kwargs).arguments["before_swap"]
         before_swap()
         alive_at_swap.append(kept.orchestrator.is_worker_alive())
         return {"success": False, "message": "stop here"}
@@ -1378,7 +1662,7 @@ def test_reloading_a_kept_model_leaves_the_primarys_npu_model_loaded(
     unloaded = []
     npu = SimpleNamespace(
         is_loaded = True,
-        loaded_model = SimpleNamespace(model_path = "lemonade:qwen3-0.6b-FLM", id = "qwen3-0.6b-FLM"),
+        loaded_model = _npu_model(),
         resident = lambda: None,
         unload = lambda: unloaded.append(True),
     )
@@ -1864,3 +2148,49 @@ def test_an_unattended_load_that_fits_beside_the_primary_is_not_rechecked(backen
     )
     assert primary.model_identifier == "org/A-GGUF"
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
+
+
+def test_long_narration_is_budgeted_against_the_kept_speech_model_not_the_chat_primary(monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    kept = object()
+
+    class Reached(Exception):
+        pass
+
+    async def route(workflow):
+        inf.routed_slot.set(kept)
+
+    async def no_switch(*a, **kw):
+        return None
+
+    def no_further(*a, **kw):
+        raise Reached
+
+    # The chat primary has a 64-token context; the kept speech model takes the narration.
+    monkeypatch.setattr(inf, "_serves_audio_workflow", lambda workflow: False)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", no_switch)
+    monkeypatch.setattr(inf, "_route_to_kept_audio_model", route)
+    monkeypatch.setattr(
+        inf, "_monitor_context_length", lambda: 8192 if inf.routed_slot.get() is kept else 64
+    )
+    monkeypatch.setattr(inf, "_audio_run_event", no_further)
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "x"}])
+
+    async def run():
+        token = inf.routed_slot.set(None)
+        try:
+            await inf._generate_tts_wav("word " * 400, payload, request = None, current_subject = "t")
+        finally:
+            inf.routed_slot.reset(token)
+
+    with pytest.raises(Reached):
+        asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "route", ["get_sampling_defaults", "chat_count_tokens", "_unload_model_impl"]
+)
+def test_reads_and_unloads_route_without_counting_as_use(route):
+    source = inspect.getsource(getattr(inf, route))
+    assert "_route_to_extra_slot(" in source and "touch = False)" in source

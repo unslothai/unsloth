@@ -77,7 +77,6 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
-  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -93,6 +92,9 @@ export interface LoadModelRequest {
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
+  npu_power_mode?: "powersaver" | "balanced" | "performance" | "turbo";
+  npu_prefill_chunk_len?: number;
+  npu_img_pre_resize?: number;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -118,6 +120,8 @@ export interface LoadModelRequest {
   llama_extra_args?: string[] | null;
   tensor_parallel?: boolean | null;
   disable_vision?: boolean | null;
+  /** GGUF only: load with the repo's standalone Engram table of this precision; null keeps the quant's own. */
+  engram_precision?: string | null;
   /** "manual": gpu_layers -1 hands sizing to llama.cpp --fit, >= 0 pins layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
   /** -1 = Auto (--fit). */
@@ -175,6 +179,18 @@ export interface GgufVariantDetail {
   partial?: boolean;
   /** Not repo-wide: one repo can hold several GGUF families. Null means the repo is one group. */
   dependency_key?: string | null;
+  /** Precision of the Engram table this quant ships with, when the repo publishes others. */
+  engram_precision?: string | null;
+  /** Engram precisions this quant loads with without downloading anything. */
+  engram_ready?: string[];
+}
+
+/** A standalone Engram table a GGUF repo publishes. */
+export interface EngramTableDetail {
+  precision: string;
+  filename: string;
+  size_bytes: number;
+  downloaded: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -186,6 +202,10 @@ export interface GgufVariantsResponse {
   context_length?: number | null;
   /** "mlx" for precision folders of an MLX repo. */
   variant_format?: string | null;
+  /** Standalone Engram tables, most precise first; absent or empty when the repo has none. */
+  engram_tables?: EngramTableDetail[];
+  /** Whether this server's llama.cpp takes --ple; null when there are no tables or no probe. */
+  engram_supported?: boolean | null;
 }
 
 export function isMultimodalResponse(
@@ -247,6 +267,7 @@ export interface LoadModelResponse {
   };
   requires_trust_remote_code?: boolean;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -286,11 +307,17 @@ export interface LoadModelResponse {
   tensor_parallel?: boolean;
   /** Echoes the request, unlike vision_disabled_by_user below. */
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   offloaded_layers?: number | null;
   offload_total_layers?: number | null;
+  overflow_layers?: number | null;
+  gpu_weights_mib?: number | null;
+  host_weights_mib?: number | null;
+  expert_cache_mib?: number | null;
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
@@ -337,6 +364,10 @@ export interface InferenceStatusResponse {
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
+  /** What the resident NPU load asked FastFlowLM for; null is its default. */
+  npu_power_mode?: string | null;
+  npu_prefill_chunk_len?: number | null;
+  npu_img_pre_resize?: number | null;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -358,6 +389,11 @@ export interface InferenceStatusResponse {
   /** e.g. {"clone": "clon"}; a task other than audio_server_task reloads. */
   audio_workflow_tasks?: Record<string, string> | null;
   audio_server_task?: string | null;
+  /** Separate: what the model is for, and the id of its one output when it filters a recording. */
+  audio_separation?: {
+    goal: "stems" | "speakers" | "voice" | "restore";
+    output: string | null;
+  } | null;
   audio_convert_route?: string | null;
   audio_convert?: AudioConvertCaps | null;
   audio_required_inputs?: string[] | null;
@@ -377,7 +413,9 @@ export interface InferenceStatusResponse {
   loaded: string[];
   serving?: string[];
   serving_checkpoints?: string[];
+  serving_quants?: (string | null)[];
   resident_mib?: number | null;
+  resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
   multi_model_mode?: "off" | "fit" | "always";
   inference?: {
@@ -401,6 +439,7 @@ export interface InferenceStatusResponse {
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;
+  npu_context_fit?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
@@ -429,6 +468,8 @@ export interface InferenceStatusResponse {
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   disable_vision?: boolean;
+  /** Standalone Engram table the model runs with; null when it runs with the quant's own. */
+  engram_precision?: string | null;
   vision_disabled_by_user?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
@@ -622,7 +663,7 @@ export interface OpenAIChatCompletionsRequest {
   /** Reasoning-class OpenAI models reject these; caller may omit. */
   temperature?: number;
   top_p?: number;
-  max_tokens: number;
+  max_tokens?: number;
   top_k?: number;
   min_p?: number;
   repetition_penalty?: number;
@@ -756,8 +797,12 @@ export interface OpenAIChatChunk {
     checkpoint_started?: boolean;
     // true while the checkpoint in force was started by /compact
     manual?: boolean;
-    // true when the provider summarized earlier turns instead of Unsloth dropping them
+    // true when earlier turns were summarized rather than dropped
     summarized?: boolean;
+    // "unsloth" when Unsloth asked the model for the summary; absent when the provider wrote it
+    summary_source?: "unsloth";
+    // cloud fits only: turns were dropped, after a summary call failed (true) or could not help (false)
+    summary_failed?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt
     boundary_anchor?: string;
     // discard a replayed boundary when its trim used more headroom than the current request

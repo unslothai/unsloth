@@ -11,7 +11,8 @@ import { readSrc } from "./helpers/kit.ts";
 test("Settings > API examples and MCP take the stored key, not the tab-local one", () => {
   const tab = readSrc("features/settings/tabs/api-keys-tab.tsx");
   assert.match(tab, /<ApiExamplesPanel\s+apiKey=\{freshKey\}/);
-  assert.match(tab, /<McpAccessSection apiKey=\{freshKey\} \/>/);
+  const agents = readSrc("features/settings/tabs/agents-tab.tsx");
+  assert.match(agents, /<McpAccessSection apiKey=\{freshApiKey\} \/>/);
 });
 
 test("the API monitor page's examples carry the new key", () => {

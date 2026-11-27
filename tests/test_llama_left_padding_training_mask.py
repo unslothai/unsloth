@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Left-padded, label-less training forwards keep their padding mask (ms-swift rerankers, #3705)."""
+"""Training forwards keep their padding mask when a pad precedes a real token (left or interior
+padding), with or without labels (ms-swift rerankers, #3705; DataCollatorForSeq2Seq left padding)."""
 
 from __future__ import annotations
 
@@ -24,20 +25,21 @@ def _lift(name):
 
 
 @pytest.mark.parametrize("dtype", [torch.long, torch.int32, torch.bool, torch.float32])
-def test_is_left_padded(dtype):
-    is_left_padded = _lift("_is_left_padded")
+def test_has_padding_before_tokens(dtype):
+    has_padding_before_tokens = _lift("_has_padding_before_tokens")
 
     def check(rows):
-        return is_left_padded(torch.tensor(rows).to(dtype))
+        return has_padding_before_tokens(torch.tensor(rows).to(dtype))
 
     assert check([[1, 1, 1], [1, 1, 1]]) is False
     assert check([[1, 1, 0], [1, 0, 0]]) is False
+    assert check([[0, 0, 0], [1, 1, 1]]) is False
     assert check([[0, 1, 1], [1, 1, 1]]) is True
     assert check([[1, 1, 1], [0, 0, 1]]) is True
-    # Zeros only inside a row are not left padding; no collator builds them.
-    assert check([[1, 0, 1]]) is False
+    assert check([[1, 0, 1]]) is True
+    assert check([[1, 1, 1, 1], [1, 0, 0, 1]]) is True
     assert check([[1]]) is False
-    assert is_left_padded(torch.ones(2, 1, 3, 3)) is False
+    assert has_padding_before_tokens(torch.ones(2, 1, 3, 3)) is False
 
 
 TINY = "trl-internal-testing/tiny-Qwen3ForCausalLM"
@@ -82,3 +84,134 @@ def test_left_padded_label_less_training_forward_matches_unpadded():
     (score[0] - score[1]).backward()
     grads = [p.grad for p in model.parameters() if p.requires_grad and p.grad is not None]
     assert grads and all(torch.isfinite(g).all() for g in grads)
+
+
+def _lora_model(dtype):
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        TINY,
+        max_seq_length = 64,
+        dtype = dtype,
+        load_in_4bit = False,
+    )
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r = 8,
+        lora_alpha = 16,
+        lora_dropout = 0.0,
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        use_gradient_checkpointing = False,
+        random_state = 0,
+    )
+    generator = torch.Generator().manual_seed(1)
+    for name, param in sorted(model.named_parameters()):
+        if "lora_" in name:
+            with torch.no_grad():
+                param.copy_((torch.randn(param.shape, generator = generator) * 0.05).to(param.dtype))
+    model.train()
+    return model
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+@pytest.mark.parametrize("padding", ["left", "interior"])
+# 13: the compiled masked SDPA backward faulted on torch < 2.15 without the aligned call.
+@pytest.mark.parametrize("length", [13, 16])
+def test_padded_labelled_lora_training_matches_unpadded_rows(padding, length):
+    model = _lora_model(torch.float32)
+    params = [p for p in model.parameters() if p.requires_grad]
+    torch.manual_seed(0)
+    vocab = model.config.vocab_size
+    short = length - 7
+    input_ids = torch.randint(3, vocab, (2, length), device = "cuda")
+    attention_mask = torch.ones_like(input_ids)
+    if padding == "left":
+        attention_mask[1, : length - short] = 0
+    else:
+        attention_mask[1, 4 : 4 + length - short] = 0
+    input_ids = input_ids.masked_fill(attention_mask == 0, 0)
+    # Interior gaps shift arange positions, so the padded arm gets positions that skip the pads.
+    position_ids = None
+    if padding == "interior":
+        position_ids = (attention_mask.cumsum(-1) - 1).clamp(min = 0)
+    labels = input_ids.masked_fill(attention_mask == 0, -100)
+    labels[:, 1:].masked_fill_(attention_mask[:, :-1] == 0, -100)
+
+    def loss_and_grads(**kwargs):
+        model.zero_grad(set_to_none = True)
+        loss = model(**kwargs).loss
+        loss.backward()
+        return loss.detach(), torch.cat([p.grad.flatten() for p in params])
+
+    # Only the padded row is trained in the batch, so its loss and grads must match it run alone.
+    row_labels = labels.clone()
+    row_labels[0] = -100
+    padded_loss, padded_grads = loss_and_grads(
+        input_ids = input_ids,
+        attention_mask = attention_mask,
+        labels = row_labels,
+        position_ids = position_ids,
+    )
+    keep = attention_mask[1].bool()
+    alone_ids = input_ids[1, keep][None]
+    alone_loss, alone_grads = loss_and_grads(
+        input_ids = alone_ids,
+        attention_mask = torch.ones_like(alone_ids),
+        labels = labels[1, keep][None],
+    )
+    torch.testing.assert_close(padded_loss, alone_loss, atol = 1e-5, rtol = 1e-5)
+    relative = (padded_grads - alone_grads).norm() / alone_grads.norm()
+    assert relative < 1e-3, float(relative)
+
+
+@pytest.mark.parametrize("additive", [False, True])
+def test_pad_queries_attend_only_themselves(additive):
+    pad_queries_attend_self = _lift("_pad_queries_attend_self")
+    mask_2d = torch.tensor([[0, 0, 1, 1, 1], [1, 1, 1, 1, 1], [1, 0, 1, 1, 1]])
+    keep = torch.ones(5, 5, dtype = torch.bool).tril()[None, None] & mask_2d.bool()[:, None, None, :]
+    # transformers' _unmask_unattended: fully masked rows attend every key.
+    keep = keep | ~keep.any(dim = -1, keepdim = True)
+    mask_4d = keep
+    if additive:
+        mask_4d = torch.zeros(keep.shape).masked_fill(~keep, torch.finfo(torch.float32).min)
+    out = pad_queries_attend_self(mask_4d, mask_2d)
+    allowed = out if not additive else out == 0
+    pad = mask_2d == 0
+    eye = torch.eye(5, dtype = torch.bool)
+    for b in range(3):
+        for i in range(5):
+            if pad[b, i]:
+                assert torch.equal(allowed[b, 0, i], eye[i]), (b, i, allowed[b, 0, i])
+            else:
+                assert torch.equal(allowed[b, 0, i], keep[b, 0, i]), (b, i)
+    assert not (allowed & ~torch.ones(5, 5, dtype = torch.bool).tril()).any()
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth fast forward needs a GPU")
+def test_left_padded_pad_query_prediction_does_not_see_later_tokens():
+    # DataCollatorForSeq2Seq with left padding keeps the first real label, so the last pad query predicts it:
+    # that query must stay causal (it was unmasked to every key, so the target was visible).
+    model = _lora_model(torch.float32)
+    torch.manual_seed(0)
+    vocab = model.config.vocab_size
+    input_ids = torch.randint(3, vocab, (2, 10), device = "cuda")
+    attention_mask = torch.ones_like(input_ids)
+    attention_mask[1, :4] = 0
+    input_ids = input_ids.masked_fill(attention_mask == 0, 0)
+    later = input_ids.clone()
+    later[1, 6:] = (later[1, 6:] + 7) % (vocab - 3) + 3
+    with torch.no_grad():
+        # Label-less forwards return logits and take the same kept-mask branch as labelled ones.
+        a = model(input_ids = input_ids, attention_mask = attention_mask).logits
+        b = model(input_ids = later, attention_mask = attention_mask).logits
+    assert torch.isfinite(a).all()
+    # Position 3 is the last pad and predicts token 4; positions 4 and 5 precede the change.
+    torch.testing.assert_close(a[1, :6].float(), b[1, :6].float(), atol = 1e-5, rtol = 1e-5)

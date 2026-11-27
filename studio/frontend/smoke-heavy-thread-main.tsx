@@ -4,6 +4,7 @@
 // Harness for tests/studio/playwright_heavy_thread.py: real Thread with a heavy thread built in
 // whole cycles of mixed content; local runtime since delete uses thread.export/import.
 
+import { holdProgressiveMounts } from "@/components/assistant-ui/progressive-messages";
 import { Thread } from "@/components/assistant-ui/thread";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -23,6 +24,10 @@ import {
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+
+// This page takes a census of the whole thread and times actions against all of it, so every row
+// stays mounted: the state an open find bar or a print puts the app in.
+holdProgressiveMounts();
 
 // Explicit allowlist, never a blanket `/api/` match: unlisted requests must trip the stray counter.
 const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [

@@ -134,9 +134,12 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "awq",
   "gptq",
   "auto-round",
+  "fbgemm_fp8",
 ]);
-// Not offered on ROCm vLLM, matching /validate: AutoRound is unmeasured there.
-const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set(["auto-round"]);
+const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set([
+  "auto-round",
+  "fbgemm_fp8",
+]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
 const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
@@ -153,8 +156,14 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
-// Video page repos whose Hub card names no pipeline task. Not Cosmos3-Nano: its guardrail package is not installed.
-const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-edge"]);
+// Video page repos whose Hub card names no pipeline task.
+const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set([
+  "nvidia/cosmos3-nano",
+  "nvidia/cosmos3-edge",
+  // NVIDIA's ModelOpt FP8 builds of the same pipelines.
+  "nvidia/cosmos3-nano-fp8",
+  "nvidia/cosmos3-edge-fp8",
+]);
 
 /** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
@@ -210,7 +219,7 @@ function detectUnsupportedFormatKey(
     if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
-    // Mirrors the backend's _looks_like_mlx_repo heuristic.
+    // Mirrors the backend's looks_like_mlx_repo heuristic.
     if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {

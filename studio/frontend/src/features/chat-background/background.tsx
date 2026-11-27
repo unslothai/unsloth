@@ -7,28 +7,26 @@ import {
 	type CSSProperties,
 } from "react";
 import { useAppearanceCustomStore } from "@/features/settings/stores/appearance-custom-store";
-import { useChatBackground, setBackgroundError } from "./storage";
+import {
+	clearBackgroundError,
+	setBackgroundError,
+	useChatBackground,
+} from "./storage";
+import { loadImage } from "./image";
 import { acquireRender } from "./render";
 import { safeArtworkOpacity, type RGB } from "./contrast";
 import {
 	type ChatBackgroundValue,
-	type ImageSizing,
 	fadeKey,
 	visibilityKey,
 } from "./model";
-import { useMaterialStore } from "./material";
-import { ComposerGlassLenses } from "./lens";
+import { useAppliedMaterial } from "./material";
+import { GlassLenses } from "./lens";
+import { WallpaperArtwork } from "./artwork";
+import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
-const BACKGROUND_SIZE: Record<ImageSizing, string> = {
-	cover: "cover",
-	contain: "contain",
-	width: "100% auto",
-	height: "auto 100%",
-	stretch: "100% 100%",
-	original: "auto",
-};
 // The window titlebar sits outside the wallpaper's subtree, so a ready wallpaper marks the root
 // rather than having CSS ask html:has(), which re-matches on every DOM change.
 export const ROOT_READY = "data-chat-wallpaper-ready";
@@ -179,10 +177,8 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			.then(async (blob) => {
 				if (cancelled) return;
 				const url = URL.createObjectURL(blob);
-				const image = new Image();
-				image.src = url;
 				try {
-					await image.decode();
+					await loadImage(new Image(), url);
 				} catch {
 					urls.current.delete(url);
 					URL.revokeObjectURL(url);
@@ -194,6 +190,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 					return;
 				}
 				adoptFrame(url);
+				clearBackgroundError("effect");
 			})
 			.catch(() => {
 				if (!cancelled) setBackgroundError("effect");
@@ -221,8 +218,9 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
-	const glass = useMaterialStore((s) => s.material !== "solid");
+	const glass = useAppliedMaterial() !== "solid";
 	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
+	const [previewWallpaper, setPreviewWallpaper] = useState<HTMLDivElement | null>(null);
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
 	useEffect(() => {
@@ -270,6 +268,10 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		// Only the app's own wallpaper drives the titlebar; a settings preview never marks the root.
 		const parent = host.current?.parentElement;
 		if (!shownReady || !parent) return;
+		if (parent.classList.contains("wallpaper-preview")) {
+			setPreviewWallpaper(host.current);
+			return () => setPreviewWallpaper(null);
+		}
 		const workspace = parent.hasAttribute("data-wallpaper-workspace");
 		if (workspace || parent.hasAttribute("data-auth-wallpaper"))
 			setAppWallpaper(host.current);
@@ -282,6 +284,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			setAppWallpaper(null);
 		};
 	}, [shownReady]);
+	useWallpaperHostFlags(host);
 	if (!value || !active) return null;
 	return (
 		<div
@@ -315,24 +318,20 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 							className="chat-wallpaper-image"
 							data-fade={adjustment[fadeKey(glass)]}
 						>
-							<div
-								className="chat-wallpaper-artwork"
-								style={{
-									backgroundImage: `url("${frame.url}")`,
-									backgroundPosition: adjustment.position,
-									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
-									transform: `scale(${adjustment.zoom / 100})`,
-									transformOrigin: adjustment.position,
-									filter: adjustment.blur
-										? `blur(${adjustment.blur}px)`
-										: undefined,
-								}}
+							<WallpaperArtwork
+								url={frame.url}
+								sizing={adjustment.sizing}
+								position={adjustment.position}
+								zoom={adjustment.zoom}
+								blur={adjustment.blur}
+								bakeable={i === 1}
 							/>
 						</div>
 					</div>
 				);
 			})}
-			<ComposerGlassLenses wallpaper={appWallpaper} />
+			<GlassLenses wallpaper={appWallpaper} />
+			{previewWallpaper && <GlassLenses wallpaper={previewWallpaper} preview />}
 		</div>
 	);
 }

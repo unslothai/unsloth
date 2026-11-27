@@ -84,7 +84,7 @@ test("the mount-time status sync treats a speech model as an empty slot", () => 
   );
   assert.match(
     hook,
-    /const chatActiveModel =\s*statusRes\.active_model &&\s*!isSpeechOnlyStatus\(statusRes\) &&\s*!\(statusLoading && options\?\.externalChatSlotLoad\);/,
+    /const chatActiveModel =\s*statusRes\.active_model &&\s*!isSpeechOnlyStatus\(statusRes\) &&\s*!isTranslationHeldSlot\(statusRes\.active_model, selectedCheckpoint\) &&\s*!\(statusLoading && options\?\.externalChatSlotLoad\);/,
   );
   assert.match(
     hook,
@@ -161,7 +161,7 @@ test("a queued local thread does not adopt a speech model either", () => {
   );
   assert.match(
     queued,
-    /const checkpoint = isSpeechOnlyStatus\(status\)\s*\n?\s*\? null\s*\n?\s*: resolveInferenceCheckpointId\(status\);/,
+    /const checkpoint =\s*isSpeechOnlyStatus\(status\) \|\| isTranslationHeldSlot\(status\.active_model, null\)\s*\? null\s*: resolveInferenceCheckpointId\(status\);/,
   );
 });
 

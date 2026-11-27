@@ -170,8 +170,7 @@ def _plan(
 
 class TestWhoTheRefitIsAllowedToTouch:
     def test_the_fixture_still_reaches_the_refit_at_this_fit_floor(self, tmp_path):
-        """If the nine cells fail with assert 0 > 0, the fixture no longer reaches the re-fit at
-        _FIT_MIN_CTX."""
+        """The fixture must reach the refit at _FIT_MIN_CTX, or the nine cells fail."""
         got, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
         assert entries > 0, (
             f"the shared fixture ({_FIXTURE_WEIGHTS_MIB} MiB of weights on a "

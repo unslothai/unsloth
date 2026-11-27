@@ -174,8 +174,7 @@ def test_walkback_does_not_cross_user_turn():
 
 
 def test_walkback_skips_explicitly_consumed_tool_call_id():
-    """An explicit-id tool result reserves its assistant slot so a
-    follow-up missing-id result picks the OTHER tool call."""
+    """An explicit-id tool result reserves its slot, so a later id-less result picks the other tool call."""
     req = _req(
         [
             {
@@ -202,8 +201,7 @@ def test_walkback_skips_explicitly_consumed_tool_call_id():
 
 
 def test_walkback_handles_malformed_function_string():
-    """A tool_call with ``function`` as a string (provider quirk) must not
-    raise; resolution falls back to id selection."""
+    """A string-valued function (provider quirk) must not raise; resolution falls back to id selection."""
     req = _req(
         [
             {

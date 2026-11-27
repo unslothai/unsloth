@@ -110,7 +110,7 @@ def test_completion_cut_by_vllm_context_is_truncated(name, via_vllm_generation):
     prompts = [[7] * 480, [7] * 480, [7] * 20, [7] * 480, [7] * 20]
     trainer = _trainer(128, max_model_len = 512, via_vllm_generation = via_vllm_generation)
     assert _is_truncated(name, completions, trainer, prompts) == [True, False, False, False, True]
-    # Without a local engine (HF generate, vLLM server mode) only the completion budget is known.
+    # HF generate has no context cap: only the completion budget is known.
     assert _is_truncated(name, completions, _trainer(128), prompts) == [
         False,
         False,
@@ -118,3 +118,71 @@ def test_completion_cut_by_vllm_context_is_truncated(name, via_vllm_generation):
         False,
         True,
     ]
+
+
+def _server_trainer(
+    max_completion_length,
+    vllm_max_model_length = None,
+    vlm = False,
+):
+    """TRL vLLM server mode: use_vllm with no local engine (vllm_generation.llm is None)."""
+    text = types.SimpleNamespace(max_position_embeddings = 512)
+    config = types.SimpleNamespace(text_config = text) if vlm else text
+    return types.SimpleNamespace(
+        max_completion_length = max_completion_length,
+        use_vllm = True,
+        vllm_mode = "server",
+        llm = None,
+        vllm_generation = types.SimpleNamespace(llm = None, vllm_client = object()),
+        args = types.SimpleNamespace(vllm_max_model_length = vllm_max_model_length),
+        model = types.SimpleNamespace(config = config),
+    )
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        {"vllm_max_model_length": 512},
+        {"vllm_max_model_length": None},
+        {"vllm_max_model_length": -1},
+        {"vllm_max_model_length": None, "vlm": True},
+    ],
+    ids = ["vllm_max_model_length", "max_position_embeddings", "vllm_auto_length", "vlm_text_config"],
+)
+@pytest.mark.parametrize("name", NAMES)
+def test_completion_cut_by_server_context_is_truncated(name, server):
+    completions = [
+        [5] * 32,  # 480 + 32 = 512
+        [5] * 10,
+        [5] * 31 + [EOS],  # EOS at the limit is a normal stop
+        [5] * 128,
+    ]
+    prompts = [[7] * 480, [7] * 480, [7] * 480, [7] * 20]
+    trainer = _server_trainer(128, **server)
+    assert _is_truncated(name, completions, trainer, prompts) == [True, False, False, True]
+
+
+@pytest.mark.parametrize("name", NAMES)
+@pytest.mark.parametrize("status", [200, 404])
+def test_server_mode_reads_the_served_max_model_len_once(name, status, monkeypatch):
+    import requests
+
+    calls = []
+
+    def fake_get(url, timeout = None):
+        calls.append(url)
+        return types.SimpleNamespace(
+            status_code = status, json = lambda: {"data": [{"max_model_len": 500}]}
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    trainer = _server_trainer(128)  # max_position_embeddings = 512
+    trainer.args.vllm_server_base_url = None
+    trainer.args.vllm_server_host, trainer.args.vllm_server_port = "10.0.0.1", 8000
+    completions = [[5] * 20, [5] * 20, [5] * 19 + [EOS]]
+    prompts = [[7] * 480, [7] * 470, [7] * 480]
+    # 480 + 20 reaches the served 500; the 404 fallback (512) does not. EOS is never truncated.
+    expected = [status == 200, False, False]
+    assert _is_truncated(name, completions, trainer, prompts) == expected
+    assert _is_truncated(name, completions, trainer, prompts) == expected
+    assert calls == ["http://10.0.0.1:8000/v1/models"]

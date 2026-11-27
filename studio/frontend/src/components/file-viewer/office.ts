@@ -517,12 +517,26 @@ const digitLayout = memo((format) => {
   };
 });
 
+/** Excel rounds the 15-digit decimal it shows, halves up; toFixed rounds the binary value, so 1.005 gave "1.00". */
+function decimalFixed(number: number, places: number): string {
+  const shifted = number * 10 ** places;
+  // Only a fraction within reach of a written half (15 digits, ~1e-14 relative) rounds differently; integers keep every digit.
+  const nearHalf = Math.abs(shifted - Math.floor(shifted) - 0.5) <= 1e-9 + shifted * 1e-13;
+  if (Number.isInteger(number) || !nearHalf) return number.toFixed(places);
+  const [mantissa, exponent] = number.toExponential(14).split("e");
+  const scaled = Math.round(Number(`${mantissa}e${Number(exponent) + places}`));
+  // 1e21 and up print as exponents, which the caller already hands to generalText.
+  if (!(scaled < 1e21)) return number.toFixed(places);
+  return Number(`${scaled}e-${places}`).toFixed(places);
+}
+
 function placeDigits(number: number, format: string): string {
   const { dot, whole, part, first, places, grouped, zeros, before, after } = digitLayout(format);
   const shown = number ? 14 - Math.floor(Math.log10(Math.abs(number))) : 100;
-  const [intDigits = "", fracDigits = ""] = number
-    .toFixed(Math.max(0, Math.min(places.length, shown, 100)))
-    .split(".");
+  const [intDigits = "", fracDigits = ""] = decimalFixed(
+    number,
+    Math.max(0, Math.min(places.length, shown, 100)),
+  ).split(".");
   if (/e/i.test(intDigits)) return generalText(number);
   const significant = intDigits === "0" ? "" : intDigits;
   let integer: string;
@@ -658,16 +672,13 @@ function formatScientific(value: number, format: string): string {
   const dot = tokens.indexOf(".");
   const places = Math.min(dot === -1 ? 0 : tokens.slice(dot + 1).filter(isPlaceholder).length, 100);
   const step = Math.max(1, (dot === -1 ? tokens : tokens.slice(0, dot)).filter(isPlaceholder).length);
-  const [normalized = "0", exponentText = "0"] = value.toExponential(places).split("e");
-  let mantissa = normalized;
-  let exponent = Number(exponentText);
-  if (step > 1 && value !== 0) {
-    exponent = Math.floor(Math.log10(value) / step) * step;
-    mantissa = (value / 10 ** exponent).toFixed(places);
-    if (Number(mantissa) >= 10 ** step) {
-      exponent += step;
-      mantissa = (value / 10 ** exponent).toFixed(places);
-    }
+  const [digits = "0", exponentText = "0"] = value.toExponential(14).split("e");
+  const at10 = Number(exponentText);
+  let exponent = Math.floor(at10 / step) * step;
+  let mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
+  if (Number(mantissa) >= 10 ** step) {
+    exponent += step;
+    mantissa = decimalFixed(Number(`${digits}e${at10 - exponent}`), places);
   }
   const expSign = exponent < 0 ? "-" : format[at + 1] === "+" ? "+" : "";
   return `${placeDigits(Number(mantissa), mantissaFormat)}E${expSign}${placeDigits(Math.abs(exponent), exponentFormat)}`;
@@ -879,6 +890,7 @@ function readSheet(
   date1904: boolean,
   budget: { cells: number },
   limits: SheetLimits,
+  keepHidden: boolean,
 ): Sheet {
   const rows: (SheetCell | undefined)[][] = [];
   const widths: (number | undefined)[] = [];
@@ -890,7 +902,7 @@ function readSheet(
     const min = Number(attribute(attrs, "min") ?? 1);
     const max = Math.min(Number(attribute(attrs, "max") ?? min), limits.columns);
     const width = Number(attribute(attrs, "width"));
-    const hide = isTrue(attribute(attrs, "hidden"));
+    const hide = !keepHidden && isTrue(attribute(attrs, "hidden"));
     for (let i = min; i <= max; i++) {
       if (hide) hidden.columns.add(i - 1);
       else if (width) widths[i - 1] = Math.round(width * 7 + 5);
@@ -910,7 +922,7 @@ function readSheet(
       break;
     }
     budget.cells--;
-    const rowHidden = isTrue(attribute(rowAttrs, "hidden"));
+    const rowHidden = !keepHidden && isTrue(attribute(rowAttrs, "hidden"));
     if (rowHidden) hidden.rows.add(r);
     if (rowHidden && !rowBody.includes("shared")) continue;
     const cells: (SheetCell | undefined)[] = [];
@@ -1119,7 +1131,11 @@ function styleSections(bytes: Uint8Array | undefined): { doc: Document | null; c
   return { doc: parseXml(`${open}${parts.join("")}</${prefix}styleSheet>`), cut };
 }
 
-export function readXlsx(bytes: Uint8Array, limits: SheetLimits = FULL_SHEET_LIMITS): Sheet[] {
+export function readXlsx(
+  bytes: Uint8Array,
+  limits: SheetLimits = FULL_SHEET_LIMITS,
+  { keepHidden = false } = {},
+): Sheet[] {
   const read = archive(bytes);
   const main = mainPart(read, "xl/workbook.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
@@ -1153,8 +1169,11 @@ export function readXlsx(bytes: Uint8Array, limits: SheetLimits = FULL_SHEET_LIM
   const paths = new Map(rels.map((rel) => [rel.id, rel.path]));
   const sheets: Sheet[] = [];
   const budget = { cells: MAX_WORKBOOK_CELLS };
-  for (const sheet of all(workbook, "sheet")) {
-    if (sheet.getAttribute("state") === "hidden" || sheet.getAttribute("state") === "veryHidden") continue;
+  const listed = all(workbook, "sheet");
+  const isHidden = (sheet: Element) => ["hidden", "veryHidden"].includes(sheet.getAttribute("state") ?? "");
+  const visible = listed.filter((sheet) => !isHidden(sheet));
+  // Hidden sheets last, so they never take the sheet or cell budget from visible ones.
+  for (const sheet of keepHidden ? [...visible, ...listed.filter(isHidden)] : visible) {
     if (limits.extraNames !== undefined && sheets.length >= limits.sheets) {
       if (sheets.length >= limits.sheets + limits.extraNames) break;
       sheets.push({ name: sheet.getAttribute("name") ?? "Sheet", rows: [], widths: [], truncated: false });
@@ -1171,7 +1190,7 @@ export function readXlsx(bytes: Uint8Array, limits: SheetLimits = FULL_SHEET_LIM
     const whole = part.length <= MAX_SHEET_XML_BYTES;
     const { text, cut } = sheetText(part, Math.min(limits.rows, budget.cells), whole);
     missed = false;
-    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget, limits);
+    const parsed = readSheet(text, sheet.getAttribute("name") ?? "Sheet", string, style, date1904, budget, limits, keepHidden);
     if (cut || missed) parsed.truncated = true;
     sheets.push(parsed);
   }
@@ -1249,6 +1268,7 @@ export interface SlideBox {
 
 export interface Slide {
   boxes: SlideBox[];
+  notes?: string[];
 }
 
 export interface Deck {
@@ -1510,7 +1530,10 @@ function degrees(xfrm: Element | undefined): number {
   return Number(xfrm?.getAttribute("rot")) / 60000 || 0;
 }
 
-export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLIDES } = {}): Deck {
+export function readPptx(
+  bytes: Uint8Array,
+  { images = true, maxSlides = MAX_SLIDES, notes = false, keepHidden = false } = {},
+): Deck {
   const read = archive(bytes);
   const main = mainPart(read, "ppt/presentation.xml");
   if ((read.size(main) ?? 0) > MAX_XML_PART_BYTES) throw new Error("File is too large to preview.");
@@ -1541,13 +1564,13 @@ export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLI
     }
     const part = read([path, relsPath(path)], MAX_XML_PART_BYTES);
     const slideXml = part[path];
-    if (!slideXml || HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384)))) continue;
+    if (!slideXml || (!keepHidden && HIDDEN_SLIDE.test(strFromU8(slideXml.subarray(0, 16384))))) continue;
     if (slides.length === maxSlides) {
       truncated = true;
       break;
     }
     const doc = xml(part, path);
-    if (!doc || ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? "")) continue;
+    if (!doc || (!keepHidden && ["0", "false"].includes(doc.documentElement.getAttribute("show")?.trim() ?? ""))) continue;
     const slideRelList = relationshipList(part, path);
     const partDoc = (partPath: string) => {
       if ((read.size(partPath) ?? 0) > MAX_XML_PART_BYTES) {
@@ -1680,8 +1703,20 @@ export function readPptx(bytes: Uint8Array, { images = true, maxSlides = MAX_SLI
     };
     const tree = first(doc, "spTree");
     if (tree) walk(tree);
+    const notesPath = notes ? slideRelList.find((rel) => rel.type.endsWith("/notesSlide"))?.path : undefined;
+    const notesDoc = notesPath ? partDoc(notesPath) : null;
+    const slideNumber = new Set(
+      (notesDoc ? all(notesDoc, "sp") : [])
+        .filter((sp) => first(sp, "ph")?.getAttribute("type") === "sldNum")
+        .flatMap((sp) => all(sp, "p")),
+    );
+    const noteLines = (notesDoc ? all(notesDoc, "p") : [])
+      .filter((p) => !slideNumber.has(p))
+      .map(paragraphText)
+      .filter((text) => text.trim());
+    textLeft -= noteLines.reduce((n, text) => n + text.length, 0);
     if (cut) boxes.push({ paragraphs: [{ text: "…" }] });
-    slides.push({ boxes });
+    slides.push(noteLines.length ? { boxes, notes: noteLines } : { boxes });
     if (textLeft <= 0) {
       truncated = index < slidePaths.length - 1;
       break;

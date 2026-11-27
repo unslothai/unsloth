@@ -13,13 +13,16 @@ const HAS_INSIDE_IS = /:is\([^{]*:has\([^{]*\s[~>+]?\s?\*\)/;
 
 test("Tailwind's group-has and peer-has variants lose their :has() inside :is()", async () => {
   const compiler = await compile("@theme { --spacing: 0.25rem; } @tailwind utilities;");
-  const generated = compiler.build([
-    "group-has-[[data-state=open]]:opacity-0",
-    "group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16",
-    "group-has-[>svg]/alert:col-start-2",
-    "group-has-[[data-state=open]]:hover:opacity-0",
-    "peer-has-[:checked]:opacity-50",
-  ]);
+  // Spelled so Tailwind's scan of this file does not ship these as real app CSS (has-subject-after.test.ts).
+  const generated = compiler.build(
+    [
+      "GROUP-has-[[data-state=open]]:opacity-0",
+      "GROUP-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16",
+      "GROUP-has-[>svg]/alert:col-start-2",
+      "GROUP-has-[[data-state=open]]:hover:opacity-0",
+      "PEER-has-[:checked]:opacity-50",
+    ].map((token) => token.replace("GROUP", "group").replace("PEER", "peer")),
+  );
   assert.match(generated, HAS_INSIDE_IS, "Tailwind still emits the shape this plugin rewrites");
   const rewritten = hoistHasAnchors(generated);
   assert.doesNotMatch(

@@ -660,9 +660,8 @@ def test_rocm_batch_1_decode_takes_the_triton_gemv(monkeypatch, env):
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 @pytest.mark.parametrize("shape", SHAPES + [(12288, 4096), (256, 256)], ids = str)
 def test_eager_decode_route_matches_dequantize_matmul(shape, dtype, nested):
-    """The route eager batch-1 decode takes on this GPU (on ROCm with Triton 3.6+, the Triton
-    GEMV) against dequantize + fp32 matmul, on the Llama 3 8B / Qwen3 8B decode shapes. Reruns
-    of a weight's planned launch must give the same result."""
+    """Checks the route eager batch-1 decode takes on this GPU (Triton GEMV on ROCm with Triton
+    3.6+) against dequantize + fp32 matmul on Llama 3 8B and Qwen3 8B shapes; reruns must match."""
     from unsloth.kernels import utils
 
     if torch.version.hip and nf4_gemv._TRITON_VERSION >= nf4_gemv._HIP_EAGER_MIN_TRITON:

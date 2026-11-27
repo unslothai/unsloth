@@ -86,8 +86,7 @@ def _run(
 
 
 class TestSlotsThatFitOnGpu:
-    """Synthetic compute buffer per slot count: cb(1)=46, cb(2)=604, cb(3)=1162,
-    cb(4)=1720 MiB. Single 24 GB card usable = 24576 - 0.03*24576 = 23839 MiB."""
+    """Synthetic per-slot compute buffers; a 24 GB card keeps 23839 MiB after its 3% reserve."""
 
     def test_reduces_to_largest_fitting_slot(self):
         # base+KV = 22500: par4 (24219) over 23839, par3 (23662) fits -> 3 slots on GPU.
@@ -113,8 +112,7 @@ class TestSlotsThatFitOnGpu:
         assert use_fit is True and gi is None and slots == 1
 
     def test_multi_gpu_reduces_across_devices(self):
-        # Needs 2 GPUs: usable/GPU = 23839, cumulative 47677. base+KV 46200: par4 (47919)
-        # over, par3 (47362) fits across both -> 3 slots spanning [0, 1].
+        # Two cards: 47677 MiB cumulative; base+KV 46200 fits 3 slots across both, not 4.
         gi, use_fit, slots = _run(
             _backend(), 4, 46200, [(0, 24576), (1, 24576)], {0: 24576, 1: 24576}
         )
@@ -177,8 +175,7 @@ class TestSlotsThatFitOnGpu:
             )
             return got, [call["n_ubatch"] for call in calls]
 
-        # priced at the batch each candidate LAUNCHES with: the first one fits, so the
-        # search stops there
+        # Price each candidate at its launch micro-batch; the search stops at the first fit.
         assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
         # held at the requested count's micro-batch, the same card loses a slot
         assert _fit() == (([0], False, 2), [64, 64])
@@ -220,9 +217,8 @@ class TestMtpReserveIsRepricedPerCandidate:
         assert self._fit(None) == self._fit(lambda _s, _ub: 0)
 
     def test_the_candidate_micro_batch_reaches_the_reserve(self):
-        """Compact SWA adds one micro-batch to its window allowance, and a reduced
-        candidate lowers the batch floor, so the reserve has to see the candidate ubatch
-        and not the one the original request was sized at (PR #8172)."""
+        """Compact SWA adds one micro-batch to its window allowance and a reduced candidate lowers
+        the batch floor, so the reserve must see the candidate ubatch (PR 8172)."""
         seen = []
         self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
         assert seen, "the reserve callback was never consulted"

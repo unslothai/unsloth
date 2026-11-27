@@ -57,6 +57,7 @@ _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
+_CAPABILITIES_PATH = "/sdcpp/v1/capabilities"
 
 # Compute-buffer lines excluded: they vary per generation, params stay until exit.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
@@ -64,13 +65,58 @@ _TOTAL_PARAMS_VRAM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# sd.cpp auto-fit device line "[I]  CUDA0  <card>  free N MiB, budget M MiB"; the RAM "params budget" line won't match.
+_AUTO_FIT_DEVICE_FREE_RE = re.compile(
+    r"^\[I\]\s+(\S+)\s.*\bfree\s+([0-9]+)\s*MiB,\s*budget\s+[0-9]+\s*MiB\b"
+)
+
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
 _TERMINAL_CANCELLED = "cancelled"
 
-# Grace for the best-effort native cancel to show in job status; without the cap a lost cancel would hold the generate
-# lock until the job ends.
+# Grace for the best-effort native cancel; uncapped, a lost cancel holds the generate lock.
 _CANCEL_GRACE_S = 5.0
+
+
+# Floor between a log line and the next poll; caps log-driven polling at 50/s.
+_LOG_WAKE_FLOOR_S = 0.02
+
+
+class _LogPacedWait:
+    """Sleeps ``interval`` between polls; a server log line cuts it short and starts polls at ``floor``,
+    doubling back to ``interval``. sd-server logs just before a status flip or port bind, not at it.
+    HTTP status stays the only source of truth."""
+
+    def __init__(
+        self,
+        wake: Optional[threading.Event],
+        interval: float,
+        floor: float = _LOG_WAKE_FLOOR_S,
+    ) -> None:
+        self._wake = wake
+        self._interval = max(0.0, float(interval))
+        self._floor = max(0.0, min(float(floor), self._interval))
+        self._follow: Optional[float] = None
+        if wake is not None:
+            wake.clear()
+
+    def wait(self) -> None:
+        if self._wake is None or self._floor <= 0.0:
+            time.sleep(self._interval)
+            return
+        if self._follow is None:
+            woke = self._wake.wait(self._interval)
+        else:
+            woke = self._wake.wait(self._follow)
+        if woke:
+            self._wake.clear()
+            time.sleep(self._floor)
+            self._wake.clear()
+            self._follow = self._floor
+            return
+        if self._follow is not None:
+            nxt = self._follow * 2.0
+            self._follow = nxt if nxt < self._interval else None
 
 
 def _socket_owner_is_always_named() -> bool:
@@ -103,6 +149,10 @@ class SdCppServerUnsupported(RuntimeError):
     """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
 
 
+class SdCppLatentFormatError(RuntimeError):
+    """A completed ``output_latent`` job whose latents this client cannot use; the render can be redone as PNG."""
+
+
 def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
     # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
     if status_code == 404:
@@ -124,17 +174,24 @@ class SdCppServer:
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
         self._resident_params_vram_gb: Optional[float] = None
+        self._planned_free_vram_mib: dict[str, int] = {}
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
+        self._lines_seen = 0
         self._stdout_thread: Optional[threading.Thread] = None
         self._lifecycle_lock = threading.Lock()
         # Set lock-free by stop() so a blocking start()/readiness wait bails promptly.
         self._abort = threading.Event()
         # Set during a generation so the stdout drain feeds the step-progress callback.
         self._step_listener: Optional[Callable[[str], None]] = None
+        # Set by the stdout drain on every line (and at EOF) so readiness / job polls run sooner.
+        self._log_wake = threading.Event()
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
+        self._vid_gen_features: Optional[dict] = None
+        self._img_gen_features: dict = {}
+        self._vid_gen_output_formats: tuple[str, ...] = ()
         self._stopped = False
         atexit.register(self.stop)
 
@@ -147,6 +204,49 @@ class SdCppServer:
         """Server rescans this dir per request; reference staged files via the lora field, not
         prompt tags."""
         return self._scratch_dir
+
+    def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """Read once per server, idle only (capabilities can block behind a job); older builds get False."""
+        if not features:
+            return True
+        caps = self._vid_gen_capabilities()
+        if caps is None:
+            return False
+        return all(caps[0].get(key) is True for key in features)
+
+    def img_gen_accepts(self, features: tuple[str, ...]) -> bool:
+        """``vid_gen_accepts`` for img_gen features (same once-per-server read); older builds get False."""
+        if not features:
+            return True
+        if self._vid_gen_capabilities() is None:
+            return False
+        return all(self._img_gen_features.get(key) is True for key in features)
+
+    def vid_gen_output_formats(self) -> tuple[str, ...]:
+        """The vid_gen ``output_format`` values this server writes (same once-per-server read); () when unknown."""
+        caps = self._vid_gen_capabilities()
+        return () if caps is None else caps[1]
+
+    def _vid_gen_capabilities(self) -> Optional[tuple[dict, tuple[str, ...]]]:
+        """(vid_gen features, vid_gen output formats), read once; None when the read failed (retried next call)."""
+        if self._vid_gen_features is None:
+            try:
+                resp = self._client.get(f"{self.base_url}{_CAPABILITIES_PATH}", timeout = 10.0)
+                data = resp.json() if resp.status_code == 200 else {}
+            except (*_TRANSPORT_ERRORS, httpx.TimeoutException, ValueError):
+                return None
+            data = data if isinstance(data, dict) else {}
+            modes = data.get("features_by_mode")
+            caps = modes.get("vid_gen") if isinstance(modes, dict) else None
+            img_caps = modes.get("img_gen") if isinstance(modes, dict) else None
+            self._img_gen_features = img_caps if isinstance(img_caps, dict) else {}
+            formats = data.get("output_formats_by_mode")
+            formats = formats.get("vid_gen") if isinstance(formats, dict) else None
+            self._vid_gen_features = caps if isinstance(caps, dict) else {}
+            self._vid_gen_output_formats = tuple(
+                f for f in (formats if isinstance(formats, list) else ()) if isinstance(f, str)
+            )
+        return self._vid_gen_features, self._vid_gen_output_formats
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -168,6 +268,7 @@ class SdCppServer:
         env: Optional[dict[str, str]] = None,
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
+        rng: Optional[str] = None,
     ) -> None:
         """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
@@ -191,8 +292,12 @@ class SdCppServer:
                 verbose = True,  # sd-server prints the per-step sampling lines we parse
                 extra_args = list(extra_args or []),
                 accelerator = binary_accelerator(self.binary),
+                rng = rng,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
+            if files.clip_l:
+                # FLUX.1 CLIP-L leaves a null encoder param; sd.cpp's LoRA cond-cache check segfaults on it.
+                run_env.setdefault("SD_COND_CACHE_STRICT", "1")
             if env:
                 run_env.update(env)
             if _verbose_native_logs():
@@ -205,6 +310,7 @@ class SdCppServer:
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None
+            self._planned_free_vram_mib = {}
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -290,6 +396,7 @@ class SdCppServer:
         """A 200 is a true ready signal: upstream binds the port only after the model has loaded."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), interval)
         while time.monotonic() < deadline:
             # stop() sets _abort so the wait bails early instead of holding the load for startup_timeout.
             if self._abort.is_set():
@@ -306,7 +413,7 @@ class SdCppServer:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
-            time.sleep(interval)
+            pacer.wait()
         logger.error("sd-server readiness timed out after %ss", timeout)
         return False
 
@@ -391,8 +498,7 @@ class SdCppServer:
         return True
 
     def _drain_stdout(self, proc: subprocess.Popen) -> None:
-        """Drain stdout so the pipe never deadlocks; keep a tail for diagnostics and
-        feed each line to the active generation's step callback."""
+        """Drains stdout (no deadlock); keeps a tail, feeds each line to the step callback."""
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
@@ -400,11 +506,15 @@ class SdCppServer:
                 if not line:
                     continue
                 self._tail.append(line)
+                self._lines_seen += 1
                 match = _TOTAL_PARAMS_VRAM_RE.search(line)
                 if match is not None:
                     value = float(match.group(1)) / 1024.0
                     if value > 0:
                         self._resident_params_vram_gb = value
+                match = _AUTO_FIT_DEVICE_FREE_RE.search(line)
+                if match is not None:
+                    self._planned_free_vram_mib[match.group(1)] = int(match.group(2))
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -412,8 +522,21 @@ class SdCppServer:
                         cb(line)
                     except Exception:  # noqa: BLE001 -- a progress callback must never break drain
                         pass
+                # After the callback, so a woken poll never outruns this line's progress event.
+                self._wake_pollers()
         except Exception:  # noqa: BLE001 -- drain thread must never raise (pipe closed at teardown)
             pass
+        self._wake_pollers()
+
+    def _wake_pollers(self) -> None:
+        wake = getattr(self, "_log_wake", None)
+        if wake is not None:
+            wake.set()
+
+    @property
+    def planned_free_vram_mib(self) -> dict[str, int]:
+        """Free VRAM per device (``{"CUDA0": 6666}``) from sd.cpp's startup auto-fit plan; empty without one."""
+        return dict(self._planned_free_vram_mib)
 
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
@@ -430,8 +553,7 @@ class SdCppServer:
         return {int(physical_gpu_id): float(value)}
 
     def stop(self) -> None:
-        """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP
-        client + atexit handler. Idempotent."""
+        """SIGTERM then SIGKILL, join the drain, release HTTP client and atexit; idempotent."""
         # Set abort BEFORE taking the lock so a start() readiness wait bails instead of blocking.
         self._abort.set()
         self._stopped = True
@@ -440,9 +562,8 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Release per-instance resources (on stop / failed start). The backend never
-        reuses a disposed server, so this closes the pooled httpx client and drops the
-        atexit handler that would otherwise pin every reloaded instance for the session."""
+        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
+        instance; the backend never reuses a disposed server."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001
@@ -504,6 +625,30 @@ class SdCppServer:
             total_timeout = total_timeout,
         )
 
+    def img_gen_latents(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> list[tuple[tuple[int, ...], bytes]]:
+        """``img_gen`` with ``output_latent``: the server skips its VAE decode and returns each final latent as
+        ``(shape, float32 bytes)``; only for a server whose capabilities list ``output_latent``."""
+        return self._run_job(
+            "img_gen",
+            _IMG_GEN_PATH,
+            {**payload, "output_latent": True},
+            self._decode_latents,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
+
     def vid_gen(
         self,
         payload: dict[str, Any],
@@ -520,7 +665,7 @@ class SdCppServer:
             "vid_gen",
             _VID_GEN_PATH,
             payload,
-            self._decode_video,
+            self._fetch_video,
             on_step = on_step,
             cancel_event = cancel_event,
             poll_interval = poll_interval,
@@ -548,7 +693,10 @@ class SdCppServer:
             raise RuntimeError("sd-server is not running.")
 
         self._step_listener = on_step
+        job_mark = self._lines_seen
         job_id: Optional[str] = None
+        # Before submit, so a line logged while the POST is in flight already counts.
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), poll_interval)
         try:
             try:
                 resp = self._client.post(
@@ -634,15 +782,17 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    if kind == "vid_gen":
-                        # The job error is generic; the cause (OOM, abort) is only in the log.
-                        tail = _diagnostic_tail(self._tail)
-                        if tail:
-                            message += "\nLast output:\n" + tail[:1500]
+                    # The cause is only in this job's output; an earlier job's stale OOM would mislabel it.
+                    lines = list(self._tail)
+                    tail = _diagnostic_tail(
+                        lines[max(0, len(lines) - (self._lines_seen - job_mark)) :]
+                    )
+                    if tail:
+                        message += "\nLast output:\n" + tail[:1500]
                     raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")
-                time.sleep(poll_interval)
+                pacer.wait()
         finally:
             self._step_listener = None
 
@@ -652,6 +802,23 @@ class SdCppServer:
             self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout = 5.0)
         except Exception:  # noqa: BLE001 -- cancel is best-effort
             pass
+
+    def _fetch_video(self, job: dict[str, Any]) -> bytes:
+        """The finished job's container: raw bytes from ``result.media_url`` (uncompressed AVI), else base64 JSON."""
+        result = job.get("result") if isinstance(job, dict) else None
+        media_url = result.get("media_url") if isinstance(result, dict) else None
+        if not isinstance(media_url, str) or not media_url.startswith("/sdcpp/v1/jobs/"):
+            return self._decode_video(job)
+        try:
+            resp = self._client.get(f"{self.base_url}{media_url}", timeout = 300.0)
+        except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
+            raise RuntimeError(f"sd-server video download failed: {exc}") from exc
+        expected = result.get("media_size")
+        if resp.status_code != 200 or (isinstance(expected, int) and len(resp.content) != expected):
+            raise RuntimeError(
+                f"sd-server video download failed (HTTP {resp.status_code}, {len(resp.content)} bytes)."
+            )
+        return resp.content
 
     @staticmethod
     def _decode_video(job: dict[str, Any]) -> bytes:
@@ -681,6 +848,41 @@ class SdCppServer:
                 raise RuntimeError(f"sd-server returned an undecodable image: {exc}") from exc
         if not out:
             raise RuntimeError("sd-server completed the job but returned no images.")
+        return out
+
+    @staticmethod
+    def _decode_latents(job: dict[str, Any]) -> list[tuple[tuple[int, ...], bytes]]:
+        result = job.get("result") if isinstance(job, dict) else None
+        images = result.get("images") if isinstance(result, dict) else None
+        items = [it for it in images if isinstance(it, dict)] if isinstance(images, list) else []
+        out: list[tuple[tuple[int, ...], bytes]] = []
+        for item in sorted(items, key = lambda d: d.get("index", 0)):
+            latent = item.get("latent")
+            if not isinstance(latent, dict) or latent.get("dtype") != "float32":
+                raise SdCppLatentFormatError(
+                    "sd-server returned an image item without a float32 latent."
+                )
+            shape = latent.get("shape")
+            if not isinstance(shape, list) or not all(isinstance(n, int) and n > 0 for n in shape):
+                raise SdCppLatentFormatError(
+                    f"sd-server returned a latent with an invalid shape: {shape!r}"
+                )
+            try:
+                data = base64.b64decode(latent.get("b64") or "")
+            except Exception as exc:  # noqa: BLE001
+                raise SdCppLatentFormatError(
+                    f"sd-server returned an undecodable latent: {exc}"
+                ) from exc
+            count = 1
+            for n in shape:
+                count *= n
+            if len(data) != count * 4:
+                raise SdCppLatentFormatError(
+                    f"sd-server returned {len(data)} latent bytes for shape {shape}, expected {count * 4}."
+                )
+            out.append((tuple(shape), data))
+        if not out:
+            raise SdCppLatentFormatError("sd-server completed the job but returned no latents.")
         return out
 
     def _died_message(self, where: str, exc: Optional[Exception]) -> str:

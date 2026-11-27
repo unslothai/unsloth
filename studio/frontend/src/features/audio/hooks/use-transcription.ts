@@ -17,7 +17,10 @@ import {
   transcribeSourceWithProgress,
 } from "../transcribe-api";
 import { downloadTranscript } from "../transcript-download";
-import type { TranscriptExportFormat } from "../transcript-export";
+import {
+  type TranscriptExportFormat,
+  needsSavedTimings,
+} from "../transcript-export";
 import {
   readTranscriptDraft,
   transcriptDraftKey,
@@ -244,6 +247,7 @@ export function useTranscription({
         language: string;
         timestamps: boolean;
         speakers: boolean;
+        speakerAccent?: string;
         connection?: { providerId: string; modelId: string } | null;
       },
       onSourceExpired?: () => void,
@@ -388,19 +392,37 @@ export function useTranscription({
   const handleDownloadTranscript = useCallback(
     async (format: TranscriptExportFormat) => {
       const version = transcriptVersion.current;
+      let details = transcriptDetails;
+      let names = speakerNames;
+      if (
+        transcriptRecord &&
+        !details.segments.length &&
+        !details.words.length &&
+        needsSavedTimings(format, transcriptRecord)
+      ) {
+        try {
+          // A listed row can predate a rename; nothing is renamed here before timings load.
+          const full = await getTranscript(transcriptRecord.id);
+          details = detailsFrom(full);
+          names = full.speaker_names ?? {};
+        } catch (error) {
+          toastFailure("Could not load this transcript's timing", error);
+          return;
+        }
+      }
       if (
         (await downloadTranscript(format, {
           title: transcribedName ?? "transcript",
           text: transcript,
           model: transcriptModel,
-          details: transcriptDetails,
-          names: speakerNames,
+          details,
+          names,
         })) &&
         transcriptVersion.current === version
       )
         setTranscriptExported(true);
     },
-    [transcript, transcribedName, transcriptModel, transcriptDetails, speakerNames],
+    [transcript, transcribedName, transcriptModel, transcriptDetails, transcriptRecord, speakerNames],
   );
 
   return {

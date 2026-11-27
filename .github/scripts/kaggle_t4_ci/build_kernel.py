@@ -145,11 +145,8 @@ def build_payload_notebook(
     extra_args: tuple[str, ...] = (),
     reference: str | None = None,
 ) -> dict:
-    """A notebook that installs one leg's stack and runs it.
-
-    One GPU for every leg but the `all_cards` one, which is unpinned so that
-    unsloth's DEVICE_COUNT > 1 code path is reachable at all.
-    """
+    """Builds a notebook that installs one leg's stack and runs it; one GPU per leg except
+    all_cards, which is unpinned so unsloth's DEVICE_COUNT > 1 path is reachable at all."""
     root = _kernel_root(leg)
     expected_visible = 2 if leg.all_cards else 1
     wanted = list(leg.files)
@@ -1646,19 +1643,8 @@ def build_kernel(
 
 
 def _shared_vcs_specs(leg_groups: dict[str, list[list[str]]]) -> tuple[str, ...]:
-    """VCS requirements that EVERY leg installs identically.
-
-    Derived rather than declared. The two SHAs already live in the install
-    groups, and a second copy here would be a second thing to keep in step --
-    one that drifts silently, because a wheel built from the wrong ref installs
-    perfectly and fails nothing.
-
-    "Every leg" is the point of the intersection. A spec only one leg carries is
-    part of what that leg is testing and must keep its own resolution; building
-    it once and sharing it would quietly make the legs agree about something
-    they exist to disagree about. Two legs pinning the SAME package to
-    DIFFERENT refs therefore yields nothing shared, which is the safe answer.
-    """
+    """VCS requirements every leg installs identically, derived by intersection; a spec only one leg
+    carries, or one package pinned to different refs by two legs, is never shared."""
     if not leg_groups:
         return ()
     sets = []

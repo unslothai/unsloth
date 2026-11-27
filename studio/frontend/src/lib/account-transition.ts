@@ -58,7 +58,6 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "palette",
   APPEARANCE_KEY,
   "unsloth_locale",
-  "unsloth_spellcheck",
   "sidebar_pinned",
   "sidebar_width",
   "chat_settings_width",
@@ -76,6 +75,7 @@ export const ACCOUNT_CHROME_PREFIXES = [
 export const ACCOUNT_KEYED_PREFIXES = [
   "unsloth_scheduled_tasks_seen:",
   "unsloth_scheduled_tasks_unseen:",
+  "unsloth_model_picker_intro_dismissed:",
 ] as const;
 /** Per-tab flags about the browser session, not the account. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
@@ -159,6 +159,17 @@ function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   if (previous.accountId && next.accountId)
     return previous.accountId === next.accountId;
   return previous.username === next.username;
+}
+
+/** Whether `storage` still names the account `since` was taken from, across marker upgrades. */
+export function sameBrowserAccount(
+  since: string | null,
+  storage: Pick<Storage, "getItem"> = window.localStorage,
+): boolean {
+  return isSameAccount(
+    parseAccountMarker(since ?? OWNER_BROWSER_ACCOUNT),
+    parseAccountMarker(storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT),
+  );
 }
 
 export function resetFullAccessForMultiUser(storage: Storage): void {

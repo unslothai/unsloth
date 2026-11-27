@@ -73,8 +73,7 @@ MODE_WINDOWED = "windowed"
 #: Written by `record_completeness_gate` when the arm may have lost messages.
 COMPLETENESS_GATE = "thread_complete"
 
-#: Written when the thread did not stay pinned through the stream; an unmounted reply costs
-#: nothing to render.
+# Written when the thread lost its pin through the stream; unmounted replies render nothing.
 FOLLOW_GATE = "follows_the_stream"
 
 #: A gate that only qualifies one column (`timer_clamp`) is deliberately NOT here.
@@ -274,7 +273,6 @@ def incomplete_cells(paths: list[Path]) -> dict[str, str]:
             # Not measured is not failed; `gate_detail_is_unmeasured` is the shared definition.
             if gate_detail_is_unmeasured(detail):
                 continue
-            # First failure wins.
             if cid in out:
                 continue
             out[cid] = (
@@ -355,8 +353,7 @@ def collect(
         shard = path.parent.name
         gate_failures = incomplete_cells([path])
         raw_rows = rows(path)
-        # Unfinished cells are dropped on the null only: there they would narrow the excuse set, while
-        # on the result a dead cell's difference is still real. Resolved per file via the same filter.
+        # Unfinished cells: dropped on the null (would narrow excuses), kept on the result.
         kept_rows = latest_attempt_rows(raw_rows)
         completed = {
             r.get("cell_id")
@@ -1509,8 +1506,7 @@ def corroborated(entries: list[tuple], min_reps: int) -> tuple[list[tuple], list
         by_action[(entry[0], rung_of_cell(entry[2]), direction)].append(entry)
     firm, weak = [], []
     for group in by_action.values():
-        # Distinct repetitions, deliberately not keyed on shard: a film recorded twice in two shards
-        # would otherwise let one flake corroborate itself.
+        # Keyed by repetition, not shard, so one film in two shards cannot corroborate itself.
         reps = {e[2] for e in group}
         (firm if len(reps) >= min_reps else weak).extend(group)
     return firm, weak
@@ -1589,8 +1585,7 @@ def swapped_between_arms(results: list[tuple], min_reps: int) -> frozenset[int]:
         if base is None or treat is None or base == treat:
             continue
         groups[(action, rung_of_cell(cell))].append((i, cell, base, treat))
-    # One-to-one by repetition: each reversed rep excuses one rep in the other direction, and a rep
-    # recorded in both directions is ambiguous and never excused.
+    # One-to-one by repetition; a rep recorded in both directions is ambiguous, never excused.
     out: set[int] = set()
     for group in groups.values():
         by_cell: dict[str, dict[tuple[str, str], list[int]]] = collections.defaultdict(
@@ -1719,7 +1714,6 @@ def report(
             f"cell rows, so completion could not be checked"
         )
     print(f"  matched:                    {matched}")
-    # Report matches that only held after setting fence latch state aside.
     latch_normalised = sum(
         1 for _a, _s, _c, r in results if r.get("verdict") == P.MATCH and r.get("fence_latch")
     )
@@ -1880,9 +1874,7 @@ def report(
         print("\n  (reported, not counted) actions that vary between runs of any build:")
         for action, shard, cell, moved in unstable_bad[:8]:
             print(f"    {action:<26} {shard} {cell}: {', '.join(moved[:3])}")
-    # A one-sided action is a failure on the same footing as a differing digest: the two builds
-    # behaved differently and the difference leaves no digest to compare.
-    # `expect_bad` is collected ahead of the verdict branches.
+    # One-sided fails like a differing digest (none to compare); expect_bad is gathered first.
     if one_sided or expect_bad or (stable_bad and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
     if stable_bad:
@@ -1891,10 +1883,8 @@ def report(
             "rendering differences above are reported, not failed. Behaviour differences still fail."
         )
 
-    # 2, the same code the empty-payload path uses: the tool was asked a question it could not
-    # answer, and exiting 0 would let CI go green on a run structurally incapable of firing.
-    # `decided`, not `matched`. AFTER the failure return, since "it failed" is more specific.
-    # A declared difference was decided too: a wrapper change can differ on every pair.
+    # Outcome 2 (empty payload) must not exit 0 and turn CI green; checked after the failure return;
+    # declared differences count too, as a wrapper change can differ on every pair.
     if decided == 0 and not stable_bad:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
@@ -2193,7 +2183,6 @@ def main(argv: list[str] | None = None) -> int:
         # Both, in this order: visible parity catches what users see, behaviour what a viewport cannot.
         if args.mode in ("auto", "visible"):
             if vis_unstable is None:
-                # Derived once from the caller's null control.
                 vis_null: list[Path] = []
                 for pat in args.null:
                     vis_null.extend(shards_of(pat))
@@ -2364,7 +2353,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         worst = max(worst, int(struct))
         note(pattern, struct)
-    # Worst outcome wins across payloads.
     if scored_windowed and scored_structural:
         print(
             f"\nCOMBINED EXIT STATUS {worst}: {scored_windowed} pair(s) scored on the visible "

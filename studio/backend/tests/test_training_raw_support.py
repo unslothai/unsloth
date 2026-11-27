@@ -193,8 +193,7 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             request(max_grad_norm = float("inf"))
-        # Unset must survive to the resolver rather than being coerced en route,
-        # so "no opinion" stays distinguishable from an explicit 0.
+        # Unset must reach the resolver uncoerced, keeping "no opinion" apart from explicit 0.
         self.assertIsNone(request().max_grad_norm)
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn(
@@ -213,8 +212,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
-        # None is what lets the worker apply the trainer's default; coercing it to
-        # 0.0 here would make "no opinion" indistinguishable from an explicit 0.
+        # None lets the worker apply the trainer default; coercing to 0.0 erases "no opinion".
         backend = TrainingBackend()
 
         class DummyProcess:

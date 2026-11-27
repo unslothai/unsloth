@@ -14,6 +14,7 @@ offload slots must then be leased per checkpoint, unsloth-zoo PR #2071) and whet
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 from typing import Optional
@@ -199,30 +200,55 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
             return False
         if func.keywords.get("use_reentrant", True) is not False:
             return False
-    if not found and bool(getattr(model, "is_gradient_checkpointing", False)):
+    from unsloth.models._gc_config_default import (
+        is_activation_checkpointing as _is_activation_checkpointing,
+    )
+
+    if not found and bool(_is_activation_checkpointing(model)):
         return False
     return True if found else None
 
 
 def allow_split_backward():
-    """Disable AOTAutograd donated buffers: zero bubble backward uses retain_graph, which a compiled backward
-    with donated buffers refuses. Returns True if changed; call before the first forward (already compiled
-    blocks keep their buffers)."""
+    """True if AOTAutograd donated buffers are on, so a zero bubble step must turn them off
+    (split_backward_scope). Reads the config only: nothing is written."""
     try:
         import torch._functorch.config as functorch_config
     except ImportError:
         return False
-    if getattr(functorch_config, "donated_buffer", False):
-        functorch_config.donated_buffer = False
-        return True
-    return False
+    return bool(getattr(functorch_config, "donated_buffer", False))
+
+
+@contextlib.contextmanager
+def split_backward_scope(enabled = True):
+    """AOTAutograd donated buffers off while one zero bubble step runs: its backward calls autograd.grad
+    with retain_graph, which a donated buffer refuses. The previous value comes back on exit, so every
+    other compiled graph in the process keeps torch's default. A plain write, not config.patch: on
+    torch >= 2.12 patch() is thread local, and the backward can run on an autograd device thread
+    (import_fixes mirrors plain functorch writes to every thread). Blocks compiled inside the scope
+    keep no donated buffers, also when they run later outside it."""
+    try:
+        import torch._functorch.config as functorch_config
+    except ImportError:
+        functorch_config = None
+    if (
+        not enabled
+        or functorch_config is None
+        or not getattr(functorch_config, "donated_buffer", False)
+    ):
+        yield
+        return
+    functorch_config.donated_buffer = False
+    try:
+        yield
+    finally:
+        functorch_config.donated_buffer = True
 
 
 @functools.lru_cache(maxsize = None)
 def split_backward_keeps_function_nodes() -> bool:
-    """True if an autograd.Function node (e.g. CompiledFunctionBackward) keeps `_input_metadata` after its
-    output dies; split backward's weight pass needs it. torch <= 2.12 holds the node by weak_ptr, so it fails.
-    Probed rather than version-checked."""
+    """True if an autograd.Function node keeps _input_metadata after its output dies (split backward
+    needs it). torch <= 2.12 fails by weak_ptr; probed, not version-checked."""
 
     class _Probe(torch.autograd.Function):
         @staticmethod
@@ -316,8 +342,7 @@ def _unwrap_callable(value):
 
 
 def single_backward_kernels(model):
-    """Fused LoRA kernels on `model`: their backward mutates saved tensors, so it cannot run twice as split
-    backward (zero bubble) requires."""
+    """Fused LoRA kernels: backward mutates saved tensors, so split backward cannot run."""
     found = set()
     for module in model.modules():
         candidates = list(module.__dict__.values()) + [getattr(type(module), "forward", None)]

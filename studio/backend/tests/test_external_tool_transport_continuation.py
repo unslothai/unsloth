@@ -101,7 +101,7 @@ def test_every_round_is_fitted_again(monkeypatch):
         provider_type = "vllm", base_url = "http://self-hosted.example/v1", api_key = ""
     )
 
-    async def fitter(messages):
+    async def fitter(messages, tools = None):
         return messages[1:], 7, None
 
     transport = OAICompatTransport(

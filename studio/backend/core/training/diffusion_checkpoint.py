@@ -14,8 +14,10 @@ import os
 import random
 import re
 import shutil
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
@@ -48,6 +50,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("family", "model family"),
     ("base_model", "base model"),
     ("base_revision", "base model revision"),
+    ("base_dit", "base DiT"),
+    ("base_dit_revision", "base DiT revision"),
     ("dataset_fingerprint", "training images"),
     ("lora_target_modules", "LoRA target modules"),
     ("lora_rank", "LoRA rank"),
@@ -70,11 +74,12 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("random_flip", "random flipping"),
     # Buckets change canvases and batch order; a pre-field manifest trained square (_LEGACY_IDENTITY_DEFAULTS).
     ("bucketing", "aspect ratio buckets"),
-    # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
-    # strict-reproducibility mode.
+    # TF32 changes numerics mid-trajectory; off is the strict-reproducibility mode.
     ("enable_tf32", "TF32 matmuls"),
     # Batch, accumulation and clip norm all change the trajectory the restored moments were produced on.
     ("train_batch_size", "batch size"),
+    # Every rank draws train_batch_size images: the GPU count scales the global batch and the sampler's stream.
+    ("world_size", "GPU count"),
     ("gradient_accumulation_steps", "gradient accumulation"),
     ("max_grad_norm", "gradient clipping"),
     # Trainers crop to this before the restored sampler sees anything; a 1024 bundle could finish at 768.
@@ -83,6 +88,9 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("base_precision", "base precision"),
     # Record actual base precision: fp8/mxfp8 can fall back to bf16, so the request would look clean.
     ("base_precision_effective", "resolved base precision"),
+    # int8 is the W8A8 base or torchao weight-only (UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only): different base math,
+    # one name.
+    ("base_int8_kernel", "int8 base kernel"),
     # LoRAEMA uses the INCOMING decay with restored shadows, so a change makes a hybrid EMA.
     ("ema_decay", "EMA decay"),
 )
@@ -109,14 +117,19 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "bucketing",
         "enable_tf32",
         "train_batch_size",
+        "world_size",
         "gradient_accumulation_steps",
         "max_grad_norm",
         # Known only to the DiT trainer; unknown means cannot-tell, leaving route preflight and SDXL alone.
         "base_precision_effective",
+        "base_int8_kernel",
+        "base_dit",
+        "base_dit_revision",
     }
 )
 # Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
-_LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
+# A bundle from before world_size was recorded trained on one GPU.
+_LEGACY_IDENTITY_DEFAULTS: dict[str, Any] = {"bucketing": "off", "world_size": 1}
 
 
 def _revision_is_comparable(value: Any) -> bool:
@@ -170,6 +183,8 @@ class CheckpointIdentity:
     bucketing: Optional[str] = None
     enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
+    # Data-parallel GPU count; set by the DiT trainer once the world is planned, None elsewhere (cannot tell).
+    world_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
     max_grad_norm: Optional[str] = None
@@ -177,8 +192,12 @@ class CheckpointIdentity:
     ema_decay: Optional[str] = None
     # Set by the DiT trainer once it knows whether fp8/mxfp8 took; None elsewhere reads as cannot-tell.
     base_precision_effective: Optional[str] = None
+    # "w8a8" or "weight-only" for an int8 base, set by the DiT trainer; None elsewhere and in older bundles.
+    base_int8_kernel: Optional[str] = None
     # Gated bases fetch from an ungated mirror with different SHAs, so record which repo.
     base_revision_repo: Optional[str] = None
+    base_dit: Optional[str] = None
+    base_dit_revision: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -187,6 +206,8 @@ class CheckpointIdentity:
             "base_model": self.base_model,
             "base_revision": self.base_revision,
             "base_revision_repo": self.base_revision_repo,
+            "base_dit": self.base_dit,
+            "base_dit_revision": self.base_dit_revision,
             "dataset_fingerprint": self.dataset_fingerprint,
             "lora_target_modules": list(self.lora_target_modules),
             "lora_rank": int(self.lora_rank),
@@ -208,10 +229,12 @@ class CheckpointIdentity:
             "bucketing": self.bucketing,
             "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
+            "world_size": self.world_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
             "ema_decay": self.ema_decay,
             "base_precision_effective": self.base_precision_effective,
+            "base_int8_kernel": self.base_int8_kernel,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Resolution is a hard identity: trainers crop to it, so loadable tensors alone are not a resume.
@@ -250,16 +273,20 @@ class CheckpointIdentity:
                 bucketing = _optional_str(data.get("bucketing")),
                 enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
+                world_size = _optional_int(data.get("world_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 ema_decay = _optional_str(data.get("ema_decay")),
                 base_precision_effective = _optional_str(data.get("base_precision_effective")),
+                base_int8_kernel = _optional_str(data.get("base_int8_kernel")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
                 kind = str(data.get("kind") or "image"),
                 base_revision = _optional_str(data.get("base_revision")),
                 base_revision_repo = _optional_str(data.get("base_revision_repo")),
+                base_dit = _optional_str(data.get("base_dit")),
+                base_dit_revision = _optional_str(data.get("base_dit_revision")),
                 dataset_fingerprint = _optional_str(data.get("dataset_fingerprint")),
             )
         except (TypeError, ValueError):
@@ -278,6 +305,8 @@ class CheckpointIdentity:
             a, b = mine.get(field), theirs.get(field)
             if a in (None, "") and field in _LEGACY_IDENTITY_DEFAULTS:
                 a = _LEGACY_IDENTITY_DEFAULTS[field]
+            if a in (None, "") and field == "base_dit" and b not in (None, ""):
+                a = default_base_dit(self)
             # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
             # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
             if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
@@ -288,6 +317,12 @@ class CheckpointIdentity:
                 continue
             # SHAs are comparable only within one repo: an ungated mirror has different SHAs.
             if field == "base_revision" and _revision_repo(self) != _revision_repo(other):
+                continue
+            if field == "base_dit_revision" and not (
+                _revision_is_comparable(a)
+                and _revision_is_comparable(b)
+                and self.base_dit == other.base_dit
+            ):
                 continue
             if a == b:
                 continue
@@ -339,8 +374,7 @@ def _flow_shift_key(value: Any, family: str = "") -> str:
 
 
 def _snr_gamma_key(value: Any) -> str:
-    """min-SNR as a comparable token. None DISABLES the weighting, so it gets its own value rather
-    than the unknown the optional-field rule skips."""
+    """Comparable min-SNR token; None disables weighting, so it is a value, not an unknown."""
     number = _optional_float(value)
     return "off" if number is None else f"{number}"
 
@@ -421,6 +455,11 @@ def with_cache_mode(identity: "CheckpointIdentity", used_cache: bool) -> "Checkp
     return replace(identity, cache_mode = "cached" if used_cache else "in-loop")
 
 
+def with_world_size(identity: "CheckpointIdentity", world: Any) -> "CheckpointIdentity":
+    """Records the data-parallel GPU count after its fallbacks; a resume at another count changes the global batch."""
+    return replace(identity, world_size = max(1, int(world or 1)))
+
+
 def with_resolved_base_precision(
     identity: "CheckpointIdentity", resolved: Any
 ) -> "CheckpointIdentity":
@@ -429,6 +468,38 @@ def with_resolved_base_precision(
     if not value:
         return identity  # nothing resolved; leave it unknown rather than asserting a value
     return replace(identity, base_precision_effective = value)
+
+
+def with_int8_kernel(identity: "CheckpointIdentity", w8a8: bool) -> "CheckpointIdentity":
+    """Records which int8 base trained: a resume must not switch W8A8 and torchao weight-only under one name."""
+    return replace(identity, base_int8_kernel = "w8a8" if w8a8 else "weight-only")
+
+
+_DEFAULT_DIT_SUBFOLDER = {"ltx-2.5": "transformer_full"}
+
+
+def _dit_key(repo: Any, subfolder: Any) -> str:
+    return f"{str(repo or '').strip().lower()}:{str(subfolder or '').strip()}"
+
+
+def default_base_dit(identity: "CheckpointIdentity") -> Optional[str]:
+    subfolder = _DEFAULT_DIT_SUBFOLDER.get(str(identity.family or "").strip().lower())
+    return _dit_key(identity.base_model, subfolder) if subfolder else None
+
+
+def with_resolved_dit(
+    identity: "CheckpointIdentity", repo: Any, subfolder: Any
+) -> "CheckpointIdentity":
+    """Records the DiT the trainer actually loaded, and its revision: a dev and a distilled DiT (or two repos) have
+    the same shapes, so only this tells an adapter trained on one from the other."""
+    from core.training.diffusion_train_extras import source_revision
+
+    revision = source_revision(repo)
+    return replace(
+        identity,
+        base_dit = _dit_key(repo, subfolder),
+        base_dit_revision = revision if _revision_is_comparable(revision) else None,
+    )
 
 
 def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "CheckpointIdentity":
@@ -940,9 +1011,7 @@ def _recover_orphaned_slots(
 
 
 def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
-    """True when ``entry`` is a stale bundle that must not be swept up: either it was handed back to
-    its empty slot, or the hand-back failed and leaving it on disk beats deleting the only copy
-    of the run's last resumable state."""
+    """Stale bundles to leave alone: already handed back, or a failed hand-back is kept as the only copy."""
     match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
     if match is None:
         return False
@@ -1277,15 +1346,69 @@ _UNRESUMABLE_STATUS = {
 }
 
 
+# Listing-only memo of passing _assert_loadable verdicts, keyed on the stat of every state file.
+# Files touched within the settle window are not kept: a coarse mtime can hide a same-size rewrite.
+_LOADABLE_PASSES: "OrderedDict[str, tuple]" = OrderedDict()
+_LOADABLE_PASSES_MAX = 512
+_LOADABLE_SETTLE_NS = 2_000_000_000
+_LOADABLE_PASSES_LOCK = threading.Lock()
+
+
+def _loadable_key(path: Path, manifest: dict[str, Any]) -> Optional[tuple]:
+    """Identity of every file _assert_loadable reads, or None when one cannot be stat'ed."""
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        return None
+    entries = []
+    try:
+        for role in sorted(files, key = str):
+            name = files[role]
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                return None
+            st = os.stat(path / name)
+            entries.append(
+                (str(role), name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            )
+    except (OSError, TypeError):
+        return None
+    return tuple(entries)
+
+
+def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
+    cache_id = str(path)
+    key = _loadable_key(path, manifest)
+    if key is not None:
+        with _LOADABLE_PASSES_LOCK:
+            if _LOADABLE_PASSES.get(cache_id) == key:
+                _LOADABLE_PASSES.move_to_end(cache_id)
+                return True
+    try:
+        _assert_loadable(path, manifest)
+    except ResumeError:
+        # Never kept: a refusal can be transient (MemoryError, EMFILE).
+        return False
+    now = time.time_ns()
+    if (
+        key is not None
+        and all(now - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key)
+        and _loadable_key(path, manifest) == key
+    ):
+        with _LOADABLE_PASSES_LOCK:
+            _LOADABLE_PASSES[cache_id] = key
+            _LOADABLE_PASSES.move_to_end(cache_id)
+            while len(_LOADABLE_PASSES) > _LOADABLE_PASSES_MAX:
+                _LOADABLE_PASSES.popitem(last = False)
+    return True
+
+
 def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:
     """Header scan is not enough; the required state and a real torch.load must also succeed."""
     try:
         _assert_required_state(path, manifest)
         _assert_optimizer_buildable(path, manifest)
-        _assert_loadable(path, manifest)
     except ResumeError:
         return False
-    return True
+    return _assert_loadable_cached(path, manifest)
 
 
 def _source_checkpoint_bundle(
@@ -1473,20 +1596,8 @@ def _join_clauses(items: list[str]) -> str:
 
 
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
-    """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
-
-    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
-    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
-    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
-    to terminate without training.
-
-    Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
-    bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
-    tell an installed-and-broken wheel (which the trainer catches and falls back from) from a
-    working one. So only the case that cannot be wrong is refused here: 8-bit moments with no
-    bitsandbytes to load them, or with the fp32 override forcing torch AdamW. The other direction
-    stays with the child, where the real optimizer object exists.
-    """
+    """Refuse only provably unbuildable AdamW8bit moments (no bitsandbytes, or fp32 override),
+    before teardown; import-free, so no CUDA context; other cases left to the child."""
     saved = manifest.get("optimizer_class")
     if not isinstance(saved, str) or "bitsandbytes" not in saved:
         return
@@ -1552,6 +1663,44 @@ def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
     return None
 
 
+def recorded_base_precision(path_value: Any) -> tuple[bool, Optional[str]]:
+    """(found, precision): whether a resume would continue a readable bundle, and the base precision that bundle
+    actually trained on (None when it predates the field). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None:
+                return True, saved.base_precision_effective
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return False, None
+
+
+def recorded_int8_resume_kernel(path_value: Any) -> Optional[str]:
+    """The int8 base kernel ("w8a8" / "weight-only") a resumed bundle trained on, or None when it is unreadable or
+    did not train int8. A bundle without ``base_precision_effective`` counts as int8 when it requested int8, and one
+    without ``base_int8_kernel`` trained weight-only (both records postdate weight-only int8). Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is None:
+                continue
+            effective = (saved.base_precision_effective or "").strip().lower()
+            requested = (saved.base_precision or "").strip().lower()
+            if effective == "int8" or (not effective and requested == "int8"):
+                return saved.base_int8_kernel or "weight-only"
+            return None
+    except Exception:  # noqa: BLE001 -- best effort; the identity check reports a real mismatch
+        pass
+    return None
+
+
 def recorded_bucketing(path_value: str) -> bool:
     """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
     try:
@@ -1605,8 +1754,7 @@ def preflight_resume(
 
 
 def _terminal(error: ResumeError) -> ResumeError:
-    """Mark a refusal as final: it describes the REQUEST, not a damaged bundle, so the directory
-    scan must not walk past it to an older checkpoint."""
+    """Final refusal of the request, not a damaged bundle: the scan must not walk past it."""
     error.terminal = True  # type: ignore[attr-defined]
     return error
 
@@ -1724,7 +1872,25 @@ class LoadedCheckpoint:
         path = self._file(role)
         if path is None:
             return None
+        _refuse_pickle_on_old_torch(torch, path)
         return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
+def _refuse_pickle_on_old_torch(torch: Any, path: Path) -> None:
+    """Same rule as unsloth/import_fixes.py::refuse_pickle_checkpoint_on_old_torch (diffusion never
+    imports unsloth): torch < 2.6 runs code hidden in a .pt even with weights_only = True
+    (CVE-2025-32434), so a resume bundle is refused there instead of loaded."""
+    try:
+        from packaging.version import Version
+        old = Version(str(torch.__version__).split("+")[0]).release[:2] < (2, 6)
+    except Exception:  # noqa: BLE001 -- an unparsable version is a newer build, not an old one
+        return
+    if old:
+        raise ResumeError(
+            f"'{path.name}' is a pickled state file and torch {torch.__version__} can execute code "
+            "hidden in it even with weights_only = True (CVE-2025-32434). Upgrade to torch >= 2.6 "
+            "to resume this run."
+        )
 
 
 def load_checkpoint(path: str | os.PathLike[str]) -> LoadedCheckpoint:

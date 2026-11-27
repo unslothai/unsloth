@@ -72,7 +72,7 @@ from core.inference.stt_sidecar import (
     normalize_whisper_language,
 )
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
-from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.prebuilt.runtime_libs import dedupe_existing_dirs, oneapi_lib_dirs
 from utils.prebuilt.whisper_layout import lookup_marker
 from utils.process_lifetime import (
     adopt_pid,
@@ -369,7 +369,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     elif sys.platform == "darwin":
         var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
     else:
-        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs]
+        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs, *oneapi_lib_dirs(bin_dir)]
         wsl_rocm = _wsl_system_rocm_lib_dirs()
         if wsl_rocm:
             lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
@@ -386,13 +386,18 @@ def _cached_model_path(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a fully downloaded GGML file in the shared HF cache, else None."""
+    """Path of a fully downloaded GGML file in *hub_cache* (default: every cache find_in_hub_caches covers) or None."""
+    if hub_cache is None:
+        from core.inference.model_cache_search import find_in_hub_caches
+        return find_in_hub_caches(
+            GGML_STT_REPOS[model_id],
+            lambda root: _cached_model_path(model_id, hub_cache = root, revision = revision),
+        )
+
     from huggingface_hub import hf_hub_download
 
-    from core.inference.stt_sidecar import _active_hf_hub_cache
-
     repo_id = GGML_STT_REPOS[model_id]
-    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[str]:
         try:
@@ -1060,6 +1065,13 @@ class GgmlSttSidecar:
             if GgmlSttSidecar._probe_is_whisper_server(process, port, route) and (
                 GgmlSttSidecar._probe_is_whisper_server(process, port, route)
             ):
+                from core.inference.llama_cpp import LlamaCppBackend
+
+                # whisper-server binds only after loading its model, so another local user can answer first.
+                if not LlamaCppBackend._health_listener_is_ours(process, port):
+                    raise SttEngineUnavailableError(
+                        "Another program took the local transcription port; try again."
+                    )
                 return
             time.sleep(0.2)
         raise SttEngineUnavailableError("The local transcription runtime did not start in time.")
@@ -1070,8 +1082,7 @@ class GgmlSttSidecar:
         port: int,
         route: str = "",
     ) -> bool:
-        """One readiness probe: our child is alive and the responder looks like
-        whisper.cpp's server (its index page and errors identify whisper)."""
+        """Child alive, responder looks like whisper.cpp (index page and errors name whisper)."""
         if process.poll() is not None:
             return False
         try:
@@ -1091,9 +1102,11 @@ class GgmlSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        *,
+        timestamps: bool = False,
     ) -> dict:
         """Accepts any container PyAV decodes, under the same validation and caps as the
-        Transformers sidecar."""
+        Transformers sidecar; ``timestamps`` adds whisper.cpp's segments."""
         self._raise_if_update_in_progress()
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
@@ -1117,7 +1130,7 @@ class GgmlSttSidecar:
                     self.load(model_id)
                 else:
                     self.load(model_id, request_cancel_event = cancel_event)
-                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
+                payload = self._post_inference(wav_bytes, lang, fast, cancel_event, timestamps)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -1127,12 +1140,17 @@ class GgmlSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return {
-            "text": text,
+        result = {
+            "text": _one_line(payload["text"]),
             "language": lang,
             "duration": duration,
             "model": model_id,
         }
+        if timestamps:
+            segments = _segments(payload.get("segments"))
+            if segments:
+                result["segments"] = segments
+        return result
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
@@ -1145,15 +1163,19 @@ class GgmlSttSidecar:
         lang: Optional[str],
         fast: bool,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+        timestamps: bool = False,
+    ) -> dict:
         boundary = uuid.uuid4().hex
         fields = {
             "temperature": "0.0",
-            "response_format": "json",
+            "response_format": "verbose_json" if timestamps else "json",
             # Match the Transformers sidecar: 5-way beam search, greedy for fast.
             "beam_size": "1" if fast else "5",
             "language": lang or "auto",
         }
+        if timestamps:
+            # Spares a second language detection pass over the audio.
+            fields["no_language_probabilities"] = "true"
         parts: list[bytes] = []
         for name, value in fields.items():
             parts.append(
@@ -1215,8 +1237,27 @@ class GgmlSttSidecar:
             raise SttAudioDecodeError("Could not decode the audio.")
         # It served a transcription, so whatever failed earlier was transient.
         clear_runtime_inference_failure()
-        # whisper.cpp joins segments with newlines; dictation wants one line.
-        return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+        return payload
+
+
+def _one_line(text: str) -> str:
+    # whisper.cpp joins segments with newlines; dictation wants one line.
+    return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+
+
+def _segments(raw) -> list[dict]:
+    """whisper.cpp's verbose_json segments as ``{start, end, text}`` in seconds."""
+    segments = []
+    for item in raw if isinstance(raw, list) else ():
+        if not isinstance(item, dict):
+            continue
+        start, end, text = item.get("start"), item.get("end"), item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (start, end)):
+            continue
+        segments.append({"start": float(start), "end": float(end), "text": text.strip()})
+    return segments
 
 
 _sidecar: Optional[GgmlSttSidecar] = None

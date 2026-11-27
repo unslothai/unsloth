@@ -221,12 +221,16 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
         "imatrix_path",
         "data_dir",
         "conditioning_cache_dir",
-        "cond_cache_dir",
         "vae_path",
         "text_encoder_path",
         "dataset_path",
     ):
         account_path(values.get(key))
+    from core.training.diffusion_train_extras import cond_cache_is_off
+
+    # "off" (the trainers' no-cache value, which the start route writes) names no directory.
+    if not cond_cache_is_off(values.get("cond_cache_dir")):
+        account_path(values.get("cond_cache_dir"))
     export_write_path(values.get("save_directory"))
     if isinstance(values.get("imatrix_file"), (str, Path)):
         account_path(values["imatrix_file"])
@@ -274,8 +278,7 @@ def refresh_job_owner(service) -> None:
 
 
 def owned_job(*, continuation: bool = False):
-    """Hold ownership across validation/spawn and while work is live. Skipped when no managed
-    account ever existed."""
+    """Holds ownership through validation, spawn and live work; skipped if no managed account."""
 
     def decorate(fn):
         @wraps(fn)
@@ -612,8 +615,26 @@ def validate_recipe_access(recipe) -> None:
                                 )
                         else:
                             account_path(path)
+                            _require_contained_glob(path)
             if isinstance(value, (dict, list)):
                 validate_recipe_access(value)
+
+
+def _require_contained_glob(path: str) -> None:
+    """The engine opens a seed path with wildcards as a glob, cutting it at the first wildcard and
+    resolving the rest on its own: ``x.jsonl/..*.jsonl`` climbs where account_path saw a literal name.
+    A wildcard path may not walk up at all, and the folder it starts from must be the account's."""
+    if not any(char in path for char in "*?["):
+        return
+    parts = path.replace("\\", "/").split("/")
+    if any(part.startswith("..") for part in parts):
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
+    static = []
+    for part in parts:
+        if any(char in part for char in "*?["):
+            break
+        static.append(part)
+    account_path("/".join(static) or ".")
 
 
 async def account_event_stream(service, events):

@@ -35,6 +35,7 @@ DEFAULT_OVERLAP = 32
 MIN_TILE = 64
 # ComfyUI ImageUpscaleWithModel halves the tile on an OOM and gives up below 128 px.
 OOM_MIN_TILE = 128
+INPLACE_ENV = "UNSLOTH_UPSCALER_INPLACE"
 
 DOWNLOAD_TIMEOUT_S = 600
 _SOCKET_TIMEOUT_S = 60
@@ -75,7 +76,7 @@ CATALOG: tuple[CatalogUpscaler, ...] = (
     ),
 )
 _CATALOG_BY_ID = {entry.id: entry for entry in CATALOG}
-# Loadable without pickle by spandrel and resolvable by sd.cpp --hires-upscalers-dir.
+# Read by _read_state_dict, which runs nothing a file carries, and resolvable by sd.cpp --hires-upscalers-dir.
 LOCAL_SUFFIXES = (".pth", ".pt", ".safetensors")
 _STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.+()\-]{0,127}$")
 
@@ -278,6 +279,10 @@ def resolve_model_path(upscaler_id: str, *, cancel: Any = None) -> Path:
     return dest
 
 
+def inplace_enabled() -> bool:
+    return (os.environ.get(INPLACE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def tile_starts(length: int, tile: int, overlap: int) -> list[int]:
     """Start offsets covering ``[0, length)`` with windows of ``tile`` that overlap by at least ``overlap``; the last
     window ends exactly at ``length``. One window when ``length <= tile``."""
@@ -360,7 +365,9 @@ def tiled_apply(
     # Stop may land while the last tile runs: never hand back a result for an accepted cancel.
     if cancel is not None and cancel.is_set():
         _raise_cancelled()
-    return out / weight.clamp_min(1e-8)
+    if not inplace_enabled():
+        return out / weight.clamp_min(1e-8)
+    return out.div_(weight.clamp_min_(1e-8))
 
 
 _model_lock = threading.Lock()
@@ -393,11 +400,48 @@ def _pick_dtype(descriptor: Any, device: Any) -> Any:
     return torch.float32
 
 
+def _weights_only_refuses_torchscript() -> bool:
+    """Checked by version: below torch 2.6, weights_only still hands a TorchScript archive to torch.jit.load
+    (CVE-2025-32434)."""
+    try:
+        import torch
+        parts = str(torch.__version__).split("+")[0].split(".")
+        return (int(parts[0]), int(parts[1])) >= (2, 6)
+    except Exception:  # noqa: BLE001 - an unreadable version is not a safe one
+        return False
+
+
+def _pinned_catalog_file(path: Path) -> bool:
+    """A catalog file whose bytes match its SHA-256; a drop-in never is (_local_files skips catalog names)."""
+    return any(path.name == entry.filename and _verified_file(path, entry) for entry in CATALOG)
+
+
+def _read_state_dict(path: Path) -> Any:
+    """The file's tensors, read without running anything it carries.
+
+    Not spandrel's load_from_file: that gives a .pt to torch.jit.load, and its torch.load (a pickle_module, so
+    weights_only is off) does the same with a .pth that is a TorchScript archive; the archive's code then runs here."""
+    if path.suffix.lower() == ".safetensors":
+        from safetensors.torch import load_file
+        return load_file(str(path), device = "cpu")
+    import torch
+
+    if not _weights_only_refuses_torchscript() and not _pinned_catalog_file(path):
+        raise ValueError(
+            f"'{path.name}' is a pickle file, which this torch cannot read safely (needs torch 2.6 or newer). "
+            "Use a .safetensors upscaler instead."
+        )
+    return torch.load(str(path), map_location = "cpu", weights_only = True)
+
+
 def _load(path: Path, device: Any) -> tuple[Any, Any]:
     import torch
-    from spandrel import ImageModelDescriptor, ModelLoader
+    from spandrel import ImageModelDescriptor, ModelLoader, canonicalize_state_dict
 
-    descriptor = ModelLoader(device = "cpu").load_from_file(str(path))
+    # load_from_file's own two steps after the read, so architecture detection is unchanged.
+    descriptor = ModelLoader(device = "cpu").load_from_state_dict(
+        canonicalize_state_dict(_read_state_dict(path))
+    )
     if not isinstance(descriptor, ImageModelDescriptor):
         raise ValueError(f"'{path.name}' is not a single-image upscaler model.")
     if int(getattr(descriptor, "input_channels", 3)) != 3:
@@ -409,6 +453,20 @@ def _load(path: Path, device: Any) -> tuple[Any, Any]:
     descriptor.model.eval()
     descriptor.model.requires_grad_(False)
     return descriptor, dtype
+
+
+def _to_uint8_hwc(y: Any, source: Any) -> Any:
+    """In place unless ``y`` shares ``source``'s storage; inference mode because ``y`` is an inference tensor."""
+    import torch
+
+    if (
+        not inplace_enabled()
+        or y.untyped_storage().data_ptr() == source.untyped_storage().data_ptr()
+    ):
+        return (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
+    with torch.inference_mode():
+        y.clamp_(0, 1).mul_(255.0).round_()
+        return y.to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
 
 
 @dataclass
@@ -501,7 +559,7 @@ def upscale_with_model(
         if (y.shape[3], y.shape[2]) != (tw, th):
             # Resized where it accumulated (host), as ComfyUI's ImageScale after ImageUpscaleWithModel.
             y = torch.nn.functional.interpolate(y, size = (th, tw), mode = "bicubic", antialias = True)
-        out = (y.clamp(0, 1) * 255.0).round().to(torch.uint8)[0].permute(1, 2, 0).cpu().numpy()
+        out = _to_uint8_hwc(y, x)
     result = Image.fromarray(out, mode = "RGB")
     del x, y
     released = not keep_resident

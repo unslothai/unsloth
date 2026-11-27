@@ -70,7 +70,7 @@ const surface = {
 };
 const placed = () => ["left", "top", "width", "height"].map((key) => Number.parseFloat(style[key] ?? "NaN"));
 
-const { floatSurface, startFloatingGesture } = await import("../src/features/browser/floating-preview.ts");
+const { floatSurface, nudgeFloating, startFloatingGesture } = await import("../src/features/browser/floating-preview.ts");
 
 function drag(edge: Parameters<typeof startFloatingGesture>[1], from: [number, number], to: [number, number]) {
   const target = { closest: () => null };
@@ -142,6 +142,19 @@ test("a move stays in the chat, and one dropped at the right edge stays anchored
   release();
 });
 
+test("arrow keys move a window anchored at the right edge off it", () => {
+  const release = floatSurface(surface as never);
+  drag("move", [400, 700], [2400, 700]);
+  const right = placed()[0];
+  const press = () => nudgeFloating({ key: "ArrowLeft", shiftKey: false, currentTarget: surface, preventDefault() {} } as never);
+  press();
+  press();
+  assert.equal(placed()[0], right - 32);
+  assert.equal(JSON.parse(storage.get("unsloth_browser_floating_preview") ?? "{}").left, right - 32 - 312);
+  drag("move", [400, 700], [2400, 700]);
+  release();
+});
+
 test("a resize from a corner keeps the opposite corner put and never goes under the minimum", () => {
   const release = floatSurface(surface as never);
   const [left, top, width, height] = placed();
@@ -157,21 +170,19 @@ test("a resize from a corner keeps the opposite corner put and never goes under 
   release();
 });
 
-test("the preview steps over the composer rather than covering it, and a resize stops at it", () => {
+test("the window goes wherever it is dragged: over the composer and up over the chat header", () => {
   composer = rect(500, 760, 600, 120);
   dockedWidth = 0;
   const release = floatSurface(surface as never);
-  const [left, , width, height] = placed();
-  drag("move", [left + 10, placed()[1] + 10], [800, 780]);
-  assert.equal(placed()[1] + height, 760 - 12);
-  assert.equal(placed()[2], width);
-  const above = placed();
-  drag("s", [above[0] + 10, above[1] + above[3]], [above[0] + 10, above[1] + above[3] + 200]);
-  assert.deepEqual(placed(), above);
-  drag("sw", [above[0], above[1] + above[3]], [above[0] - 100, above[1] + above[3] + 200]);
-  const grown = placed();
-  assert.equal(grown[0], above[0] - 100);
-  assert.equal(grown[1] + grown[3], 760 - 12);
+  const [left, top, width, height] = placed();
+  drag("move", [left + 10, top + 10], [800, 790]);
+  // Dropped onto the composer, it stays there, down at the chat's bottom edge.
+  assert.equal(placed()[1] + placed()[3], 900 - 12);
+  drag("move", [800, placed()[1]], [800, -500]);
+  // Up to the chat's own edge, over its 48px header.
+  assert.equal(placed()[1], 12);
+  drag("s", [placed()[0] + 10, 12 + height], [placed()[0] + 10, 2000]);
+  assert.deepEqual([placed()[1], placed()[1] + placed()[3], placed()[2]], [12, 900 - 12, width]);
   release();
   composer = null;
 });

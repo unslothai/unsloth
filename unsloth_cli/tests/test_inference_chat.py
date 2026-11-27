@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import inspect
+import io
 import json
+import os
+import re
 import subprocess
 import sys
 import types
@@ -31,6 +34,7 @@ from unsloth_cli._inference import (
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     render_columns,
+    server_load_opts,
     visible_text,
 )
 
@@ -1445,6 +1449,264 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+def test_inference_reports_an_incomplete_studio_stream(monkeypatch):
+    from unsloth_cli.commands import inference as infermod
+
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeSSEResponse(
+        [b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n']
+    )
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+    monkeypatch.setattr(infermod, "connect_studio_server", lambda *a, **k: backend)
+
+    result = CliRunner().invoke(_inference_app(), ["fake-model", "hello", "--verbose"])
+
+    assert result.exit_code == 1
+    assert "partial" in result.stdout
+    assert "Stream ended before the reply completed" in result.stderr
+
+
+def test_chat_drops_a_turn_with_an_incomplete_studio_stream(monkeypatch):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    requests = []
+
+    def fake_request(method, path, payload):
+        requests.append(payload["messages"])
+        if len(requests) == 1:
+            return _FakeSSEResponse([b'data: {"choices":[{"delta":{"content":"partial"}}]}\n'])
+        return _FakeSSEResponse(
+            [b'data: {"choices":[{"delta":{"content":"complete"}}]}\n', b"data: [DONE]\n"]
+        )
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: backend)
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "first\nsecond\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "Stream ended before the reply completed" in result.stderr
+    assert requests == [
+        [{"role": "user", "content": "first"}],
+        [{"role": "user", "content": "second"}],
+    ]
+
+
+_QWEN = "unsloth/Qwen3-0.6B-GGUF"
+
+
+@pytest.mark.parametrize(
+    "loaded, requested, picked, replacement",
+    [
+        ([], _QWEN, "Q4_K_M", (_QWEN, "Q8_0")),
+        ([], f"{_QWEN}:Q8_0", "Q8_0", ("unsloth/gemma-3-270m-it-GGUF", "Q8_0")),
+        # A low-disk load serves a smaller quant than the one asked for.
+        ([], f"{_QWEN}:Q8_0", "Q4_K_M", (_QWEN, "Q8_0")),
+        # The asked quant is already kept beside another quant of its repo.
+        ([(_QWEN, "Q6_K"), (_QWEN, "IQ2_M")], f"{_QWEN}:IQ2_M", "IQ2_M", (_QWEN, "Q6_K")),
+    ],
+)
+def test_chat_turn_is_not_answered_by_a_model_loaded_elsewhere(
+    loaded, requested, picked, replacement
+):
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    studio = {"slots": list(loaded)}
+
+    def slot_for(name):
+        repo, _, quant = (name or "").partition(":")
+        named = [s for s in studio["slots"] if s == (repo, quant)]
+        return (named or studio["slots"] or [(None, None)])[0]
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            status,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            asked = parse_qs(urlparse(self.path).query).get("model", [None])[0]
+            repo, quant = slot_for(asked)
+            status = {"active_model": repo, "model_identifier": f"/models/{repo}/snapshot"}
+            self._send(200, {**status, "is_gguf": bool(repo), "gguf_variant": quant})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                repo = payload["model_path"].partition(":")[0]
+                if slot_for(payload["model_path"]) not in studio["slots"][1:]:
+                    studio["slots"][:1] = [(repo, picked)]
+                self._send(200, {"status": "loaded", "model": repo, "is_gguf": True})
+                return
+            repo, _, quant = payload["model"].partition(":")
+            if not any(r == repo and quant in ("", q) for r, q in studio["slots"]):
+                message = f"The model '{payload['model']}' is downloaded but not loaded."
+                self._send(404, {"error": {"message": message, "code": "model_not_found"}})
+                return
+            served = ":".join(slot_for(payload["model"]))
+            chunk = {"choices": [{"delta": {"content": served}, "finish_reason": "stop"}]}
+            sse = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+            self._send(200, sse, "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(requested, hf_token = None, max_seq_length = None, load_in_4bit = None)
+        turn = [{"role": "user", "content": "hi"}]
+        pinned = f"{_QWEN}:{picked}"
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == pinned
+
+        studio["slots"] = [replacement]
+        with pytest.raises(RuntimeError, match = re.escape(f"'{pinned}' is downloaded but not")):
+            list(backend.stream(turn, **_STREAM_KWARGS))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+_LOCAL_MODEL = str(Path("/models/qwen3").absolute())
+
+
+@pytest.mark.parametrize(
+    "local, confirmed, replacement, refused",
+    [
+        (_LOCAL_MODEL, True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL, "Q8_0"), True),
+        (_LOCAL_MODEL, True, (_LOCAL_MODEL + os.sep, "q4_k_m"), False),
+        # Unsloth does not collapse "..", which can cross a symlink to another checkpoint.
+        (_LOCAL_MODEL, True, (os.path.join(_LOCAL_MODEL, "..", "qwen3"), "Q4_K_M"), True),
+        # A native (dragged-in) load names itself only by label.
+        (_LOCAL_MODEL, True, ("label:Qwen3-0.6B-Q8_0", "Q8_0"), True),
+        ("./qwen3", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A bare relative name is a path once it exists, as the server reads it.
+        ("qwen3.gguf", True, ("unsloth/gemma-3-270m-it-GGUF", None), True),
+        # A hub id is left to the server's own refusal and switch-back.
+        (_QWEN, True, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        # Unconfirmed at load, so a mismatch proves nothing and the turn is sent as before.
+        (_LOCAL_MODEL, False, ("unsloth/gemma-3-270m-it-GGUF", None), False),
+        (_LOCAL_MODEL, True, (None, None), False),
+    ],
+)
+def test_a_path_chat_refuses_a_turn_once_another_model_replaced_it(
+    monkeypatch, tmp_path, local, confirmed, replacement, refused
+):
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "qwen3.gguf").touch()
+    resident = (local if confirmed else "qwen3", "Q4_K_M")
+    studio = {"resident": resident, "queries": [], "requests": []}
+
+    class Studio(http.server.BaseHTTPRequestHandler):
+        def _send(
+            self,
+            body,
+            content_type = "application/json",
+        ):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            studio["queries"] += parse_qs(urlparse(self.path).query).get("model", [])
+            checkpoint, quant = studio["resident"]
+            if str(checkpoint).startswith("label:"):
+                status = {"active_model": checkpoint[len("label:") :], "model_identifier": None}
+            else:
+                status = {"active_model": checkpoint, "model_identifier": checkpoint}
+            self._send({**status, "gguf_variant": quant})
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/inference/load":
+                self._send({"status": "loaded", "model": payload["model_path"]})
+                return
+            studio["requests"].append(payload["model"])
+            # Like Unsloth, an unloaded path is answered by the resident model.
+            delta = {"delta": {"content": str(studio["resident"])}, "finish_reason": "stop"}
+            sse = f"data: {json.dumps({'choices': [delta]})}\n\ndata: [DONE]\n\n"
+            self._send(sse.encode(), "text/event-stream")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Studio)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        backend = HttpChatBackend(f"http://127.0.0.1:{server.server_address[1]}", "token")
+        backend.ensure_loaded(local, hf_token = None, max_seq_length = None, load_in_4bit = None)
+        turn = [{"role": "user", "content": "hi"}]
+        assert list(backend.stream(turn, **_STREAM_KWARGS))[-1] == str(resident)
+
+        studio["resident"] = replacement
+        if refused:
+            with pytest.raises(RuntimeError, match = r"no longer loaded: .*, not '.*' \(Q4_K_M\)"):
+                list(backend.stream(turn, **_STREAM_KWARGS))
+        else:
+            list(backend.stream(turn, **_STREAM_KWARGS))
+        assert studio["requests"] == [local] * (1 if refused else 2)
+        assert set(studio["queries"]) == (set() if local == _QWEN else {local})
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "echoed, served, expected",
+    [
+        ("Qwen3-0.6B-GGUF", _QWEN, f"{_QWEN}:Q8_0"),
+        ("unsloth/qwen3-0.6b-gguf", _QWEN, f"{_QWEN}:Q8_0"),
+        (_QWEN, "unsloth/gemma-3-270m-it-GGUF", _QWEN),
+        ("/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF", "/models/Qwen3-0.6B-GGUF"),
+    ],
+)
+def test_the_pin_takes_the_quant_from_the_served_models_status(
+    monkeypatch, echoed, served, expected
+):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    status = {"active_model": served, "is_gguf": True, "gguf_variant": "Q8_0"}
+    monkeypatch.setattr(backend, "_inference_status", lambda _model: status)
+    assert backend._pinned_model_id(echoed, {"is_gguf": True}, {"model_path": echoed}) == expected
+
+
+def test_inference_reports_a_turn_the_server_refused(monkeypatch):
+    from typer.testing import CliRunner
+    from unsloth_cli import app
+    from unsloth_cli.commands import inference as inference_mod
+
+    class Refusing:
+        def stream(self, *_args, **_kwargs):
+            raise RuntimeError("The model 'm:Q8_0' is downloaded but not loaded.")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(inference_mod, "connect_studio_server", lambda *_a, **_k: Refusing())
+    result = CliRunner().invoke(app, ["inference", "unsloth/Qwen3-0.6B-GGUF", "hi"])
+    assert result.exit_code == 1
+    assert "Error: The model 'm:Q8_0' is downloaded but not loaded." in result.output
+
+
 def _http_stream_body(monkeypatch, max_new_tokens):
     backend = HttpChatBackend("http://localhost:8888", "token")
     bodies = []
@@ -1515,23 +1777,22 @@ def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
     ]
 
 
-def _http_finish(monkeypatch, finish_reason):
+@pytest.mark.parametrize("finish_reason", ["length", "stop"])
+@pytest.mark.parametrize("send_done", [True, False])
+def test_http_backend_reports_whether_a_reply_ran_out_of_budget(
+    monkeypatch, finish_reason, send_done
+):
     backend = HttpChatBackend("http://localhost:8888", "token")
     chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
-    monkeypatch.setattr(
-        backend,
-        "_request",
-        lambda *a, **k: _FakeSSEResponse([f"data: {chunk}\n".encode(), b"data: [DONE]\n"]),
-    )
+    lines = [f"data: {chunk}\n".encode()]
+    if send_done:
+        lines.append(b"data: [DONE]\n")
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: _FakeSSEResponse(lines))
+
     out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
-    return backend.reply_hit_token_limit, out
 
-
-def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
-    hit, out = _http_finish(monkeypatch, "length")
-    assert hit is True
     assert out == ["hi"]
-    assert _http_finish(monkeypatch, "stop")[0] is False
+    assert backend.reply_hit_token_limit is (finish_reason == "length")
 
 
 def _http_reasoning_reply(monkeypatch):
@@ -1621,6 +1882,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
+                "use_saved_settings": True,
             },
             None,
         )
@@ -1716,7 +1978,7 @@ def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, 
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             if status is None:
                 raise OSError("status unavailable")
             return _FakeStatusResponse(status)
@@ -1746,7 +2008,7 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         loads.append(payload)
         return _FakeLoadResponse()
@@ -1758,6 +2020,119 @@ def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spelling
     backend.ensure_loaded("c:/models/foo", hf_token = None, max_seq_length = 4096, load_in_4bit = None)
 
     assert loads[0].get("gguf_variant") == "Q8_0"
+
+
+def _untyped_load_payload(
+    monkeypatch,
+    status,
+    model = "unsloth/Qwen3-0.6B-GGUF",
+    llama_extra_args = None,
+):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path.startswith("/api/inference/status"):
+            if status is None:
+                raise OSError("status unavailable")
+            return _FakeStatusResponse(status)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    backend.ensure_loaded(
+        model,
+        hf_token = None,
+        max_seq_length = None,
+        load_in_4bit = None,
+        tensor_parallel = None,
+        llama_extra_args = llama_extra_args,
+    )
+    return loads[0]
+
+
+@pytest.mark.parametrize(
+    "status",
+    [None, {**_RESIDENT_Q8, "model_identifier": "unsloth/Qwen3-1.7B-GGUF"}],
+)
+def test_http_backend_cold_load_applies_saved_settings(monkeypatch, status):
+    payload = _untyped_load_payload(monkeypatch, status)
+
+    assert payload["use_saved_settings"] is True
+    assert "max_seq_length" not in payload
+    assert "tensor_parallel" not in payload
+
+
+def test_http_backend_load_keeps_the_resident_context_and_kv_cache(monkeypatch):
+    status = {
+        **_RESIDENT_Q8,
+        "requested_context_length": 65536,
+        "cache_type_kv": "q8_0",
+        "tensor_parallel": False,
+        "requested_parallel_slots": 4,
+        "requested_llama_extra_args": ["--top-k", "20"],
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status)
+
+    assert payload["max_seq_length"] == 65536
+    assert payload["cache_type_kv"] == "q8_0"
+    assert payload["gguf_variant"] == "Q8_0"
+    assert "use_saved_settings" not in payload
+    assert "n_parallel" not in payload
+    assert "llama_extra_args" not in payload
+
+
+def test_http_backend_load_keeps_a_resident_gguf_file_loaded(monkeypatch):
+    model = "/models/Qwen3-0.6B-Q8_0.gguf"
+    status = {
+        **_RESIDENT_Q8,
+        "model_identifier": model,
+        "requested_context_length": 65536,
+        "cache_type_kv": "q8_0",
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status, model = model)
+
+    assert payload["max_seq_length"] == 65536
+    assert payload["cache_type_kv"] == "q8_0"
+    assert "use_saved_settings" not in payload
+    assert "gguf_variant" not in payload
+
+
+@pytest.mark.parametrize(
+    ("extras", "gpu_ids"),
+    [(None, [0, 1]), (["--device", "CUDA1,CUDA0"], None), (["--main-gpu=1"], None)],
+)
+def test_http_backend_load_lets_typed_device_extras_beat_the_resident_gpu_pin(
+    monkeypatch, extras, gpu_ids
+):
+    status = {
+        **_RESIDENT_Q8,
+        "requested_gpu_ids": [0, 1],
+        "tensor_split": [3.0, 1.0],
+        "gpu_memory_mode": "manual",
+    }
+
+    payload = _untyped_load_payload(monkeypatch, status, llama_extra_args = extras)
+
+    assert payload.get("gpu_ids") == gpu_ids
+    assert payload.get("tensor_split") == (gpu_ids and [3.0, 1.0])
+
+
+def test_chat_leaves_untyped_tensor_parallel_to_the_server():
+    class Ctx:
+        def get_parameter_source(self, name):
+            return None
+
+    opts = server_load_opts(Ctx(), {"tensor_parallel": False, "max_seq_length": 0})
+
+    assert opts["tensor_parallel"] is None
 
 
 def test_http_backend_load_drains_the_padded_body(monkeypatch):
@@ -2234,13 +2609,13 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
     )
 
     assert result.exit_code == 0, result.output
-    # 0 is the "no context requested" sentinel.
+    # None: an untyped context, so the server can keep a resident model's.
     assert loads == [
         (
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 0,
+                "max_seq_length": None,
                 "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -2293,7 +2668,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             {
                 "hf_token": None,
-                "max_seq_length": 0,
+                "max_seq_length": None,
                 "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
@@ -2393,7 +2768,7 @@ def test_server_chat_banner_names_the_kept_quant(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return _FakeStatusResponse(resident)
         return _FakeLoadResponse()
 
@@ -2485,40 +2860,41 @@ def test_local_load_forwards_the_unrequested_context_sentinel(monkeypatch, comma
     assert loads == [8192]
 
 
-def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
-    streamed, closed, base_loads = [], [], []
+def test_chat_server_mode_compare_toggles_the_resident_adapter(monkeypatch):
+    bodies = []
 
-    class _FakeHttpBackend:
-        def stream(self, *a, **k):
-            streamed.append("tuned")
-            return iter(["tuned-answer"])
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        tag = "base-reply" if payload.get("use_adapter") is False else "tuned-reply"
+        chunks = [
+            {"choices": [{"delta": {"content": tag}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        sse = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return io.BytesIO(sse.encode())
 
-        def close(self):
-            closed.append("http")
+    def no_second_load(*a, **k):
+        raise AssertionError("compare loaded a second model next to the Unsloth server")
 
-    class _FakeBaseBackend:
-        def stream(self, *a, **k):
-            streamed.append("base")
-            return iter(["base-answer"])
-
-        def close(self):
-            closed.append("base")
-
-    def fake_local_load(model, **kwargs):
-        base_loads.append((model, kwargs.get("fresh_backend", False)))
-        return _FakeBaseBackend()
-
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
     monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
-    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
-    monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
+    monkeypatch.setattr(
+        chatmod, "connect_studio_server", lambda *a, **k: HttpChatBackend("http://x", "t")
+    )
+    monkeypatch.setattr(chatmod, "load_chat_backend", no_second_load)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model", "--compare"], input = "hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
-    assert "(compare on)" in result.output
-    assert base_loads == [("fake/base", True)]
-    assert streamed == ["base", "tuned"]
-    assert set(closed) == {"http", "base"}
+    assert [body.get("use_adapter") for body in bodies] == [False, True]
+    assert "base-reply" in result.output and "tuned-reply" in result.output
 
 
 def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):

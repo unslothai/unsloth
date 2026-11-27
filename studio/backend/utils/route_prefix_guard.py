@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Let the router skip route-table entries whose literal path prefix rules the request out.
-
-A route regex is anchored at the literal text before its first ``{``, so a path not starting with it
-is ``Match.NONE``; the guard answers that without the regex. Entries it cannot prove path-anchored
-(Host routes, ``matches`` overrides, ``root_path`` requests) keep the original code path.
-"""
+"""Lets the router skip route entries whose literal path prefix rules a request out (Match.NONE, no
+regex); Host routes, matches overrides and root_path requests keep the original path."""
 
 from __future__ import annotations
 

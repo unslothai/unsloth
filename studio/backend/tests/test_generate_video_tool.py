@@ -153,11 +153,55 @@ def test_model_none_never_reaches_the_auto_switch_or_a_load(
     assert backend.last_load_kwargs == {}
 
 
-def test_a_running_job_maps_the_busy_409(tmp_path, backend, keepwarm):
+def _queued_ids() -> list:
+    return [entry.id for entry in video_routes._VIDEO_QUEUE]
+
+
+def test_a_clip_asked_for_while_one_renders_queues_then_renders_after_it(
+    tmp_path, backend, keepwarm
+):
     backend.gate.clear()
     assert _run(tmp_path, {"prompt": "first"}, timeout = 0.2) == tool.STILL_RENDERING_MSG
-    assert _run(tmp_path, {"prompt": "second"}, timeout = 0.2) == tool.BUSY_MSG
-    assert keepwarm[-1] == ("end", gpu_arbiter.VIDEO, False)
+    result = {}
+    second = threading.Thread(
+        target = lambda: result.update(out = _run(tmp_path, {"prompt": "second"}, timeout = 30))
+    )
+    second.start()
+    deadline = time.monotonic() + 5
+    while not video_routes._VIDEO_QUEUE and time.monotonic() < deadline:
+        time.sleep(0.01)
+    [entry] = video_routes._VIDEO_QUEUE
+    assert entry.kind == "chat" and entry.shown_prompt == "second"
+    assert backend.last_generate_kwargs["prompt"] == "first"
+    backend.gate.set()
+    second.join(20)
+    assert result["out"].startswith("Generated a video"), result
+    assert backend.last_generate_kwargs["prompt"] == "second"
+    assert video_routes._VIDEO_QUEUE == []
+
+
+def test_stop_while_the_clip_is_queued_removes_it_before_it_starts(tmp_path, backend, keepwarm):
+    backend.gate.clear()
+    assert _run(tmp_path, {"prompt": "first"}, timeout = 0.2) == tool.STILL_RENDERING_MSG
+    stop = threading.Event()
+    result = {}
+    second = threading.Thread(
+        target = lambda: result.update(
+            out = _run(tmp_path, {"prompt": "never"}, cancel_event = stop, timeout = 30)
+        )
+    )
+    second.start()
+    deadline = time.monotonic() + 5
+    while not video_routes._VIDEO_QUEUE and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(video_routes._VIDEO_QUEUE) == 1
+    stop.set()
+    second.join(10)
+    assert result["out"] in (tool.STOPPED_MSG, "Error: the video was removed before it finished.")
+    assert video_routes._VIDEO_QUEUE == []
+    backend.gate.set()
+    _wait_phase(backend, "completed")
+    assert backend.last_generate_kwargs["prompt"] == "first"
 
 
 def test_timeout_leaves_the_job_running(tmp_path, backend, keepwarm, monkeypatch):
@@ -259,7 +303,7 @@ def test_another_accounts_generation_maps_to_its_own_error(
     async def _busy(*args, **kwargs):
         raise gpu_arbiter.GpuBusyForAnotherAccountError(gpu_arbiter.VIDEO, 1)
 
-    monkeypatch.setattr(video_routes, "_create_openai_video", _busy)
+    monkeypatch.setattr(video_routes, "_create_or_queue_chat_video", _busy)
     assert _run(tmp_path, {"prompt": "x"}) == tool.OTHER_ACCOUNT_MSG
 
 
@@ -279,15 +323,26 @@ def test_seed_is_offered_and_forwarded_only_when_the_request_has_the_field(
     monkeypatch.setattr(models_inference, "VideoJobCreateRequest", _Seeded if has_seed else _Plain)
     seen: list = []
 
-    async def _capture(body, reference, subject, hf_token):
+    async def _capture(body, subject, hf_token):
         seen.append(body.model_dump(exclude_none = True))
         raise video_routes.HTTPException(status_code = 400, detail = {"error": {"message": "stop"}})
 
-    monkeypatch.setattr(video_routes, "_create_openai_video", _capture)
+    monkeypatch.setattr(video_routes, "_create_or_queue_chat_video", _capture)
     schema = tool.generate_video_schema(backend.status())
     assert ("seed" in schema["function"]["parameters"]["properties"]) is has_seed
     assert _run(tmp_path, {"prompt": "x", "seed": 7}) == "Error: stop"
     assert seen == [{"prompt": "x", **({"seed": 7} if has_seed else {})}]
+
+
+def test_seed_minus_one_draws_a_random_seed(tmp_path, backend, keepwarm):
+    text = _run(tmp_path, {"prompt": "x", "seed": -1}).split("\n__FILES__:")[0]
+    assert text.startswith("Generated a video (") and "seed" not in text
+    assert 0 <= backend.last_generate_kwargs["seed"] < 2**53
+
+
+def test_a_fractional_seed_is_rejected_instead_of_rounded_to_random(tmp_path, backend, keepwarm):
+    assert "Generated a video" not in _run(tmp_path, {"prompt": "x", "seed": -1.5})
+    assert video_routes._jobs == {} and "seed" not in backend.last_generate_kwargs
 
 
 def test_the_schema_names_the_tool_and_appends_the_prompt_hint(backend):

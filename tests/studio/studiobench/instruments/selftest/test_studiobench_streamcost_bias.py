@@ -151,9 +151,7 @@ def test_the_wire_denominator_is_the_same_price_on_a_windowed_document(browser, 
 
 
 def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(browser):
-    """The denominator itself, not just its cost. Both arms are fed by the SAME pacer, so the
-    counter has to be a function of the bytes and of nothing else -- least of all of how much of
-    the thread the arm chose to mount."""
+    """The denominator itself: both arms share one pacer, so the wire count depends only on bytes."""
     full, _ = _page(browser, FULL_ELEMENTS)
     win, _ = _page(browser, WINDOWED_ELEMENTS)
     try:
@@ -169,9 +167,8 @@ def test_the_wire_count_is_identical_on_both_documents_for_identical_traffic(bro
 
 
 def test_the_counter_survives_a_frame_split_across_two_decode_calls(browser):
-    """A decode() call is a slice of the socket, not an SSE frame. A counter that assumed frame
-    alignment would silently under-count exactly when the renderer is jammed and the chunks arrive
-    ragged, which is the condition the whole instrument exists to measure."""
+    """A decode() call is a socket slice, not an SSE frame; assuming alignment under-counts ragged
+    chunks."""
     page, _ = _page(browser, WINDOWED_ELEMENTS)
     try:
         before = page.evaluate("() => window.__sb.streamcost.wireStats()")
@@ -217,6 +214,34 @@ def test_reasoning_and_content_are_both_counted(browser):
     finally:
         page.close()
     assert got == 5
+
+
+def test_chat_run_events_are_counted_like_plain_chunks(browser):
+    """Connected-model chats stream through chat runs: each SSE block starts with id: and event: lines,
+    and its data wraps the OpenAI chunk as {seq, type: "chunk", payload}. Non-chunk events add nothing."""
+    page, _ = _page(browser, WINDOWED_ELEMENTS)
+    try:
+        got = page.evaluate("""
+          () => {
+            const enc = new TextEncoder();
+            const dec = new TextDecoder();
+            const before = window.__sb.streamcost.wireStats();
+            // The wire format of /api/inference/chat-runs/{id}/events: id and event lines precede the data.
+            const event = (type, payload) => "id: 1\\nevent: " + type + "\\ndata: " + JSON.stringify(
+              { seq: 1, type, payload, createdAt: 0 }) + "\\n\\n";
+            dec.decode(enc.encode(
+              event("chunk", { choices: [{ index: 0, delta: { content: "abcdefg" } }] })
+              + event("status", { status: "running" })
+            ));
+            const after = window.__sb.streamcost.wireStats();
+            return { chars: after.wire_chars - before.wire_chars,
+                     frames: after.wire_frames - before.wire_frames,
+                     failures: after.wire_parse_failures - before.wire_parse_failures };
+          }
+        """)
+    finally:
+        page.close()
+    assert got == {"chars": 7, "frames": 1, "failures": 0}
 
 
 def test_a_malformed_frame_is_counted_as_a_failure_not_silently_dropped(browser):

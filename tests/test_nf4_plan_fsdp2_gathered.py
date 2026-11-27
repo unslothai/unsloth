@@ -33,8 +33,7 @@ def _quantize(seed, shape = (512, 256)):
 
 
 def _gathered_param(q, mark):
-    # What FSDP2 hands the forward for a float-packed Params4bit: a frozen parameter whose packed
-    # bytes are stored as bfloat16 (fsdp2_qlora.params4bit_to_float_storage), marked when gathered.
+    # FSDP2 gives a frozen float-packed Params4bit as bfloat16 bytes, marked when gathered.
     p = torch.nn.Parameter(
         q.reshape(-1).view(torch.bfloat16).reshape(-1, 1).clone(), requires_grad = False
     )
@@ -44,8 +43,7 @@ def _gathered_param(q, mark):
 
 
 def _reallocate(p, packed_bytes):
-    """FSDP2's free_storage / alloc_storage around an all-gather, forced onto a new address, then
-    the all-gather's copy-out of `packed_bytes` (uint8)."""
+    """FSDP2 free_storage/alloc_storage forces a new address; copies out uint8 packed_bytes."""
     storage = p.untyped_storage()
     nbytes = storage.nbytes()
     old = p.data_ptr()
@@ -92,7 +90,6 @@ def test_gathered_weight_reuses_its_plan_across_reallocation(monkeypatch):
         old, blocker = _reallocate(p, packed)
         assert p.data_ptr() != old
         got = utils.fast_dequantize(p, s, use_global_buffer = True)
-        # The bytes at the new address, not those the plan was built from.
         assert _equal(got, bnb_functional.dequantize_4bit(packed, s)), step
         del blocker
     assert calls[0] == 1, "the planned launch was rebuilt for a re-allocated FSDP2 weight"
@@ -121,8 +118,7 @@ def test_gathered_weight_view_reuses_its_plan_across_reallocation(monkeypatch):
 
 
 def test_gathered_weight_with_swapped_storage_rebuilds(monkeypatch):
-    """A view the plan holds keeps the storage it was built on: when the parameter gets a new
-    storage object instead of a resized one, the plan must not read the old bytes."""
+    """A plan's view keeps the old storage; a swapped storage object must force a rebuild."""
     utils = _utils()
     calls = _count_planned(monkeypatch, utils)
     q, s = _quantize(6)

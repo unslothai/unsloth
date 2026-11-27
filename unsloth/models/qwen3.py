@@ -15,6 +15,7 @@ import os
 from ._utils import __version__
 from unsloth_zoo.utils import Version, _get_dtype
 from ..utils.packing import get_packed_info_from_kwargs
+from ..context_parallel import get_cp_manager
 from ..kernels import qk_norm_rope as _qk_norm_rope
 from ..kernels.qk_norm_rope import fast_qk_norm_rope, decode_qk_norm_rope
 from . import _decode_graphs
@@ -22,16 +23,19 @@ from .llama import _decode_attention_core, _decode_attention_span
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     _gqa_decode_scores,
     _gqa_decode_values,
+    _grouped_decode_batched,
     _LlamaModel_fast_forward_inference,
     original_apply_qkv,
     original_apply_o,
@@ -68,6 +72,8 @@ except:
     Qwen3FlashAttention2 = Qwen3Attention
 
 
+@applies_prefix_seg_info
+@context_parallel_attention(rl = True)
 def Qwen3Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -109,13 +115,17 @@ def Qwen3Attention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Under context parallel this rank holds a shard of the sequence but its positions are global.
+    cp_manager = get_cp_manager()
+    rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
+
     # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
-    if position_embeddings and kv_seq_len <= position_embeddings[0].shape[0]:
+    if position_embeddings and rope_seq_len <= position_embeddings[0].shape[0]:
         cos, sin = position_embeddings
     else:
         rotary_emb = self.rotary_emb
-        rotary_emb.extend_rope_embedding(V, seq_len = kv_seq_len)
-        cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        rotary_emb.extend_rope_embedding(V, seq_len = rope_seq_len)
+        cos, sin = rotary_emb.get_cached(rope_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if _qk_norm_rope.QK_NORM_ROPE_ENABLED:
@@ -321,15 +331,22 @@ def Qwen3Attention_fast_forward_inference(
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # Grouped query attention: bsz == 1, and bsz > 1 past the card's crossover, read the KV heads
+    # in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
+    grouped = bsz == 1 or (
+        n_groups != 1
+        and _grouped_decode_batched(
+            bsz, cached_len, not use_sdpa_gqa, attention_mask is not None, Qn.device
+        )
+    )
+    if not grouped and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    if bsz == 1:
+    if grouped:
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).

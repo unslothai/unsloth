@@ -90,16 +90,28 @@ def patch_gradient_checkpointing_enable_kwargs():
         import transformers.modeling_utils as hf_modeling_utils
     except Exception:
         return
-    original = PreTrainedModel.gradient_checkpointing_enable
+    # transformers >= 5.23: both public names and instance wrappers of the old one end here.
+    name = next(
+        (
+            n
+            for n in ("_activation_checkpointing_enable", "activation_checkpointing_enable")
+            if hasattr(PreTrainedModel, n)
+        ),
+        "gradient_checkpointing_enable",
+    )
+    original = getattr(PreTrainedModel, name)
     if getattr(original, "_unsloth_gc_kwargs", False):
         return
     try:
         params = list(inspect.signature(original).parameters)
     except Exception:
         return
-    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
+    kwargs_name = name.lstrip("_").replace("_enable", "_kwargs")
+    positional = [p for p in params if p not in ("self", kwargs_name)]
     native_every = "every_n_layers" in params
     native_offload = "offload" in params
+    # transformers >= 5.23 always passes the defaults (1, False) here, so they cannot override the dict.
+    forwards_defaults = name == "_activation_checkpointing_enable"
 
     @functools.wraps(original)
     def gradient_checkpointing_enable(
@@ -108,6 +120,7 @@ def patch_gradient_checkpointing_enable_kwargs():
         *args,
         **kwargs,
     ):
+        gradient_checkpointing_kwargs = kwargs.pop(kwargs_name, gradient_checkpointing_kwargs)
         kwargs.update(zip(positional, args))
         every = kwargs.pop("every_n_layers", None)
         offload = kwargs.pop("offload", None)
@@ -115,6 +128,9 @@ def patch_gradient_checkpointing_enable_kwargs():
             gc_kwargs = dict(gradient_checkpointing_kwargs)
             dict_every = gc_kwargs.pop("every_n_layers", None)
             dict_offload = gc_kwargs.pop("offload", None)
+            if forwards_defaults:
+                every = None if every == 1 else every
+                offload = offload or None
             every = dict_every if every is None else every
             offload = dict_offload if offload is None else offload
             if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
@@ -154,4 +170,4 @@ def patch_gradient_checkpointing_enable_kwargs():
         return out
 
     gradient_checkpointing_enable._unsloth_gc_kwargs = True
-    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
+    setattr(PreTrainedModel, name, gradient_checkpointing_enable)

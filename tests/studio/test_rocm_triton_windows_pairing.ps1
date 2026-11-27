@@ -45,8 +45,7 @@ function Invoke-BoundedPythonProbe {
         if (-not $py) { $py = Get-Command python3 }
         $savedPath = $env:PYTHONPATH
         $env:PYTHONPATH = $script:RealProbeDir
-        # Continue: under Stop, Windows PowerShell 5.1 turns the failing import's redirected stderr into a
-        # terminating error before the exit code is read (the probe helper in setup.ps1 reads stderr itself).
+        # Under Stop, PS 5.1 makes redirected stderr terminating before the exit code is read.
         $ErrorActionPreference = "Continue"
         try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
         return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
@@ -79,11 +78,13 @@ function Fast-Install {
     return ""
 }
 function Test-UvOfflineRequested { return $script:Offline }
-# "fail": the move throws; "stays": it reports success but the original remains (cross-volume copy).
+# "fail": the move throws; "stays": it reports success but the original remains (cross-volume copy);
+# "restore-fails": setting the manifest aside works, moving it back throws.
 $script:MoveMode = ""
 function Move-Item {
     param([string]$LiteralPath, [string]$Destination, [switch]$Force, $ErrorAction)
     if ($script:MoveMode -eq "fail") { throw "the manifest is locked" }
+    if ($script:MoveMode -eq "restore-fails" -and $LiteralPath -like "*.triton-pending") { throw "the manifest is locked" }
     if ($script:MoveMode -eq "stays") { Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force; return }
     Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force -ErrorAction Stop
 }
@@ -114,7 +115,7 @@ function Invoke-Block([string]$Torch, [string]$Triton, [string]$Hip = "", [bool]
     $script:InstallExit = $InstallExit
     $script:InstallLeaves = $Leaves
     $script:MoveMode = $Move
-    Remove-Item -LiteralPath $manifestFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $manifestFile, "$manifestFile.triton-pending" -Force -ErrorAction SilentlyContinue
     if ($Manifest) { Set-Content -LiteralPath $manifestFile -Value '{"complete": true}' -Encoding ascii }
     $stackExit = $StackExit
     $ROCmIndexUrl = $IndexUrl
@@ -150,10 +151,10 @@ $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $fa
 # A 3.8 already satisfies the pin, so a plain install is a no-op: only a forced reinstall restores the files.
 Check "a 3.8 that no longer imports is force-reinstalled" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin" -and $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Imports $false -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
-Check "a forced reinstall that still does not import is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
-# A post-install probe that could not read the venv verifies nothing.
+Check "a forced reinstall that still does not import warns and keeps the manifest" ($r.StackExit -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
+# A post-install probe that could not read the venv verifies nothing, but nothing was broken either.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Readable = $false }
-Check "an unreadable post-install probe is not certified" ((Repaired $r) -and -not $r.Manifest -and $r.Pending -eq 0)
+Check "an unreadable post-install probe warns and keeps the manifest" ((Repaired $r) -and $r.StackExit -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
 # A manifest that cannot be set aside stays valid, so nothing is replaced.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Move "fail"
 Check "a manifest that cannot be moved blocks the replacement" ($r.Installs.Count -eq 0 -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
@@ -194,18 +195,20 @@ Remove-Item Env:UV_REQUIRE_HASHES, Env:PIP_REQUIRE_HASHES -ErrorAction SilentlyC
 $script:HashSeen = @()
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30"
 Check "an unset PIP_REQUIRE_HASHES is 0 during the install and unset after" ($script:HashSeen[0] -eq "|0" -and $null -eq [Environment]::GetEnvironmentVariable('PIP_REQUIRE_HASHES'))
-# Exit 0 that leaves the old version (a uv config override) is not accepted.
+# Exit 0 that leaves the old version (a uv config override) warns and keeps the manifest Desktop needs to start.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Leaves @{ Triton = "3.9.0.post30"; Imports = $true }
-Check "exit 0 with 3.9 still installed is not certified (manifest dropped, setup continues)" ((Repaired $r) -and -not $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
+Check "exit 0 with 3.9 still installed warns, keeps the manifest, setup continues" ((Repaired $r) -and $r.Manifest -and $r.StackExit -eq 0 -and $r.Pending -eq 0)
 # A replacement that fails part way and breaks a working triton fails setup and is never certified.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
 Check "a failed replacement that breaks triton fails setup" ((Repaired $r) -and $r.StackExit -eq 1 -and -not $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 0 -Leaves @{ Triton = "3.8.0.post29"; Imports = $false }
 Check "even with exit 0" ($r.StackExit -eq 1 -and -not $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 2 -Leaves $null
-Check "a failed download that leaves a working 3.9 warns, drops the manifest, setup continues" ((Repaired $r) -and $r.StackExit -eq 0 -and -not $r.Manifest)
+Check "a failed download that leaves a working 3.9 warns, keeps the manifest, setup continues" ((Repaired $r) -and $r.StackExit -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "" -Imports $false -InstallExit 2 -Leaves $null
-Check "a missing triton that cannot be installed warns only (nothing was broken)" ($r.StackExit -eq 0 -and -not $r.Manifest)
+Check "a missing triton that cannot be installed warns only (nothing was broken)" ($r.StackExit -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
+$r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 2 -Leaves $null -Move "restore-fails"
+Check "a manifest that cannot be put back fails setup" ((Repaired $r) -and $r.StackExit -eq 1)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Manifest $false
 Check "no manifest to hold is fine" ((Repaired $r) -and $r.StackExit -eq 0 -and -not $r.Manifest -and $r.Pending -eq 0)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -StackExit 1
@@ -216,12 +219,12 @@ Check "3.8 metadata over a runtime that is not 3.8 is repaired" ($r.Installs.Cou
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false }
 Check "a namespace-only triton.language is not certified as paired" ($r.Installs.Count -eq 1 -and $r.Installs[0] -eq "--force-reinstall --no-deps $pin")
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Paired = $false } -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $true; Paired = $false }
-Check "an install whose runtime still is not 3.8 is not certified" (-not $r.Manifest -and $r.Pending -eq 0)
+Check "an install whose runtime still is not 3.8 warns and keeps the manifest" ($r.StackExit -eq 0 -and $r.Manifest -and $r.Pending -eq 0)
 # The health baseline and the escalation use the runtime check, not a bare import.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
 Check "a replacement that leaves an importable triton without its API fails setup" ($r.StackExit -eq 1 -and -not $r.Manifest)
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.8.0.post29" -Extra @{ Healthy = $false; Paired = $false } -InstallExit 1 -Leaves @{ Triton = "3.8.0.post29"; Imports = $true; Healthy = $false; Paired = $false }
-Check "a namespace-only baseline is not counted as a working triton that the repair broke" ($r.StackExit -eq 0 -and -not $r.Manifest)
+Check "a namespace-only baseline is not counted as a working triton that the repair broke" ($r.StackExit -eq 0 -and $r.Manifest)
 # The post-stack repair honours UV_OFFLINE like the fast path.
 $r = Invoke-Block -Torch "2.11.0+rocm7.14.0" -Triton "3.9.0.post30" -Offline $true
 Check "UV_OFFLINE leaves the post-stack repair for the next online update" (Untouched $r)
@@ -314,7 +317,6 @@ try {
         Check "a $pre runtime is not a 3.8 release" ((Get-RocmTritonPairing).Stale)
     }
     New-TritonPackage -Version "3.8.0"
-    # A leftover or versionless record does not hide the 3.8 record.
     New-DistInfo "triton_windows-0.dist-info" "triton-windows" ""
     New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
     $pair = Get-RocmTritonPairing

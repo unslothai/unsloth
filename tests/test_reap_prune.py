@@ -1078,3 +1078,24 @@ def test_provenance_names_a_local_source_without_its_path(tmp_path):
     )
     data = json.loads((out / reap.REAP_PROVENANCE_FILE).read_text(encoding = "utf-8"))
     assert data["source_model"] == "my-moe"
+
+
+class _SyncsOnTrain(torch.nn.Module):
+    """A train() override that keeps its own copy of the mode, as Int4PackedLinear does."""
+
+    def __init__(self):
+        super().__init__()
+        self.synced = self.training
+
+    def train(self, mode = True):
+        self.synced = bool(mode)
+        return super().train(mode)
+
+
+def test_restores_mode_through_train_overrides():
+    model = _qwen3_moe()
+    model.probe = _SyncsOnTrain()
+    model.train()
+    reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
+    assert model.training and model.probe.training
+    assert model.probe.synced is True  # reap_prune's model.eval() ran it with False

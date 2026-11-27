@@ -15,6 +15,7 @@ import {
   DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
   deleteLocalModel,
+  deleteUploadedDataset,
   revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
@@ -29,7 +30,7 @@ import {
 } from "@/features/hub";
 import {
   ModelRowMenu,
-  pinKey,
+  pinCoversId,
   usePinnedModelsStore,
 } from "@/features/model-picker";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -764,10 +765,10 @@ export const InventoryRow = memo(function InventoryRow({
   );
 
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
-  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const toggleRepoPinned = usePinnedModelsStore((s) => s.toggleRepoPinned);
   const rowPinned =
     cacheDeletableRepoId != null &&
-    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
+    pinCoversId(pinnedKeys, cacheDeletableRepoId);
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
     deletableRepoId ? (
@@ -781,7 +782,7 @@ export const InventoryRow = memo(function InventoryRow({
                 pinned: rowPinned,
                 pinLabel: "Pin",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(deletableRepoId),
+                onToggle: () => toggleRepoPinned(deletableRepoId),
               }
         }
         cachePath={
@@ -832,6 +833,24 @@ export const InventoryRow = memo(function InventoryRow({
           },
           onDeleted: onChange,
         } : undefined}
+      />
+    ) : isDataset && row.kind === "local" && row.datasetSource === "upload" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${title}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        del={{
+          title: "Delete uploaded dataset?",
+          description: (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{title}</span> from
+              disk. Runs that used it cannot be resumed from this file.
+            </>
+          ),
+          successMessage: `Deleted ${title}`,
+          onConfirm: () => deleteUploadedDataset(row.id),
+          onDeleted: onChange,
+        }}
       />
     ) : localActionPath && row.kind === "local" ? (
       <ModelRowMenu

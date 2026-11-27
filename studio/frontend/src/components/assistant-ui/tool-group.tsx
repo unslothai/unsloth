@@ -4,6 +4,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   memo,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type FC,
@@ -28,10 +29,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -94,7 +96,7 @@ function ToolGroupRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled
@@ -167,8 +169,7 @@ function ToolGroupTrigger({
     <CollapsibleTrigger
       data-slot="tool-group-trigger"
       className={cn(
-        // Muted like the tool rows it summarises, so only the answer is at full foreground,
-        // and it brightens on hover like the Thinking trigger above it.
+        // Muted like the tool rows it summarises, so only the answer is at full foreground.
         "aui-tool-group-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         "group-data-[variant=outline]/tool-group-root:px-4",
         "group-data-[variant=muted]/tool-group-root:px-4",
@@ -226,15 +227,12 @@ function ToolGroupContent({
   return (
     <CollapsibleContent
       data-slot="tool-group-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-group-content relative overflow-hidden text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -260,6 +258,12 @@ type ToolGroupComponent = FC<
   Trigger: typeof ToolGroupTrigger;
   Content: typeof ToolGroupContent;
 };
+
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return (
+    a.length === b.length && a.every((value, index) => value === b[index])
+  );
+}
 
 const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
@@ -300,28 +304,32 @@ const ToolGroupImpl: FC<
   const collapseByDefault = useChatPreferencesStore(
     (state) => state.toolVisibility === "collapsed",
   );
-  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
-  const hasLiveOutput = useMessageMemo(
+  const toolCallIds = useMessageMemo(
     (message) =>
       message.parts
         .slice(startIndex, endIndex + 1)
-        .some(
-          (part) =>
-            part.type === "tool-call" &&
-            // Either scope: a first turn writes under the unresolved one for its whole
-            // life, even after the autosave assigns the id (see useToolOutputFor).
-            (Object.prototype.hasOwnProperty.call(
-              toolLiveOutput,
-              toolOutputKey(paneScope, part.toolCallId),
-            ) ||
-              Object.prototype.hasOwnProperty.call(
-                toolLiveOutput,
-                toolOutputKey(unresolvedScope, part.toolCallId),
-              )),
+        .flatMap((part) =>
+          part.type === "tool-call" ? [part.toolCallId] : [],
         ),
-    [startIndex, endIndex, toolLiveOutput, paneScope, unresolvedScope],
+    [startIndex, endIndex],
+    sameStrings,
+  );
+  // Either scope: a first turn writes under the unresolved scope for its whole life.
+  const liveKeys = useMemo(
+    () =>
+      toolCallIds.flatMap((id) => [
+        toolOutputKey(paneScope, id),
+        toolOutputKey(unresolvedScope, id),
+      ]),
+    [toolCallIds, paneScope, unresolvedScope],
+  );
+  // Select the boolean, not the map: each tool_output replaces the map and would re-render every group.
+  const hasLiveOutput = useChatRuntimeStore((s) =>
+    liveKeys.some((key) =>
+      Object.prototype.hasOwnProperty.call(s.toolLiveOutput, key),
+    ),
   );
   // Keep the group open once forced so allow/deny does not snap it shut between calls. Only latch
   // what could have forced it, or turning collapsed off would snap them all open.

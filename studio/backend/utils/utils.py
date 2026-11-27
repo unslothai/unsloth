@@ -41,14 +41,9 @@ def hf_env_offline() -> bool:
 
 
 def package_installs_offline() -> bool:
-    """True when an on-demand package install (a kernel wheel, a source build) must not reach the
-    network: the HF offline switches above, or UV_OFFLINE, the operator's no-network switch for
-    installs. Under UV_OFFLINE uv refuses the index, and install_wheel's pip fallback would then
-    reach it anyway, so such an install is skipped outright.
-
-    An HF offline that Studio set itself only because the Hub was unreachable (export's offline
-    window marks it, wheel_utils.hf_offline_auto_set) says nothing about GitHub / PyPI, so then
-    only UV_OFFLINE counts: an operator-set HF offline still blocks every install."""
+    """True when installs must stay off the network: an operator-set HF offline, or UV_OFFLINE
+    (install_wheel's pip fallback would reach the index anyway). A Studio auto-set HF offline
+    says nothing about GitHub or PyPI, so only UV_OFFLINE counts."""
     from utils.wheel_utils import hf_offline_auto_set, uv_offline
 
     if hf_offline_auto_set():
@@ -373,6 +368,17 @@ def force_hf_offline_active() -> bool:
     return _force_offline_depth > 0
 
 
+def hf_user_offline() -> bool:
+    """The offline mode the user or operator asked for (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE), read from the
+    values saved before any open force_hf_offline window: such a window is one short operation's, so it must not
+    make an unrelated load that starts inside it cache-only. Lock-free, like force_hf_offline_active."""
+    env = _force_offline_saved_env if _force_offline_depth > 0 else os.environ
+    return any(
+        str(env.get(var) or "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for var in _OFFLINE_ENV_KEYS
+    )
+
+
 def force_hf_offline_state() -> tuple[bool, bool]:
     """Return guard ownership and env presence under one lock."""
     with _force_offline_lock:
@@ -603,7 +609,8 @@ def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
     """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
     try:
         return _snapshot_in_repo_dir(cache_root / _repo_folder_name(repo_id))
-    except (OSError, UnicodeDecodeError):
+    # HFValidationError (a ValueError): an audio.cpp ``<namespace>/<repo>/<folder>`` id has no cache dir of its own.
+    except (OSError, ValueError):
         return None
 
 

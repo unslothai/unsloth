@@ -34,6 +34,8 @@ PROFILES = {
         "driver": 580,
         # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
+        # vLLM samples with FlashInfer (nvcc JIT at first launch); Studio's SGLang flags never do.
+        "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
@@ -152,8 +154,7 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # Status is read by idle Chat. The wheel's build family is enough to choose
-    # an engine profile; discovering it must not initialize the ML runtime.
+    # Idle Chat reads this: the wheel's build family is enough; do not init the ML runtime.
     if hardware.DETECTION_COMPLETE.is_set():
         is_rocm = hardware.IS_ROCM
     else:
@@ -245,11 +246,19 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+_pins_seen: dict[Path, tuple[tuple | None, dict[str, tuple[str, str]]]] = {}
+
+
 def _pins(engine: str) -> dict[str, tuple[str, str]]:
     """{name: (version, requirement line with its hashes)} from a uv-compiled lock."""
+    path = requirements(engine)
+    identity = _file_identity(path)
+    seen = _pins_seen.get(path)
+    if identity is not None and seen is not None and seen[0] == identity:
+        return dict(seen[1])
     entries: dict[str, tuple[str, str]] = {}
     name = None
-    for line in requirements(engine).read_text(encoding = "utf-8").splitlines(keepends = True):
+    for line in path.read_text(encoding = "utf-8").splitlines(keepends = True):
         match = re.match(r"([A-Za-z0-9][A-Za-z0-9_.\-]*)==([^\s;\\]+)", line)
         if match:
             name = _normalize(match.group(1))
@@ -258,7 +267,8 @@ def _pins(engine: str) -> dict[str, tuple[str, str]]:
             entries[name] = (entries[name][0], entries[name][1] + line)
         else:
             name = None
-    return entries
+    _pins_seen[path] = (identity, entries)
+    return dict(entries)
 
 
 def _studio_site() -> list[str]:
@@ -269,6 +279,10 @@ def _studio_site() -> list[str]:
 _studio_seen: tuple[tuple, dict[str, str]] | None = None
 
 
+def _studio_site_key(sites: list[str]) -> tuple:
+    return tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+
+
 def _studio_packages() -> dict[str, str]:
     """Distributions in Studio's own site-packages, excluding sidecars on sys.path. Status polls
     read this several times; the scan is redone only when an install changes a site directory."""
@@ -276,7 +290,7 @@ def _studio_packages() -> dict[str, str]:
     import importlib.metadata as metadata
 
     sites = _studio_site()
-    key = tuple((site, os.stat(site).st_mtime_ns) for site in sites if os.path.isdir(site))
+    key = _studio_site_key(sites)
     if _studio_seen is None or _studio_seen[0] != key:
         _studio_seen = (
             key,
@@ -337,20 +351,67 @@ def _compat(engine: str) -> dict[str, list[str]]:
     return _compat_file(engine).get("requires", {})
 
 
+def _file_identity(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+# Status polls price every engine that is not current; reused until the key or an engine job moves.
+_priced_plans: dict[str, tuple[tuple, dict | None, frozenset[str]]] = {}
+
+
+def _forget_priced_plans() -> None:
+    with _lock:
+        _priced_plans.clear()
+
+
+def _priced_plan(engine: str) -> tuple[dict | None, frozenset[str]]:
+    """The lock's wheel sizes and the names Studio provides, as download_bytes prices them."""
+    lock = requirements(engine)
+    sites = _studio_site()
+    key = (
+        str(lock),
+        _file_identity(lock),
+        _file_identity(lock.with_suffix(".compat.json")),
+        _studio_site_key(sites),
+        tuple(sorted(_studio_packages().items())),
+        repr(profile(engine)),
+        sys.implementation.name,
+        tuple(sys.version_info[:2]),
+    )
+    with _lock:
+        seen = _priced_plans.get(engine)
+    if seen is not None and seen[0] == key:
+        return seen[1], seen[2]
+    sizes = _compat_file(engine).get("sizes")
+    provided = frozenset(install_plan(engine)["provided"]) if sizes else frozenset()
+    with _lock:
+        _priced_plans[engine] = (key, sizes, provided)
+    return sizes, provided
+
+
 def download_bytes(engine: str) -> int | None:
     """Wheel bytes an install of the selected release downloads: the lock minus what Studio provides."""
     from . import wsl_host
 
-    sizes = _compat_file(engine).get("sizes")
+    wsl = wsl_host.active()
+    if wsl:
+        sizes = _compat_file(engine).get("sizes")
+        provided: frozenset[str] | dict = {}
+    else:
+        sizes, provided = _priced_plan(engine)
     if not sizes:
         return None
-    wsl = wsl_host.active()
     # A WSL engine is always a complete environment, plus the distro and uv on first setup.
-    provided = {} if wsl else install_plan(engine)["provided"]
     omit = set(profile(engine).get("omit", ()))
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
+    if not wsl and (kernels := flashinfer_kernel_wheel(engine, wait = False)):
+        total += kernels.get("size") or 0
     summary = wsl_host.summary() if wsl else {}
     if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
@@ -1115,10 +1176,16 @@ def _safe_download_bytes(engine: str) -> int | None:
 
 
 def _update(engine: str, **values) -> None:
+    if "state" in values:
+        _forget_priced_plans()
     with _lock:
         job = _jobs.setdefault(engine, {})
         if "phase" in values and values["phase"] != job.get("phase"):
             values.setdefault("activity", "")
+        if values.get("state") == "running" and job.get("state") != "running":
+            values.setdefault("finished_at", None)
+        elif values.get("state") in ("success", "error", "cancelled", "waiting"):
+            values.setdefault("finished_at", time.time())
         job.update(values)
         root = engine_root()
         root.mkdir(parents = True, exist_ok = True)
@@ -1332,6 +1399,100 @@ def _index_arguments(engine: str) -> list[str]:
     ]
 
 
+# flashinfer.ai/whl/cu130 jit-cache per locked FlashInfer; UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips.
+_FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
+
+
+def _kernels_run_on(arches: list[str], capability: str) -> bool:
+    """SASS only, no PTX: `X.Ya` runs on exactly X.Y, `X.Y` and `X.Yf` on X.Y and later X minors."""
+    major, minor = (int(part) for part in capability.strip().split(".")[:2])
+    for arch in arches:
+        built = tuple(int(part) for part in arch.rstrip("af").split("."))
+        if (major, minor) == built or (
+            not arch.endswith("a") and major == built[0] and minor > built[1]
+        ):
+            return True
+    return False
+
+
+def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
+    """The jit-cache wheel if it has SASS for every GPU here (a missing arch fails, never JITs)."""
+    if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    wanted = profile(engine)
+    if (
+        not wanted.get("flashinfer_kernels")
+        or sys.platform != "linux"
+        or wanted["platform"] != "cuda"
+        or not wanted["cuda"]
+    ):
+        return None
+    version = _pins(engine).get("flashinfer-python", (None,))[0]
+    try:
+        entry = json.loads(_FLASHINFER_KERNELS.read_text(encoding = "utf-8")).get(
+            f"{version}+{wanted['cuda']}", {}
+        )
+        wheel = entry.get(platform.machine())
+        if not wheel:
+            return None
+        rows = _driver_rows(None, wait = wait)
+        if (
+            rows is _PENDING
+            or not rows
+            or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
+        ):
+            return None
+    except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError):
+        return None
+    return wheel
+
+
+def _install_flashinfer_kernels(
+    engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
+) -> bool:
+    """Best effort: a failure removes the wheel and keeps JIT; one that cannot be removed fails."""
+    wheel = flashinfer_kernel_wheel(engine)
+    if wheel is None:
+        return False
+    requirement = destination / "flashinfer-kernels.txt"
+    requirement.write_text(
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n", encoding = "utf-8"
+    )
+    _update(engine, message = "Downloading FlashInfer's prebuilt kernels")
+    try:
+        _run(
+            engine,
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--link-mode",
+                package_link_mode(destination),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(requirement),
+            ],
+            cancel,
+        )
+        _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
+        return True
+    except RuntimeError:
+        if cancel.is_set():
+            raise
+        _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
+        return False
+
+
 def _smoke_source(engine: str) -> str:
     """Imports the engine and the precision libraries its lock carries, on the locked torch build."""
     wanted = profile(engine)
@@ -1340,6 +1501,8 @@ def _smoke_source(engine: str) -> str:
         wanted["module"],
         "torch",
         *(name for name in ("bitsandbytes", "torchao") if name in pins),
+        # vLLM 0.28+ serves BitsAndBytes only through this plugin, loaded from its entry point.
+        *(["vllm_bnb_plugin"] if "vllm-bnb-plugin" in pins else []),
     ]
     runtime = (
         "assert torch.version.hip"
@@ -1352,6 +1515,15 @@ def _smoke_source(engine: str) -> str:
         + runtime
         + "\n"
     )
+
+
+def _uv_executable() -> str | None:
+    """PATH, then uv's install folders: service and web UI launches skip the shell profile."""
+    try:
+        from utils.mlx_repair import _uv_executable as find_uv
+        return find_uv()
+    except Exception:  # noqa: BLE001
+        return shutil.which("uv")
 
 
 def _install(
@@ -1371,7 +1543,7 @@ def _install(
             if wsl_host.active():
                 _install_wsl(engine, cancel)
                 return
-            uv = shutil.which("uv")
+            uv = _uv_executable()
             if uv is None:
                 raise RuntimeError("uv is unavailable. Repair the Unsloth installation and retry.")
             root = engine_root() / engine
@@ -1424,6 +1596,7 @@ def _install(
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
             if profile(engine)["platform"] == "cuda":
                 link_cuda_home(destination, plan["shared"])
+            kernels = _install_flashinfer_kernels(engine, uv, python, destination, cancel)
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1463,6 +1636,7 @@ def _install(
                     "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
+                    **({"flashinfer_kernels": True} if kernels else {}),
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
@@ -1774,6 +1948,7 @@ def remove(engine: str) -> dict:
             _jobs.pop(engine, None)
         (engine_root() / f"{engine}.job.json").unlink(missing_ok = True)
         (engine_root() / f"{engine}.cancel").unlink(missing_ok = True)
+    _forget_priced_plans()
     _record_manifest(engine)
     return status(engine)
 
@@ -1802,6 +1977,7 @@ def remove_wsl_environment() -> list[dict]:
 
 
 def rollback(engine: str) -> dict:
+    _forget_priced_plans()
     with engine_lease(engine, exclusive = True):
         info = installed(engine)
         previous = info.get("previous") if info else None

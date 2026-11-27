@@ -157,8 +157,7 @@ def _config(base, dataset, **overrides):
     }
 
 
-# The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
-# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+# Worker imports unsloth; CI installs unsloth_zoo only in this step; Apple Silicon uses MLX.
 _WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
     importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
@@ -674,6 +673,22 @@ def test_arrow_merged_criteria_are_not_trained_as_options(tmp_path):
     warnings.clear()
     _read_local_rows([str(strings)], load_dataset_cache_safe, warnings.append)
     assert not warnings
+
+
+def test_jsonl_rows_keep_unicode_separators_inside_strings(tmp_path):
+    from core.training.decision_trainer import _read_local_rows
+
+    rows = [
+        {"state": "one\u2028two\u2029three\u0085four", "gold": "a"},
+        {"state": "plain", "gold": "b"},
+    ]
+    path = tmp_path / "decisions.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii = False) for row in rows) + "\n",
+        encoding = "utf-8",
+    )
+
+    assert _read_local_rows([str(path)], None, lambda message: None) == rows
 
 
 def _load(should_stop = lambda: False, **config):

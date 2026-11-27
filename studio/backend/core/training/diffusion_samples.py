@@ -16,7 +16,19 @@ from typing import Any, Callable, Optional
 
 # Video families are left out: a preview there is a clip with audio, not a cheap still.
 SAMPLE_FAMILIES: frozenset[str] = frozenset(
-    {"sdxl", "z-image", "flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "krea-2"}
+    {
+        "sdxl",
+        "z-image",
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein-base",
+        "qwen-image",
+        "qwen-image-2.1",
+        "krea-2",
+        "moss-image",
+        "minimax-h3-image",
+    }
 )
 MAX_SAMPLE_PROMPTS = 4
 MAX_SAMPLE_PROMPT_CHARS = 1000
@@ -50,10 +62,7 @@ def validate_sample_settings(
     return every, prompts
 
 
-# How each diffusers pipeline combines the conditional (c) and empty-prompt (u) predictions, and above which scale it
-# runs the second pass at all: "uncond" u + g(c - u) (SDXL, FLUX.1 true CFG, FLUX.2 Klein; on when g > 1), "cond"
-# c + g(c - u) (Z-Image pipeline_z_image.py:547, Krea 2 pipeline_krea2.py:666; on when g > 0), "qwen" the "uncond"
-# combination rescaled to the conditional prediction's per-token norm (pipeline_qwenimage.py:668-672; on when g > 1).
+# uncond (SDXL, FLUX.1, FLUX.2 Klein) on g>1; cond (Z-Image, Krea 2) on g>0; qwen is rescaled, g>1.
 _CFG_MODES = {"z-image": "cond", "krea-2": "cond", "qwen-image": "qwen"}
 
 
@@ -65,6 +74,8 @@ class SampleSettings:
     cfg_mode: str = "uncond"
     # A fixed schedule shift (Krea 2 Turbo pins mu = 1.15, pipeline_krea2.py:615); None derives it.
     mu: Optional[float] = None
+    # Inference static shift when it differs from training's (FLUX.3).
+    shift: Optional[float] = None
 
     @property
     def uses_cfg(self) -> bool:
@@ -83,6 +94,13 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         return SampleSettings(8, 0.0, mode)
     if family == "flux.2-klein":
         return SampleSettings(28, 4.0) if "base" in name else SampleSettings(4, 0.0)
+    if family == "flux.3-klein-base":
+        # Inference's shift and CFG, fewer steps than its 50.
+        from core.inference.diffusion_families import named_generation_params
+        from core.inference.diffusion_flux3 import FLUX3_REFERENCE_SHIFT
+
+        _steps, guidance = named_generation_params(family)
+        return SampleSettings(28, guidance, shift = FLUX3_REFERENCE_SHIFT)
     if family == "flux.2-dev":
         # Guidance-distilled: the forward feeds the guidance embedding (4.0, the pipeline default) instead of true CFG.
         return SampleSettings(28, 0.0)
@@ -90,6 +108,14 @@ def sample_inference_settings(family: str, base_model: str) -> SampleSettings:
         return SampleSettings(20, 0.0)
     if family == "qwen-image":
         return SampleSettings(20, 4.0, mode)
+    if family == "qwen-image-2.1":
+        # Sampled without guidance (pipeline default true_cfg_scale 1.0); Studio's 25-step default, 8 for Turbo.
+        return SampleSettings(8, 1.0) if "turbo" in name else SampleSettings(25, 1.0)
+    if family == "moss-image":
+        return SampleSettings(25, 2.5)
+    if family == "minimax-h3-image":
+        # Distilled to 6 steps with one head each, guidance-distilled (no CFG); the trainer runs its own sampler.
+        return SampleSettings(6, 0.0)
     if family == "krea-2":
         if "turbo" in name:
             return SampleSettings(8, 0.0, mode, mu = 1.15)
@@ -134,6 +160,7 @@ class SamplePlan:
     written: list
     cfg_mode: str = "uncond"
     mu: Optional[float] = None
+    shift: Optional[float] = None
 
     @property
     def uses_cfg(self) -> bool:
@@ -181,6 +208,7 @@ def plan_samples(cfg: Any, family: str, captions: list[str]) -> Optional[SampleP
         guidance = settings.guidance,
         cfg_mode = settings.cfg_mode,
         mu = settings.mu,
+        shift = settings.shift,
         resolution = sample_resolution(getattr(cfg, "resolution", 1024), multiple),
         out_dir = Path(cfg.output_dir).expanduser(),
         tag = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}",
@@ -227,13 +255,23 @@ def flow_sigmas(
     steps: int,
     image_seq_len: int,
     mu: Optional[float] = None,
+    shift: Optional[float] = None,
 ):
     """Inference sigmas from a FRESH scheduler: set_timesteps on the training one rewrites its tables."""
     import numpy as np
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
 
-    sched = FlowMatchEulerDiscreteScheduler.from_config(scheduler_config)
+    if family == "moss-image":
+        # sgm_uniform steps at the training shift, terminal 0 appended.
+        from core.inference.diffusion_moss_image import sgm_uniform_sigmas
+
+        num_train = int(scheduler_config.get("num_train_timesteps", 1000))
+        shift = float(scheduler_config.get("shift", 5.0))
+        sigmas = sgm_uniform_sigmas(steps, shift, num_train) + [0.0]
+        return torch.tensor(sigmas, dtype = torch.float32), float(num_train)
+    overrides = {} if shift is None else {"shift": float(shift)}
+    sched = FlowMatchEulerDiscreteScheduler.from_config(scheduler_config, **overrides)
     sc = sched.config
     kwargs: dict = {}
     if getattr(sc, "use_dynamic_shifting", False):
@@ -257,8 +295,7 @@ def flow_sigmas(
 
 
 def to_pil(images):
-    """Raises on a non-finite decode, which the trainers turn into a "sampling disabled" warning instead of
-    saving a black image that reads as a broken LoRA."""
+    """Raises on non-finite decode; trainers then warn instead of saving a black image."""
     import torch
     from PIL import Image
 
@@ -384,7 +421,9 @@ def euler_flow_sample(
     (target convention noise - latents) and the family pipeline's CFG combination."""
     import torch
 
-    sigmas, num_train = flow_sigmas(scheduler_config, family, plan.steps, image_seq_len, plan.mu)
+    sigmas, num_train = flow_sigmas(
+        scheduler_config, family, plan.steps, image_seq_len, plan.mu, plan.shift
+    )
     x = initial_noise(plan, index, latent_shape, device)
     for i in range(len(sigmas) - 1):
         if stop_requested is not None and stop_requested():

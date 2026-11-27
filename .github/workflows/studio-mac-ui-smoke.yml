@@ -14,6 +14,8 @@ on:
     paths:
       # Not studio/** or unsloth/**: the install is --no-torch and src-tauri is never built.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -49,6 +51,8 @@ on:
     # Same list as the PR filter, to spare the account-wide macOS slots.
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -160,10 +164,9 @@ jobs:
           enableCrossOsArchive: true
 
       - name: Install Playwright browsers
-        # A background step, like the two cache restores after it: all three only
-        # fetch into their own directories, so they run while Install Unsloth does.
-        # The `wait-all` after the llama.cpp check settles them before any step reads
-        # their outputs.
+        # Background step like the two cache restores after it: all three only fetch into their own
+        # directories, so they overlap Install Unsloth; wait-all after the llama.cpp check settles
+        # them before any step reads their outputs.
         id: pw_install
         background: true
         # No --with-deps on Mac: that flag installs Linux apt packages.
@@ -339,14 +342,23 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      - name: Cross-browser permission controls
+      # Own ports and home, since the scripts wipe auth/ per boot; starts after the chat UI.
+      - name: Cross-browser permission controls + loaded-models indicator (WebKit)
+        id: webkit_lane
+        background: true
         run: |
-          bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
-
-      # WKWebView is what the desktop app embeds; status reads are stubbed.
-      - name: Loaded-models indicator (WebKit)
-        run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+          installed_home="$HOME/.unsloth/studio"
+          test -x "$installed_home/unsloth_studio/bin/python" \
+            || { echo "::error::no studio venv under $installed_home"; exit 1; }
+          home="${{ github.workspace }}/.studio-webkit-lane"
+          mkdir -p "$home"
+          ln -sfn "$installed_home/unsloth_studio" "$home/unsloth_studio"
+          export UNSLOTH_STUDIO_HOME="$home"
+          rc=0
+          bash .github/scripts/run-studio-permission-browser.sh 18895 webkit || rc=1
+          # WKWebView is what the desktop app embeds; status reads are stubbed.
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit || rc=1
+          exit "$rc"
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
@@ -439,6 +451,10 @@ jobs:
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
+
+      # Before the tab smoke, whose cold boot needs the runner to itself.
+      - name: Wait for the permission controls + loaded-models indicator
+        wait: webkit_lane
 
       # ---------------------------------------------------------------
       # Own cold-port boot with no health wait: a settled backend is the wrong start state.

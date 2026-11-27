@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import threading
 import uuid
 import weakref
@@ -67,6 +68,8 @@ class Answer:
     checkpoint: Optional[str] = None
     gguf_variant: Optional[str] = None
     provider: Optional[dict] = None
+    # The task chat's message the history ended on; the answer is saved under it.
+    chat_parent_id: Optional[str] = None
 
 
 @dataclass
@@ -82,6 +85,7 @@ class _Swap:
     attended: Optional[float] = None
     # A Transformers or MLX model in the primary has no GGUF identity: it is loaded back by name.
     previous_model: Optional[str] = None
+    previous_launch: Optional[dict] = None
 
 
 @dataclass
@@ -117,18 +121,71 @@ def next_run_for(task: dict, after_ms: int) -> Optional[int]:
     )
 
 
-def system_prompt(task: dict, now_ms: int) -> str:
+def _local_time(task: dict, now_ms: int) -> datetime:
     try:
         zone = resolve_timezone(task["timezone"])
     except ValueError:
         zone = timezone.utc
-    local = datetime.fromtimestamp(now_ms / 1000, tz = zone)
+    return datetime.fromtimestamp(now_ms / 1000, tz = zone)
+
+
+def system_prompt(task: dict, now_ms: int) -> str:
+    local = _local_time(task, now_ms)
     when = f"{local:%A}, {local:%B} {local.day}, {local.year} at {local:%H:%M}"
     return (
         f"This is a scheduled task the user set up in Unsloth Studio, running on {when} "
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
+
+
+_PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
+
+
+def _reject_json_constant(name: str) -> Any:
+    # NaN and Infinity are not JSON to Chat's JSON.parse, which then drops the whole map.
+    raise ValueError(name)
+
+
+def _resolve_prompt_variables(prompt: str, variables_raw: Any, task: dict, now_ms: int) -> str:
+    # Mirrors resolveSystemPromptVariables in chat-adapter.ts, using the task timezone.
+    local = _local_time(task, now_ms)
+    offset = local.strftime("%z")
+    builtins = {
+        "$date": f"{local:%Y-%m-%d}",
+        "$time": f"{local:%H:%M:%S}",
+        "$now": f"{local:%Y-%m-%dT%H:%M:%S}{offset[:3]}:{offset[3:]}",
+    }
+    try:
+        custom = (
+            json.loads(variables_raw, parse_constant = _reject_json_constant)
+            if isinstance(variables_raw, str) and variables_raw.strip()
+            else {}
+        )
+    except ValueError:
+        custom = {}
+    if not isinstance(custom, dict):
+        custom = {}
+
+    def replace(match: re.Match) -> str:
+        key = match.group(1).strip()
+        if key in builtins:
+            return builtins[key]
+        current: Any = custom
+        parts = [part.strip() for part in key.split(".") if part.strip()]
+        if not parts:
+            return match.group(0)
+        for part in parts:
+            if not isinstance(current, dict) or part not in current:
+                return match.group(0)
+            current = current[part]
+        if current is None:
+            return ""
+        if isinstance(current, str):
+            return current
+        return json.dumps(current, ensure_ascii = False, separators = (",", ":"))
+
+    return _PROMPT_VARIABLE.sub(replace, prompt)
 
 
 def _run_instructions(task: dict, now_ms: int) -> str:
@@ -138,12 +195,127 @@ def _run_instructions(task: dict, now_ms: int) -> str:
     project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
     agents_md = agents_md_text(project).strip()
     instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    chat_settings = (_target_chat(task) or {}).get("settings")
+    # Read as Chat does: a snapshot or prompt of the wrong type is absent.
+    chat_settings = chat_settings if isinstance(chat_settings, dict) else {}
+    chat_prompt = chat_settings.get("systemPrompt")
     parts = [
         f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
         f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        _resolve_prompt_variables(
+            chat_prompt if isinstance(chat_prompt, str) else "",
+            chat_settings.get("systemVariables"),
+            task,
+            now_ms,
+        ).strip(),
         system_prompt(task, now_ms),
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+_HISTORY_TURNS = 40
+_HISTORY_CHARS = 48_000
+
+
+def _target_chat(task: dict) -> Optional[dict]:
+    from storage import studio_db
+
+    thread_id = task.get("threadId")
+    if not thread_id:
+        return None
+    thread = studio_db.get_chat_thread(thread_id)
+    return thread if thread is not None and not thread.get("pairId") else None
+
+
+_ROLE_ORDER = {"system": 0, "user": 1, "assistant": 2}
+
+
+def _shown_branch(messages: list[dict]) -> list[dict]:
+    """The branch Chat shows, oldest first; mirrors resolveSavedBranchHead and createParentResolver."""
+    if not messages:
+        return []
+    ordered = sorted(
+        messages,
+        key = lambda m: (m.get("createdAt") or 0, _ROLE_ORDER.get(m.get("role") or "", 99), m["id"]),
+    )
+    by_id = {message["id"]: message for message in ordered}
+    order = {message["id"]: index for index, message in enumerate(ordered)}
+    parent_of: dict[str, Optional[str]] = {}
+    children: dict[str, list[str]] = {}
+    previous: Optional[str] = None
+    saw_recorded = False
+    for message in ordered:
+        recorded = message.get("parentId")
+        parent = previous if recorded is None and not saw_recorded else recorded
+        saw_recorded = saw_recorded or recorded is not None
+        parent_of[message["id"]] = parent
+        if parent is not None:
+            children.setdefault(parent, []).append(message["id"])
+        previous = message["id"]
+    head, head_order = ordered[-1]["id"], -1
+    pending, seen = [head], set()
+    while pending:
+        node = pending.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        below = children.get(node)
+        if below:
+            pending.extend(below)
+        elif order[node] > head_order:
+            head, head_order = node, order[node]
+    branch: list[dict] = []
+    walked: set[str] = set()
+    current: Optional[str] = head
+    while current is not None and current in by_id and current not in walked:
+        walked.add(current)
+        branch.append(by_id[current])
+        current = parent_of.get(current)
+    return branch[::-1]
+
+
+def _message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    parts = content if isinstance(content, list) else []
+    return "\n".join(
+        str(part.get("text") or "")
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text"
+    ).strip()
+
+
+def _chat_history(task: dict) -> tuple[list[dict], Optional[str]]:
+    """Text turns, alternating and opening on the user as chat templates expect, and the branch's leaf id."""
+    from storage import studio_db
+
+    thread = _target_chat(task)
+    if thread is None:
+        return [], None
+    branch = _shown_branch(studio_db.list_chat_messages(thread["id"]))
+    turns: list[dict] = []
+    for message in branch:
+        text = _message_text(message)
+        if message.get("role") not in ("user", "assistant") or not text:
+            continue
+        if turns and turns[-1]["role"] == message["role"]:
+            turns[-1]["content"] += "\n\n" + text
+        else:
+            turns.append({"role": message["role"], "content": text})
+    kept: list[dict] = []
+    total = 0
+    for turn in reversed(turns[-_HISTORY_TURNS:]):
+        total += len(turn["content"])
+        if total > _HISTORY_CHARS and kept:
+            break
+        kept.append(turn)
+    kept.reverse()
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    if kept and kept[-1]["role"] == "user":
+        kept.pop()
+    return kept, (branch[-1]["id"] if branch else None)
 
 
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
@@ -229,13 +401,33 @@ def _speech_only(llama: Any, orchestrator: Any) -> bool:
     return bool(info.get("is_audio"))
 
 
+# Translate's models (frontend lib/translation-models.ts): Chat reads their slot as empty, so a run does too.
+_TRANSLATION_ONLY_REPOS = frozenset(
+    {
+        "unslothai/hy-mt3-1.8b-gguf",
+        "unslothai/hy-mt3-7b-gguf",
+        "unslothai/hy-mt3-30b-a3b-gguf",
+        "unslothai/hy-mt3-1.8b-fp8",
+        "unslothai/hy-mt3-7b-fp8",
+        "unslothai/hy-mt3-30b-a3b-fp8",
+        "unsloth/hy-mt2-1.8b-gguf",
+        "unsloth/hy-mt2-7b-gguf",
+    }
+)
+
+
+def _translation_only(name: Optional[str]) -> bool:
+    return (name or "").strip().lower() in _TRANSLATION_ONLY_REPOS
+
+
 def _slot_model(slot: Any) -> Optional[str]:
     if _speech_only(slot.llama, slot.orchestrator):
         return None
     if getattr(slot.llama, "is_loaded", False) and getattr(slot.llama, "model_identifier", None):
-        return str(slot.llama.model_identifier)
-    name = getattr(slot.orchestrator, "active_model_name", None)
-    return str(name) if name else None
+        name = slot.llama.model_identifier
+    else:
+        name = getattr(slot.orchestrator, "active_model_name", None)
+    return str(name) if name and not _translation_only(name) else None
 
 
 def _sole_kept_model() -> Optional[str]:
@@ -251,6 +443,7 @@ def _sole_kept_model() -> Optional[str]:
             account_access.managed_account() and account_access.resident_hidden("chat", primary)
         )
         and not _speech_only(get_llama_cpp_backend(), _peek_inference_backend())
+        and not _translation_only(primary)
     ):
         return None
     names = [name for name in map(_slot_model, model_slots.visible()) if name]
@@ -275,12 +468,16 @@ def _model_is_loaded(model: str) -> bool:
     )
 
 
-# Levels the request accepts; a template may list others, which a run never sends.
+# Levels Lowest/Highest may pick; a template may list others, which they never send.
 _EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
 
 
-def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: bool) -> dict:
-    """The request fields for a task's thinking effort; None keeps the model's default."""
+def _reasoning_fields(
+    effort: Optional[str],
+    connection: bool,
+    flags: Optional[dict] = None,
+) -> dict:
+    """Request fields for a task's effort (None: the model's default) given the model's ``flags``."""
     if effort is None:
         return {}
     relative = {"off": "none", "lowest": "low", "highest": "high"}
@@ -288,33 +485,31 @@ def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: 
         return {"reasoning_effort": relative.get(effort, effort)}
     if effort not in relative:
         return {"enable_thinking": True, "reasoning_effort": effort}
-    backend = None
-    if on_loaded_model:
-        from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
-        if not getattr(backend, "is_loaded", False):
-            backend = None
-    if backend is None:
+    if flags is None:
         if effort == "off":
             return {"enable_thinking": False}
         return {
             "enable_thinking": True,
             "reasoning_effort": "low" if effort == "lowest" else "high",
         }
-    if not backend.supports_reasoning:
+    if not flags.get("supports_reasoning"):
         return {}
-    style = backend.reasoning_style
+    style = flags.get("reasoning_style")
+    levels = [
+        level
+        for level in (flags.get("reasoning_effort_levels") or ["low", "medium", "high"])
+        if level in _EFFORT_LEVELS
+    ] or ["low", "high"]
     if effort == "off":
-        if backend.reasoning_always_on or style == "reasoning_effort":
+        if flags.get("reasoning_always_on"):
             return {}
+        if style == "reasoning_effort":
+            # Effort-only templates ignore enable_thinking: name the level, "none" when offered.
+            offers_none = "none" in (flags.get("reasoning_effort_levels") or ())
+            return {"reasoning_effort": "none" if offers_none else levels[0]}
         return {"enable_thinking": False}
     if style == "enable_thinking":
         return {"enable_thinking": True}
-    levels = [
-        level
-        for level in (backend.reasoning_effort_levels or ["low", "medium", "high"])
-        if level in _EFFORT_LEVELS
-    ] or ["low", "high"]
     fields = {"reasoning_effort": levels[0] if effort == "lowest" else levels[-1]}
     if style == "enable_thinking_effort":
         fields["enable_thinking"] = True
@@ -357,7 +552,12 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
 
 async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back; an unattended run swaps only a restorable GGUF while Studio is idle."""
-    from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
+    from core.inference.llama_keepwarm import (
+        attended_stamp,
+        idle_for,
+        launch_to_replay,
+        loaded_identity,
+    )
     from routes.inference import (
         _loaded_slot_ident,
         _resident_npu_model,
@@ -384,6 +584,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
     keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
     previous = carried.previous if keep_carried else loaded_identity()
     previous_model = carried.previous_model if keep_carried else None
+    previous_launch = carried.previous_launch if keep_carried else launch_to_replay()
     if not keep_carried and previous is None and _resident_npu_model() is None:
         previous_model = getattr(
             await asyncio.to_thread(get_inference_backend), "active_model_name", None
@@ -396,6 +597,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
         task_id = task["id"],
         attended = attended_stamp(),
         previous_model = previous_model,
+        previous_launch = previous_launch,
     )
 
 
@@ -434,9 +636,8 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         with unattended_activity():
             current = loaded_identity()
             if not _primary_serves(swap.model) and _model_is_loaded(swap.model):
-                # Loaded beside the primary (Keep multiple models loaded with a speech model in it): the primary
-                # was never replaced, so only the task model goes.
-                # Its own task: unloading routes to the slot through a context variable, which must not stick to the loop.
+                # Primary is never replaced; unload runs in its own task so its context variable
+                # cannot stick.
                 await asyncio.ensure_future(
                     _unload_model_impl(UnloadRequest(model_path = swap.model), swap.subject)
                 )
@@ -457,7 +658,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             if swap.previous is None and not swap.previous_model:
                 return
             if swap.previous is not None:
-                stash_for_reload(swap.previous)
+                stash_for_reload(swap.previous, swap.previous_launch)
             # Named for a non-GGUF model, which must not be held to what is loaded now.
             request = _producer_request(
                 app,
@@ -484,6 +685,30 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
         )
 
 
+def _tool_fields(web_search: bool, mcp_enabled: bool) -> dict:
+    """Use only tools explicitly enabled on the task, with no interactive approval."""
+    from state.tool_policy import get_tool_policy
+
+    # --disable-tools also covers a connection's hosted search, which the local loop's veto would not reach.
+    if get_tool_policy() is False:
+        if mcp_enabled:
+            raise RunFailed(message = "MCP tools are disabled in Unsloth.")
+        web_search = False
+    if not web_search and not mcp_enabled:
+        # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
+        # means every built-in, python and terminal included.
+        return {"tool_choice": "none", "enabled_tools": []}
+    return {
+        "enable_tools": True,
+        "enabled_tools": ["web_search"] if web_search else [],
+        "mcp_enabled": mcp_enabled,
+        "permission_mode": "off",
+        # Studio's search, not a provider's hosted one, as Chat sends it.
+        "run_tools_locally": True,
+        "nudge_tool_calls": False,
+    }
+
+
 def _pins_local_model(model: Optional[str]) -> bool:
     from routes.inference import _connection_model_ref
     return bool(model) and _connection_model_ref(model) is None
@@ -496,7 +721,7 @@ async def generate_answer(
     cancel_event: threading.Event,
     holder: Optional[SwapHolder] = None,
 ) -> Answer:
-    """Ask the chat model to do the task, text only (tools never run unattended)."""
+    """Ask the chat model to do the task with its explicitly selected tools."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
@@ -510,6 +735,7 @@ async def generate_answer(
     from models.inference import ChatCompletionRequest
     from routes.inference import (
         _chat_completion_from_connection_stream,
+        _loaded_slot_ident,
         _relay_split_thinking,
         allow_model_switch_for_request,
         load_alongside_for_request,
@@ -555,9 +781,9 @@ async def generate_answer(
         activity.reserve()
         producer: Optional[asyncio.Future] = None
         response = None
+        mcp_thread: Optional[str] = None
         try:
-            # The deadline covers the wait for a model load or unload to let go too: one that never
-            # does must not keep the scheduler from every other task.
+            # Also bounds a stuck model load or unload so one wait cannot block other tasks.
             try:
                 await asyncio.wait_for(activity.start(cancel_event), timeout = _RUN_TIMEOUT_SECONDS)
             except TimeoutError:
@@ -570,38 +796,52 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            elif not task.get("model") and _translation_only(_loaded_slot_ident()):
+                raise RunFailed("no_model")
             # A project folder on a stalled mount must not keep the scheduler from every other task.
             try:
-                instructions = await asyncio.wait_for(
-                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                instructions, (history, chat_parent_id) = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        lambda: (_run_instructions(task, db.now_ms()), _chat_history(task))
+                    ),
                     timeout = max(0.0, deadline - loop.time()),
                 )
             except TimeoutError:
                 raise RunFailed("timeout") from None
+            mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
+            tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
                         {"role": "system", "content": instructions},
+                        *history,
                         {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,
                     "cancel_id": run["id"],
-                    # Both opt-outs: --enable-tools overrides enable_tools, and an omitted enabled_tools
-                    # means every built-in, python and terminal included.
-                    "tool_choice": "none",
-                    "enabled_tools": [],
+                    # History is budgeted in characters, so a small window must drop turns, not fail.
+                    **(
+                        {"context_overflow": "truncate_oldest", "context_policy": "rolling"}
+                        if history
+                        else {}
+                    ),
+                    **tool_fields,
                     **model_fields,
-                    **_reasoning_fields(
-                        task.get("reasoningEffort"),
-                        provider is not None,
-                        # Only the primary's levels are known here: a model kept beside it gets the generic fields.
-                        on_loaded_model = not allow_switch
-                        and (
-                            not model_fields.get("model") or _primary_serves(model_fields["model"])
-                        ),
+                    **(
+                        _reasoning_fields(task.get("reasoningEffort"), True)
+                        if provider is not None
+                        else {}
                     ),
                 }
             )
+            if provider is None:
+                # Resolved by the chat route against the model that serves the run, once loaded or routed.
+                payload._scheduled_reasoning_effort = task.get("reasoningEffort")
+
+            if mcp_server_ids:
+                payload._scheduled_mcp_server_ids = mcp_server_ids
+                # Stateful MCP sessions last one run, closed in release().
+                payload.thread_id = mcp_thread = run["id"]
 
             serving: dict = {}
 
@@ -646,8 +886,7 @@ async def generate_answer(
                     raise RunFailed("model_busy") from None
                 if allow_switch and not _model_is_loaded(payload.model):
                     raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
-                # A named kept model answered for itself, so its refusal is not "nothing loaded",
-                # unless it was unloaded before the request reached it.
+                # Named kept model's refusal is not nothing-loaded, unless unloaded first.
                 if provider is None and not task.get("model"):
                     named = "model" in payload.model_fields_set
                     if (not named and not _chat_model_loaded()) or (
@@ -670,6 +909,11 @@ async def generate_answer(
 
             def release(*_: Any) -> None:
                 activity.finish(request.scope)
+                if mcp_thread is not None:
+                    from core.inference.tools import close_mcp_thread_sessions
+
+                    # Off the loop: past the cleanup queue's cap a close runs inline.
+                    loop.run_in_executor(None, close_mcp_thread_sessions, mcp_thread)
                 if producer is None:
                     end_in_process_request(request.scope, answered = False)
 
@@ -709,6 +953,7 @@ async def generate_answer(
         checkpoint = serving.get("checkpoint"),
         gguf_variant = serving.get("gguf_variant"),
         provider = provider,
+        chat_parent_id = chat_parent_id,
     )
 
 
@@ -729,12 +974,66 @@ def _project_or_none(project_id: Optional[str]) -> Optional[str]:
 def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_at: int) -> str:
     from storage import studio_db
 
-    thread_id = db.chat_id_for_run(run["id"])
-    user_message_id = str(uuid.uuid4())
+    target = _target_chat(task)
+    if target is not None:
+        thread_id = target["id"]
+        user_message_id, answer_message_id = db.message_ids_for_run(run["id"])
+        messages = studio_db.list_chat_messages(thread_id)
+        # Under the turns the model read, even if the chat moved on while it answered.
+        if any(message["id"] == answer.chat_parent_id for message in messages):
+            parent_id = answer.chat_parent_id
+        else:
+            branch = _shown_branch(messages)
+            parent_id = branch[-1]["id"] if branch else None
+    else:
+        thread_id = db.chat_id_for_run(run["id"])
+        user_message_id, answer_message_id = str(uuid.uuid4()), str(uuid.uuid4())
+        parent_id = None
     # After the prompt even within one millisecond, which the message order relies on.
     answered_at = max(finished_at, started_at + 1)
     model = answer.model or ""
     checkpoint = answer.checkpoint or model
+    if target is None:
+        _new_run_chat(task, thread_id, checkpoint, answer, started_at, answered_at)
+    parts, metadata = _answer_parts(task, run, answer, checkpoint, model, started_at, answered_at)
+    source = {"taskId": task["id"], "runId": run["id"]}
+    try:
+        studio_db.sync_chat_messages(
+            thread_id,
+            [
+                {
+                    "id": user_message_id,
+                    "threadId": thread_id,
+                    "parentId": parent_id,
+                    "role": "user",
+                    "content": [{"type": "text", "text": task["prompt"]}],
+                    "metadata": {"scheduledTask": source},
+                    "createdAt": started_at,
+                },
+                {
+                    "id": answer_message_id,
+                    "threadId": thread_id,
+                    "parentId": user_message_id,
+                    "role": "assistant",
+                    "content": parts,
+                    "metadata": metadata,
+                    "createdAt": answered_at,
+                },
+            ],
+            return_rows = False,
+        )
+    except Exception:
+        # Never leave an empty chat behind.
+        if target is None:
+            _discard_chat(thread_id)
+        raise
+    return thread_id
+
+
+def _new_run_chat(
+    task: dict, thread_id: str, checkpoint: str, answer: Answer, started_at: int, answered_at: int
+) -> None:
+    from storage import studio_db
     studio_db.upsert_chat_thread(
         {
             "id": thread_id,
@@ -749,6 +1048,17 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             "archived": bool(task.get("archiveSuccessful")),
         }
     )
+
+
+def _answer_parts(
+    task: dict,
+    run: dict,
+    answer: Answer,
+    checkpoint: str,
+    model: str,
+    started_at: int,
+    answered_at: int,
+) -> tuple[list[dict], dict]:
     parts: list[dict] = []
     source = {"taskId": task["id"], "runId": run["id"]}
     metadata: dict = {
@@ -777,41 +1087,20 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
         seconds = max(0, round((answered_at - started_at) / 1000))
         metadata.update(reasoningDuration = seconds, reasoningDurations = [seconds])
     parts.append({"type": "text", "text": answer.content})
-    try:
-        studio_db.sync_chat_messages(
-            thread_id,
-            [
-                {
-                    "id": user_message_id,
-                    "threadId": thread_id,
-                    "parentId": None,
-                    "role": "user",
-                    "content": [{"type": "text", "text": task["prompt"]}],
-                    "metadata": {"scheduledTask": source},
-                    "createdAt": started_at,
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "threadId": thread_id,
-                    "parentId": user_message_id,
-                    "role": "assistant",
-                    "content": parts,
-                    "metadata": metadata,
-                    "createdAt": answered_at,
-                },
-            ],
-        )
-    except Exception:
-        # Never leave an empty chat behind.
-        _discard_chat(thread_id)
-        raise
-    return thread_id
+    return parts, metadata
 
 
 def _discard_chat(thread_id: str) -> None:
     from storage import studio_db
     try:
         studio_db.delete_chat_threads([thread_id])
+    except Exception:
+        logger.exception("scheduled_tasks.discard_chat_failed")
+
+
+def _discard_run(run_id: str) -> None:
+    try:
+        db.discard_run(run_id)
     except Exception:
         logger.exception("scheduled_tasks.discard_chat_failed")
 
@@ -1030,7 +1319,7 @@ class ScheduledTaskScheduler:
             discard = saving and outcome["status"] != "succeeded"
             settled = await self._settle(run["id"], {**outcome, "discard_chat": discard})
             if saving and settled is not True:
-                await asyncio.to_thread(_discard_chat, db.chat_id_for_run(run["id"]))
+                await asyncio.to_thread(_discard_run, run["id"])
 
     @staticmethod
     def _still_wanted(account: AccountContext, task_id: str) -> bool:

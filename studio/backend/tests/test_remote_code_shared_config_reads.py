@@ -145,8 +145,7 @@ def test_outside_a_scope_nothing_is_shared(hub):
 
 
 def test_a_failed_read_is_never_kept(hub):
-    """A transient error, an auth error and a local cache miss (offline/timeout) are all retried by
-    the next pass, exactly as without the scope."""
+    """Transient, auth and local cache-miss failures are not kept, so the next pass retries them."""
     hub.fail[("org/model", "config.json")] = [
         RuntimeError("503"),
         LocalEntryNotFoundError("timeout, nothing cached"),

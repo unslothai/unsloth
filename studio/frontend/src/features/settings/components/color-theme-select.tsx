@@ -55,11 +55,12 @@ function ThemeChip({
   );
 }
 
+// Light keeps the original frost but on a cool grey base with a firmer rim, so it reads on a white menu.
 function GlassChip() {
   return (
     <span
       aria-hidden="true"
-      className="size-6 shrink-0 rounded-full border border-black/10 bg-[linear-gradient(135deg,rgb(255_255_255_/_0.85),rgb(255_255_255_/_0.2)_55%,rgb(255_255_255_/_0.55))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:border-white/20 dark:bg-[linear-gradient(135deg,rgb(255_255_255_/_0.35),rgb(255_255_255_/_0.05)_55%,rgb(255_255_255_/_0.18))]"
+      className="size-6 shrink-0 rounded-full border border-black/20 bg-[#d9dfe8] bg-[linear-gradient(135deg,rgb(255_255_255_/_0.95),rgb(255_255_255_/_0.2)_55%,rgb(255_255_255_/_0.7))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:border-white/20 dark:bg-transparent dark:bg-[linear-gradient(135deg,rgb(255_255_255_/_0.35),rgb(255_255_255_/_0.05)_55%,rgb(255_255_255_/_0.18))]"
     />
   );
 }

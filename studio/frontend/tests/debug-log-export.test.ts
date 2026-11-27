@@ -13,6 +13,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import type * as DebugLogsApi from "../src/features/settings/api/debug-logs.ts";
 import * as debugLogBuffer from "../src/features/settings/lib/debug-log-buffer.ts";
 import * as debugLogError from "../src/features/settings/lib/debug-log-error.ts";
+import * as managedEngineLogTarget from "../src/features/settings/lib/managed-engine-log-target.ts";
 import type * as DebuggingTabModule from "../src/features/settings/tabs/debugging-tab.tsx";
 import { en } from "../src/i18n/locales/en.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
@@ -197,6 +198,7 @@ function makeWorld(options: {
     },
     "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
     "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/hugeicons-derived": { LineWrapDisableIcon: {}, LineWrapIcon: {} },
     "@hugeicons/react": { HugeiconsIcon: () => null },
     "@/lib/tick-icon": { Tick02Icon: {} },
     "@/lib/copy-icon": { Copy01Icon: {} },
@@ -212,6 +214,7 @@ function makeWorld(options: {
     },
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
+    "../lib/managed-engine-log-target": managedEngineLogTarget,
     "../stores/settings-dialog-store": {
       useSettingsDialogStore: Object.assign(
         (selector?: (state: DialogState) => unknown) =>
@@ -311,9 +314,8 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession rotates the stored pair, so refreshing before every export
-  // would spend a refresh token, and risk a sign-out, just for clicking
-  // Download all logs.
+  // refreshSession rotates the stored pair, so refreshing before every export would spend a refresh
+  // token and risk a sign-out just to click Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,

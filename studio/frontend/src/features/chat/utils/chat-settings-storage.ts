@@ -17,9 +17,12 @@ import {
   defaultInferenceParams,
   getPresetOwnedConfigKey,
   getUniquePresetName,
+  isRecommendedSamplingKey,
   normalizeCustomPresets,
+  RECOMMENDED_SAMPLING_KEYS,
   type ChatPresetSource,
   type Preset,
+  type RecommendedSamplingKey,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
@@ -236,6 +239,17 @@ function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
     : undefined;
 }
 
+function sanitizePresetEditedKeys(
+  value: unknown,
+): Partial<Record<RecommendedSamplingKey, boolean>> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([key, kept]) => isRecommendedSamplingKey(key) && typeof kept === "boolean",
+    ),
+  );
+}
+
 function sanitizeReasoningEffort(value: unknown): ReasoningEffort | undefined {
   return typeof value === "string" && REASONING_EFFORTS.has(value)
     ? (value as ReasoningEffort)
@@ -285,6 +299,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
+  const presetEditedKeys = sanitizePresetEditedKeys(value.presetEditedKeys);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
   const autoTitle = sanitizeBool(value.autoTitle);
   const preserveThinking = sanitizeBool(value.preserveThinking);
@@ -317,10 +332,20 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.rememberParamsPerModel = rememberParamsPerModel;
   }
   if (customPresets !== undefined) settings.customPresets = customPresets;
+  if (isRecord(value.editCustomPresets)) {
+    const edits: Record<string, PersistedChatPreset | null> = {};
+    for (const [name, preset] of Object.entries(value.editCustomPresets)) {
+      const [saved] = sanitizeCustomPresets([preset]) ?? [];
+      if (preset === null) edits[name] = null;
+      else if (saved?.name === name) edits[name] = saved;
+    }
+    if (hasKeys(edits)) settings.editCustomPresets = edits;
+  }
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
   }
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  if (presetEditedKeys) settings.presetEditedKeys = presetEditedKeys;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
@@ -403,6 +428,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
+    settings.presetEditedKeys === undefined &&
     settings.autoTitle === undefined &&
     settings.reasoningEffort === undefined &&
     settings.preserveThinking === undefined &&
@@ -458,6 +484,12 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (activePreset?.trim()) settings.activePreset = activePreset.trim();
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  // Saved before the edited keys existed, when `modified` kept every key.
+  if (activePresetSource === "modified") {
+    settings.presetEditedKeys = Object.fromEntries(
+      RECOMMENDED_SAMPLING_KEYS.map((key) => [key, true]),
+    );
+  }
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)

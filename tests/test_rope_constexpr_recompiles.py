@@ -16,8 +16,7 @@ pytest.importorskip("triton")
 import unsloth  # noqa: F401
 from unsloth.kernels import rope_embedding as RE
 
-# Batch never 1 or equal to a head count, seq never head_dim: torch's own 0/1 and duck-size
-# specializations would recompile on any kernel.
+# Batch never 1 or a head count, seq never head_dim: avoids torch's 0/1 and duck-size recompiles.
 N_HEADS, N_KV, HEAD_DIM = 8, 4, 64
 
 
@@ -59,4 +58,34 @@ def test_compiled_rope_keeps_one_graph_across_batch_and_seq(with_indices):
         qkv, Q, K = _qk(batch, seq)
         rope(Q, K, idx).backward()
         torch.testing.assert_close(grad, qkv.grad, rtol = 1e-3, atol = 1e-3)
+    assert counters["stats"]["unique_graphs"] == 1
+
+
+@pytest.mark.gpu
+def test_compiled_rope_seq_major_grad_keeps_one_graph():
+    # dK as [b, h, d, s] (fp16 LoRA compiled block) must not specialize seq_len.
+    if not RE._TRACEABLE:
+        pytest.skip(reason = "RoPE ops are not traceable on this torch / Triton")
+    from torch._dynamo.utils import counters
+
+    freqs = torch.outer(
+        torch.arange(4096.0, device = "cuda"), torch.rand(HEAD_DIM // 2, device = "cuda")
+    )
+    emb = torch.cat((freqs, freqs), -1)
+    cos, sin = emb.cos().half(), emb.sin().half()
+
+    def rope(Q, K):
+        q, k = RE.fast_rope_embedding(Q, K, cos, sin, None)
+        return q.float().square().sum() + k.transpose(2, 3).contiguous().float().square().sum()
+
+    torch._dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(rope, dynamic = True, fullgraph = True)
+    for batch, seq in [(3, 37), (5, 96), (6, 129), (7, 13), (3, 300)]:
+        qkv, Q, K = _qk(batch, seq)
+        compiled(Q, K).backward()
+        grad = qkv.grad
+        qkv, Q, K = _qk(batch, seq)
+        rope(Q, K).backward()
+        torch.testing.assert_close(grad, qkv.grad, rtol = 1e-2, atol = 1e-2)
     assert counters["stats"]["unique_graphs"] == 1

@@ -124,6 +124,37 @@ def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_pa
     assert rows == records
 
 
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json", "seed.csv"])
+def test_a_utf8_bom_seed_upload_previews_and_runs_with_its_columns(monkeypatch, tmp_path, filename):
+    from models.data_recipe import SeedInspectUploadRequest
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "SEED_UPLOAD_DIR", tmp_path / "seed-uploads")
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [{"zip": "01234", "qty": "3"}, {"zip": "90210", "qty": "4"}]
+    if filename.endswith(".jsonl"):
+        body = "\n".join(json.dumps(record) for record in records)
+    elif filename.endswith(".json"):
+        body = json.dumps(records)
+    else:
+        body = "zip,qty\n01234,3\n90210,4\n"
+
+    response = seed_route.inspect_seed_upload(
+        SeedInspectUploadRequest(
+            filename = filename,
+            content_base64 = base64.b64encode(b"\xef\xbb\xbf" + body.encode()).decode(),
+        )
+    )
+
+    assert response.columns == ["zip", "qty"]
+    assert response.preview_rows == records
+    stored = Path(response.resolved_path)
+    duckdb = pytest.importorskip("duckdb")
+    # The recipe run reads the stored file this way (data_designer seed_reader).
+    run_columns = [row[0] for row in duckdb.sql(f"DESCRIBE SELECT * FROM '{stored}'").fetchall()]
+    assert run_columns == ["zip", "qty"]
+
+
 def test_local_parquet_seed_preview_reads_typed_rows(monkeypatch, tmp_path):
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
@@ -504,6 +535,15 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
     source.write_text("a\n\n\n\nb", encoding = "utf-8")
 
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
+
+
+def test_text_extraction_reads_a_utf16_file_without_a_byte_order_mark(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+    source = tmp_path / "wide.txt"
+    source.write_bytes("héllo wörld\n".encode("utf-16-le"))
+
+    assert seed_route._extract_text_from_file(source, ".txt") == "héllo wörld\n"
 
 
 def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
@@ -1895,5 +1935,160 @@ def test_document_extraction_threads_are_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(seed_route.to_thread, "run_sync", run_sync)
 
     assert _run_upload(seed_route, "notes.txt", b"hello").status == "ok"
-    assert seen == [seed_route._document_extraction_limiter]
+    assert [limiter for limiter in seen if limiter is not None] == [
+        seed_route._document_extraction_limiter
+    ]
     assert seed_route._document_extraction_limiter.total_tokens == 2
+
+
+def test_concurrent_native_drops_to_one_block_stay_within_its_budget(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    dropped = tmp_path / "notes.txt"
+    dropped.write_bytes(b"some extractable text " * 3)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 100)
+    monkeypatch.setitem(
+        sys.modules,
+        "utils.native_path_leases",
+        SimpleNamespace(
+            NativePathLeaseError = RuntimeError,
+            verify_native_path_lease = lambda *a, **k: SimpleNamespace(canonical_path = dropped),
+        ),
+    )
+
+    async def both():
+        return await asyncio.gather(
+            *(
+                seed_route.upload_unstructured_file(None, "block", native_path_lease = "lease")
+                for _ in range(2)
+            ),
+            return_exceptions = True,
+        )
+
+    results = asyncio.run(both())
+    refused = [r for r in results if isinstance(r, HTTPException)]
+    assert len(refused) == 1 and refused[0].status_code == 413
+    raw = [n for n in _block_files(seed_route) if n.endswith(".txt") and ".extracted" not in n]
+    assert len(raw) == 1
+
+
+def test_a_cancelled_raw_write_leaves_no_file(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    started = threading.Event()
+    real_write = Path.write_bytes
+
+    def slow_write(self, data):
+        started.set()
+        time.sleep(0.3)
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", slow_write)
+
+    async def cancel_mid_write():
+        task = asyncio.ensure_future(
+            seed_route.upload_unstructured_file(_FakeUpload("notes.txt", b"text to keep"), "block")
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_mid_write())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []
+
+
+def test_a_cancelled_extracted_text_write_leaves_no_file(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    started = threading.Event()
+    real_write = Path.write_text
+
+    def slow_write(self, *args, **kwargs):
+        started.set()
+        time.sleep(0.3)
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", slow_write)
+
+    async def cancel_mid_write():
+        task = asyncio.ensure_future(
+            seed_route.upload_unstructured_file(_FakeUpload("notes.txt", b"text to keep"), "block")
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_mid_write())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []
+
+
+@pytest.mark.parametrize("slow", ["write_bytes", "write_text"])
+def test_an_anyio_cancel_scope_leaves_no_file(monkeypatch, tmp_path, slow):
+    import time
+
+    import anyio
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    real = getattr(Path, slow)
+
+    def slow_write(self, *args, **kwargs):
+        time.sleep(0.3)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, slow, slow_write)
+
+    async def cancel_by_scope():
+        with anyio.move_on_after(0.1):
+            await seed_route.upload_unstructured_file(
+                _FakeUpload("notes.txt", b"text to keep"), "block"
+            )
+
+    asyncio.run(cancel_by_scope())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []
+
+
+def test_a_slow_raw_write_does_not_block_the_event_loop(monkeypatch, tmp_path):
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    real_write = Path.write_bytes
+
+    def slow_write(self, data):
+        time.sleep(0.3)
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", slow_write)
+
+    async def upload_while_ticking():
+        ticks = 0
+        done = False
+
+        async def ticker():
+            nonlocal ticks
+            while not done:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        tick_task = asyncio.ensure_future(ticker())
+        await asyncio.sleep(0)
+        result = await seed_route.upload_unstructured_file(
+            _FakeUpload("notes.txt", b"text to keep"), "block"
+        )
+        done = True
+        await tick_task
+        return result, ticks
+
+    result, ticks = asyncio.run(upload_while_ticking())
+    assert result.status == "ok"
+    assert ticks >= 10
+    assert seed_route._BLOCK_UPLOAD_LOCKS == {}

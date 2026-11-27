@@ -40,9 +40,8 @@ _SLOT_TENSOR = -2
 
 
 def _flatten(result: Any) -> Optional[list]:
-    """Flatten an ``encode_prompt`` result tuple of tensors / None / tensor-lists
-    into ``[layout_tensor, *tensors]`` for the conditioning cache, or None when the
-    result holds anything else (those calls simply aren't cached)."""
+    """Flatten an encode_prompt result tuple of tensors, None and tensor-lists into [layout_tensor,
+    *tensors] for the cache, or None if anything else is present (those calls are not cached)."""
     if not isinstance(result, tuple) or not result:
         return None
     layout: list[int] = []

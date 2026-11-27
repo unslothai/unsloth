@@ -31,7 +31,7 @@ from huggingface_hub import HfApi, ModelCard
 from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
-from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import (
     detect_audio_type,
@@ -47,6 +47,7 @@ from utils.paths import (
 from core.inference import get_inference_backend
 from core.export import q4nx
 from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
+from utils.utils import hf_env_offline
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
@@ -457,11 +458,7 @@ def _has_nvidia_gpu():
 
 def _hf_offline(timeout = 3):
     """Honors HF offline env vars, else a TCP probe avoids hangs; set UNSLOTH_OFFLINE_PROBE=0 to skip it."""
-    _offline = {"1", "true", "yes", "on"}
-    if (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
-    ):
+    if hf_env_offline():
         return True
     if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
         return False
@@ -606,6 +603,20 @@ def _dir_is_fresh(directory):
     )
 
 
+def _copy_replacing_links(source, destination):
+    # copytree writes through a destination symlink or hard link, changing the file it points at.
+    for dirpath, _, files in os.walk(source):
+        target = os.path.join(destination, os.path.relpath(dirpath, source))
+        if os.path.islink(target):
+            os.unlink(target)
+        os.makedirs(target, exist_ok = True)
+        for name in files:
+            dst = os.path.join(target, name)
+            if os.path.lexists(dst):
+                os.unlink(dst)
+            shutil.copy2(os.path.join(dirpath, name), dst)
+
+
 def _holds_checkpoint_weights(directory, files = None):
     if files is not None:
         return any(
@@ -639,6 +650,10 @@ class _ReusedFolderWrites:
         except OSError as exception:
             logger.info(f"Reused folder not tracked, staging a second save: {exception}")
             self._before = None
+
+    @property
+    def tracked(self) -> bool:
+        return self._before is not None
 
     def _scan(self, settled_before: Optional[int] = None) -> dict:
         notes = {}
@@ -845,19 +860,33 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
-def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
-    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
-    weight entries that point outside the folder."""
-    from core.export.decision import adapter_base_changed
+def _checkpoint_load_refusal(
+    checkpoint_path,
+    pinned_base,
+    adapter_free = False,
+) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names (or any,
+    when it was checked with no adapter config), or weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed, adapter_load_bases
     from utils.security.file_security import escaping_weight_references
 
-    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+    if (pinned_base and adapter_base_changed(checkpoint_path, pinned_base)) or (
+        adapter_free and adapter_load_bases(checkpoint_path)
+    ):
         return "The adapter's base model changed after it was checked. Load it again."
     if escaping_weight_references(checkpoint_path):
         return "This checkpoint's weight index names files outside its folder."
     # A local base loads too: its own index must stay inside its folder as well.
     if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
         return "The base model's weight index names files outside its folder."
+    return None
+
+
+def _restaged_checkpoint_refusal(checkpoint_path) -> Optional[str]:
+    """GGUF export of a full model re-stages its folder from disk, so an index written after the load
+    is followed: re-check it right before the conversion."""
+    if checkpoint_path and os.path.isdir(str(checkpoint_path)):
+        return _checkpoint_load_refusal(checkpoint_path, None)
     return None
 
 
@@ -996,6 +1025,7 @@ class ExportBackend:
         base_model: Optional[str] = None,
         offload_layers = "auto",
         _offload_retry: bool = False,
+        adapter_free: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -1026,6 +1056,12 @@ class ExportBackend:
             from core.export.decision import decision_kind
 
             decision = decision_kind(checkpoint_path)
+            if decision is not None and decision[1] and adapter_free:
+                # An adapter-only decision run loads a base: its adapter config was written after the check.
+                return (
+                    False,
+                    "The adapter's base model changed after it was checked. Load it again.",
+                )
             if decision is not None:
                 return self._load_decision_checkpoint(
                     str(Path(checkpoint_path).expanduser()),
@@ -1035,7 +1071,7 @@ class ExportBackend:
                 )
 
             # The decision loader above checks its own base against the pin.
-            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base, adapter_free)
             if refusal:
                 return False, refusal
 
@@ -1075,6 +1111,13 @@ class ExportBackend:
                 self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                # Only a definitive no (not an unreadable config) takes the multimodal load below.
+                audio_vlm_multimodal = False
+                if self._audio_type == "audio_vlm" and not self.is_vision:
+                    takes, known = audio_vlm_multimodal_lm_checked(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                    audio_vlm_multimodal = known and takes
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
 
                 self.diffusion_lm_profile = (
@@ -1089,7 +1132,7 @@ class ExportBackend:
                     self.is_vision = False
 
             # Again right before the load: the folder may have been edited during the probes.
-            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base, adapter_free)
             if refusal:
                 return False, refusal
 
@@ -1177,6 +1220,34 @@ class ExportBackend:
                     **_device_map_kw,
                     **_offload_kw,
                 )
+
+            elif self._audio_type == "audio_vlm" and audio_vlm_multimodal:
+                # LFM3-Audio: the text load builds the bare backbone with no LM head; Training and Chat use this class.
+                from unsloth import FastModel
+                from transformers import AutoModelForMultimodalLM
+
+                logger.info("Loading as audio-input model (AutoModelForMultimodalLM)...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    auto_model = AutoModelForMultimodalLM,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+                if base_model and not hasattr(tokenizer, "feature_extractor"):
+                    with _offline_window_if(local_files_only):
+                        tokenizer = _with_base_processor(
+                            tokenizer,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
 
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel
@@ -1342,6 +1413,7 @@ class ExportBackend:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = adapter_free,
             **retry_kw,
         )
 
@@ -1609,13 +1681,12 @@ class ExportBackend:
                 _shadow_offered = False
                 try:
                     from utils.transformers_version import (
-                        _env_offline,
                         _llmcompressor_main_disabled,
                         llmcompressor_shadow_pythonpath,
                     )
 
                     # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
-                    _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
+                    _shadow_offered = not _llmcompressor_main_disabled() and not hf_env_offline()
                     _shadow_pp = llmcompressor_shadow_pythonpath(
                         allow_provision = install_missing_dependencies,
                     )
@@ -1675,6 +1746,13 @@ class ExportBackend:
                     and not self._export_dir_overlaps_checkpoint(save_directory)
                 ):
                     reused_writes = _ReusedFolderWrites(save_directory)
+                if (
+                    push_to_hub
+                    and (is_compressed or is_torchao)
+                    and not _dir_is_fresh(f"{save_directory}-{compressed_suffix}")
+                ):
+                    # The quantized "<dir>-<suffix>" sibling is pushed whole; an earlier export's files there must not go up.
+                    reused_writes = _ReusedFolderWrites(f"{save_directory}-{compressed_suffix}")
 
                 # save.py turns None into get_token(), so the merge needs the token spelled out.
                 merged_token_kw = (
@@ -1772,6 +1850,24 @@ class ExportBackend:
                                     **merged_token_kw,
                                 )
                                 self._package_drafter_merged(upload_dir, repo_id)
+                                self._sync_reap_report(upload_dir)
+                            if (
+                                (is_compressed or is_torchao)
+                                and reused_writes is not None
+                                and written is None
+                            ):
+                                # An untracked reused quantized sibling is rebuilt in a fresh folder, sidecars too.
+                                staged = stack.enter_context(_staging_dir(Path(output_path).parent))
+                                rebuilt = os.path.join(staged, "model")
+                                self.current_model.save_pretrained_merged(
+                                    rebuilt,
+                                    self.current_tokenizer,
+                                    save_method = save_method,
+                                    **consent_kw,
+                                    **merged_token_kw,
+                                )
+                                upload_dir = f"{rebuilt}-{compressed_suffix}"
+                                self._package_drafter_merged(upload_dir, repo_id, allow_mtp = False)
                                 self._sync_reap_report(upload_dir)
                             # Whatever was built, only weights are worth a repo; without them the
                             # merging push below runs instead, as it did before this was uploaded.
@@ -2072,6 +2168,9 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
@@ -2119,9 +2218,13 @@ class ExportBackend:
                             "GGUF conversion produced only AppleDouble metadata companions "
                             f"and no usable .gguf file for {abs_save_dir}"
                         )
-                    drafter_gguf_files = self._package_drafter_gguf(
-                        reported.get("save_directory") or _model_tmp, abs_save_dir, exported_ggufs
-                    )
+                    # Runs the converter again (on an EAGLE-3 drafter folder): same trust decision.
+                    with _converter_remote_code(remote_code_approved):
+                        drafter_gguf_files = self._package_drafter_gguf(
+                            reported.get("save_directory") or _model_tmp,
+                            abs_save_dir,
+                            exported_ggufs,
+                        )
                     exported_ggufs.extend(f for f in drafter_gguf_files if f.endswith(".gguf"))
                     exported_is_vlm = bool(
                         reported.get("is_vlm", getattr(self, "is_vision", False))
@@ -2209,15 +2312,26 @@ class ExportBackend:
                 )
 
                 if npu_q4nx:
-                    source = q4nx.source_gguf(exported_ggufs, quant_methods)
+                    sources = q4nx.source_ggufs(exported_ggufs, quant_methods)
                     try:
-                        if source is None:
+                        if not sources:
                             raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
-                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
-                            q4nx.convert_gguf_to_q4nx(source, staging)
-                            self._write_q4nx_companions(staging, exported_config)
-                            # The NPU folder is deployed on its own, so it carries its own report.
-                            self._sync_reap_report(staging)
+                        # Q4_0 fits some models and Q4_1 others: a refused source falls to the next.
+                        for index, source in enumerate(sources):
+                            try:
+                                with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                                    q4nx.convert_gguf_to_q4nx(
+                                        source,
+                                        staging,
+                                        json.loads(exported_config) if exported_config else None,
+                                    )
+                                    self._write_q4nx_companions(staging, exported_config)
+                                    # The NPU folder is deployed on its own, so it carries its own report.
+                                    self._sync_reap_report(staging)
+                                break
+                            except q4nx.SourceMismatch:
+                                if index == len(sources) - 1:
+                                    raise
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (
@@ -2294,6 +2408,9 @@ class ExportBackend:
                     except Exception as exception:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
+                    refusal = _restaged_checkpoint_refusal(self.current_checkpoint)
+                    if refusal:
+                        return False, refusal, None
                     # Converts as well as pushes, so it needs the same scoped pin.
                     with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
@@ -2707,6 +2824,11 @@ class ExportBackend:
                 f"LoRA -> GGUF conversion failed (exit {result.returncode}): "
                 + (result.stderr or result.stdout or "").strip()[-2000:]
             )
+        if not os.path.isfile(out_gguf):
+            raise RuntimeError(
+                f"LoRA GGUF conversion reported success but wrote no .gguf file to {out_gguf}. "
+                "Check the export log for the path the converter actually used."
+            )
 
     def export_lora_adapter(
         self,
@@ -2789,19 +2911,51 @@ class ExportBackend:
                         None,
                     )
 
+        gguf_staging = contextlib.ExitStack()
+        staged_gguf_dir = None
+
         def save_lora_gguf(directory):
-            # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
-            if _IS_MLX:
-                self._save_mlx_adapter(directory, "peft", gguf_outtype = outtype, hf_token = hf_token)
-                return
-            self.current_model.save_pretrained_gguf(
-                directory,
-                self.current_tokenizer,
-                save_method = "lora",
-                quantization_method = outtype,
-                # False keeps a denied caller off get_token().
-                token = normalize_token(hf_token),
+            nonlocal staged_gguf_dir
+            reused_writes = None if _dir_is_fresh(directory) else _ReusedFolderWrites(directory)
+            written = None
+            # Untracked folder: skip the wasted in-place conversion.
+            if reused_writes is None or reused_writes.tracked:
+                if _IS_MLX:
+                    self._save_mlx_adapter(
+                        directory, "peft", gguf_outtype = outtype, hf_token = hf_token
+                    )
+                else:
+                    self.current_model.save_pretrained_gguf(
+                        directory,
+                        self.current_tokenizer,
+                        save_method = "lora",
+                        quantization_method = outtype,
+                        # False keeps a denied caller off get_token().
+                        token = normalize_token(hf_token),
+                    )
+                written = reused_writes.written() if reused_writes else None
+            if reused_writes and written is None:
+                tmp_dir = gguf_staging.enter_context(_staging_dir(Path(directory).parent))
+                staged = os.path.join(tmp_dir, Path(directory).name)
+                ensure_dir(Path(staged))
+                ggufs = save_lora_gguf(staged)
+                _copy_replacing_links(staged, directory)
+                staged_gguf_dir = staged
+                return [os.path.join(directory, os.path.basename(f)) for f in ggufs]
+            final_ggufs = sorted(
+                str(p)
+                for p in drop_appledouble_metadata(list(Path(directory).iterdir()))
+                if p.is_file()
+                and p.name.lower().endswith(".gguf")
+                and (written is None or p.name in written)
             )
+            if not final_ggufs:
+                raise RuntimeError(
+                    f"LoRA GGUF conversion reported success but wrote no .gguf file to "
+                    f"{directory}. Check the export log for the path the converter actually "
+                    "used, then upgrade with `pip install --upgrade unsloth unsloth_zoo` and retry."
+                )
+            return final_ggufs
 
         output_path: Optional[str] = None
         save_dir_was_empty = False
@@ -2827,13 +2981,7 @@ class ExportBackend:
 
                 if gguf:
                     _apply_wsl_sudo_patch()
-                    save_lora_gguf(save_directory)
-                    # iterdir, not glob.glob: glob hides dot-leading names.
-                    final_ggufs = sorted(
-                        str(p)
-                        for p in drop_appledouble_metadata(list(Path(save_directory).iterdir()))
-                        if p.is_file() and p.name.lower().endswith(".gguf")
-                    )
+                    final_ggufs = save_lora_gguf(save_directory)
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,
@@ -2872,9 +3020,9 @@ class ExportBackend:
 
                 if gguf:
                     with contextlib.ExitStack() as stack:
-                        upload_dir = output_path
-                        if not save_dir_was_empty:
-                            # A reused folder can hold leftovers, so upload a clean second save; the converter names the GGUF model after its folder
+                        upload_dir = staged_gguf_dir or output_path
+                        if not save_dir_was_empty and staged_gguf_dir is None:
+                            # A reused folder can hold leftovers, so upload a clean second save.
                             upload_dir = os.path.join(
                                 stack.enter_context(_staging_dir(Path(output_path).parent)),
                                 Path(output_path).name,
@@ -2914,6 +3062,8 @@ class ExportBackend:
 
             logger.error(traceback.format_exc())
             return False, f"Adapter export failed: {str(e)}", None
+        finally:
+            gguf_staging.close()
 
 
 _export_backend = None

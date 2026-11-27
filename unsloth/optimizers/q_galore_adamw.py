@@ -196,28 +196,35 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             queue_size = group.get("queue_size", 5),
                         )
 
-                    # Temporarily disable weight decay for GaLore params; it is applied manually after project-back.
-                    if "weight_decay" in group and group["weight_decay"] > 0:
-                        group["_wd_saved"] = group["weight_decay"]
-                        group["weight_decay"] = 0
+                full_rank_grad = p.grad
+                try:
+                    if "rank" in group:
+                        # Temporarily disable weight decay for GaLore params; it is applied manually after project-back.
+                        if "weight_decay" in group and group["weight_decay"] > 0:
+                            group["_wd_saved"] = group["weight_decay"]
+                            group["weight_decay"] = 0
 
-                    full_rank_grad = p.grad
-                    grad = state["projector"].project(full_rank_grad, state["step"])
+                        grad = state["projector"].project(full_rank_grad, state["step"])
 
-                    # Zero p.data so the 8-bit update writes the pure delta.
-                    p._saved_data = p.data.clone()
-                    p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
-                    p.grad = grad
+                        # Zero p.data so the 8-bit update writes the pure delta; rebinding keeps the weight, so no clone.
+                        p._saved_data = p.data
+                        p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
+                        p.grad = grad
 
-                if "state1" not in state:
-                    self.init_state(group, p, gindex, pindex)
+                    if "state1" not in state:
+                        self.init_state(group, p, gindex, pindex)
 
-                self.prefetch_state(p)
-                self.update_step(group, p, gindex, pindex)
+                    self.prefetch_state(p)
+                    self.update_step(group, p, gindex, pindex)
+                    if "rank" in group:
+                        update = state["projector"].project_back(p.data)
+                except BaseException:
+                    # auto_find_batch_size catches an OOM here and retries the step.
+                    self._undo_low_rank_swap(group, p, full_rank_grad)
+                    raise
 
                 if "rank" in group:
-                    # Decay the pre-update weight BEFORE adding the update; only p._saved_data is touched,
-                    # so p.data still holds the low-rank update below.
+                    # Decay the pre-update weight BEFORE adding the update; only p._saved_data is touched.
                     if "_wd_saved" in group:
                         p._saved_data.add_(
                             p._saved_data,
@@ -226,8 +233,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
                         group["weight_decay"] = group["_wd_saved"]
                         del group["_wd_saved"]
 
-                    # project_back stays inline: a loop-local name outlives the iteration (+64 MiB).
-                    p.data = p._saved_data.add_(state["projector"].project_back(p.data))
+                    p.data = p._saved_data.add_(update)
+                    # A loop-local name outlives the iteration (+64 MiB).
+                    del update
                     p.grad = full_rank_grad
                     del p._saved_data
 
@@ -249,6 +257,18 @@ class QGaLoreAdamW8bit(Optimizer2State):
         return loss
 
     @staticmethod
+    def _undo_low_rank_swap(group: dict, p: torch.Tensor, full_rank_grad) -> None:
+        """Put back the weight, gradient and weight decay a failed low-rank step swapped out, so a
+        retried step does not train zeroed weights with weight decay off."""
+        if "_wd_saved" in group:
+            group["weight_decay"] = group.pop("_wd_saved")
+        saved = getattr(p, "_saved_data", None)
+        if saved is not None:
+            p.data = saved
+            del p._saved_data
+        p.grad = full_rank_grad
+
+    @staticmethod
     def _has_weight_quant(p: torch.Tensor, group: dict) -> bool:
         """Check if this parameter uses INT8 weight quantization."""
         return (
@@ -263,14 +283,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
         group_size: int = 128,
         stochastic: bool = True,
     ) -> None:
-        """Tag parameters for INT8 weight quantization.
-
-        This marks eligible weights with quantization metadata so that
-        the optimizer knows to quantize/dequantize them during ``step()``.
-        **Weights are NOT converted to uint8 here** — they remain in float
-        so that the first forward/backward pass runs correctly.  The actual
-        quantization happens at the end of the first ``step()`` call.
-        """
+        """Tag INT8-eligible weights; they stay float until the first step() quantizes them, so the
+        first forward and backward pass runs correctly."""
         weight_quant_params = set()
         for group in param_groups:
             if group.get("weight_quant", False):
@@ -334,10 +348,7 @@ def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
-    """Register forward and checkpoint hooks for INT8-quantized weights.
-
-    Returns a list of hook handles so the caller can remove them if needed.
-    """
+    """Register forward and checkpoint hooks for INT8 weights; returns handles to remove them later."""
     handles = [
         model.register_forward_pre_hook(
             _weight_quant_model_pre_hook, prepend = True, with_kwargs = True

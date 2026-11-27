@@ -34,7 +34,10 @@ from utils.process_lifetime import (
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
+    SttContextSizeError,
+    SttIncompleteTranscriptionError,
     SttLoadCancelledError,
+    SttAudioDecodeError,
     SttModelBusyError,
     SttModelIdError,
     SttModelNotDownloadedError,
@@ -72,6 +75,8 @@ class MtmdSttModel:
     label: str
     # Qwen3-ASR emits "language English<asr_text>" before the transcript.
     transcript_marker: Optional[str] = None
+    # Audio tokens/s, prompt excluded so a cold Auto start never exceeds the counted size.
+    audio_tokens_per_second: float = 0.0
 
 
 # Every entry takes Qwen3-ASR's assistant-prefill language hint; see _post_transcribe before adding another family.
@@ -82,6 +87,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         label = "Qwen3-ASR 0.6B",
         transcript_marker = "<asr_text>",
+        audio_tokens_per_second = 13.0,
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-1.7B-GGUF",
@@ -89,6 +95,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
         label = "Qwen3-ASR 1.7B",
         transcript_marker = "<asr_text>",
+        audio_tokens_per_second = 13.0,
     ),
 }
 # Voxtral Mini answers audio instead of transcribing in chat mode; Parakeet and Nemotron lack llama.cpp text architectures.
@@ -97,8 +104,37 @@ _TRANSCRIBE_PROMPT = "Transcribe the audio."
 # Generous cap; it only stops a looping model before the request timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
-# Well under trained context, which must also hold the audio; llama-server keeps its default.
+# Output allowance is reserved alongside the measured audio/prompt tokens in Auto mode.
 _MAX_TRANSCRIPT_TOKENS = 16384
+_AUTO_CONTEXT_MIN = 4096
+_MAX_CONTEXT_LENGTH = 65536
+_CONTEXT_MARGIN = 64
+
+
+def _auto_start_size(hint: Optional[int]) -> int:
+    if type(hint) is int and _AUTO_CONTEXT_MIN < hint <= _MAX_CONTEXT_LENGTH and hint % 256 == 0:
+        return hint
+    return _AUTO_CONTEXT_MIN
+
+
+def _validate_context_length(value: Optional[int]) -> Optional[int]:
+    if value is not None and (
+        type(value) is not int
+        or (value != 0 and not (1024 <= value <= _MAX_CONTEXT_LENGTH and value % 256 == 0))
+    ):
+        raise SttContextSizeError(
+            "Voice context must be Auto (0) or a multiple of 256 from 1024 to 65536 tokens."
+        )
+    return value
+
+
+def _auto_context_length(input_tokens: int, output_tokens: int) -> int:
+    required = input_tokens + output_tokens + _CONTEXT_MARGIN
+    if required > _MAX_CONTEXT_LENGTH:
+        raise SttContextSizeError(
+            "This recording needs more than the model's 64K context. Split it into shorter recordings."
+        )
+    return max(_AUTO_CONTEXT_MIN, ((required + 4095) // 4096) * 4096)
 
 
 def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
@@ -107,6 +143,15 @@ def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
         return _MIN_TRANSCRIPT_TOKENS
     scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
     return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
+
+
+def _cold_start_context(model_id: str, audio_seconds: Optional[float]) -> int:
+    """Lower bound of the counted size: a short guess still resizes, never adds a start."""
+    audio_tokens = int((audio_seconds or 0) * MTMD_STT_MODELS[model_id].audio_tokens_per_second)
+    try:
+        return _auto_context_length(audio_tokens, _transcript_token_budget(audio_seconds))
+    except SttContextSizeError:
+        return _AUTO_CONTEXT_MIN
 
 
 _SERVER_START_TIMEOUT_SECONDS = 180.0
@@ -159,6 +204,25 @@ def ensure_engine_available() -> str:
             "Run `unsloth studio update` to install it."
         )
     return binary
+
+
+def _open_server_log(port: int):
+    """None on any error: logging must never block a load. Epoch first: the log list presorts by name."""
+    try:
+        from core.inference.llama_cpp import _swa_cache_path
+        from utils.log_retention import prune_log_dir
+
+        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+        log_dir.mkdir(parents = True, exist_ok = True)
+        path = log_dir / f"llama-{int(time.time())}-dictation-port-{port}.log"
+        # Append: a relaunch in the same second on the same port must not erase a crash log.
+        handle = open(path, "a", encoding = "utf-8")
+        prune_log_dir(log_dir, "llama-*.log", protect = path)
+        logger.info("dictation llama-server stdout/stderr -> %s", path)
+        return handle
+    except Exception as exc:  # noqa: BLE001 - best effort
+        logger.warning("Could not open the dictation llama-server log file: %s", exc)
+        return None
 
 
 def _reap(process: Optional[subprocess.Popen]) -> None:
@@ -217,11 +281,22 @@ def _cached_model_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both cached files, or None when either is missing."""
+    """Both cached files in *hub_cache* (default: the active cache, then search_other_locations), else None."""
     spec = MTMD_STT_MODELS[model_id]
-    from core.inference.stt_sidecar import _active_hf_hub_cache
+    if hub_cache is None:
+        from core.inference.model_cache_search import search_other_locations
+        from core.inference.stt_sidecar import _active_hf_hub_cache
 
-    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+        cached = _cached_model_paths(
+            model_id, hub_cache = Path(_active_hf_hub_cache()), revision = revision
+        )
+        if cached is not None:
+            return cached
+        return search_other_locations(
+            lambda listing: _location_candidates(spec, listing, revision),
+            lambda candidate: _location_hit(model_id, candidate, revision),
+        )
+    root = hub_cache
 
     def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
         model = _cached_file(
@@ -258,30 +333,64 @@ def _cached_model_paths(
     return None
 
 
+def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
+    model, mmproj = directory / spec.model_file, directory / spec.mmproj_file
+    try:
+        if model.is_file() and mmproj.is_file():
+            return str(model), str(mmproj)
+    except OSError:
+        pass
+    return None
+
+
+def _location_candidates(
+    spec: MtmdSttModel, listing, revision: Optional[str]
+) -> list[tuple[str, Path]]:
+    """Hub caches of the repo, then dirs holding both files; loose ones skip pinned revisions."""
+    found = [("cache", hub_cache) for hub_cache in listing.caches_holding(spec.repo)]
+    if revision is None:
+        found += [("loose", d) for d in listing.dirs_holding(spec.model_file, spec.mmproj_file)]
+    return found
+
+
+def _location_hit(
+    model_id: str, candidate: tuple[str, Path], revision: Optional[str]
+) -> Optional[tuple[str, str]]:
+    kind, directory = candidate
+    if kind == "cache":
+        return _cached_model_paths(model_id, hub_cache = directory, revision = revision)
+    return _pair_in(directory, MTMD_STT_MODELS[model_id])
+
+
 # The panel polls every 750ms and each probe stats the snapshot twice, so memoise briefly.
 _DOWNLOADED_PROBE_TTL_SECONDS = 2.0
 _downloaded_probe_lock = threading.Lock()
-_downloaded_probe: dict[str, tuple[float, bool]] = {}
+# Keyed by (model id, account): a copy in one account's custom folder is not another account's download.
+_downloaded_probe: dict[tuple[str, str], tuple[float, bool]] = {}
 # Bumped on every invalidation so an in-flight probe cannot overwrite a cleared entry.
 _downloaded_probe_generation = 0
 
 
 def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
-    """Drop memoised answers, for one model or all of them."""
+    """Drop memoised answers, for one model (every account) or all of them."""
     global _downloaded_probe_generation
     with _downloaded_probe_lock:
         _downloaded_probe_generation += 1
         if model_id is None:
             _downloaded_probe.clear()
         else:
-            _downloaded_probe.pop(model_id, None)
+            for key in [key for key in _downloaded_probe if key[0] == model_id]:
+                del _downloaded_probe[key]
 
 
 def is_model_downloaded(model_id: str) -> bool:
     if model_id not in MTMD_STT_MODELS:
         return False
+    from core.inference.model_cache_search import account_scope
+
+    key = (model_id, account_scope())
     with _downloaded_probe_lock:
-        cached = _downloaded_probe.get(model_id)
+        cached = _downloaded_probe.get(key)
         if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
             return cached[1]
         generation = _downloaded_probe_generation
@@ -289,7 +398,7 @@ def is_model_downloaded(model_id: str) -> bool:
     with _downloaded_probe_lock:
         # Timestamp now, not before the probe: a slow cache would store a near-expired entry.
         if generation == _downloaded_probe_generation:
-            _downloaded_probe[model_id] = (time.monotonic(), downloaded)
+            _downloaded_probe[key] = (time.monotonic(), downloaded)
     return downloaded
 
 
@@ -658,6 +767,8 @@ class MtmdSttSidecar:
         self._generation = 0
         # Transcription runs outside _lock; the idle timer stays disarmed while requests are in flight.
         self._active_requests = 0
+        self._context_length = 0
+        self._context_preference = 0  # 0 is Auto; a positive value is a hard limit.
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -668,6 +779,14 @@ class MtmdSttSidecar:
     def device(self) -> Optional[str]:
         # derived, not a second probe: two probes can straddle the publish and report a device with no model
         return "llama.cpp" if self.loaded_model else None
+
+    @property
+    def context_length(self) -> Optional[int]:
+        return self._context_length if self.loaded_model else None
+
+    @property
+    def context_length_preference(self) -> int:
+        return self._context_preference
 
     def is_loading(self) -> bool:
         # Bare bool read, for the same reason as loaded_model.
@@ -698,7 +817,7 @@ class MtmdSttSidecar:
 
     def _idle_unload(self, generation: int) -> None:
         with self._lock:
-            if generation != self._generation:
+            if generation != self._generation or self._active_requests:
                 return
             self._release_locked()
 
@@ -715,6 +834,8 @@ class MtmdSttSidecar:
             self._api_key = None
             self._model_id = None
             self._binary_path_revision = None
+            self._context_length = 0
+            self._context_preference = 0
 
     def _drain_active_requests(self, deadline: float) -> None:
         """Must not hold _lock: transcribe claims _active_requests under it, so the wait would block
@@ -850,11 +971,13 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
+        *,
+        context_length: Optional[int] = None,
+        auto_start_context: Optional[int] = None,
     ) -> None:
         """``device`` is the user's audio device preference; ``cpu`` starts
         llama-server at ``-ngl 0``, the same offload training already forces."""
-        from core.inference.audio_device import audio_device_forces_cpu
-
+        _validate_context_length(context_length)
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
@@ -874,6 +997,8 @@ class MtmdSttSidecar:
                 request_cancel_event,
                 path_revision = path_revision,
                 device = device,
+                context_length = context_length,
+                auto_start_context = auto_start_context,
             )
 
     def _load_locked(
@@ -884,6 +1009,10 @@ class MtmdSttSidecar:
         *,
         path_revision: Optional[int] = None,
         device: Optional[str] = None,
+        context_length: Optional[int] = None,
+        auto_start_context: Optional[int] = None,
+        _context_size: Optional[int] = None,
+        _active_request: bool = False,
     ) -> None:
         from core.inference.audio_device import stt_device_forces_cpu
 
@@ -891,6 +1020,24 @@ class MtmdSttSidecar:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
             path_revision = custom_llama_cpp_path_revision()
         with self._lock:
+            preference = (
+                self._context_preference
+                if context_length is None and self._process_alive()
+                else (context_length or 0)
+            )
+            # A preload in Auto keeps the warm window. The actual recording sizes it after counting.
+            context_size = (
+                _context_size
+                or preference
+                or (
+                    self._context_length
+                    if self._process_alive()
+                    and self._model_id == model_id
+                    and self._context_preference == 0
+                    else _auto_start_size(auto_start_context)
+                )
+            )
+            other_requests = self._active_requests - int(_active_request)
             # None is no opinion: a caller sending none cannot move the server.
             if device is None:
                 forced_cpu = (
@@ -905,8 +1052,16 @@ class MtmdSttSidecar:
                 and self._model_id == model_id
                 and self._binary_path_revision == path_revision
             ):
+                if other_requests > 0 and preference != self._context_preference:
+                    raise SttModelBusyError(
+                        "A transcription is using the current voice context. "
+                        "Retry after it finishes to change the context setting."
+                    )
                 # Never restart a busy server just to move it back to the GPU; the next idle load does it.
-                if self._gpu_disabled == training or self._active_requests:
+                if self._context_length == context_size and (
+                    self._gpu_disabled == training or other_requests > 0
+                ):
+                    self._context_preference = preference
                     # Recorded though nothing restarts: dropping it sends the next device-less load to the GPU.
                     self._forced_cpu = forced_cpu
                     self._schedule_idle_unload_locked()
@@ -925,7 +1080,7 @@ class MtmdSttSidecar:
                 # Before the release: a 409 for an undownloaded model must not cost the current server.
                 model_path, mmproj_path = self._ensure_model_downloaded(model_id)
                 # Only guard a live server: a request against one that already died must not block recovery.
-                if self._active_requests and self._process_alive():
+                if other_requests > 0 and self._process_alive():
                     raise SttModelBusyError(
                         "A transcription is still running on the current dictation model. "
                         "Try again in a moment."
@@ -955,6 +1110,9 @@ class MtmdSttSidecar:
                 # one short request at a time, so one slot keeps the footprint down next to a loaded chat model
                 "--parallel",
                 "1",
+                # Explicit so the voice model cannot inherit a chat-sized cache.
+                "--ctx-size",
+                str(context_size),
                 # keep off the accelerator during training so a dictation load cannot reclaim VRAM training just freed
                 "-ngl",
                 "0" if training else "99",
@@ -985,18 +1143,22 @@ class MtmdSttSidecar:
                 key_argv, key_env, key_file = _llama_server_key_launch(api_key)
                 # Right after the binary: --no-mmproj-offload has to stay last.
                 cmd[1:1] = key_argv
-            process = subprocess.Popen(
-                cmd,
-                # An undrained pipe blocks llama-server once its log output fills the buffer.
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                stdin = subprocess.DEVNULL,
-                # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
-                # the same binary
-                env = {**_llama_server_child_env(binary), **key_env},
-                # Die with Unsloth, so a crash never orphans a server on the GPU.
-                **child_popen_kwargs(),
-            )
+            # A file, never a pipe: an undrained pipe blocks llama-server once its output fills the buffer.
+            log_handle = _open_server_log(port)
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout = log_handle if log_handle is not None else subprocess.DEVNULL,
+                    stderr = subprocess.STDOUT if log_handle is not None else subprocess.DEVNULL,
+                    stdin = subprocess.DEVNULL,
+                    # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
+                    env = {**_llama_server_child_env(binary), **key_env},
+                    # Die with Unsloth, so a crash never orphans a server on the GPU.
+                    **child_popen_kwargs(),
+                )
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
             # Published before the wait so training can preempt a startup that is already allocating.
             with self._lock:
                 self._starting_process = process
@@ -1014,8 +1176,7 @@ class MtmdSttSidecar:
                     with suppress(OSError):
                         key_file.unlink()
             if not ready:
-                # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
-                # keeps port and VRAM.
+                # Reap here: _process is unset, so unload() misses a child ignoring SIGTERM.
                 _reap(process)
                 if cancel_event.is_set():
                     # 409 via the route, like other sidecars: expected preemption, not a broken or missing runtime (501).
@@ -1023,11 +1184,27 @@ class MtmdSttSidecar:
                         "Dictation model loading was cancelled so training could start."
                     )
                 raise SttUnavailableError(f"llama-server did not become ready for '{model_id}'.")
+            try:
+                actual_context = self._read_server_context(port, api_key, cancel_event = cancel_event)
+                if actual_context != context_size:
+                    raise SttContextSizeError(
+                        f"The voice runtime loaded {actual_context} context tokens instead of "
+                        f"{context_size}. Choose a supported context size or update the runtime."
+                    )
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
+            except Exception as exc:
+                _reap(process)
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.") from exc
+                raise
             with self._lock:
                 self._process = process
                 self._port = port
                 self._api_key = api_key
                 self._model_id = model_id
+                self._context_length = actual_context
+                self._context_preference = preference
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
                 self._forced_cpu = forced_cpu
@@ -1073,6 +1250,10 @@ class MtmdSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
+        *,
+        context_length: Optional[int] = None,
+        prompt: Optional[str] = None,
+        decoded_audio = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1085,12 +1266,22 @@ class MtmdSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard: load() already pins the server to CPU while training runs.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if decoded_audio is None:
+            decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
+        # llama-server aborts (mtmd GGML_ASSERT) on a one-sample clip.
+        if len(decoded_audio) < _TARGET_SAMPLE_RATE // 1000:
+            raise SttAudioDecodeError("Audio is too short (min 1 ms).")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        self.load(model_id, request_cancel_event = cancel_event)
+        start_context = 0 if context_length else _cold_start_context(model_id, audio_seconds)
+        self.load(
+            model_id,
+            request_cancel_event = cancel_event,
+            **({"context_length": context_length} if context_length is not None else {}),
+            **({"auto_start_context": start_context} if start_context > _AUTO_CONTEXT_MIN else {}),
+        )
         with self._lock:
             port = self._port
             api_key = self._api_key
@@ -1102,11 +1293,52 @@ class MtmdSttSidecar:
                     "The dictation model changed while this recording was being "
                     "prepared. Try again."
                 )
-            # Disarm the idle timer: long audio can outlast the keep-alive.
+            if context_length is not None and self._context_preference != context_length:
+                raise SttModelBusyError(
+                    "The voice context changed while this recording was being prepared. Try again."
+                )
+            preference = self._context_preference if context_length is None else context_length
+            generation = self._generation
+            # Counting is part of the request: it must also keep the process resident.
             self._active_requests += 1
             self._cancel_idle_unload_locked()
         try:
-            # Outside the lock so unload (including training's) is not blocked for the whole request.
+            payload, _ = _transcription_payload(wav_bytes, audio_seconds, language, prompt)
+            input_tokens = self._count_prompt_tokens(
+                port, payload, cancel_event = cancel_event, api_key = api_key
+            )
+            with self._lock:
+                self._check_request_server(model_id, generation)
+            if preference == 0:
+                # Older supported runtimes cannot measure audio tokens. Preserve their full
+                # context rather than guess a smaller window or break default API requests.
+                required_context = (
+                    _MAX_CONTEXT_LENGTH
+                    if input_tokens is None
+                    else _auto_context_length(input_tokens, payload["max_tokens"])
+                )
+                if input_tokens is None and self.context_length != required_context:
+                    logger.info(
+                        "Voice runtime has no audio token counter; Auto uses the full 64K context. "
+                        "Choose a fixed voice context to reduce memory, or update llama.cpp."
+                    )
+                self._resize_for_request(model_id, generation, required_context, cancel_event)
+            with self._lock:
+                # A resize changes both the port and its per-launch key.
+                if self._model_id != model_id or not self._process_alive():
+                    raise SttModelBusyError("The voice model changed. Try this recording again.")
+                port, api_key = self._port, self._api_key
+                capacity = self._context_length
+                if preference and capacity != preference:
+                    raise SttModelBusyError("The voice context changed. Try this recording again.")
+            available = capacity - (input_tokens or 0) - _CONTEXT_MARGIN
+            if available <= 0:
+                raise SttContextSizeError(
+                    f"This recording does not fit the selected {capacity}-token voice context. "
+                    "Choose Auto or a larger context, or use a shorter recording."
+                )
+            payload["max_tokens"] = min(payload["max_tokens"], available)
+            # Outside the lock so unload (including training's) remains bounded.
             text = self._post_transcribe(
                 port,
                 model_id,
@@ -1114,6 +1346,7 @@ class MtmdSttSidecar:
                 audio_seconds,
                 language = language,
                 cancel_event = cancel_event,
+                payload = payload,
                 **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
             )
@@ -1134,6 +1367,156 @@ class MtmdSttSidecar:
             "model": model_id,
         }
 
+    def prepare_cold_start(
+        self,
+        audio: bytes,
+        model: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[tuple[Optional[int], object]]:
+        """None (old path, same errors in the same order) for a warm Auto server, undownloaded model or bad clip."""
+        try:
+            model_id = resolve_mtmd_model_id(model)
+            keeps_window = (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._context_preference == 0
+            )
+            if keeps_window or not is_model_downloaded(model_id):
+                return None
+            decoded = _decode_audio_bounded(audio, cancel_event)
+        except Exception:  # noqa: BLE001 - transcribe re-raises it after the load
+            return None
+        if len(decoded) < _TARGET_SAMPLE_RATE // 1000:
+            return None
+        start_context = _cold_start_context(model_id, len(decoded) / _TARGET_SAMPLE_RATE)
+        return (start_context if start_context > _AUTO_CONTEXT_MIN else None), decoded
+
+    def _check_request_server(self, model_id: str, generation: int) -> None:
+        if (
+            not self._process_alive()
+            or self._model_id != model_id
+            or self._generation != generation
+        ):
+            raise SttModelBusyError(
+                "The voice model changed while preparing this recording. Try again."
+            )
+
+    def _resize_for_request(
+        self,
+        model_id: str,
+        generation: int,
+        context_size: int,
+        cancel_event: Optional[threading.Event],
+    ) -> None:
+        # Only the preparing request may replace its own server. Other transcriptions
+        # can keep using a large enough window, but must never be killed by a resize.
+        while not self._start_lock.acquire(timeout = 0.05):
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            self._raise_if_update_in_progress()
+            with self._lock:
+                self._check_request_server(model_id, generation)
+                if self._context_length == context_size:
+                    return
+                if self._active_requests > 1:
+                    if self._context_length >= context_size:
+                        return
+                    raise SttModelBusyError(
+                        "Another transcription is using the voice model. Retry when it finishes "
+                        "so this recording can load a larger context."
+                    )
+            self._load_locked(
+                model_id,
+                ensure_engine_available(),
+                cancel_event,
+                context_length = 0,
+                _context_size = context_size,
+                _active_request = True,
+            )
+        finally:
+            self._start_lock.release()
+
+    @staticmethod
+    def _server_json(
+        port: int,
+        path: str,
+        payload: Optional[dict] = None,
+        *,
+        api_key: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> tuple[int, dict]:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout = 60)
+        done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, done),
+                daemon = True,
+            ).start()
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            connection.request(
+                "GET" if payload is None else "POST",
+                path,
+                body = None if payload is None else json.dumps(payload).encode("utf-8"),
+                headers = {
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
+            )
+            with connection.getresponse() as response:
+                raw = response.read()
+                try:
+                    body = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    body = {}
+                return response.status, body if isinstance(body, dict) else {}
+        finally:
+            done.set()
+            connection.close()
+
+    @classmethod
+    def _read_server_context(
+        cls,
+        port: int,
+        api_key: Optional[str] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> int:
+        status, body = cls._server_json(port, "/props", api_key = api_key, cancel_event = cancel_event)
+        settings = body.get("default_generation_settings") or {}
+        value = settings.get("n_ctx") if isinstance(settings, dict) else None
+        if status != 200 or type(value) is not int or value <= 0:
+            raise SttUnavailableError("Could not verify the voice runtime's context size.")
+        return value
+
+    @classmethod
+    def _count_prompt_tokens(
+        cls,
+        port: int,
+        payload: dict,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        api_key: Optional[str] = None,
+    ) -> Optional[int]:
+        status, body = cls._server_json(
+            port,
+            "/v1/chat/completions/input_tokens",
+            payload,
+            api_key = api_key,
+            cancel_event = cancel_event,
+        )
+        if status in (404, 405, 501):
+            return None
+        count = body.get("input_tokens")
+        if status != 200 or type(count) is not int or count <= 0:
+            raise SttUnavailableError("The voice runtime could not count this recording's tokens.")
+        return count
+
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
@@ -1150,35 +1533,15 @@ class MtmdSttSidecar:
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
         api_key: Optional[str] = None,
+        payload: Optional[dict] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
-        payload = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": base64.b64encode(wav_bytes).decode("ascii"),
-                                "format": "wav",
-                            },
-                        },
-                        {"type": "text", "text": _TRANSCRIBE_PROMPT},
-                    ],
-                }
-            ],
-            # Greedy: a transcript, not a sampled paraphrase.
-            "temperature": 0,
-            "max_tokens": _transcript_token_budget(audio_seconds),
-        }
-        forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
-        assistant_prefix = ""
-        if forced_language:
-            assistant_prefix = f"language {forced_language}<asr_text>"
-            payload["messages"].append({"role": "assistant", "content": assistant_prefix})
-            # Explicit, so a server-wide --no-prefill-assistant cannot close the prefix as a finished turn.
-            payload.update({"continue_final_message": True, "add_generation_prompt": False})
+        if payload is None:
+            payload, assistant_prefix = _transcription_payload(wav_bytes, audio_seconds, language)
+        else:
+            payload = dict(payload)
+            last = payload["messages"][-1]
+            assistant_prefix = last["content"] if last["role"] == "assistant" else ""
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
@@ -1224,6 +1587,7 @@ class MtmdSttSidecar:
                             )
                         choices = event.get("choices") or []
                         if choices:
+                            _check_transcription_finish(choices[0].get("finish_reason"))
                             finished = finished or choices[0].get("finish_reason") is not None
                             text += choices[0].get("delta", {}).get("content") or ""
                             if not spec.transcript_marker or spec.transcript_marker in text:
@@ -1237,6 +1601,15 @@ class MtmdSttSidecar:
                     return _clean_transcript(text, spec.transcript_marker)
                 response_body = response.read()
                 if not 200 <= response.status < 300:
+                    try:
+                        error = json.loads(response_body).get("error", {})
+                    except (ValueError, AttributeError):
+                        error = {}
+                    if isinstance(error, dict) and error.get("type") == "exceed_context_size_error":
+                        raise SttContextSizeError(
+                            "This recording exceeds the selected voice context. "
+                            "Choose Auto or a larger context, or use a shorter recording."
+                        )
                     raise RuntimeError(
                         f"MTMD transcription server returned HTTP {response.status}."
                     )
@@ -1245,8 +1618,58 @@ class MtmdSttSidecar:
             cancel_done.set()
             connection.close()
         choices = body.get("choices") or []
+        if choices:
+            _check_transcription_finish(choices[0].get("finish_reason"))
         text = (choices[0].get("message", {}).get("content") or "") if choices else ""
         return _clean_transcript(text, spec.transcript_marker)
+
+
+def _transcription_payload(
+    wav_bytes: bytes,
+    audio_seconds: Optional[float],
+    language: Optional[str],
+    context: Optional[str] = None,
+) -> tuple[dict, str]:
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": base64.b64encode(wav_bytes).decode("ascii"),
+                            "format": "wav",
+                        },
+                    },
+                    {"type": "text", "text": _TRANSCRIBE_PROMPT},
+                ],
+            }
+        ],
+        # Greedy: a transcript, not a sampled paraphrase.
+        "temperature": 0,
+        "max_tokens": _transcript_token_budget(audio_seconds),
+    }
+    context = (context or "").strip()
+    if context:
+        # Qwen3-ASR reads its context (background text that biases recognition) from the system turn.
+        payload["messages"].insert(0, {"role": "system", "content": context})
+    forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
+    assistant_prefix = ""
+    if forced_language:
+        assistant_prefix = f"language {forced_language}<asr_text>"
+        payload["messages"].append({"role": "assistant", "content": assistant_prefix})
+        # Explicit, so a server-wide --no-prefill-assistant cannot close the prefix as a finished turn.
+        payload.update({"continue_final_message": True, "add_generation_prompt": False})
+    return payload, assistant_prefix
+
+
+def _check_transcription_finish(reason: Optional[str]) -> None:
+    if reason == "length":
+        raise SttIncompleteTranscriptionError(
+            "Transcription stopped at a token limit and is incomplete. "
+            "Try a shorter recording, or Auto/a larger voice context if you selected a fixed size."
+        )
 
 
 def _clean_transcript(text: str, marker: Optional[str]) -> str:

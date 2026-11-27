@@ -89,6 +89,96 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
+# Same causal ``_padding`` + F.pad forward: Wan 2.x and the Qwen-Image VAE.
+_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d", "QwenImageCausalConv3d"})
+
+
+def _zero_buffer_causal_conv(
+    module: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
+    """``WanCausalConv3d.forward`` padding into a zero buffer: MPS F.pad leaks driver memory per call before torch
+    2.15 (pytorch#195368: 270 GiB over one Wan 2.2 decode)."""
+    import torch
+
+    padding = list(module._padding)
+    lead = None
+    if cache_x is not None and padding[4] > 0:
+        lead = cache_x.to(x.device)
+        padding[4] -= lead.shape[2]
+    if (
+        x.dim() != 5
+        or min(padding) < 0
+        or padding[5]
+        or (lead is not None and (lead.dim() != 5 or lead.dtype != x.dtype))
+    ):
+        return type(module).forward(module, x, cache_x)
+    left, right, top, bottom, front, _back = padding
+    lead_t = 0 if lead is None else lead.shape[2]
+    batch, channels, frames, height, width = x.shape
+    buffer = x.new_zeros(
+        (batch, channels, front + lead_t + frames, top + height + bottom, left + width + right)
+    )
+    rows, cols = slice(top, top + height), slice(left, left + width)
+    if lead is not None:
+        buffer[:, :, front : front + lead_t, rows, cols] = lead
+    buffer[:, :, front + lead_t :, rows, cols] = x
+    return torch.nn.Conv3d.forward(module, buffer)
+
+
+def _zero_buffer_qwen_conv(
+    module: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
+    """Qwen-Image VAE: the zero buffer only on one-frame, no-cache calls (the measured image path); multi-frame
+    and cached calls keep the stock forward, whose MPS numerics against the zero buffer are unmeasured."""
+    if cache_x is not None or x.dim() != 5 or x.shape[2] != 1:
+        return type(module).forward(module, x, cache_x)
+    return _zero_buffer_causal_conv(module, x, cache_x)
+
+
+_CAUSAL_PAD_FORWARDS = {"QwenImageCausalConv3d": _zero_buffer_qwen_conv}
+
+# MiniMax-H3's VAE conv (and the image VAE's copy of it): spatial F.pad, then the causal frames as a second F.pad.
+_H3_CAUSAL_CLASSES = frozenset({"MiniMaxH3VideoCausalConv3d", "MiniMaxH3ImageCausalConv3d"})
+
+
+def h3_causal_pad(x: Any, spatial: int, mode: str, front: int) -> Any:
+    """The H3 conv input: ``spatial`` pixels each side in ``mode``, then ``front`` zero frames concatenated ahead.
+    The same values as the stock frame-axis F.pad, which on MPS (torch 2.13) returns wrong data for a 5-D tensor:
+    max |diff| 3.1 against CPU on a [1, 64, 5, 256, 544] decoder activation, 99.8% of elements off."""
+    import torch
+    import torch.nn.functional as F
+
+    if spatial > 0:
+        x = F.pad(x, (spatial, spatial, spatial, spatial, 0, 0), mode = mode)
+    if front > 0:
+        x = torch.cat([x.new_zeros((*x.shape[:2], front, *x.shape[3:])), x], dim = 2)
+    return x
+
+
+def _cat_front_h3_conv(module: Any, hidden_states: Any) -> Any:
+    """``MiniMaxH3VideoCausalConv3d.forward`` with the causal zero frames concatenated instead of F.pad-ed."""
+    front = int(getattr(module, "temporal_padding", 0) or 0)
+    if front <= 0 or hidden_states.dim() != 5:
+        return type(module).forward(module, hidden_states)
+    import torch.nn.functional as F
+
+    padded = h3_causal_pad(
+        hidden_states, int(module.spatial_padding or 0), module.spatial_padding_mode, front
+    )
+    return F.conv3d(
+        padded,
+        module.weight,
+        module.bias,
+        stride = module.stride,
+        padding = 0,
+        dilation = module.dilation,
+    )
+
+
 def install_frame_pad_fix(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -104,18 +194,42 @@ def install_frame_pad_fix(
         if not callable(modules):
             continue
         for module in modules():
-            if type(module).__name__ not in _FRAME_PAD_CLASSES:
-                continue
             if getattr(module, "_unsloth_frame_pad_fix", False):
                 continue
-            module.register_forward_pre_hook(_prepend_zero_frames)
+            name = type(module).__name__
+            if name in _FRAME_PAD_CLASSES:
+                module.register_forward_pre_hook(_prepend_zero_frames)
+            elif (
+                name in _CAUSAL_PAD_CLASSES
+                and len(getattr(module, "_padding", ())) == 6
+                and "forward" not in module.__dict__
+            ):
+                forward = _CAUSAL_PAD_FORWARDS.get(name, _zero_buffer_causal_conv)
+                module.forward = types.MethodType(forward, module)
+            elif (
+                name in _H3_CAUSAL_CLASSES
+                and hasattr(module, "temporal_padding")
+                and hasattr(module, "spatial_padding_mode")
+                and "forward" not in module.__dict__
+            ):
+                module.forward = types.MethodType(_cat_front_h3_conv, module)
+            else:
+                continue
             module._unsloth_frame_pad_fix = True
             patched += 1
     if patched and logger is not None:
         logger.info(
-            "diffusion.vae_frame_pad: %d module(s) pad by concatenation (MPS pad defect)", patched
+            "diffusion.vae_frame_pad: %d module(s) pad by concatenation or into a zero buffer (MPS pad defects)",
+            patched,
         )
     return patched
+
+
+def mps_synchronize() -> None:
+    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
+    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    import torch
+    torch.zeros(1, device = "mps").cpu()
 
 
 def install_vae_sync(
@@ -124,11 +238,9 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder / encoder call (one per tile or latent frame).
-
-    Metal cannot reuse a buffer until the queued work holding it completes, so an unsynchronised
-    tile loop accumulates every call's intermediates; ``empty_cache`` cannot return them.
-    """
+    """Synchronise Metal after every VAE decoder or encoder call (one per tile or latent frame):
+    Metal cannot reuse a buffer until queued work holding it completes, and empty_cache cannot
+    return the intermediates."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -139,11 +251,10 @@ def install_vae_sync(
     ]
     if not modules:
         return False
-    import torch
 
     def _sync(_module, _args, _output) -> None:
         try:
-            torch.mps.synchronize()
+            mps_synchronize()
         except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
             pass
 
@@ -373,6 +484,22 @@ def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
     return sorted(dict.fromkeys(ordinals))
 
 
+def physical_gpu_id_for_ordinal(ordinal: Optional[int]) -> Optional[int]:
+    """The PHYSICAL GPU id (the UI's and ``gpu_ids``' index space) of torch ``ordinal``, the inverse of
+    :func:`resolve_selected_cuda_ordinals`: under ``CUDA_VISIBLE_DEVICES=1,0`` ordinal 0 is physical 1. None when the
+    ordinal is unknown or the mask cannot be read as numeric ids; never raises (status reads it)."""
+    if ordinal is None:
+        return None
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        index = int(ordinal)
+        return int(visible[index]) if 0 <= index < len(visible) else None
+    except Exception:  # noqa: BLE001 -- an unreadable mask names no card
+        return None
+
+
 _UNPLANNED = object()
 # Set by an auto-switch for its locality check and the load it starts (both copy this context), so free VRAM
 # moving in between cannot rank the load onto a card whose precision picks an artifact the check never saw.
@@ -488,6 +615,33 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     return 0
 
 
+_SMI_ROWS: ContextVar[Optional[dict]] = ContextVar("unsloth_diffusion_smi_rows", default = None)
+
+
+@contextmanager
+def smi_rows_snapshot():
+    """smi_free_total_mib and smi_util_pct share one nvidia-smi reading inside this block; failures are not cached."""
+    token = _SMI_ROWS.set({})
+    try:
+        yield
+    finally:
+        _SMI_ROWS.reset(token)
+
+
+def _smi_rows(hw: Any) -> Optional[dict]:
+    spec = hw._get_parent_visible_gpu_spec()
+    memo = _SMI_ROWS.get()
+    if memo is None:
+        return hw._smi_visible_utilization(spec)
+    key = repr(spec)
+    if key not in memo:
+        result = hw._smi_visible_utilization(spec)
+        if result is None:
+            return None
+        memo[key] = result
+    return memo[key]
+
+
 def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
     on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
@@ -511,7 +665,7 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
         mig = hw._nvidia_mig_gpu_indices_or_none()
         if mig is None or index in mig:
             return None, None
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") != index:
                 continue
@@ -536,7 +690,7 @@ def smi_util_pct(ordinal: int) -> Optional[float]:
         if not 0 <= int(ordinal) < len(visible):
             return None
         index = visible[int(ordinal)]
-        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        result = _smi_rows(hw)
         for device in (result or {}).get("devices", []):
             if device.get("index") == index:
                 util = device.get("gpu_utilization_pct")
@@ -728,6 +882,47 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
     return _mps_or_cpu_target(torch)
 
 
+def diffusion_target_is_cpu() -> bool:
+    """``resolve_diffusion_device_target().backend == "cpu"`` without its dtype probes, which initialise CUDA / MPS in
+    the server: a status poll asks this. Never raises; an unreadable probe reads as not cpu."""
+    try:
+        import torch
+    except Exception:
+        return True
+    try:
+        try:
+            from utils.hardware import DeviceType, get_device
+            studio_device = get_device()
+        except Exception:
+            DeviceType = studio_device = None
+        if DeviceType is not None and studio_device is not None:
+            if _studio_device_is(studio_device, DeviceType, "CUDA"):
+                return not torch.cuda.is_available()
+            if _studio_device_is(studio_device, DeviceType, "XPU"):
+                return False
+        if torch.cuda.is_available():
+            return False
+        xpu = getattr(torch, "xpu", None)
+        if xpu is not None and callable(getattr(xpu, "is_available", None)):
+            try:
+                if xpu.is_available():
+                    return False
+            except Exception:
+                pass
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        try:
+            mps_available = bool(
+                mps_backend is not None
+                and callable(getattr(mps_backend, "is_available", None))
+                and mps_backend.is_available()
+            )
+        except Exception:
+            mps_available = False
+        return not mps_available
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def diffusion_device_target_from_torch_device(
     torch_device: str, dtype: Any
 ) -> DiffusionDeviceTarget:
@@ -756,6 +951,11 @@ def diffusion_device_target_from_torch_device(
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
+        try:
+            import torch
+            xpu = getattr(torch, "xpu", None)
+        except Exception:
+            xpu = None
         return DiffusionDeviceTarget(
             device = "xpu",
             dtype = dtype,
@@ -764,6 +964,10 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            # float64_device() (VAE tiling blend weights) comes through here, not _xpu_target.
+            supports_float64 = _xpu_has_fp64(xpu, int(index) if index.isdigit() else None)
+            if xpu is not None
+            else True,
         )
     if device == "mps":
         return DiffusionDeviceTarget(
@@ -832,6 +1036,21 @@ def _cuda_or_rocm_target(
     )
 
 
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
+XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
+    """True when the probe is off or unanswerable."""
+    if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    try:
+        idx = xpu.current_device() if index is None else index
+        return bool(getattr(xpu.get_device_properties(idx), "has_fp64", True))
+    except Exception:
+        return True
+
+
 def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     bf16_ok = False
     xpu = getattr(torch, "xpu", None)
@@ -847,6 +1066,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
+        supports_float64 = _xpu_has_fp64(xpu) if xpu is not None else True,
     )
 
 
@@ -871,13 +1091,10 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
-    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
-    missing (no cap: the caller keeps the unbounded allocator).
-
-    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
-    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
-    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    """Ratio capping Metal allocations at RAM minus an OS reserve, never below the recommended
+    working set; None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0
+    removes the limit; a finite cap raises an out-of-memory RuntimeError that batch backoff and
+    VAE tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)
@@ -971,6 +1188,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_float64 = False,
         )
     return _cpu_target(torch)
+
+
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread. An explicit
+    OMP_NUM_THREADS / MKL_NUM_THREADS (torch sizes its intra-op pool from them) is kept, as configure_cpu_threads does."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    if any(os.environ.get(name, "").strip() for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")):
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:

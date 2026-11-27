@@ -17,7 +17,12 @@ from typing import Any, Callable, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
-from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
+from .diffusion_native_quant import (
+    int8_act_disabled,
+    int8_act_requested,
+    is_native_linear,
+    rocm_rdna_w8a8_ready,
+)
 from .diffusion_nvfp4_flag import (
     nvfp4_blocked,
     nvfp4_diffusion_enabled,
@@ -208,9 +213,11 @@ def quantize_streamed_weight_only(
     family: Optional[str],
     *,
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
+    device: Any = None,
     logger: Any = None,
 ) -> tuple[str, ...]:
     """Quantise the still-dense Linears named by ``streamed_weight_only_tokens_for_scheme``; returns their fqns.
+    Host-placed Linears are quantised on CUDA ``device`` and moved back.
     Weight-only (default): the timestep-embedding outlier channels stay dense beside the int8 codes and the fused GEMV
     runs them (``diffusion_int8_gemv``). An artifact loaded with them already weight-only only gets the GEMV forward.
     Best effort: any failure leaves them dense (the build is still valid, only bigger)."""
@@ -244,9 +251,6 @@ def quantize_streamed_weight_only(
             if mode == "wo"
             else ()
         )
-        if outliers:
-            modules = dict(transformer.named_modules())
-            used = min(split_outliers_(modules[name], outliers) for name in names)
         if mode == "w8a8rot":
             from .diffusion_convrot import DEFAULT_CONVROT_GROUPSIZE, rotate_linears_
             rotate_linears_(
@@ -257,7 +261,21 @@ def quantize_streamed_weight_only(
                     if transformer.get_submodule(n).in_features % DEFAULT_CONVROT_GROUPSIZE == 0
                 ],
             )
-        quantize_(transformer, config, filter_fn = lambda _m, fqn = "": fqn in wanted)
+        modules = dict(transformer.named_modules())
+        splits: list = []
+
+        def _split_and_quantize(module: Any) -> None:
+            if outliers:
+                splits.append(split_outliers_(module, outliers))
+            quantize_(module, config)
+
+        _hop_each(
+            [modules[name] for name in names if name in wanted],
+            _hop_device(device),
+            _split_and_quantize,
+        )
+        if outliers:
+            used = min(splits)
         if mode == "wo":
             install(transformer, names, logger = logger)
         else:
@@ -363,6 +381,10 @@ _INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
     name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.default_on
 )
 
+_INT8_FAMILY_CONVROT_HOSTED_PLAIN: frozenset[str] = frozenset(
+    name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.hosted_plain
+)
+
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 
@@ -375,6 +397,14 @@ def int8_convrot_enabled(family: Optional[str] = None) -> bool:
     if raw in ("0", "off", "false", "no"):
         return False
     return str(family or "").strip().lower() in _INT8_FAMILY_CONVROT_DEFAULT_ON
+
+
+def convrot_drops_plain_hosted(scheme: str, family: Optional[str] = None) -> bool:
+    """True when an int8 load must skip the family's unrotated hosted files (``ConvRotSpec.hosted_plain``)."""
+    if scheme != TQ_INT8:
+        return False
+    key = str(family or "").strip().lower()
+    return key in _INT8_FAMILY_CONVROT_HOSTED_PLAIN and int8_convrot_enabled(key)
 
 
 def convrot_spec_for_scheme(
@@ -584,7 +614,7 @@ def divisible_for_scheme(scheme: str) -> int:
 
 
 # int8 leads: full-rate on consumer cards (which halve fp8 FP32 accumulate).
-# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``.
+# nvfp4 reaches auto only via ``_FAMILY_AUTO_PREFER``. sm_103 reorders its rung: ``_sm103_order``.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     (
         (10, 0),
@@ -593,6 +623,54 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
     ((8, 9), (TQ_INT8, TQ_FP8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
+# Blackwell Ultra (B300 / GB300) only, matched exactly: its tensor cores drop nearly all dense INT8 throughput
+# (datasheet 307 TOPS INT8 vs 9 PFLOPS FP8, sparse). Other caps (sm_101 / sm_107 / sm_110 / sm_12x) keep the ladder.
+_SM103_CAP = (10, 3)
+# FP8 first changes the output, so it applies only where fp8 passed the accuracy gate against bf16 (B200, LPIPS mean
+# <= 0.25 with the SSIM / CLIP bars; outputs/prequant_gate): flux.1 schnell / dev / krea-dev, both FLUX.2s, Z-Image,
+# Krea 2, Lumina 2, Qwen-Image with the activation floor (28/28), FLUX.3 Klein 0.033 (keep-list, 11 cases),
+# Wan2.2-TI2V-5B 0.17. Every other family (unmeasured, or fp8 over the bar) keeps the sm_100 int8-first order.
+_SM103_FP8_FIRST_FAMILIES = frozenset(
+    {
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "z-image",
+        "krea-2",
+        "lumina-2",
+        "qwen-image",
+        "wan2.2-ti2v-5b",
+    }
+)
+# Of those, the families with an MXFP8 row on record (same gate): flux.1 schnell 0.160, FLUX.2 Klein 0.091,
+# FLUX.2-dev 0.106, Z-Image 0.149, Krea 2 0.170, FLUX.3 Klein 0.024. Only they try mxfp8 before int8 when fp8 fails.
+_SM103_MXFP8_BEFORE_INT8_FAMILIES = frozenset(
+    {
+        "flux.1",
+        "flux.2-klein",
+        "flux.2-dev",
+        "flux.3-klein",
+        "flux.3-klein-base",
+        "z-image",
+        "krea-2",
+    }
+)
+
+
+def _sm103_order(order: list[str], family_key: str) -> list[str]:
+    """``order`` for an FP8-first family on sm_103: fp8, then nvfp4 (a gated head), then int8 and mxfp8, with mxfp8
+    ahead of int8 only for a family whose mxfp8 output is on record. Anything else keeps its place after them."""
+    mxfp8_first = family_key in _SM103_MXFP8_BEFORE_INT8_FAMILIES
+    rank = {
+        TQ_FP8: 0,
+        TQ_NVFP4: 1,
+        TQ_MXFP8: 2 if mxfp8_first else 3,
+        TQ_INT8: 3 if mxfp8_first else 2,
+    }
+    return sorted(order, key = lambda scheme: rank.get(scheme, 4))
+
 
 # Families whose activation ranges break specific schemes at the MODEL level (``FamilyProfile.scheme_deny``; the smoke
 # probe only proves the GEMM runs). The deny also applies to an EXPLICIT request; a passing NVFP4 gate record lifts an
@@ -606,8 +684,7 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quan
 _FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
 
 
-# AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
-# INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
+# AUTO keeps bf16 while it fits (image AUTO rule in diffusion_families); INT8 when bf16 would offload.
 _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
     "auto_bf16_when_resident", quant = True
 )
@@ -615,6 +692,27 @@ _FAMILY_AUTO_BF16_WHEN_RESIDENT: dict[str, str] = _profile_table(
 
 def auto_bf16_when_resident_reason(family: Optional[str]) -> Optional[str]:
     return _FAMILY_AUTO_BF16_WHEN_RESIDENT.get(str(family or "").strip().lower())
+
+
+# Hosted-checkpoint auto order: int8 from Turing up (``torch._int_mm`` has no capability gate), then fp8, then bf16.
+_HOSTED_AUTO_FLOORS: tuple[tuple[str, tuple[int, int]], ...] = (
+    (TQ_INT8, (7, 5)),
+    (TQ_FP8, (8, 9)),
+)
+
+
+def hosted_auto_scheme_order(
+    family: Optional[str], cap: Optional[tuple[int, int]]
+) -> tuple[str, ...]:
+    """Hosted schemes auto tries for ``family`` at ``cap``, best first; () means bf16. Deny / auto-skip tables apply."""
+    if cap is None:
+        return ()
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
+    return tuple(
+        scheme
+        for scheme, floor in _HOSTED_AUTO_FLOORS
+        if tuple(cap) >= floor and scheme not in skip and not _family_denied(family, scheme)
+    )
 
 
 # Schemes denied for TRAINING on top of the inference table (``FamilyProfile.train_scheme_deny``): the inference
@@ -777,6 +875,202 @@ def explain_unusable_scheme(
             "is a package/version problem, not a limit of the GPU"
         )
     return f"'{scheme}' is not usable for family '{family}' on this GPU"
+
+
+def _precision_card_key(device: Any, ordinal: Optional[int]) -> Optional[str]:
+    """The smoke-cache card key for ``device`` WITHOUT initialising CUDA; None when it cannot be told."""
+    if device is None:
+        return None
+    device = str(device)
+    if device != "cuda":
+        return device
+    if ordinal is not None:
+        return f"cuda:{ordinal}"
+    torch = _sys.modules.get("torch")
+    try:
+        if torch is not None and torch.cuda.is_initialized():
+            return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001 -- an unreadable index reads no probe verdict
+        pass
+    return None
+
+
+_PRECISION_PERSISTED_TABLES: dict[str, Optional[dict[str, bool]]] = {}
+
+
+def _probed_unusable(scheme: str, card: Optional[str]) -> bool:
+    """A recorded smoke-probe failure for ``scheme`` on ``card`` (this process, else the persisted table)."""
+    if card is None:
+        return False
+    cached = _SMOKE_CACHE.get((scheme, card))
+    if cached is not None:
+        return cached is False
+    # Read once per card: status polls this, and a later probe lands in ``_SMOKE_CACHE``, which wins above.
+    if card not in _PRECISION_PERSISTED_TABLES:
+        _PRECISION_PERSISTED_TABLES[card] = _persisted_probe_table(card)
+    table = _PRECISION_PERSISTED_TABLES[card]
+    return isinstance(table, dict) and table.get(scheme) is False
+
+
+def _denied_precision_reason(family: Optional[str], scheme: str, base_repo: Optional[str]) -> str:
+    """``explain_unusable_scheme``'s family-deny text, short enough for a dropdown, measured numbers kept."""
+    if scheme == TQ_NVFP4:
+        failure = _nvfp4_gate_failure(family)
+        if failure is not None:
+            return f"Measured and failed the NVFP4 accuracy gate for this model: {failure}"
+        return "No NVFP4 accuracy-gate record covers this model yet, so NVFP4 is not offered for it"
+    return (
+        f"{scheme.upper()} is ruled out for this model by the measured accuracy gate (black frames or "
+        "below the quality bar), whatever the GPU"
+    )
+
+
+def torchao_probe_governs(
+    scheme: str,
+    target: Any,
+    *,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
+    family: Optional[str] = None,
+) -> bool:
+    """Whether an explicit ``scheme`` on ``target`` stands or falls on the torchao smoke probe. False when the load
+    could take a native path that skips the probe, mirroring the image and video precision checks: a ROCm / stubbed
+    torchao / MPS host, the fp16 Turing linears, or native INT8 under offload (``offload`` None = not known, counted
+    as possible). No target, or an unanswerable host check, also reads False, so a probe verdict is never applied to a
+    load that would not run the probed kernels."""
+    if target is None:
+        return False
+    try:
+        if model_kind != "pipeline":
+            return True  # a GGUF pick reaches dense quant only through torchao
+        if scheme in NATIVE_QUANT_SCHEMES and not modular and native_quant_host(target):
+            return False
+        if fp16_card_native_host(target, scheme):
+            return False
+        if (
+            offload is not False
+            and scheme in NATIVE_OFFLOAD_SCHEMES
+            and native_offload_host(target)
+        ):
+            return False
+        if scheme == TQ_FP8 and str(family or "").strip().lower() == "minimax-h3":
+            # MiniMax-H3 runs its hosted fp8 codes stored where torchao's fp8 GEMM fails (the video precision check).
+            from .video_minimax_h3_native_quant import h3_hosted_fp8_storage_host
+            if h3_hosted_fp8_storage_host(target):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 -- see the docstring
+        return False
+
+
+def precision_target(device: Any, dtype: Any, ordinal: Optional[int]) -> Any:
+    """A device target for ``precision_options`` from a load's recorded device, dtype and card, or None. No allocation;
+    the dtype may be a ``torch.dtype`` or its name."""
+    try:
+        import torch
+
+        from .diffusion_device import diffusion_device_target_from_torch_device
+
+        if not isinstance(dtype, torch.dtype):
+            dtype = getattr(torch, str(dtype or "").replace("torch.", ""), None)
+        if not isinstance(dtype, torch.dtype) or device is None:
+            return None
+        device = str(device)
+        if device == "cuda" and ordinal is not None:
+            device = f"cuda:{int(ordinal)}"
+        return diffusion_device_target_from_torch_device(device, dtype)
+    except Exception:  # noqa: BLE001 -- no target, no probe verdicts
+        return None
+
+
+def plan_precision_options(
+    family: Optional[str],
+    *,
+    model_kind: Optional[str],
+    repo_id: Optional[str],
+    base_repo: Optional[str],
+    gpu_ordinal: Optional[int],
+    target: Any = None,
+    offload: Optional[bool] = None,
+    modular: bool = False,
+) -> Optional[dict[str, Optional[str]]]:
+    """``precision_options`` for a download plan, judged on the base the load check uses: a pipeline is its own base;
+    a GGUF without one is judged on a gate-lifted base, as ``assert_precision_available`` does. None without a family.
+    Probe verdicts need the planned ``target``; without one only the family table answers."""
+    if not family:
+        return None
+    try:
+        if model_kind == "pipeline":
+            base = repo_id or base_repo
+        else:
+            base = base_repo or nvfp4_gated_base(family)
+        return precision_options(
+            family,
+            base,
+            "cuda" if gpu_ordinal is not None else None,
+            ordinal = gpu_ordinal,
+            target = target,
+            model_kind = model_kind,
+            offload = offload,
+            modular = modular,
+        )
+    except Exception:  # noqa: BLE001 -- a plan never fails over its precision hints
+        return None
+
+
+def precision_options(
+    family: Optional[str],
+    base_repo: Optional[str] = None,
+    device: Any = None,
+    *,
+    ordinal: Optional[int] = None,
+    target: Any = None,
+    model_kind: Optional[str] = "pipeline",
+    offload: Optional[bool] = None,
+    modular: bool = False,
+) -> dict[str, Optional[str]]:
+    """Each explicit dense scheme -> why an explicit request for it would be refused, or None when nothing known rules
+    it out. Sources: the family deny table (with the NVFP4 gate failures) and a recorded probe failure on this card,
+    applied only when ``torchao_probe_governs`` says the load would run the probed torchao kernels (so never without
+    a ``target``). Network-free and GPU-free: never spawns the smoke probe or initialises CUDA, and never raises (status
+    reads it). The global NVFP4 switch is left to the caller, so an nvfp4 that is only switched off reads None."""
+    options: dict[str, Optional[str]] = {scheme: None for scheme in TQ_SCHEMES}
+    try:
+        if target is not None:
+            card = _precision_card_key(
+                getattr(target, "device", None), getattr(target, "ordinal", None)
+            )
+        else:
+            card = _precision_card_key(device, ordinal)
+    except Exception:  # noqa: BLE001 -- no card, no probe verdicts
+        card = None
+    for scheme in TQ_SCHEMES:
+        try:
+            if nvfp4_blocked(scheme):
+                # Switched off, the gate lift is unreadable: only a measured failure outlives the switch.
+                if (
+                    family
+                    and family_denies_scheme(family, scheme, base_repo)
+                    and _nvfp4_gate_failure(family)
+                ):
+                    options[scheme] = _denied_precision_reason(family, scheme, base_repo)
+            elif family and family_denies_scheme(family, scheme, base_repo):
+                options[scheme] = _denied_precision_reason(family, scheme, base_repo)
+            elif _probed_unusable(scheme, card) and torchao_probe_governs(
+                scheme,
+                target,
+                model_kind = model_kind,
+                offload = offload,
+                modular = modular,
+                family = family,
+            ):
+                options[scheme] = (
+                    f"{scheme.upper()} failed this GPU's kernel probe: the GEMM this scheme needs did not run here"
+                )
+        except Exception:  # noqa: BLE001 -- an unanswerable lookup rules nothing out
+            options[scheme] = None
+    return options
 
 
 # The reason torchao cannot be used AT ALL, resolved once. None means it imports.
@@ -1034,8 +1328,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
     return None
 
 
-def _module_quantised_marker(module: Any) -> Optional[str]:
-    """Explain why ``module`` is not a dense bf16 source, or return None."""
+def _module_quantised_marker(module: Any, *, allow_float16: bool = False) -> Optional[str]:
+    """Explain why ``module`` is not a dense bf16 source, or return None. ``allow_float16``: an fp16 pipeline on an
+    fp16-only card (``fp16_card_int8_host``), whose dense weights were cast to float16 on load."""
     if getattr(module, "_unsloth_runtime_quant", None):
         return "it is already quantised by this loader"
     source = getattr(module, SOURCE_PRECISION_ATTR, None)
@@ -1053,14 +1348,14 @@ def _module_quantised_marker(module: Any) -> Optional[str]:
     try:
         for param in module.parameters(recurse = True):
             name = str(getattr(param, "dtype", "")).rsplit(".", 1)[-1]
-            if name not in _DENSE_PARAM_DTYPE_NAMES:
+            if name not in _DENSE_PARAM_DTYPE_NAMES and not (allow_float16 and name == "float16"):
                 return f"its weights are stored as {name}, not dense bfloat16"
     except Exception:  # noqa: BLE001 -- an unwalkable module is not evidence of anything
         return None
     return None
 
 
-def dense_quant_blocker(pipe: Any) -> Optional[str]:
+def dense_quant_blocker(pipe: Any, *, allow_float16: bool = False) -> Optional[str]:
     """Explain why a pipeline cannot be quantised in place, or return None."""
     denoisers = denoiser_modules(pipe)
     if not denoisers:
@@ -1069,7 +1364,7 @@ def dense_quant_blocker(pipe: Any) -> Optional[str]:
             "dense torchao schemes do not cover)"
         )
     for attr, module in denoisers:
-        marker = _module_quantised_marker(module)
+        marker = _module_quantised_marker(module, allow_float16 = allow_float16)
         if marker is not None:
             where = "its transformer" if attr == "transformer" else f"its {attr}"
             return f"{where} is not a dense bf16 source: {marker}"
@@ -1198,13 +1493,261 @@ def native_quant_scheme(
     return scheme
 
 
+FP16_CARD_INT8_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_INT8"
+# sm70 has no int8 tensor cores; Ampere+ runs bf16 through torchao.
+_FP16_CARD_INT8_CAPS = ((7, 5), (8, 0))
+
+
+def fp16_card_int8_enabled() -> bool:
+    raw = (_os.environ.get(FP16_CARD_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def fp16_card_int8_host(target: Any) -> bool:
+    """A Turing NVIDIA card running the pipeline in fp16 or fp32 (no bf16): torchao refuses it, but the torchao-free
+    int8 linear runs there (``torch._int_mm`` is cuBLASLt int8 with no capability gate). False on every bf16 GPU."""
+    if getattr(target, "device", None) != "cuda" or not fp16_card_int8_enabled():
+        return False
+    if torch_is_rocm() or is_stubbed("torchao"):
+        return False
+    try:
+        import torch
+        if getattr(target, "dtype", None) not in (torch.float16, torch.float32):
+            return False
+    except Exception:
+        return False
+    cap = _capability(getattr(target, "ordinal", None))
+    return cap is not None and _FP16_CARD_INT8_CAPS[0] <= cap < _FP16_CARD_INT8_CAPS[1]
+
+
+def fp16_card_int8_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    """``int8`` for an explicit int8 request on an ``fp16_card_int8_host``, else None (AUTO is unchanged)."""
+    if normalize_transformer_quant(requested) != TQ_INT8 or not fp16_card_int8_host(target):
+        return None
+    if _family_denied(family, TQ_INT8):
+        return None
+    return TQ_INT8
+
+
+FP16_CARD_FP8_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_FP8"
+
+
+def fp16_card_fp8_enabled() -> bool:
+    raw = (_os.environ.get(FP16_CARD_FP8_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def fp16_card_fp8_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    """``fp8`` for an explicit fp8 request on an ``fp16_card_int8_host``, else None. Weight-only (no fp8 matmul
+    below sm_89); ``UNSLOTH_DIFFUSION_FP16_CARD_FP8=0`` restores the refusal."""
+    if normalize_transformer_quant(requested) != TQ_FP8 or not fp16_card_fp8_enabled():
+        return None
+    if not fp16_card_int8_host(target) or _family_denied(family, TQ_FP8):
+        return None
+    try:
+        import torch
+        if not hasattr(torch, "float8_e4m3fn"):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return TQ_FP8
+
+
+_FAMILY_TURING_AUTO_INT8: dict[str, str] = _profile_table("turing_auto_int8", quant = True)
+
+
+def turing_auto_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO takes int8 for ``family`` on this Turing fp16 card, else None (AUTO keeps fp16)."""
+    reason = _FAMILY_TURING_AUTO_INT8.get(str(family or "").strip().lower())
+    if reason is None or fp16_card_int8_scheme(target, TQ_INT8, family) != TQ_INT8:
+        return None
+    return reason
+
+
+def fp16_card_native_host(target: Any, requested: Optional[str]) -> bool:
+    scheme = normalize_transformer_quant(requested)
+    if scheme == TQ_FP8 and not fp16_card_fp8_enabled():
+        return False
+    return scheme in (TQ_INT8, TQ_FP8) and fp16_card_int8_host(target)
+
+
+def fp16_card_native_scheme(
+    target: Any,
+    requested: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[str]:
+    return fp16_card_int8_scheme(target, requested, family) or fp16_card_fp8_scheme(
+        target, requested, family
+    )
+
+
+def fp16_card_int8_act(target: Any) -> bool:
+    """W8A8 for the explicit-int8 Turing build; ``int8_storage_host`` (also true there) answers only for checkpoint
+    int8 storage, which stays weight-only."""
+    return fp16_card_int8_host(target) and not int8_act_disabled()
+
+
+# Checkpoint int8 codes on a GPU with no Studio int8 runtime (pre-Ampere fp16, XPU) stay int8, widened per layer.
+# Unset: offloaded plans only (resident, the expanded DiT is faster); 1: resident too; 0: always expand.
+# A float32 CPU target stores them unless 0: the expanded copy is 4 bytes a weight, the per-layer widen inside step noise.
+INT8_STORAGE_ENV = "UNSLOTH_DIFFUSION_INT8_STORAGE"
+
+
+def _int8_storage_setting() -> str:
+    return (_os.environ.get(INT8_STORAGE_ENV) or "").strip().lower()
+
+
+def int8_storage_host(target: Any) -> bool:
+    """Whether ``target`` keeps checkpoint int8 codes as weight-only storage (no int8 GEMM)."""
+    if _int8_storage_setting() in ("0", "off", "false", "no"):
+        return False
+    device = getattr(target, "device", None)
+    try:
+        import torch
+
+        dtype = getattr(target, "dtype", None)
+        if device == "cpu":
+            return dtype is torch.float32
+        if device == "xpu":
+            return dtype in (torch.bfloat16, torch.float16)
+        if device != "cuda" or torch_is_rocm() or is_stubbed("torchao"):
+            return False
+        return dtype is torch.float16
+    except Exception:
+        return False
+
+
+def int8_storage_scheme(
+    target: Any,
+    family: Optional[str] = None,
+    *,
+    offload: bool = False,
+) -> Optional[str]:
+    cpu = getattr(target, "device", None) == "cpu"
+    if not (offload or cpu or _int8_storage_setting() in ("1", "on", "true", "yes")):
+        return None
+    if not int8_storage_host(target) or _family_denied(family, TQ_INT8):
+        return None
+    return TQ_INT8
+
+
 def native_int8_act(target: Any) -> bool:
     # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
         return False
+    # storage only (int8_storage_scheme): never an int8 GEMM, unless the host also runs a native W8A8 path
+    if int8_storage_host(target) and not (native_quant_host(target) or native_offload_host(target)):
+        return False
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
+
+
+def _rocm_cuda(target: Any) -> bool:
+    return getattr(target, "device", None) == "cuda" and torch_is_rocm()
+
+
+_FAMILY_RDNA_AUTO_W8A8: dict[str, str] = _profile_table("rdna_auto_w8a8", quant = True)
+
+
+def _rdna_compile_tier_proven(target: Any) -> bool:
+    """Whether the compiled RDNA int8 tier may be chosen on this host. Linux: yes (measured there; the regional compile
+    probe still runs when the tier engages). Elsewhere (Windows ROCm) only once that probe has passed on this card,
+    so a failed or unanswerable probe keeps the eager weight-only path. Kill switch UNSLOTH_DIFFUSION_ROCM_COMPILE=0."""
+    if _sys.platform.startswith("linux"):
+        return True
+    try:
+        from .diffusion_rocm_compile import rocm_block_compile_works
+        return bool(rocm_block_compile_works(getattr(target, "ordinal", None)))
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps the eager path
+        return False
+
+
+def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO picks W8A8 for ``family`` on ROCm RDNA, else None. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
+    if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    if not _rdna_compile_tier_proven(target):
+        return None
+    return reason
+
+
+_FAMILY_RDNA_EXPLICIT_W8A8: dict[str, str] = _profile_table("rdna_explicit_w8a8", quant = True)
+
+# Only archs with measured W8A8 rows (kernels accept all gfx11/12); others stay weight-only. Widen per measurement.
+RDNA_EXPLICIT_W8A8_ARCHS = frozenset({"gfx1151"})
+
+
+def _rdna_explicit_w8a8_arch_measured(target: Any) -> bool:
+    """Whether ``target``'s own card (its ordinal, not the current device) is a measured arch. Never raises."""
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, getattr(target, "ordinal", None)) in RDNA_EXPLICIT_W8A8_ARCHS
+    except Exception:  # noqa: BLE001 - an unreadable arch keeps the weight-only build
+        return False
+
+
+def rdna_explicit_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason an explicit int8 request runs W8A8 for ``family`` on ROCm RDNA, else None (weight-only).
+    Only on the measured archs (``RDNA_EXPLICIT_W8A8_ARCHS``)."""
+    reason = _FAMILY_RDNA_EXPLICIT_W8A8.get(str(family or "").strip().lower())
+    if reason is None or rdna_explicit_int8_reason(target, family) is None:
+        return None
+    if not _rdna_explicit_w8a8_arch_measured(target):
+        return None
+    return reason
+
+
+def rdna_explicit_int8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Why an explicit int8 request on this ROCm RDNA card compiles its denoiser from render 1, else None (eager).
+    Weight-only int8 stays the scheme unless the family's AUTO table measured W8A8 faster (``rdna_auto_w8a8_reason``,
+    or ``rdna_explicit_w8a8_reason`` for explicit requests only);
+    eager int8 is slower than bf16 on gfx1151 for every measured family. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    if not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    if not _rdna_compile_tier_proven(target):
+        return None
+    return "an explicit int8 request on RDNA is measured compiled"
+
+
+# "0" keeps an explicit int8 video DiT on ROCm weight-only and quantised from the dense shards at load.
+ROCM_VIDEO_HOSTED_INT8_ENV = "UNSLOTH_ROCM_VIDEO_HOSTED_INT8"
+
+
+def rocm_video_hosted_int8_enabled() -> bool:
+    raw = (_os.environ.get(ROCM_VIDEO_HOSTED_INT8_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def rdna_video_explicit_w8a8_reason(
+    target: Any, family: Optional[str], requested: Optional[str]
+) -> Optional[str]:
+    """Why an EXPLICIT int8 video request runs W8A8 on this ROCm RDNA card (the family's ``rdna_explicit_w8a8``),
+    else None. AUTO is never changed. Kill switches UNSLOTH_ROCM_VIDEO_HOSTED_INT8=0, UNSLOTH_NATIVE_INT8_ACT=0."""
+    if normalize_transformer_quant(requested) != TQ_INT8 or not rocm_video_hosted_int8_enabled():
+        return None
+    if not _rocm_cuda(target):
+        return None
+    return rdna_explicit_w8a8_reason(target, family)
 
 
 def select_transformer_quant_scheme(
@@ -1229,7 +1772,7 @@ def select_transformer_quant_scheme(
         if not _scheme_supported(requested, device, unproven_ok = unproven_ok):
             return None
         return requested
-    cap = _capability()
+    cap = _target_capability(target)
     if cap is None:
         return None
     for scheme in _auto_scheme_order(family, device, cap, base_repo):
@@ -1311,7 +1854,7 @@ def auto_scheme_candidates(
     if not dense_transformer_supported(target):
         return ()
     device = str(getattr(target, "device", "cuda"))
-    cap = _capability()
+    cap = _target_capability(target)
     if cap is None:
         return ()
     return tuple(
@@ -1336,6 +1879,7 @@ def _auto_scheme_order(
             break
     if not tier:
         return ()
+    key = str(family or "").strip().lower()
     prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
     if prefer is not None and (prefer.gated or prefer.backend) and not nvfp4_diffusion_enabled():
         # Switch off: drop gated/backend rows before their gate record or backend probe (imports flashinfer).
@@ -1355,6 +1899,8 @@ def _auto_scheme_order(
     for scheme in without_nvfp4(head + tier):
         if scheme not in order and scheme not in skip:
             order.append(scheme)
+    if tuple(cap) == _SM103_CAP and key in _SM103_FP8_FIRST_FAMILIES:
+        order = _sm103_order(order, key)
     return tuple(order)
 
 
@@ -1374,6 +1920,12 @@ def auto_scheme_candidates_cached(target: Any, family: Optional[str] = None) -> 
         if _auto_offers_scheme(scheme, family, None, frozenset({TQ_NVFP4}), None)
         and _SMOKE_CACHE.get((scheme, card), True)
     )
+
+
+def _target_capability(target: Any) -> Optional[tuple[int, int]]:
+    """The capability of ``target``'s card (its ordinal), else the current device's, as the cached readers use."""
+    ordinal = getattr(target, "ordinal", None)
+    return _capability() if ordinal is None else _capability(ordinal)
 
 
 def _capability(ordinal: Optional[int] = None) -> Optional[tuple[int, int]]:
@@ -1410,8 +1962,11 @@ def _scheme_supported(
             # Re-checked under the lock: concurrent plans must not each spawn a child.
             if (scheme, card) not in _SMOKE_CACHE:
                 table = _persisted_probe_table(card)
+                # The load's early kick already ran this child (None: it gave no table, so probe in-process).
+                early_ran = card in _PREWARMED_TABLES
+                prewarmed = _PREWARMED_TABLES.pop(card, None)
                 if table is None or scheme not in table:
-                    table = _child_probe_table(card)
+                    table = prewarmed if early_ran else _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1562,6 +2117,82 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
             if verdict is not None:
                 _SMOKE_CACHE[(name, card)] = verdict
     return True
+
+
+PROBE_OVERLAP_ENV = "UNSLOTH_DIFFUSION_PROBE_OVERLAP"
+# card -> the early kick's child table (None: no table); consumed by _scheme_supported, dropped by the load's join.
+_PREWARMED_TABLES: dict[str, Optional[dict[str, Optional[bool]]]] = {}
+
+
+def start_probe_table_prewarm(device: str) -> Optional[tuple]:
+    """Start the scheme probe's child on a daemon thread so it overlaps the load's imports (~4-5 s cold), only when
+    ``_scheme_supported`` would spawn it anyway (no cached or persisted verdict). Returns a handle for
+    ``join_probe_table_prewarm``, or None. ``UNSLOTH_DIFFUSION_PROBE_OVERLAP=0`` keeps the serial probe."""
+    if (_os.environ.get(PROBE_OVERLAP_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        if not str(device).startswith("cuda"):
+            return None
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        # Keyed in the caller's thread, under its device scope, exactly as _scheme_supported keys it.
+        card = _smoke_cache_device_key(str(device))
+    except Exception:  # noqa: BLE001 - no early probe; the load probes as before
+        return None
+    schemes = without_nvfp4(TQ_SCHEMES)
+    if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+        return None
+
+    def _run() -> None:
+        # Never queue behind another probe: the join must bound this thread by one child's own deadline, so a held
+        # lock means the load's serial probe runs instead.
+        if not _CHILD_PROBE_LOCK.acquire(blocking = False):
+            return
+        try:
+            if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+                return
+            if _persisted_probe_table(card) is not None:
+                return
+            import logging
+            import time
+
+            started = time.monotonic()
+            table = _child_probe_table(card)
+            # Kept when None too: the load must not spawn a second child after a failed one.
+            _PREWARMED_TABLES[card] = table
+            if table is not None:
+                # Cached as the serial probe would, so the boot warm and later plans spawn no second child.
+                for name, verdict in table.items():
+                    if verdict is not None:
+                        _SMOKE_CACHE[(name, card)] = verdict
+                logging.getLogger(__name__).info(
+                    "diffusion.transformer_quant: scheme probe ran beside the load (%.1f s, %s)",
+                    time.monotonic() - started,
+                    card,
+                )
+        except Exception:  # noqa: BLE001 - the load's own probe runs instead
+            pass
+        finally:
+            _CHILD_PROBE_LOCK.release()
+
+    thread = _threading.Thread(target = _run, name = "quant-probe-overlap", daemon = True)
+    thread.start()
+    return (thread, card)
+
+
+def join_probe_table_prewarm(handle: Optional[tuple], *, discard: bool = False) -> None:
+    """Wait for an early probe (its child, and so its CUDA context, is gone after this); ``discard`` drops a table
+    the load never consumed so it cannot outlive the load that started it. Untimed: the thread never waits on the
+    probe lock and ``_child_probe_table`` closes its child at ``_CHILD_PROBE_TIMEOUT``, so it always ends."""
+    if not handle:
+        return
+    thread, card = handle
+    thread.join()
+    if discard:
+        with _CHILD_PROBE_LOCK:
+            _PREWARMED_TABLES.pop(card, None)
 
 
 def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
@@ -1846,8 +2477,12 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
 
         from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
 
+        from .diffusion_nvfp4_weight_quant import install_nvfp4_weight_quant_patch
+
         # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
         install_nvfp4_act_quant_patch()
+        # Weight scales per UNSLOTH_NVFP4_WEIGHT_QUANT.
+        install_nvfp4_weight_quant_patch()
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
@@ -1870,14 +2505,36 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 
+def linear_compute_dtype(module: Any) -> Any:
+    """Manual-cast ``_unsloth_compute_dtype`` if set, else the weight dtype."""
+    import torch
+
+    cast = getattr(module, "_unsloth_compute_dtype", None)
+    if isinstance(cast, torch.dtype):
+        return cast
+    weight = getattr(module, "weight", None)
+    return getattr(weight, "dtype", None)
+
+
+FP16_CARD_QUANT_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_QUANT_STORAGE"
+
+
+def fp16_card_quant_storage_enabled() -> bool:
+    """fp16-card native quant reads bf16 as stored instead of widening to float32; env ``=0`` widens."""
+    raw = (_os.environ.get(FP16_CARD_QUANT_STORAGE_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def make_filter_fn(
     min_features: int,
     exclude_name_tokens: tuple[str, ...] = (),
     *,
     require_bf16: bool = False,
     require_divisible: int = 0,
+    require_dtype: Any = None,
 ):
-    """A non-bf16 Linear aborts the whole quantise pass; an unaligned one crashes the first matmul later."""
+    """A non-bf16 Linear aborts the whole quantise pass; an unaligned one crashes the first matmul later.
+    ``require_dtype``: keep only Linears computing in that dtype (by compute dtype, not stored bf16 weight)."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -1905,6 +2562,10 @@ def make_filter_fn(
             weight = getattr(module, "weight", None)
             if weight is None or weight.dtype != torch.bfloat16:
                 return False
+        if require_dtype is not None:
+            weight = getattr(module, "weight", None)
+            if weight is None or linear_compute_dtype(module) != require_dtype:
+                return False
         return True
 
     return filter_fn
@@ -1925,6 +2586,12 @@ def quantize_transformer(
 ) -> Optional[str]:
     """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
+    fp16_card_scheme = fp16_card_native_scheme(target, mode, family) if native is None else None
+    fp16_card = fp16_card_scheme is not None
+    if fp16_card:
+        native = fp16_card_scheme
+        # native_int8_act is False on fp16 CUDA targets; int8 here is W8A8, fp8 weight-only.
+        act_int8 = fp16_card_int8_act(target) if native == TQ_INT8 else False
     if native is not None:
         mps = _mps_bf16(target)
         if act_int8 is None or mps:
@@ -1937,6 +2604,7 @@ def quantize_transformer(
             act_int8 = bool(act_int8) and native == TQ_INT8,
             logger = logger,
             scale_dtype = getattr(target, "dtype", None) if mps else None,
+            compute_dtype = getattr(target, "dtype", None) if fp16_card else None,
         )
     scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
@@ -2013,12 +2681,32 @@ def quantize_transformer(
                 transformer._unsloth_runtime_quant_info.update(
                     getattr(transformer, "_unsloth_weight_only_layout", None) or {}
                 )
+            if scheme == TQ_NVFP4:
+                from .diffusion_nvfp4_weight_quant import resolve_method
+
+                # The quantiser that wrote these weights, so the cache never files them under another method.
+                transformer._unsloth_runtime_quant_info["nvfp4_weight_quant"] = resolve_method()
+                # And where: 4over6 compares fp32 reductions, so a CPU build and a CUDA build differ in a few blocks.
+                transformer._unsloth_runtime_quant_info["nvfp4_quant_device"] = _nvfp4_quant_device(
+                    transformer
+                )
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 - leave the transformer dense -> GGUF fallback
         _warn(logger, scheme, exc)
         return None
+
+
+def _nvfp4_quant_device(transformer: Any) -> Optional[str]:
+    """``"cuda"`` / ``"cpu"`` when every NVFP4 weight sits on that device type, else None (mixed or none)."""
+    kinds = set()
+    for module in transformer.modules():
+        weight = getattr(module, "weight", None)
+        if type(weight).__name__ == "NVFP4Tensor":
+            qdata = getattr(weight, "qdata", None)
+            kinds.add(getattr(getattr(qdata, "device", None), "type", None))
+    return kinds.pop() if len(kinds) == 1 else None
 
 
 def _quantize_native(
@@ -2030,7 +2718,9 @@ def _quantize_native(
     act_int8: bool,
     logger: Any,
     scale_dtype: Any = None,
+    compute_dtype: Any = None,
 ) -> Optional[str]:
+    """``compute_dtype``: the pipeline dtype on an fp16-only card (fp16 / fp32); None keeps the bf16 filter."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
@@ -2041,7 +2731,8 @@ def _quantize_native(
         filter_fn = make_filter_fn(
             min_features,
             exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True) + ("lora_",),
-            require_bf16 = True,
+            require_bf16 = compute_dtype is None,
+            require_dtype = compute_dtype,
         )
         if not apply_native_weight_quant(
             transformer,
@@ -2052,6 +2743,17 @@ def _quantize_native(
             scale_dtype = scale_dtype,
         ):
             return None
+        if compute_dtype is not None:
+            from .diffusion_manual_cast import undo_same_width_manual_cast_
+
+            # The Linears left dense (bf16 read as stored for a float16 build) become what a float16 load holds.
+            undone = undo_same_width_manual_cast_(transformer)
+            if undone and logger is not None:
+                logger.info(
+                    "diffusion.transformer_quant: %.2f GiB of unquantised stored weights converted to %s",
+                    undone / (1 << 30),
+                    str(compute_dtype).replace("torch.", ""),
+                )
         if scale_dtype is not None:
             from .diffusion_native_quant import probe_mps_int8pack
 
@@ -2066,6 +2768,115 @@ def _quantize_native(
     except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
         _warn(logger, f"{scheme} (weight-only)", exc)
         return None
+
+
+def _hop_device(device: Any) -> Any:
+    """CUDA ``torch.device`` to quantise host-placed Linears on, else None. An unindexed "cuda" resolves to this
+    thread's current card here: the upload thread does not inherit it and would default to cuda:0."""
+    if device is None:
+        return None
+    try:
+        import torch
+
+        work = torch.device(device)
+        if work.type != "cuda":
+            return None
+        if work.index is None and torch.cuda.is_available():
+            work = torch.device("cuda", torch.cuda.current_device())
+    except Exception:  # noqa: BLE001 - an unparsable device quantises in place
+        return None
+    return work
+
+
+def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:
+    """``fn`` on each module, host-placed ones on ``work``; a raise leaves every module on its home device."""
+    if work is None:
+        for module in modules:
+            fn(module)
+        return
+
+    def _home(module: Any) -> Any:
+        weight = getattr(module, "weight", None)
+        return getattr(weight, "device", None)
+
+    from .host_pinning import host_pinning_allowed
+
+    staged = host_pinning_allowed(work)
+
+    def _up(module: Any) -> Any:
+        home = _home(module)
+        if home is None or home.type != "cpu":
+            return None
+        if not (staged and _upload_staged(module, work)):
+            module.to(work)
+        return home
+
+    try:
+        _hop_loop(modules, fn, _up)
+    finally:
+        if staged:
+            from .diffusion_memory import release_pinned_host_memory
+            release_pinned_host_memory()
+
+
+def _upload_staged(module: Any, work: Any) -> bool:
+    """``module.to(work)`` via pinned copies (pageable H2D is 1-2 GB/s on cloud hosts); False = nothing moved."""
+    import torch
+
+    try:
+        tensors = list(module._parameters.items()) + list(module._buffers.items())
+    except AttributeError:  # not an nn.Module
+        return False
+    if any(
+        t is not None and (type(t.data) is not torch.Tensor or not t.data.is_contiguous())
+        for _n, t in tensors
+    ):
+        return False
+    try:
+        moved = {
+            name: t.data.pin_memory().to(work, non_blocking = True)
+            for name, t in tensors
+            if t is not None and t.device.type == "cpu"
+        }
+        torch.cuda.current_stream(work).synchronize()
+    except Exception:  # noqa: BLE001 - pinning refused: the pageable copy still works
+        return False
+    for name, value in moved.items():
+        if name in module._parameters:
+            module._parameters[name].data = value
+        else:
+            module._buffers[name] = value
+    return True
+
+
+def _hop_loop(modules: list, fn: Callable[[Any], None], _up: Callable[[Any], Any]) -> None:
+    """Upload module i + 1 on a helper thread while ``fn`` runs on module i."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    pending = None
+    with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "quant-hop") as pool:
+        try:
+            pending = (modules[0], pool.submit(_up, modules[0])) if modules else None
+            for i, module in enumerate(modules):
+                home = pending[1].result()
+                pending = (
+                    (modules[i + 1], pool.submit(_up, modules[i + 1]))
+                    if i + 1 < len(modules)
+                    else None
+                )
+                try:
+                    fn(module)
+                finally:
+                    if home is not None:
+                        module.to(home)
+        finally:
+            if pending is not None:
+                try:
+                    home = pending[1].result()
+                except Exception:  # noqa: BLE001 - its upload failed: still home
+                    home = None
+                if home is not None:
+                    pending[0].to(home)
 
 
 def quantize_runtime_leftovers(
@@ -2109,23 +2920,13 @@ def quantize_runtime_leftovers(
     ]
     if not targets:
         return 0
-    work = None
-    try:
-        work = torch.device(device) if device is not None else None
-    except Exception:  # noqa: BLE001 - an unparsable device quantises in place
-        work = None
-    if work is not None and work.type != "cuda":
-        work = None
     config = _make_quant_config(scheme)
     t0 = time.perf_counter()
-    for _name, module in targets:
-        home = module.weight.device
-        hop = work is not None and home.type == "cpu"
-        if hop:
-            module.to(work)
-        quantize_(module, config)
-        if hop:
-            module.to(home)
+    _hop_each(
+        [module for _name, module in targets],
+        _hop_device(device),
+        lambda module: quantize_(module, config),
+    )
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: quantised %d %s Linear(s) the artifact kept dense (%s) in %.1f s",

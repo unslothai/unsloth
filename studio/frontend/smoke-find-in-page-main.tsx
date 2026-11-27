@@ -19,6 +19,12 @@ import {
 import "@/index.css";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  COMPOSER_SURFACE,
+  FIND_SCOPE_SURFACE,
+  trustSurfaceRegistry,
+  useSurfaceRef,
+} from "@/lib/surface-registry";
 
 declare global {
   interface Window {
@@ -158,6 +164,8 @@ function Harness() {
   const [outerScroll, setOuterScroll] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
+  const scopeSurfaceRef = useSurfaceRef(FIND_SCOPE_SURFACE, scopeRef);
+  const composerRef = useSurfaceRef<HTMLTextAreaElement>(COMPOSER_SURFACE);
 
   const stream = useCallback((text: string, msPerChar = 12) => {
     setStreamed((rows) => [...rows, ""]);
@@ -250,7 +258,7 @@ function Harness() {
         }
       >
         <div
-          ref={scopeRef}
+          ref={scopeSurfaceRef}
           {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
           aria-hidden={modal || undefined}
           className={
@@ -277,6 +285,7 @@ function Harness() {
             className="shrink-0 border-border border-t p-2"
           >
             <textarea
+              ref={composerRef}
               className="aui-composer-input w-full resize-none bg-transparent text-sm outline-none"
               placeholder="Message"
               rows={2}
@@ -298,7 +307,10 @@ function Harness() {
 }
 
 // StrictMode as in main.tsx: effects mount, unmount and remount in development.
-createRoot(document.getElementById("root") as HTMLElement).render(
+const rootElement = document.getElementById("root") as HTMLElement;
+// As main.tsx: the checks read registered surfaces, so the smoke covers the path the app takes.
+trustSurfaceRegistry(rootElement);
+createRoot(rootElement).render(
   <StrictMode>
     <Harness />
   </StrictMode>,

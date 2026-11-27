@@ -110,8 +110,7 @@ def test_it_reports_only_what_the_viewport_showed(page):
 
 
 def test_a_partly_visible_message_counts_as_visible(page):
-    """One pixel of message 2 inside the viewport. A threshold that rounded this away would exempt
-    real differences at the top and bottom of the screen."""
+    """One pixel of message 2 counts; rounding away would exempt top and bottom differences."""
     _watch(page)
     page.evaluate("() => { document.getElementById('vp').scrollTop = 101; }")
     got = _capture(page)
@@ -119,8 +118,7 @@ def test_a_partly_visible_message_counts_as_visible(page):
 
 
 def test_the_compared_set_is_the_union_across_the_whole_action(page):
-    """The scroll passes over messages 1 to 8 and lands showing 7 and 8. A single sample at the
-    close would report two; the user saw eight."""
+    """A scroll over messages 1 to 8 must count all eight, not the two visible at the close."""
     _watch(page)
     for top in (0, 700, 1400, 2100, 2800, 3200):
         page.evaluate(f"() => {{ document.getElementById('vp').scrollTop = {top}; }}")
@@ -132,9 +130,8 @@ def test_the_compared_set_is_the_union_across_the_whole_action(page):
 
 
 def test_a_message_mounted_mid_action_is_observed_too(page):
-    """A windowed list mounts rows as it scrolls. Rows that appear after the observer was installed
-    have to be picked up, or a windowed arm reports only what it happened to have mounted at the
-    start and the comparison silently shrinks to nothing."""
+    """A windowed list mounts rows as it scrolls; rows appearing after the observer is installed
+    must be picked up, or the comparison silently shrinks to the start-time rows."""
     page.evaluate("() => window.__build(2)")
     _watch(page)
     page.evaluate("() => window.__build(20)")
@@ -247,8 +244,7 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
     assert 3 in got["ever_visible"], got["ever_visible"]
 
 
-# Readiness accepts ordinals on the message or an ancestor row, so the digest must ignore where
-# they are published or such arms differ on every message.
+# Digest must ignore where ordinals sit, on the message or an ancestor, or all rows differ.
 
 
 def _arm_html(ordinals: str, suffix: str = "") -> str:
@@ -332,8 +328,7 @@ def test_ordinals_on_the_message_do_not_make_every_message_differ(browser):
 
 
 def test_ordinals_on_the_row_wrapper_are_unaffected_as_they_always_were(browser):
-    """The other permitted placement, which was never inside the message's subtree and so was never
-    part of the defect. It must stay comparable."""
+    """Ordinals on the row wrapper were never part of the defect and must stay comparable."""
     from studiobench.analysis import parity as P
     assert (
         P.compare_visible(_capture_arm(browser, "nowhere"), _capture_arm(browser, "on_the_row"))[
@@ -465,9 +460,8 @@ def test_placing_a_batch_of_rebuilt_rows_costs_ONE_document_read_for_the_batch(b
 
 
 def test_a_row_that_publishes_its_ordinal_costs_no_document_read_at_all(browser):
-    """A windowed arm mounts rows continuously as it scrolls, and it is the arm that would pay
-    most for a document read per batch. It publishes `aria-posinset`, which is read first and
-    answers the question outright, so it never reaches the position index."""
+    """A windowed arm mounts rows continuously and would pay most for a document read per batch;
+    rows publishing `aria-posinset` are read first and never reach the position index."""
     pg = browser.new_page(viewport = {"width": 800, "height": 600})
     pg.set_content(FIXTURE)
     pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
@@ -506,8 +500,7 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
 
 
-#: `__churn` mounts and unmounts a row in one task so it is observed detached; `__remount` reuses
-#: the same node, as a recycling virtualizer does.
+# `__churn` mounts and unmounts a row in one task, observed detached; `__remount` reuses it.
 
 RECYCLE_FIXTURE = """
 <!doctype html><meta charset="utf-8">

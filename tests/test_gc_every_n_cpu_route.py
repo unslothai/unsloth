@@ -46,7 +46,8 @@ def run(m):
 
 out = {"device_type": unsloth.DEVICE_TYPE,
        "models_loaded": sorted(n for n in sys.modules if n == "unsloth.models" or n.startswith("unsloth.models.")),
-       "patched": bool(getattr(PreTrainedModel.gradient_checkpointing_enable, "_unsloth_gc_kwargs", False))}
+       "patched": any(getattr(getattr(PreTrainedModel, n, None), "_unsloth_gc_kwargs", False)
+                       for n in ("_activation_checkpointing_enable", "activation_checkpointing_enable", "gradient_checkpointing_enable"))}
 res = {}
 # dict form (TrainingArguments on transformers < 5.17, PEFT prepare_model_for_kbit_training, direct calls)
 m = model()

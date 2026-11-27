@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Thinking box (#11703): bounded under `auto`, lifted by its Expand toggle, never a scroller (#11704).
+// The Thinking box (#11703): bounded under `auto`, scrolling on its own with a bottom fade, no Expand toggle.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -13,7 +13,7 @@ registerBundlerResolver();
 const { DISPLAY_VISIBILITIES } = await import(
   "../src/features/chat/utils/display-visibility.ts"
 );
-const { reasoningTailCapped, reasoningTailFlexBox, resolveReasoningOpen } = await import(
+const { reasoningTailCapped, resolveReasoningOpen } = await import(
   "../src/features/chat/utils/reasoning-visibility.ts"
 );
 
@@ -28,78 +28,6 @@ test("only the auto setting bounds a block, whether the stream or a hand opened 
       visibility,
     );
   }
-});
-
-// Mirrors useTailFlexBox: the first state is `capped`, then each render feeds the last result back.
-function flexBoxTrace(steps: readonly { capped: boolean; streaming: boolean }[]): boolean[] {
-  let previous = steps[0]?.capped ?? false;
-  return steps.map((step) => {
-    previous = reasoningTailFlexBox({ ...step, previous });
-    return previous;
-  });
-}
-
-test("the flex box survives Expand/Collapse once finished and never flips when a stream ends", () => {
-  const capped = { capped: true, streaming: false };
-  const expanded = { capped: false, streaming: false };
-  const live = { capped: true, streaming: true };
-  const liveExpanded = { capped: false, streaming: true };
-
-  assert.deepEqual(flexBoxTrace([capped, expanded, capped, expanded]), [true, true, true, true]);
-  assert.deepEqual(
-    flexBoxTrace([live, liveExpanded, expanded, capped, expanded]),
-    [true, false, false, true, true],
-  );
-  assert.deepEqual(flexBoxTrace([live, capped, expanded]), [true, true, true]);
-  assert.deepEqual(flexBoxTrace([expanded, expanded]), [false, false]);
-  assert.deepEqual(flexBoxTrace([live, liveExpanded, live]), [true, false, true]);
-});
-
-test("the box clips at the top instead of scrolling, and Expand toggles without a permanent open", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
-  assert.match(
-    tail,
-    /capped &&\s*"-mx-\[[^\]]+\] min-w-0 max-h-\[[^\]]+\] overflow-hidden px-\[[^\]]+\] supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
-  );
-  // Toggling the flex box or the child rule on a finished box restyles every row.
-  assert.match(tail, /cappable && "\[&>\*\]:shrink-0"/);
-  assert.match(
-    reasoning,
-    /const next = reasoningTailFlexBox\(\{ capped, streaming, previous: flexBox \}\);/,
-  );
-  assert.match(tail, /cappable && flexBox && "flex flex-col"/);
-  assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
-  assert.match(
-    reasoning,
-    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/,
-  );
-  assert.match(tail, /\{cappable && overflowing && \(/);
-  assert.match(tail, /onClick=\{\(\) => onExpandedChange\(!expanded\)\}/);
-  assert.match(tail, /aria-expanded=\{expanded\}/);
-  assert.match(tail, /\{expanded \? "Collapse thinking" : "Expand thinking"\}/);
-  assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
-  assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
-});
-
-test("changing the setting drops a hand Expand along with the hand open", () => {
-  assert.match(
-    reasoning,
-    /if \(lastVisibility !== visibility\) \{\s*setLastVisibility\(visibility\);\s*setOverride\(null\);\s*setTailExpanded\(false\);\s*\}/,
-  );
-});
-
-test("focus landing in the clipped lines lifts the cap instead of staying invisible", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
-  assert.match(
-    tail,
-    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&\s*\(streaming \? target\.top < box\.top : target\.bottom > box\.bottom\)[\s\S]*?onExpandedChange\(true\);/,
-  );
 });
 
 test("a bounded transcript corrects nothing through the thread and mounts the tail", () => {
@@ -132,23 +60,60 @@ test("a closing block keeps the cap it had while open", () => {
   assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
 });
 
-test("Expand thinking ends in a chevron: right while bounded, up once expanded", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
+const tail = reasoning.slice(
+  reasoning.indexOf("function ReasoningTail("),
+  reasoning.indexOf("// With the fold preference on"),
+);
+
+test("the box scrolls on its own with no border, its scrollbar always showing, close to the text", () => {
   assert.match(
     tail,
-    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<HugeiconsIcon\s+icon=\{ChevronDownStandardIcon\}[\s\S]*?expanded \? "-rotate-180" : "-rotate-90"/,
+    /\(capped \|\| expanded\) &&\s*"-ml-\[[^\]]+\] -mr-\[[^\]]+\] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-\[[^\]]+\] pr-\[[^\]]+\] pb-3 \[scrollbar-gutter:stable\] \[&>\[data-slot=reasoning-text\]\]:pt-1"/,
   );
+  // Only the cap drops on expand: the box keeps its gutter, so the width holds.
+  assert.match(tail, /capped && "max-h-\[min\(22rem,48vh\)\]"/);
+  assert.doesNotMatch(tail, /hover-scrollbar/);
+  assert.doesNotMatch(tail, /\bborder\b|Expand thinking|overflow-y-clip/);
+  assert.doesNotMatch(reasoning, /reasoning-show-full/);
+  assert.match(reasoning, /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/);
 });
 
-test("a streaming box shows the newest lines, a finished one shows the start", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
-  assert.match(tail, /capped && \(streaming \? "justify-end" : "justify-start"\)/);
-  assert.match(tail, /to_bottom,transparent[\s\S]*?to_top,transparent/);
-  assert.match(reasoning, /streaming=\{isReasoningStreaming\}\s*onExpandedChange=/);
+test("the header's expand button lifts the cap for the round and appears only when the box overflows", () => {
+  assert.match(reasoning, /const showExpand = isOpen && capped && \(tailOverflowing \|\| tailExpanded\);/);
+  assert.match(reasoning, /label=\{tailExpanded \? "Collapse thinking" : "Expand thinking"\}/);
+  assert.match(reasoning, /icon=\{tailExpanded \? ArrowShrink01Icon : ArrowExpand01Icon\}/);
+  assert.match(reasoning, /capped=\{capped && !tailExpanded\}/);
+  assert.match(reasoning, /expanded=\{capped && tailExpanded\}/);
+  assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
+  assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
+  assert.match(tail, /if \(now !== overflowing\.current\) \{\s*overflowing\.current = now;\s*onOverflowRef\.current\(now\);/);
+});
+
+test("a streaming box follows its newest line until the reader scrolls up", () => {
+  assert.match(tail, /if \(streaming\) following\.current = true;/);
+  assert.match(tail, /if \(streaming && following\.current\) box\.scrollTop = box\.scrollHeight;/);
+  assert.match(tail, /if \(atBottom \|\| pressedHere \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
+  assert.match(reasoning, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown"\] as const;/);
+});
+
+test("a scrollbar drag stops the follow for as long as the press that started in the box is held", () => {
+  assert.match(tail, /box\.addEventListener\("pointerdown", onPress, \{ passive: true \}\);/);
+  assert.match(tail, /pressedHere &&= inputPointerHeld\(\);/);
+});
+
+test("scrolling inside the capped box mounts the passages it reaches", () => {
+  assert.match(transcript, /const tail = element\.closest<HTMLElement>\('\[data-slot="reasoning-tail"\]'\);/);
+  assert.match(transcript, /tail\?\.addEventListener\("scroll", onTailScroll, \{ passive: true \}\);/);
+  assert.match(transcript, /tailFrame = 0;\s*demandNow\.current\(\);/);
+});
+
+test("each edge fades only while more is past it, set without a re-render", () => {
+  assert.match(tail, /box\.toggleAttribute\("data-more-below", below\(\) > 1\)/);
+  assert.match(tail, /box\.toggleAttribute\("data-more-above", box\.scrollTop > 0\)/);
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-above\] \{\s*--trace-fade-top: 1\.25rem;/);
+  assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-below\] \{\s*--trace-fade-bottom: 1\.5rem;/);
+  assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;\s*mask-position: 0 0, right;/);
+  assert.match(reasoning, /capped \? "mt-2" : "mt-6", "mb-2 border-border border-t"/);
+  assert.doesNotMatch(tail, /setState|useState/);
 });

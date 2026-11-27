@@ -11,11 +11,14 @@
 
 Keys: dp, tp, pp, cp (positive integers; dp may be omitted and then fills the world), cp_backend (auto, ulysses,
 ring), fsdp (0 / 1: native FSDP2 over the data parallel ranks instead of DDP-style averaging; fsdp=N with N > 1
-is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b), pp_microbatches.
-transformers' DistributedConfig names are accepted too (tp_size, pp_size, fsdp_size, cp_size); ep / ep_size and
-efsdp are reserved and refused until expert parallel lands. The flag is parsed once, at `import unsloth`, and translated to the variables
+is dp_shard=N), dp_shard=N / dp_replicate=N (dp with FSDP2 / DDP), pp_schedule (gpipe, 1f1b, interleaved1f1b;
+default 1f1b), pp_microbatches, pp_stages_per_rank (interleaved1f1b only, default 2; needs pp_microbatches and
+UNSLOTH_PP_KEEP_REPLICA=0, and gradient accumulation is not folded into one schedule step).
+ep=N (ep_size): expert parallel, N dividing the world size (data parallel ranks that each keep E / N of every MoE
+block's routed experts; world / N replica groups, models/ep_native.py); not with tp / pp / cp / fsdp yet. transformers' DistributedConfig names are
+accepted too (tp_size, pp_size, fsdp_size, cp_size, ep_size); efsdp is reserved and refused. The flag is parsed once, at `import unsloth`, and translated to the variables
 the existing paths read: UNSLOTH_TP_SIZE, UNSLOTH_PP_SIZE, UNSLOTH_FSDP2, UNSLOTH_PP_SCHEDULE,
-UNSLOTH_PP_MICROBATCHES, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
+UNSLOTH_PP_MICROBATCHES, UNSLOTH_PP_STAGES_PER_RANK, UNSLOTH_CP_SIZE and UNSLOTH_CP_BACKEND. Those variables keep working on their own; a
 variable that disagrees with the flag is refused.
 
 The world splits pp x dp x cp x tp, pp outermost and tp innermost (adjacent ranks share a tensor parallel group,
@@ -24,6 +27,9 @@ mesh["pp"], context parallel mesh["cp"], and data parallel gradients (FSDP2 shar
 flattened (dp, cp) mesh, because context parallel peers hold different tokens of the same rows. The data loader
 splits over dp only. Size-1 axes are left out of the mesh, so they create no process group.
 
+UNSLOTH_PARALLEL=auto (opt-in) picks DDP when the model and its training state fit on every GPU, else native
+FSDP2, once per process at the first from_pretrained (unsloth/parallel_auto.py).
+
 Imports nothing heavy at module level: the flag is translated before transformers / accelerate read it.
 """
 
@@ -31,6 +37,8 @@ from __future__ import annotations
 
 import math
 import os
+import sys
+import warnings
 
 __all__ = [
     "ParallelSpec",
@@ -45,11 +53,15 @@ __all__ = [
 
 FLAG = "UNSLOTH_PARALLEL"
 CP_BACKENDS = ("auto", "ulysses", "ring")
-PP_SCHEDULES = ("gpipe", "1f1b")
+PP_SCHEDULES = ("gpipe", "1f1b", "interleaved1f1b")
+# Several stages per rank (pp x pp_stages_per_rank stages).
+_MULTI_STAGE_SCHEDULES = ("interleaved1f1b",)
+DEFAULT_PP_SCHEDULE = "1f1b"  # UNSLOTH_PP_SCHEDULE unset (layout.schedule_auto)
 _SIZE_KEYS = ("dp", "tp", "pp", "cp")
 _ALIASES = {
     "microbatches": "pp_microbatches",
     "mb": "pp_microbatches",
+    "stages_per_rank": "pp_stages_per_rank",
     "schedule": "pp_schedule",
     "backend": "cp_backend",
     "fsdp2": "fsdp",
@@ -63,16 +75,17 @@ _ALIASES = {
 }
 # Kept for compatibility with transformers' naming; refused until Unsloth implements them.
 _RESERVED = {
-    "ep": "expert parallel (ep) is not supported yet; MoE trains with its experts whole on every rank",
     "efsdp": "expert FSDP (efsdp) is not supported yet",
 }
 _KEYS = _SIZE_KEYS + (
+    "ep",
     "dp_shard",
     "dp_replicate",
     "cp_backend",
     "fsdp",
     "pp_schedule",
     "pp_microbatches",
+    "pp_stages_per_rank",
 )
 _TRUTHY = ("1", "true", "yes", "on")
 _FALSY = ("0", "false", "no", "off")
@@ -85,6 +98,8 @@ _LEGACY = {
     "fsdp": "UNSLOTH_FSDP2",
     "pp_schedule": "UNSLOTH_PP_SCHEDULE",
     "pp_microbatches": "UNSLOTH_PP_MICROBATCHES",
+    "pp_stages_per_rank": "UNSLOTH_PP_STAGES_PER_RANK",
+    "ep": "UNSLOTH_EP_SIZE",
 }
 
 
@@ -119,6 +134,9 @@ def parse_parallel_spec(raw, source = FLAG):
     spec = ParallelSpec()
     if raw is None or not str(raw).strip():
         return spec
+    if str(raw).strip().lower() == "auto":
+        spec["auto"] = True  # DDP or FSDP2 by memory, resolved later (parallel_auto.py)
+        return spec
     for part in str(raw).replace(";", ",").split(","):
         part = part.strip()
         if not part:
@@ -139,7 +157,13 @@ def parse_parallel_spec(raw, source = FLAG):
             )
         if key in spec:
             raise ValueError(f"Unsloth: {source}={raw!r} gives {key} twice.")
-        if key in _SIZE_KEYS or key in ("pp_microbatches", "dp_shard", "dp_replicate"):
+        if key in _SIZE_KEYS or key in (
+            "ep",
+            "pp_microbatches",
+            "pp_stages_per_rank",
+            "dp_shard",
+            "dp_replicate",
+        ):
             spec[key] = _positive(key, value, source)
         elif key == "fsdp":
             low = value.lower()
@@ -157,8 +181,8 @@ def parse_parallel_spec(raw, source = FLAG):
             low = value.lower().replace("-", "").replace("_", "")
             if low not in PP_SCHEDULES:
                 hint = (
-                    " (interleaved virtual stages are not supported yet)"
-                    if low.startswith("interleav")
+                    " (of the multi-stage schedules only interleaved1f1b is supported)"
+                    if low.startswith("interleav") or low.startswith("looped") or "zb" in low
                     else ""
                 )
                 raise ValueError(
@@ -187,6 +211,11 @@ def parse_parallel_spec(raw, source = FLAG):
         if fsdp is not None:
             spec["fsdp"] = fsdp
     # cp_backend at cp=1 and pp_schedule / pp_microbatches at pp=1 are accepted unused (launchers write every axis).
+    if "pp_stages_per_rank" in spec and spec.get("pp_schedule") not in _MULTI_STAGE_SCHEDULES:
+        raise ValueError(
+            f"Unsloth: {source}={raw!r}: pp_stages_per_rank needs pp_schedule=interleaved1f1b (gpipe and 1f1b run "
+            "one stage per rank)."
+        )
     return spec
 
 
@@ -239,13 +268,44 @@ def translate(spec, environ = None):
             f'Unsloth: {FLAG}="{given}": pp x cp x tp = {model_ranks} must divide the number of ranks '
             f"(WORLD_SIZE={world}); launch with torchrun --nproc-per-node {model_ranks} (or a multiple of it)."
         )
+    ep = spec.get("ep", 1)
+    if ep > 1:
+        # Experts shard over every rank; experts are token-local, so cp shards dispatch like dp rows.
+        others = [f"{k}={v}" for k, v in sizes.items() if v > 1 and k != "cp"] + (
+            ["fsdp=1"] if spec.get("fsdp") else []
+        )
+        # The inherited legacy variables too: only the spec was checked, so an exported UNSLOTH_FSDP2=1 would
+        # shard (and sync rank 0's values into) every rank's own expert slices.
+        for key in ("tp", "pp", "fsdp"):
+            if key in spec:
+                continue  # the spec value is checked above; a disagreeing variable is refused below
+            current = _legacy_value(key, environ)
+            if current is None or current is False or (key in _SIZE_KEYS and current == 1):
+                continue
+            others.append(f"{_LEGACY[key]}={environ.get(_LEGACY[key])}")
+        if others:
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": expert parallel (ep) cannot be combined with {", ".join(others)} yet.'
+            )
+        # ep ranks share one copy of the experts (replica groups when ep < world).
+        cp = sizes["cp"]  # an exported UNSLOTH_CP_SIZE that disagrees is refused below
+        dp = spec.get("dp", None if world is None else world // cp)
+        ranks = None if dp is None else dp * cp
+        if (world is not None and (world % ep or (ranks is not None and ranks != world))) or (
+            ranks is not None and ranks % ep
+        ):
+            raise ValueError(
+                f'Unsloth: {FLAG}="{given}": ep={ep} must divide the number of ranks (dp x cp = '
+                f"{ranks if ranks is not None else '?'}, WORLD_SIZE={world}); launch with torchrun "
+                f"--nproc-per-node a multiple of {ep}."
+            )
     out = {}
     wanted = {
         "tp": sizes["tp"],
         "pp": sizes["pp"],
         "cp": sizes["cp"],
     }
-    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches"):
+    for key in ("cp_backend", "fsdp", "pp_schedule", "pp_microbatches", "pp_stages_per_rank", "ep"):
         if key in spec:
             wanted[key] = spec[key]
     for key, value in wanted.items():
@@ -272,10 +332,129 @@ def apply_parallel_env(environ = None):
     environ = os.environ if environ is None else environ
     raw = environ.get(FLAG)
     if raw is None or not str(raw).strip():
+        refuse_ep_composition(environ)
         return None
     spec = parse_parallel_spec(raw)
-    environ.update(translate(spec, environ))
+    if spec.get("auto"):
+        from .parallel_auto import check_auto_env
+        check_auto_env(environ)
+        return spec
+    out = translate(spec, environ)
+    refuse_ep_composition({**environ, **out}, f'{FLAG}="{spec.describe()}"')
+    environ.update(out)
     return spec
+
+
+def refuse_ep_composition(environ = None, source = None):
+    """ValueError when UNSLOTH_EP_SIZE (set alone, or inherited beside UNSLOTH_PARALLEL) meets tp / pp /
+    UNSLOTH_FSDP2, as translate refuses ep in the spec: before any model loads. cp composes (the capability
+    registry's ep x cp cells decide the backend and model)."""
+    environ = os.environ if environ is None else environ
+    ep = _legacy_value("ep", environ)
+    if not isinstance(ep, int) or ep <= 1:
+        return  # ep_native.ep_env_size refuses a non-integer value
+    others = []
+    for key in ("tp", "pp", "fsdp"):
+        value = _legacy_value(key, environ)
+        if value is None or value is False or (key in _SIZE_KEYS and value == 1):
+            continue
+        others.append(f"{_LEGACY[key]}={environ.get(_LEGACY[key])}")
+    if others:
+        given = f"UNSLOTH_EP_SIZE={environ.get('UNSLOTH_EP_SIZE')}" + (
+            f" ({source})" if source else ""
+        )
+        raise ValueError(
+            f"Unsloth: {given}: expert parallel (ep) cannot be combined with {', '.join(others)} yet; "
+            "expert parallel shards the experts over data / context parallel ranks that each hold the rest of the "
+            "model. "
+            "Unset UNSLOTH_EP_SIZE, or the other variables."
+        )
+
+
+def bind_local_cuda_device(environ = None):
+    """Make cuda:LOCAL_RANK current on a torchrun rank before anything touches CUDA: otherwise the first
+    CUDA call during import opens a context on cuda:0 in every rank (~0.8 GB each on a B200, all on GPU 0)."""
+    environ = os.environ if environ is None else environ
+    try:
+        world = int(environ.get("WORLD_SIZE", "1") or "1")
+        local = int(environ["LOCAL_RANK"])
+    except (KeyError, ValueError):
+        return None
+    if world <= 1 or local <= 0 or environ.get("UNSLOTH_FORCE_CPU", "0") == "1":
+        return None
+    try:
+        import torch
+        if not torch.cuda.is_available() or local >= torch.cuda.device_count():
+            return None
+        torch.cuda.set_device(local)
+    except Exception:
+        return None
+    return local
+
+
+ALLOCATOR_ENV = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+
+
+def _allocator_env_value(torch, environ):
+    """The caching allocator settings this torch reads from the environment (None when unset): the first of its
+    variables that is set wins, an empty one included."""
+    hip = bool(getattr(torch.version, "hip", None))
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+    except ValueError:
+        major, minor = 2, 10
+    if (major, minor) >= (2, 10):
+        # c10/core/AllocatorConfig.cpp from 2.10: the legacy names still come first, on every platform.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_ALLOC_CONF")
+    elif hip:
+        # c10/cuda/CUDAAllocatorConfig.h: ROCm builds fall back to the HIP name when the CUDA one is unset.
+        names = ("PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF")
+    else:
+        names = ("PYTORCH_CUDA_ALLOC_CONF",)
+    for name in names:
+        if environ.get(name) is not None:
+            return environ[name]
+    return None
+
+
+def cuda_started():
+    """Whether CUDA (or HIP) has started in this process, without importing torch or starting it."""
+    torch = sys.modules.get("torch")
+    try:
+        return bool(torch is not None and torch.cuda.is_initialized())
+    except Exception:
+        return False
+
+
+def apply_late_allocator_env(before, environ = None):
+    """Ranks > 0 start CUDA via bind_local_cuda_device before unsloth_zoo sets expandable_segments,
+    so they lacked it (2.2 GiB more reserved on rank 1 at sharding); re-apply changed
+    ALLOCATOR_ENV from before after the zoo import; None if nothing changed or CUDA not started
+    (torch reads env)."""
+    environ = os.environ if environ is None else environ
+    if all(environ.get(k) == before.get(k) for k in ALLOCATOR_ENV):
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_initialized():
+            return None
+        setter = getattr(torch.cuda.memory, "_set_allocator_settings", None)
+        if setter is None:
+            return None
+        value = _allocator_env_value(torch, environ) or ""
+        had = _allocator_env_value(torch, before) or ""
+        if "expandable_segments" not in value and "expandable_segments:true" in had.lower():
+            value = ",".join(x for x in (value, "expandable_segments:False") if x)
+        if not value:
+            return None
+        with warnings.catch_warnings():
+            # torch 2.10+ deprecates the name (FutureWarning) but keeps it as an alias of the accelerator setter.
+            warnings.simplefilter("ignore", FutureWarning)
+            setter(value)
+        return value
+    except Exception:
+        return None
 
 
 def env_cp_size(environ = None):
@@ -310,6 +489,8 @@ def parallelize(
     fsdp = None,
     pp_schedule = None,
     pp_microbatches = None,
+    ep = None,
+    pp_stages_per_rank = None,
 ):
     """`UNSLOTH_PARALLEL` from Python: call after `import unsloth` and before `from_pretrained`, on every rank.
 
@@ -320,7 +501,7 @@ def parallelize(
     parts = []
     if dp is not None:
         parts.append(f"dp={dp}")
-    for key, value in (("tp", tp), ("pp", pp), ("cp", cp)):
+    for key, value in (("tp", tp), ("pp", pp), ("cp", cp), ("ep", ep)):
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -339,6 +520,8 @@ def parallelize(
         parts.append(f"pp_schedule={pp_schedule}")
     if pp_microbatches is not None:
         parts.append(f"pp_microbatches={pp_microbatches}")
+    if pp_stages_per_rank is not None:
+        parts.append(f"pp_stages_per_rank={pp_stages_per_rank}")
     raw = ",".join(parts)
     spec = parse_parallel_spec(raw, source = "unsloth.parallelize")
     current = os.environ.get(FLAG)
@@ -358,6 +541,9 @@ def parallelize(
         else:
             environ[name] = value
     resolved = translate(spec, environ)
+    # An inherited UNSLOTH_EP_SIZE beside the axes this call sets: refused before anything is written, as
+    # `import unsloth` refuses it for UNSLOTH_PARALLEL.
+    refuse_ep_composition({**environ, **resolved}, f"unsloth.parallelize({raw})")
     _refuse_after_layout_read(resolved)
     for name, value in prior.items():
         if value is None:
@@ -425,6 +611,41 @@ def _int_env(name):
     return value
 
 
+def _pp_stages_per_rank(schedule, microbatches):
+    """UNSLOTH_PP_STAGES_PER_RANK for `schedule` (None: one stage per rank); ValueError for what the env path cannot
+    run: a multi-stage schedule is validated for one micro-batch count and has no whole-model replica."""
+    v = _int_env("UNSLOTH_PP_STAGES_PER_RANK")
+    if schedule not in _MULTI_STAGE_SCHEDULES:
+        if v is not None and v != 1:
+            raise ValueError(
+                f"Unsloth: UNSLOTH_PP_STAGES_PER_RANK={v} needs UNSLOTH_PP_SCHEDULE=interleaved1f1b ({schedule} runs "
+                "one stage per rank)."
+            )
+        return None
+    v = 2 if v is None else v
+    if v < 2:
+        raise ValueError(
+            f"Unsloth: UNSLOTH_PP_SCHEDULE={schedule} runs 2 or more stages per rank (UNSLOTH_PP_STAGES_PER_RANK={v})."
+        )
+    missing = []
+    if microbatches is None:
+        missing.append(
+            "UNSLOTH_PP_MICROBATCHES (pp_microbatches=): the schedule is built for one micro-batch count, "
+            "which must divide per_device_train_batch_size"
+        )
+    keep = os.environ.get("UNSLOTH_PP_KEEP_REPLICA", "1").strip().lower() not in _FALSY
+    if keep:
+        missing.append(
+            "UNSLOTH_PP_KEEP_REPLICA=0: the whole-model replica (generate / merged export after training) needs "
+            "one stage per rank; save the adapter instead"
+        )
+    if missing:
+        raise ValueError(
+            f"Unsloth: UNSLOTH_PP_SCHEDULE={schedule} also needs " + "; and ".join(missing) + "."
+        )
+    return v
+
+
 class ParallelLayout:
     """world = pp x dp x cp x tp; `mesh()` builds (once) the root device mesh, initializing the process group
     if needed. (models/tp_env.TPEnvLayout is this class.)"""
@@ -440,9 +661,17 @@ class ParallelLayout:
         schedule = "gpipe",
         cp = 1,
         cp_backend = None,
+        schedule_auto = False,
+        ep = 1,
+        stages_per_rank = None,
     ):
         self.tp, self.dp, self.world, self.fsdp2 = tp, dp, world, fsdp2
+        self.ep = ep  # set only by the Trainer pre-check; read_layout keeps 1
         self.pp, self.microbatches, self.schedule = pp, microbatches, schedule
+        # UNSLOTH_PP_SCHEDULE unset: 1F1B, run as GPipe on a step with fewer micro-batches than stages (no
+        # fully masked filler rows); an explicit schedule is kept as given.
+        self.schedule_auto = schedule_auto
+        self.stages_per_rank = stages_per_rank  # interleaved1f1b: stages per pp rank (None: one)
         self.cp, self.cp_backend = cp, cp_backend
         self._mesh = None
         self._grad_mesh = None
@@ -480,6 +709,25 @@ class ParallelLayout:
         dims = [("pp", self.pp), (dp_name, self.dp), ("cp", self.cp), ("tp", self.tp)]
         return [(name, size) for name, size in dims if size > 1]
 
+    def check_backend(self):
+        """RuntimeError when mesh() would need NCCL (CUDA GPUs; RCCL under the same name on ROCm, no process
+        group yet) on a PyTorch build without it (native Windows): before any model loads, instead of failing in
+        init_process_group."""
+        import torch
+        import torch.distributed as dist
+
+        if not dist.is_available() or dist.is_initialized() or dist.is_nccl_available():
+            return
+        rocm = getattr(torch.version, "hip", None) is not None
+        if (torch.version.cuda is None and not rocm) or not torch.cuda.is_available():
+            return  # CPU (gloo) or a non-CUDA accelerator build
+        backend, gpus = ("RCCL", "ROCm") if rocm else ("NCCL", "CUDA")
+        raise RuntimeError(
+            f"Unsloth: {self.env_vars} ({self}) runs its collectives over {backend} on {gpus} GPUs, but this "
+            "PyTorch build has no NCCL backend (torch.distributed.is_nccl_available() is False; native Windows "
+            f"builds ship without it). Use a PyTorch build with {backend} (Linux or WSL), or train on one GPU."
+        )
+
     def mesh(self):
         if self._mesh is not None:
             return self._mesh
@@ -487,6 +735,7 @@ class ParallelLayout:
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
 
+        self.check_backend()
         cuda = torch.cuda.is_available()
         if cuda:
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
@@ -580,19 +829,31 @@ def read_layout():
             f"launch with torchrun --nproc-per-node {pp * tp * cp} (or a multiple of {pp * tp * cp} for {what}), or "
             f"unset {' / '.join(name for name in names.split(' x '))}."
         )
-    microbatches, schedule = None, "gpipe"
+    microbatches, schedule, schedule_auto, stages_per_rank = None, "gpipe", False, None
     if pp > 1:
         microbatches = _int_env("UNSLOTH_PP_MICROBATCHES")
-        schedule = (
-            (os.environ.get("UNSLOTH_PP_SCHEDULE") or "gpipe").strip().lower().replace("-", "")
-        )
+        asked = (os.environ.get("UNSLOTH_PP_SCHEDULE") or "").strip()
+        # Default 1F1B: on 2x T4 (pp=2, 4-bit LoRA, same micro-batches) it beat GPipe by 6-12% on Llama-3.2-1B
+        # and Qwen3.5-2B / 4B and tied on Gemma-4-E2B (bound by its larger last stage), with the same losses
+        # and a lower first-stage peak.
+        schedule_auto = not asked
+        schedule = (asked or DEFAULT_PP_SCHEDULE).lower().replace("-", "")
         schedule = schedule.replace("_", "")
         if schedule not in PP_SCHEDULES:
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE={os.environ.get('UNSLOTH_PP_SCHEDULE')!r} must be one of "
                 f"{PP_SCHEDULES}."
             )
-        if schedule == "1f1b" and microbatches is not None and microbatches < pp:
+        stages_per_rank = _pp_stages_per_rank(schedule, microbatches)
+        if schedule_auto and microbatches is not None and microbatches < pp:
+            # Every step would fall back to GPipe: resolve it here so sharded loading records the same schedule.
+            schedule = "gpipe"
+        if (
+            schedule == "1f1b"
+            and microbatches is not None
+            and microbatches < pp
+            and not schedule_auto
+        ):
             raise ValueError(
                 f"Unsloth: UNSLOTH_PP_SCHEDULE=1f1b needs UNSLOTH_PP_MICROBATCHES >= UNSLOTH_PP_SIZE "
                 f"({microbatches} < {pp})."
@@ -626,11 +887,14 @@ def read_layout():
         schedule,
         cp = cp,
         cp_backend = cp_backend,
+        schedule_auto = schedule_auto,
+        stages_per_rank = stages_per_rank,
     )
     from .parallel_capabilities import check_layout
 
     # Layout-only rules before any model loads (ring x tp is refused here, before the tp split).
     check_layout(layout, cells = False, cp_backend = cp_backend)
+    layout.check_backend()
     return layout
 
 
@@ -664,7 +928,8 @@ def describe_trainer_layout(
     if pp > 1:
         mb = getattr(layout, "microbatches", None)
         parts.append(
-            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}, {mb or 'auto'} micro-batches"
+            f"pp schedule {getattr(layout, 'schedule', 'gpipe')}"
+            f"{' (default)' if getattr(layout, 'schedule_auto', False) else ''}, {mb or 'auto'} micro-batches"
         )
     args = getattr(trainer, "args", None)
     if args is not None:

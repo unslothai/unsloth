@@ -481,7 +481,14 @@ function useExampleModelName(keylessOnly: boolean): string | null {
         : pick.id;
     };
     // The store keeps a checkpoint across unload and delete, so require the catalog to list it.
-    const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
+    const sameBase =
+      catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];
+    // Two loaded quants of the repo: the selected one, not the first listed.
+    const entry =
+      sameBase.find(
+        (m) =>
+          ggufVariant && m.quant?.toLowerCase() === ggufVariant.toLowerCase(),
+      ) ?? sameBase[0];
     const backed =
       (!keylessOnly && catalog === null) ||
       (!!entry && (entry.loaded || (!keylessOnly && autoSwitch)));
@@ -615,13 +622,15 @@ export function UsageExamples({
     (s) => s.activeNativePathToken,
   );
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   // null when these fields do not describe the model the snippet names (before status, or under an
   // external selection).
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
       ? null
-      : isServedByLlamaCpp({
+      : loadedIsMlx === true ||
+        isServedByLlamaCpp({
           loadedIsGguf,
           activeGgufVariant,
           activeNativePathToken,
@@ -661,7 +670,11 @@ export function UsageExamples({
           // Both unknown, as the CLI gate reads them: no field, or is_gguf False with no model.
           const resident =
             status.active_model ?? status.model_identifier ?? null;
-          const answer = statusGgufVerdict(resident, status.is_gguf);
+          const answer = statusGgufVerdict(
+            resident,
+            status.is_gguf,
+            status.is_mlx,
+          );
           setStatusAnswer({ key: storeModelKey, resident, isGguf: answer });
           return answer !== null;
         })

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- unsloth-studio-managed-launchd -->
+<!-- Written by the Unsloth Studio installer; opting in again overwrites it. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.unsloth.studio.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@UNSLOTH_EXE@@</string>
+    <string>studio</string>
+    <string>-H</string>
+    <string>@@HOST@@</string>
+    <string>-p</string>
+    <string>@@PORT@@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@@PATH@@</string>
+@@ENVIRONMENT_LINES@@
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>@@STUDIO_HOME@@</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart only after a crash: `unsloth studio stop` exits 0 and stays stopped. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ExitTimeOut</key>
+  <integer>120</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <!-- Studio already tees stdout and stderr to logs/server (owner-only, newest 20 kept). A launchd
+       log here would be an unrotated, world-readable second copy that includes the startup API key. -->
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+</dict>
+</plist>

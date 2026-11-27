@@ -357,3 +357,34 @@ def test_hosted_int8_is_not_the_offload_build():
 
     assert not int8_convrot_enabled(FAMILY)
     assert _spec()["rot_group"] == 256
+
+
+def _file_mapped(path) -> bool:
+    real = os.path.realpath(str(path))
+    with open("/proc/self/maps") as maps:
+        return any(line.rstrip("\n").endswith(real) for line in maps)
+
+
+def test_offload_repoint_releases_the_cache_entry(base_dir):
+    import gc
+
+    fam = _family()
+    spec = _spec()
+    fresh = _fresh_build(base_dir, "transformer")
+    assert NC.save(fresh, fam, spec, base_repo = base_dir, component = "transformer") is not None
+    del fresh
+    path = NC.lookup(fam, spec, base_repo = base_dir, component = "transformer")
+    cached = NC.load(
+        path, diffusers.WanTransformer3DModel, base_dir, component = "transformer", spec = spec
+    )
+    assert cached is not None
+    tensors = [*cached.parameters(), *cached.buffers()]
+    assert all(t._base is None for t in tensors)
+    if not os.path.exists("/proc/self/maps"):
+        return
+    assert _file_mapped(path)
+    for t in tensors:
+        t.data = t.data.clone()
+    del t, tensors
+    gc.collect()
+    assert not _file_mapped(path)

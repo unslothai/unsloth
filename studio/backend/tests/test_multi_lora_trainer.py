@@ -794,6 +794,30 @@ def test_packing_is_ignored_where_the_single_job_ignores_it(monkeypatch, tmp_pat
     assert steps == 2 * math.ceil(math.ceil(12 / 2) / 2)
 
 
+def test_a_packed_raw_text_member_wraps_long_documents_into_the_next_row(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    packed = []
+    real = mlt._pack_rows
+
+    def spy(rows, *args, **kwargs):
+        out = real(rows, *args, **kwargs)
+        packed.append((rows, out[0]))
+        return out
+
+    monkeypatch.setattr(mlt, "_pack_rows", spy)
+    texts = _texts(12, 11)
+    raw = {"dataset": Dataset.from_dict({"text": texts}), "final_format": "raw_text"}
+    events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 8, datasets = {"job_a": raw})
+    assert _member_events(events, "job_a")[-1]["type"] == "complete"
+    (raw_docs, raw_rows), (other_docs, _) = packed
+    full = [t for text in texts for t in _tokenizer()(text)["input_ids"]]
+    assert max(len(ids) for ids, _ in raw_docs) > 8
+    assert [t for ids, _ in raw_rows for t in ids] == full
+    assert [t for _, labels in raw_rows for t in labels] == full
+    assert max(len(ids) for ids, _ in raw_rows) == 8
+    assert max(len(ids) for ids, _ in other_docs) == 8
+
+
 @pytest.mark.parametrize("varlen", [True, False])
 def test_a_hybrid_packs_only_with_the_varlen_kernels(monkeypatch, varlen):
     transformers = pytest.importorskip("transformers", minversion = "5.2")
@@ -991,6 +1015,20 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
     events, _, _ = _run(monkeypatch, PACKED[:2], max_seq_length = 24)
     assert seen == []
     assert all(_member_events(events, m["run_id"])[-1]["type"] == "complete" for m in PACKED[:2])
+
+
+@pytest.mark.parametrize("target", ["embed_tokens", "lm_head", "model.embed_tokens"])
+def test_an_embedding_target_fails_instead_of_training_something_else(
+    monkeypatch, tmp_path, target
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    events, model, pristine = _run(monkeypatch, MEMBERS[:2], target_modules = ["q_proj", target])
+    for m in MEMBERS[:2]:
+        mine = _member_events(events, m["run_id"])
+        assert mine[-1]["type"] == "error" and target in mine[-1]["error"], mine[-1]
+        assert not any(e.get("output_dir") for e in mine)
+    assert type(model.lm_head) is type(pristine.lm_head)
+    assert [e["type"] for e in events if "member_run_id" not in e][-1] == "error"
 
 
 def test_an_expert_only_moe_target_trains_batched(monkeypatch, tmp_path):

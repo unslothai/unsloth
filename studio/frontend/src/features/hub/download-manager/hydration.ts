@@ -101,6 +101,8 @@ async function adoptActiveModelDownloads(): Promise<void> {
         variant,
         ...(inventoryKind ? { inventoryKind } : {}),
         ...(files ? { files } : {}),
+        // The backend always reports the table; null is the quant's own and clears a stale one.
+        engramPrecision: download.engram_precision ?? null,
         expectedBytes: 0,
       },
       safeGeneration(download.generation),
@@ -297,6 +299,7 @@ export function hydrateDownloadManager(): void {
       ...(job.scopedFiles ? { files: job.scopedFiles } : {}),
       ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
       ...(job.presentation ? { presentation: job.presentation } : {}),
+      ...(job.engramPrecision ? { engramPrecision: job.engramPrecision } : {}),
       expectedBytes: job.expectedBytes,
     };
     void probeHydratedJob(job.key, req, 0);

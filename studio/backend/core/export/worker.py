@@ -183,14 +183,16 @@ def _offline_window_if_unreachable(step = "loading"):
     saved_marker: list = []  # [prior value] once this window marked HF offline as auto-set
     force_ctx = None
     try:
-        from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+        from utils.transformers_version import hf_endpoint_unreachable
+        from utils.utils import hf_env_offline
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         )
-        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+        if not hf_env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
             # Only the Hub is known to be down: mark this offline as ours so a required kernel
             # install (GitHub / PyPI) is still allowed; an operator's HF offline never enters here.
@@ -307,9 +309,8 @@ def _run_export_security_gates(
             )
             return False
 
-    # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved.
-    # A LoRA merges its base model, whose code runs, so gate it too. Adapter + base are scanned as
-    # one combined unit, pinned by a single fingerprint.
+    # Consent gate scans auto_map code before it runs; blocks CRITICAL/HIGH unless pinned-approved;
+    # a LoRA's base code is gated too, scanned as one unit by one fingerprint.
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
@@ -383,9 +384,7 @@ def _preflight_security_gates(cmd: dict, resp_queue: Any) -> bool:
 
 
 def _export_uses_cuda_kernels(device_backend) -> bool:
-    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions, so only a CUDA export (ROCm reports as
-    "cuda" too) provisions them: MLX, CPU, XPU, an unspecified backend and any macOS export never
-    load them. ssm_runtime then checks the torch build itself."""
+    """Only CUDA exports provision causal-conv1d and mamba-ssm; ROCm also reports as cuda."""
     return sys.platform != "darwin" and str(device_backend or "") in ("cuda", "rocm")
 
 
@@ -397,9 +396,7 @@ def _provision_ssm_kernels(
     device_backend = None,
     trust_remote_code = None,
 ) -> bool:
-    """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
-    import, decided from its config (a LoRA's base config), as a training or chat load does.
-    Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    """Install before the Unsloth import, from config; False only for a model that needs mamba-ssm."""
     if not _export_uses_cuda_kernels(device_backend):
         return True
     try:
@@ -455,10 +452,10 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     load_in_4bit = cmd.get("load_in_4bit", True)
     # Latest-sidecar checkpoints load 16-bit: bnb 4-bit hits unvalidated expert paths.
     if load_in_4bit:
-        from utils.transformers_version import latest_tier_active_for
+        from utils.transformers_version import latest_tier_forces_16bit
 
         # Plain token: the sentinel reads no cache offline, misses the sidecar and leaves 4-bit on.
-        if latest_tier_active_for(checkpoint_path, hf_token or None):
+        if latest_tier_forces_16bit(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
                 "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -518,6 +515,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
+            adapter_free = bool(cmd.get("adapter_free")),
         )
 
         _send_response(
@@ -755,6 +753,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         quiet_progress_bars = False,
     )
 
+    # REAP calibration loads a Hub dataset in this process: its card may not name host paths either.
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
+
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     checkpoint_path = config["checkpoint_path"]
@@ -785,11 +788,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
-        # Before Unsloth and the modeling import: transformers captures its kernel gates at import,
-        # and some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm. Inside
-        # the activation window, so it adds no Hub reachability probe of its own; an MLX / CPU /
-        # macOS export installs nothing. The security gates run first, so a blocked checkpoint
-        # never triggers a kernel build on its behalf.
+        # Runs before the Unsloth import (transformers captures kernel gates then); security gates
+        # run first, so a blocked checkpoint never triggers a kernel build.
         if not _preflight_security_gates(config, resp_queue):
             return
         if not _provision_ssm_kernels(

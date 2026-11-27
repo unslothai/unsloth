@@ -31,8 +31,8 @@ def _exact_forward_kernel(
     g,
     h,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -78,8 +78,8 @@ def _exact_backward_kernel(
     e,
     g,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     """
     f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -150,8 +150,8 @@ def _approx_forward_kernel(
     g,
     h,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -199,8 +199,8 @@ def _approx_backward_kernel(
     e,
     g,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # elements per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     """
     f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))

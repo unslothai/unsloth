@@ -3,6 +3,7 @@
 """Training-only: BERT/RoBERTa encoder runs on valid tokens, output re-padded before mean pooling;
 embeddings and pooling stay stock; checkpoints unchanged."""
 
+import os
 from types import MethodType
 
 import torch
@@ -99,6 +100,7 @@ def _encoder_forward(
         or (hidden_states.dtype == torch.float32 and not torch.is_autocast_enabled())
         or kwargs.get("encoder_hidden_states") is not None
         or kwargs.get("past_key_values") is not None
+        or kwargs.get("cache") is not None
         or (backend := _unpadding_backend()) is None
     ):
         return original_forward(hidden_states, attention_mask = attention_mask, **kwargs)
@@ -182,12 +184,9 @@ def disable_sentence_transformer_unpadding(model):
 
 
 def enable_sentence_transformer_unpadding(model, auto = False):
-    """Pack valid tokens through FlashAttention varlen / xFormers during training.
-
-    Returns False (model untouched) unless: Transformers 5, stock BertModel / RobertaModel
-    with absolute positions and SDPA, a mean-only pooling pipeline, and a bidirectional
-    varlen backend. ``auto`` skips batches under _MIN_AUTO_TOKENS padded slots.
-    """
+    """Packs valid tokens for FlashAttention varlen or xFormers in training; returns False (model
+    untouched) unless transformers 5, stock Bert or Roberta with absolute positions and SDPA,
+    mean-only pooling, bidirectional varlen backend"""
     import transformers
 
     if getattr(model, "_unsloth_unpadding_installed", False):
@@ -203,8 +202,7 @@ def enable_sentence_transformer_unpadding(model, auto = False):
 
     transformer = model[0]
     base = transformer.auto_model
-    # Exact types (seen through unsloth_zoo's bf16 autocast subclass): PEFT-wrapped,
-    # remote-code and compiled models keep the stock path.
+    # Exact type check: PEFT, remote-code and compiled models keep the stock path.
     base_type = getattr(type(base), "_unsloth_autocast_base", type(base))
     if base_type not in (BertModel, RobertaModel):
         return False
@@ -229,11 +227,12 @@ def enable_sentence_transformer_unpadding(model, auto = False):
         return False
 
     from transformers import AttentionInterface, AttentionMaskInterface
-    from transformers.masking_utils import sdpa_mask
+    from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
 
     AttentionInterface.register(_ATTENTION, _sentence_attention)
     # Without a registered mask builder the padded fallback would silently lose its padding mask.
-    AttentionMaskInterface.register(_ATTENTION, sdpa_mask)
+    # The registry entry, which carries the fully masked row fix (import_fixes).
+    AttentionMaskInterface.register(_ATTENTION, ALL_MASK_ATTENTION_FUNCTIONS["sdpa"])
     config._attn_implementation = _ATTENTION
     # None means ST forwards every feature key unfiltered.
     if transformer.model_forward_params is not None:
@@ -246,4 +245,110 @@ def enable_sentence_transformer_unpadding(model, auto = False):
     model._unsloth_original_forward = model.forward
     model.forward = MethodType(_sentence_forward, model)
     model._unsloth_unpadding_installed = True
+    return True
+
+
+# Causal decoder embedders on FA2: pack the padded batch into one position_ids row. UNSLOTH_ST_PACKING=0 disables.
+_PACKED_DECODERS = frozenset({"qwen3", "qwen2", "llama", "mistral"})
+_TOKEN_KEYS = ("input_ids", "attention_mask")
+_HIDDEN = (None, "last_hidden_state", ("last_hidden_state",), ["last_hidden_state"])
+
+
+def _decoder_config(transformer):
+    model = transformer.auto_model
+    model = getattr(model, "_orig_mod", model)
+    if hasattr(model, "get_base_model"):
+        model = model.get_base_model()
+    return getattr(model, "config", None)
+
+
+def _packable(transformer, features, kwargs):
+    if (
+        kwargs
+        or not transformer.training
+        or torch.compiler.is_compiling()
+        or os.environ.get("UNSLOTH_ST_PACKING", "1") == "0"
+    ):
+        return False
+    modality = features.get("modality", "text")
+    if modality not in ("text", "message"):
+        return False
+    if getattr(transformer, "module_output_name", "token_embeddings") != "token_embeddings":
+        return False
+    modalities = getattr(transformer, "modality_config", None)
+    if modalities is not None:
+        spec = modalities.get(modality) or {}
+        if (
+            spec.get("method", "forward") != "forward"
+            or spec.get("method_output_name") not in _HIDDEN
+        ):
+            return False
+    ids, mask = features.get("input_ids"), features.get("attention_mask")
+    if not (
+        isinstance(ids, torch.Tensor)
+        and isinstance(mask, torch.Tensor)
+        and ids.ndim == 2
+        and ids.is_cuda
+        and mask.shape == ids.shape
+    ):
+        return False
+    # Any other tensor input (position_ids, token_type_ids, pixels) keeps the padded batch.
+    if any(k not in _TOKEN_KEYS and isinstance(v, torch.Tensor) for k, v in features.items()):
+        return False
+    config = _decoder_config(transformer)
+    if (
+        config is None
+        or getattr(config, "model_type", None) not in _PACKED_DECODERS
+        or getattr(config, "_attn_implementation", None) != "flash_attention_2"
+        or getattr(config, "use_bidirectional_attention", False)
+        or getattr(config, "output_hidden_states", False)
+        or getattr(config, "output_attentions", False)
+    ):
+        return False
+    # Old sentence-transformers build the model inputs from a fixed key list.
+    if not hasattr(transformer, "model_forward_params"):
+        return False
+    params = transformer.model_forward_params
+    return params is None or "position_ids" in params
+
+
+def _packed_transformer_forward(transformer, features, **kwargs):
+    original_forward = transformer._unsloth_original_forward
+    if not _packable(transformer, features, kwargs):
+        return original_forward(features, **kwargs)
+    ids, mask = features["input_ids"], features["attention_mask"]
+    keep = mask.bool()
+    full, empty_row = torch.stack((keep.all(), ~keep.any(dim = 1).all())).tolist()
+    if full or empty_row:
+        return original_forward(features, **kwargs)
+    # Positions restart per row, so left-padded rows read the same relative rotary angles.
+    positions = (keep.cumsum(1) - 1)[keep].unsqueeze(0)
+    packed = {k: v for k, v in features.items() if k not in _TOKEN_KEYS}
+    packed.update(input_ids = ids[keep].unsqueeze(0), position_ids = positions)
+    output = original_forward(packed, **kwargs)
+    hidden = output["token_embeddings"]
+    restored = hidden.new_zeros((*ids.shape, hidden.shape[-1]))
+    restored[keep] = hidden[0]
+    output.pop("position_ids", None)
+    output.update(input_ids = ids, attention_mask = mask, token_embeddings = restored)
+    transformer._unsloth_packed_calls += 1
+    return output
+
+
+def enable_sentence_transformer_decoder_packing(model) -> bool:
+    """Eligibility is checked per call; ineligible models stay padded."""
+    from sentence_transformers.models import Pooling, Transformer
+
+    modules = list(model.children())
+    if len(modules) < 2 or type(modules[0]) is not Transformer or type(modules[1]) is not Pooling:
+        return False
+    transformer = modules[0]
+    if getattr(transformer, "_unsloth_packing_installed", False):
+        return True
+    if getattr(transformer, "model_forward_params", None) is not None:
+        transformer.model_forward_params = set(transformer.model_forward_params) | {"position_ids"}
+    transformer._unsloth_original_forward = transformer.forward
+    transformer._unsloth_packed_calls = 0
+    transformer.forward = MethodType(_packed_transformer_forward, transformer)
+    transformer._unsloth_packing_installed = True
     return True

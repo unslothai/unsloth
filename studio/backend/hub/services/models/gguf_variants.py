@@ -25,7 +25,15 @@ from typing import NamedTuple, Optional
 from fastapi import HTTPException
 from loggers import get_logger
 
-from hub.schemas.inventory import GgufVariantDetail, GgufVariantsResponse
+from core.inference.engram_tables import (
+    cached_engram_tables,
+    cached_table_path,
+    engram_table_precision,
+    engram_tables,
+    remember_listing,
+    remembered_listing,
+)
+from hub.schemas.inventory import EngramTableDetail, GgufVariantDetail, GgufVariantsResponse
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
@@ -39,10 +47,12 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    HUB_MODEL_INFO_SINK,
     GgufVariantInfo,
     extract_quant_label,
     gguf_variant_family,
     gguf_variant_key,
+    hub_model_info_from_token,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
@@ -61,12 +71,14 @@ from hub.utils.paths import (
 
 # Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
+from utils.utils import hf_env_offline
 from hub.services.models.common import (
     _is_imatrix_filename,
     _is_mmproj_filename,
     _is_mtp_drafter_path,
     _iter_gguf_paths,
 )
+from hub.utils.gguf_alternates import repo_alternate_blobs
 from hub.utils.gguf_plan import (
     GgufVariantPlan as _GgufVariantRequirement,
     build_gguf_variant_plans,
@@ -211,6 +223,80 @@ _VARIANT_REQUIREMENT_LAST_KNOWN_MAX = 65536
 _VARIANT_REQUIREMENT_FORGOTTEN = False
 
 
+def _llama_loads_engram_tables() -> Optional[bool]:
+    """Whether the selected llama-server takes --ple; None when it cannot be probed."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        caps = LlamaCppBackend.probe_server_capabilities()
+    except Exception:  # noqa: BLE001 -- an unprobed build is unknown, not unsupported
+        return None
+    if not caps.get("found") or not caps.get("help_probe_ok"):
+        return None
+    return bool(caps.get("supports_ple"))
+
+
+def _all_shards_cached(repo_id: str, filename: Optional[str], pinned_to: Optional[str]) -> bool:
+    """Every split shard of ``filename`` in one snapshot (only the pinned one for a request that
+    names a copy): the quant still holds its own table."""
+    from core.inference.engram_tables import repo_snapshots
+    from hub.utils.gguf_lookup_tables import shard_names
+
+    if not filename:
+        return False
+    names = shard_names(filename)
+    pinned = Path(pinned_to) if pinned_to else None
+    snapshots = [pinned] if pinned is not None and pinned.is_dir() else repo_snapshots(repo_id)
+    return any(
+        all(snapshot.joinpath(*name.split("/")).is_file() for name in names)
+        for snapshot in snapshots
+    )
+
+
+def _with_remembered_engram(
+    repo_id: str,
+    response: GgufVariantsResponse,
+    pinned_to: Optional[str] = None,
+) -> GgufVariantsResponse:
+    """A cache-only answer (offline, or the Hub unreachable) names no Engram tables, which hid the
+    Engram Table row; the last Hub answer fills them in, with ``downloaded`` read from disk."""
+    if response.engram_tables or not response.variants or not _is_valid_repo_id(repo_id):
+        return response
+    remembered = remembered_listing(repo_id)
+    if remembered is None:
+        return response
+    tables, own_by_quant = remembered
+    cached = {t.precision: cached_table_path(repo_id, t) is not None for t in tables}
+    # Without the Hub only a cached table or a quant's own one can load.
+    on_disk = {(v.quant or "").lower() for v in response.variants if v.downloaded or v.partial}
+    owns = {own_by_quant.get(q) for q in on_disk}
+    tables = [t for t in tables if cached[t.precision] or t.precision in owns]
+    variants = []
+    for v in response.variants:
+        own = own_by_quant.get((v.quant or "").lower())
+        if own is None or v.engram_precision or (v.quant or "").lower() not in on_disk:
+            variants.append(v)
+            continue
+        ready = [p for p, hit in cached.items() if hit and p != own] if v.downloaded else []
+        if v.downloaded and _all_shards_cached(repo_id, v.filename, pinned_to):
+            ready.insert(0, own)
+        variants.append(v.model_copy(update = {"engram_precision": own, "engram_ready": ready}))
+    return response.model_copy(
+        update = {
+            "variants": variants,
+            "engram_tables": [
+                EngramTableDetail(
+                    precision = t.precision,
+                    filename = t.filename,
+                    size_bytes = t.size_bytes,
+                    downloaded = cached[t.precision],
+                )
+                for t in tables
+            ],
+            "engram_supported": _llama_loads_engram_tables(),
+        }
+    )
+
+
 def _variant_requirement_last_known(key: tuple[str, ...]) -> Optional[_GgufVariantRequirement]:
     with _VARIANT_HASH_LOCK:
         return _VARIANT_REQUIREMENT_LAST_KNOWN.get(key[:2])
@@ -230,6 +316,9 @@ def gguf_variant_requirements(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[_GgufVariantRequirement]:
+    # A scope is never in the repo's quant listing, so it would miss the cache and refetch model_info every call.
+    if _is_scope_key(variant):
+        return None
     key = _variant_hash_cache_key(repo_id, variant, hf_token)
     cached = _variant_requirement_cache_get(key)
     if cached is not None:
@@ -564,7 +653,10 @@ def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
 
 
 def _variant_update_available_from_requirement(
-    local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
+    local_blobs: dict[str, set[str]],
+    requirement: Optional[_GgufVariantRequirement],
+    variant: str,
+    alternates: Optional[dict[str, frozenset[str]]] = None,
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
@@ -584,6 +676,9 @@ def _variant_update_available_from_requirement(
         if not local_set:
             return True
         if remote_blob in local_set:
+            continue
+        # An earlier blob the repo declares equivalent (unsloth_alternates.json) is current too.
+        if alternates and local_set & alternates.get(path, frozenset()):
             continue
         if _size_identity_matches(local_set, expected.size):
             continue
@@ -1000,10 +1095,13 @@ async def _audio_cpp_variants_answer(
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
-    if not umbrella and not (_is_valid_repo_id(text) and text.lower().startswith("audio-cpp/")):
+    if not umbrella and not (
+        _is_valid_repo_id(text)
+        and (text.lower().startswith("audio-cpp/") or audio_cpp_models.spec_vouched_family(text))
+    ):
         return None
     real_repo = audio_cpp_models.repo_of(text) or text
-    network = not (offline or audio_cpp_models.hub_offline())
+    network = not (offline or hf_env_offline())
     if account_access.managed_account():
         # Offline: the disk pool and a disk-only grant check, never queued behind Hub listings.
         await listing_thread(
@@ -1023,7 +1121,8 @@ async def _audio_cpp_variants_answer(
         if umbrella:
             raise HTTPException(status_code = 404, detail = f"No GGUF variants found in {text}.")
         return None
-    if not umbrella and not model.is_package:
+    packaged = model.is_package or model.spec_packaged
+    if not umbrella and not packaged:
         return None
     from core.inference import audio_cpp_files
 
@@ -1063,7 +1162,7 @@ async def _audio_cpp_variants_answer(
             downloaded = companions_cached and audio_cpp_files.cached_files(row_model) is not None
             partial = False
             remaining = None
-            key = variant.key if model.is_package else gguf_variant_key(variant.primary)
+            key = variant.key if packaged else gguf_variant_key(variant.primary)
             if not downloaded:
                 missing_files = audio_cpp_files.missing_files(row_model)
                 missing = {path for path, _size in missing_files}
@@ -1089,7 +1188,7 @@ async def _audio_cpp_variants_answer(
                 if partial:
                     remaining = (
                         None
-                        if model.is_package
+                        if packaged
                         else variant_remaining_bytes_from_state(model.repo_id, key, None)
                     )
                     if remaining is None:
@@ -1148,12 +1247,14 @@ async def _mlx_precision_variants_answer(
     hf_token: Optional[str],
     offline: bool,
     cache_readable: bool = True,
+    info = None,
 ) -> Optional[VariantsAnswer]:
     """The precision folders of an MLX repo (``4-bit/``, ``6-bit/``, ``8bit/``) as its variants,
-    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
+    else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone.
+    *info* is this request's own ``model_info`` (same token, files_metadata), reused if given."""
     if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
         return None
-    from hub.utils.mlx_variants import cached_precision_folder
+    from hub.utils.mlx_variants import cached_precision_folder, looks_like_mlx_repo
     from hub.utils.snapshot_filters import (
         precision_variant_subfolders,
         repo_ships_root_safetensors,
@@ -1167,21 +1268,27 @@ async def _mlx_precision_variants_answer(
         if not offline:
             from huggingface_hub import HfApi
             try:
-                info = call_with_anonymous_retry(
-                    lambda token: HfApi(token = token).model_info(
-                        repo_id, files_metadata = True, timeout = 5.0
-                    ),
-                    hf_token,
-                )
+                hub_info = info
+                if hub_info is None:
+                    hub_info = call_with_anonymous_retry(
+                        lambda token: HfApi(token = token).model_info(
+                            repo_id, files_metadata = True, timeout = 5.0
+                        ),
+                        hf_token,
+                    )
             except Exception as exc:  # noqa: BLE001 - fall back to the cached copy below
                 logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
             else:
-                tags = {str(tag).lower() for tag in (info.tags or [])}
-                if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
+                tags = {str(tag).lower() for tag in (hub_info.tags or [])}
+                if (
+                    "mlx" not in tags
+                    and str(hub_info.library_name or "").lower() != "mlx"
+                    and not looks_like_mlx_repo(repo_id)
+                ):
                     return None
-                sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
-                hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
-                has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
+                sizes = {s.rfilename: int(s.size or 0) for s in (hub_info.siblings or [])}
+                hashes = {s.rfilename: sibling_sha256(s) for s in (hub_info.siblings or [])}
+                has_vision = str(hub_info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
         if not sizes:
             # A caller refused this repo's cache learns nothing from it.
             if not cache_readable:
@@ -1420,6 +1527,23 @@ def _hub_repo_architecture(repo_id: str, hf_token: Optional[str]) -> Optional[st
     return arch
 
 
+def _seed_listing_architecture(repo_id: str, hf_token: Optional[str], info) -> Optional[str]:
+    """Caches ``gguf.architecture`` from this request's own listing (same repo + credential), skipping a fetch."""
+    if info is None or not (hf_token is None or (isinstance(hf_token, str) and hf_token)):
+        return None
+    if str(getattr(info, "id", "") or "").lower() != repo_id.lower():
+        return None
+    gguf_meta = getattr(info, "gguf", None)
+    if not isinstance(gguf_meta, dict) or not hub_model_info_from_token(info):
+        return None
+    arch = str(gguf_meta.get("architecture") or "") or None
+    if arch is not None:
+        key = (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+        with _lookup_arch_lock:
+            _lookup_arch_cache[key] = (arch, time.monotonic() + _LOOKUP_ARCH_TTL_S)
+    return arch
+
+
 def _local_variant_gguf(
     answer: "VariantsAnswer",
     repo_id: str,
@@ -1482,6 +1606,7 @@ async def _with_lookup_tables(
     offline: bool,
     prefer_local_cache: bool,
     local_path: Optional[str] = None,
+    listing_info = None,
 ) -> "VariantsAnswer":
     """``answer`` with ``lookup_table_bytes`` filled per variant."""
     try:
@@ -1541,13 +1666,19 @@ async def _with_lookup_tables(
                             for _i, v in unresolved
                         )
                     ):
-                        arch = await _lookup_await_once(
-                            ("arch", repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token)),
-                            deadline,
-                            _hub_repo_architecture,
-                            repo_id,
-                            hf_token,
-                        )
+                        arch = _seed_listing_architecture(repo_id, hf_token, listing_info)
+                        if arch is None:
+                            arch = await _lookup_await_once(
+                                (
+                                    "arch",
+                                    repo_id.lower(),
+                                    hf_cache_scan.token_fingerprint(hf_token),
+                                ),
+                                deadline,
+                                _hub_repo_architecture,
+                                repo_id,
+                                hf_token,
+                            )
                 if lazy_architecture(arch):
                     _fingerprint = hf_cache_scan.token_fingerprint(hf_token)
                     tasks = {}
@@ -1631,8 +1762,7 @@ async def get_gguf_variants_answer(
             await listing_thread(
                 False, account_access.authorize_download, repo_id, "model", hf_token
             )
-    # Returned with the listing because the HF cache answers before local_path, so a caller cannot infer
-    # the copy from the request alone.
+    # Sent back since the HF cache answers before local_path; callers cannot infer the copy.
     answered_from: list[Optional[str]] = [None]
     # A repo id naming a directory is answered by that directory alone, or a GGUF-less dir evicts it.
     answered_locally = [False]
@@ -1640,6 +1770,7 @@ async def get_gguf_variants_answer(
     cache_authorized = [True]
     variant_context_sources: dict[str, str] = {}
     hub_listing = None
+    hub_model_info: list = []
     # The downloaded rows a Hub-less answer proved complete from disk, see _locally_resolved.
     locally_proven: list[Optional[frozenset]] = [None]
 
@@ -1988,8 +2119,7 @@ async def get_gguf_variants_answer(
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate matches the local resolver's exact labels rather than the
-            # id's shape, and no client mirrors its grammar.
+            # Report the resolution so the CLI gate matches the resolver, not the id's shape.
             return _local_response(
                 repo_id, variants, has_vision, complete, context_root = local_id
             ).model_copy(
@@ -2164,7 +2294,11 @@ async def get_gguf_variants_answer(
 
         try:
             if hub_listing is None:
-                hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                sink_token = HUB_MODEL_INFO_SINK.set(hub_model_info)
+                try:
+                    hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+                finally:
+                    HUB_MODEL_INFO_SINK.reset(sink_token)
             variants, has_vision, siblings = hub_listing
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
@@ -2225,6 +2359,12 @@ async def get_gguf_variants_answer(
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
+                # Standalone Engram tables are not .gguf, so the walk above skips them.
+                for f in cached_engram_tables(snap):
+                    try:
+                        by_filename[f.relative_to(snap).as_posix().lower()] = f.stat().st_size
+                    except (OSError, RuntimeError, ValueError):
+                        continue
                 if by_filename or by_quant:
                     cached_snapshots.append((by_filename, by_quant))
 
@@ -2501,11 +2641,46 @@ async def get_gguf_variants_answer(
             if cache_reads_authorized
             else {}
         )
+        alternates = (
+            repo_alternate_blobs(repo_id, hf_token, siblings) if local_blobs_by_quant else {}
+        )
+
+        def _engram_ready(
+            requirement: Optional[_GgufVariantRequirement], downloaded: bool
+        ) -> list[str]:
+            """Table precisions this quant loads with, nothing to download (see the schema)."""
+            own = requirement.engram_precision if requirement is not None else None
+            if own is None:
+                return []
+            ready = [own] if downloaded else []
+            shard = requirement.engram_shard
+            rest = frozenset(name for name in requirement.main_filenames if name != shard.path)
+            companions = _non_mmproj_companions(requirement)
+            backbone = any(
+                _filenames_cached_in_snapshot(
+                    by_filename, rest, requirement.main_size_bytes - int(shard.size or 0)
+                )
+                and _snapshot_has_companions(by_filename, companions)
+                for by_filename, _by_quant in cached_snapshots
+            ) and (
+                not requirement.mmproj_filenames or _any_mmproj_cached(requirement.mmproj_filenames)
+            )
+            if backbone:
+                ready += [
+                    precision
+                    for table in requirement.engram_tables
+                    if (precision := engram_table_precision(table.path)) != own
+                    and _filenames_cached(frozenset({table.path}), int(table.size or 0))
+                ]
+            return ready
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
             downloaded = _is_fully_downloaded(v) and not is_partial
+            engram_ready = _engram_ready(requirement, downloaded)
+            # A quant whose own table shard was skipped for a cached standalone table is on disk too.
+            downloaded = downloaded or (bool(engram_ready) and not is_partial)
             pending_drafter = _pending_drafter(requirement, v.quant)
             return GgufVariantDetail(
                 filename = v.filename,
@@ -2533,6 +2708,7 @@ async def get_gguf_variants_answer(
                     local_blobs_by_quant.get(v.quant.lower(), {}),
                     requirement,
                     v.quant,
+                    alternates,
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
@@ -2540,19 +2716,48 @@ async def get_gguf_variants_answer(
                     is_partial and _partial_resumable_for_variant(repo_id, v.quant, repo_cache_dir)
                 ),
                 dependency_key = _variant_dependency_key(repo_id, v.filename),
+                engram_precision = (
+                    requirement.engram_precision if requirement is not None else None
+                ),
+                engram_ready = engram_ready,
             )
 
+        engram_files = next(
+            (r.engram_tables for r in requirements_by_quant.values() if r and r.engram_tables),
+            (),
+        )
+        repo_tables = engram_tables((f.path, int(f.size or 0)) for f in engram_files)
+        if repo_tables and siblings is not None and _is_valid_repo_id(repo_id):
+            remember_listing(
+                repo_id,
+                repo_tables,
+                {q: r.engram_precision for q, r in requirements_by_quant.items() if r},
+            )
         return GgufVariantsResponse(
             repo_id = repo_id,
             variants = [_variant_detail(v) for v in variants],
             has_vision = has_vision,
             default_variant = default_variant,
             dependencies_resolved = siblings is not None,
+            engram_tables = [
+                EngramTableDetail(
+                    precision = table.precision,
+                    filename = table.filename,
+                    size_bytes = table.size_bytes,
+                    downloaded = _filenames_cached(frozenset({table.filename}), table.size_bytes),
+                )
+                for table in repo_tables
+            ],
+            engram_supported = _llama_loads_engram_tables() if engram_files else None,
         )
 
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer: coalesced callers must all see the copy it answered from.
         response = _compute_response()
+        if cache_authorized[0]:
+            response = _with_remembered_engram(
+                repo_id, response, pinned_snapshot_for_request(repo_id, local_path)
+            )
         return VariantsAnswer(
             response, answered_from[0], cache_authorized[0], variant_context_sources
         )
@@ -2731,7 +2936,11 @@ async def get_gguf_variants_answer(
         # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
             mlx_answer = await _mlx_precision_variants_answer(
-                repo_id, hf_token, offline, cache_readable = answer.cache_authorized
+                repo_id,
+                hf_token,
+                offline,
+                cache_readable = answer.cache_authorized,
+                info = hub_model_info[-1] if hub_model_info and not offline else None,
             )
             if mlx_answer is not None:
                 return mlx_answer
@@ -2742,6 +2951,7 @@ async def get_gguf_variants_answer(
             offline = bool(offline),
             prefer_local_cache = bool(prefer_local_cache),
             local_path = local_path,
+            listing_info = hub_model_info[-1] if hub_model_info else None,
         )
     except HTTPException as exc:
         # Offline, a repo with no cached GGUF raises here, before the MLX fallback above.

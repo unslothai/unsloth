@@ -44,11 +44,10 @@ def fp8_calls(monkeypatch):
         return X @ _dequant(W, W_quant).t()
 
     monkeypatch.setattr(kernel_utils, "fp8_linear", fake_fp8_linear)
-    monkeypatch.setattr(
-        fast_lora,
-        "fast_dequantize",
-        lambda W, q, *a, **k: W if q is None else _dequant(W, q),
-    )
+    fake_dequantize = lambda W, q, *a, **k: W if q is None else _dequant(W, q)
+    monkeypatch.setattr(fast_lora, "fast_dequantize", fake_dequantize)
+    # dequant_cache.dequantize (#18285) reads kernels.utils at call time; fp8 is never cached.
+    monkeypatch.setattr(kernel_utils, "fast_dequantize", fake_dequantize)
     return calls
 
 

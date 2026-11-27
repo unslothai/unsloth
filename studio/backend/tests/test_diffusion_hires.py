@@ -500,6 +500,119 @@ def test_tiled_esrgan_matches_untiled_on_a_tiny_random_model(tmp_path, monkeypat
     assert seen_devices == ["cpu", "cpu"]  # the full-scale result accumulates in host memory
 
 
+class _LiveBytes:
+    """Peak bytes of the storages ops create inside the block while any tensor on them is alive."""
+
+    def __enter__(self):
+        import weakref
+
+        import torch.utils._pytree as pytree
+        from torch.utils._python_dispatch import TorchDispatchMode
+
+        state = self
+        self.size, self.refs, self.peak = {}, {}, 0
+
+        def drop(key):
+            state.refs[key] -= 1
+            if not state.refs[key]:
+                del state.refs[key], state.size[key]
+
+        class _Mode(TorchDispatchMode):
+            def __torch_dispatch__(
+                self,
+                func,
+                types,
+                args = (),
+                kwargs = None,
+            ):
+                known = {
+                    t.untyped_storage().data_ptr()
+                    for t in pytree.tree_leaves((args, kwargs))
+                    if hasattr(t, "untyped_storage")
+                }
+                out = func(*args, **(kwargs or {}))
+                for t in pytree.tree_leaves(out):
+                    if not hasattr(t, "untyped_storage"):
+                        continue
+                    key = t.untyped_storage().data_ptr()
+                    if not key or (key in known and key not in state.size):
+                        continue  # a view or in-place result on a storage made outside the block
+                    if key not in state.size:
+                        state.size[key], state.refs[key] = t.untyped_storage().nbytes(), 0
+                    state.refs[key] += 1
+                    weakref.finalize(t, drop, key)
+                state.peak = max(state.peak, sum(state.size.values()))
+                return out
+
+        self.mode = _Mode()
+        self.mode.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self.mode.__exit__(*exc)
+
+
+@pytest.mark.parametrize("tile", [64, 512])
+def test_inplace_finalise_is_bit_identical_and_drops_full_size_planes(tile, monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    def up4(x):
+        return torch.nn.functional.interpolate(x, scale_factor = 4, mode = "bicubic").clamp(0, 1)
+
+    x = torch.rand(1, 3, 192, 160)
+    results, blend, final = {}, {}, {}
+    for flag in ("0", "1"):
+        monkeypatch.setenv(ups.INPLACE_ENV, flag)
+        with torch.inference_mode():
+            with _LiveBytes() as m:
+                y = ups.tiled_apply(x, up4, 4, tile = tile, overlap = 8, output_device = "cpu")
+                blend[flag] = m.peak
+                m.peak = 0
+                results[flag] = ups._to_uint8_hwc(y, x)
+                final[flag] = m.peak
+                del y
+    assert (results["0"] == results["1"]).all()
+    plane = 3 * (192 * 4) * (160 * 4) * 4  # one full-size float32 RGB result
+    if tile == 64:
+        assert blend["1"] <= blend["0"] - plane
+    assert final["1"] <= final["0"] - plane
+
+
+def test_inplace_finalise_never_writes_the_source():
+    torch = pytest.importorskip("torch")
+    x = torch.rand(1, 3, 16, 16) * 2 - 0.5
+    before = x.clone()
+    out = ups._to_uint8_hwc(x, x)  # a result sharing the source's storage
+    assert torch.equal(x, before)
+    assert out.dtype.name == "uint8" and out.shape == (16, 16, 3)
+
+
+def test_tiny_esrgan_pixels_are_unchanged_by_the_inplace_finalise(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    import numpy as np
+    from PIL import Image
+    from spandrel.architectures.ESRGAN import ESRGAN
+
+    torch.manual_seed(0)
+    net = ESRGAN(in_nc = 3, out_nc = 3, num_filters = 8, num_blocks = 1, scale = 4)
+    path = tmp_path / "tiny_esrgan.pth"
+    torch.save(net.state_dict(), path)
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    img = Image.fromarray((torch.rand(96, 80, 3) * 255).to(torch.uint8).numpy())
+    out = {}
+    for flag in ("0", "1"):
+        monkeypatch.setenv(ups.INPLACE_ENV, flag)
+        for tile, target in ((512, (320, 384)), (48, (320, 384)), (48, (300, 352))):
+            r = ups.upscale_with_model(
+                img, "local:tiny_esrgan", target, device = "cpu", tile = tile, overlap = 16
+            )
+            out[(flag, tile, target)] = np.asarray(r.image)
+    for (flag, tile, target), pixels in out.items():
+        if flag == "1":
+            assert np.array_equal(pixels, out[("0", tile, target)])
+
+
 def test_native_request_carries_the_hires_block():
     from core.inference.sd_cpp_args import build_img_gen_request
 
@@ -1222,6 +1335,109 @@ def test_a_resident_drop_in_reloads_when_its_file_is_replaced(tmp_path, monkeypa
         assert np.array_equal(replaced, run(False))  # the resident copy is the new file's weights
     finally:
         ups.release_models()
+
+
+def _tiny_esrgan_state(seed = 0):
+    import torch
+    from spandrel.architectures.ESRGAN import ESRGAN
+
+    torch.manual_seed(seed)
+    return ESRGAN(in_nc = 3, out_nc = 3, num_filters = 8, num_blocks = 1, scale = 4).state_dict()
+
+
+@pytest.mark.parametrize("suffix", [".pth", ".pt"])
+def test_a_torchscript_drop_in_is_refused_before_its_code_runs(tmp_path, monkeypatch, suffix):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    from typing import Tuple
+
+    from PIL import Image
+
+    class Writes(torch.nn.Module):
+        def __init__(self, target: str):
+            super().__init__()
+            self.target = target
+            self.mapped = torch.zeros(1, dtype = torch.uint8)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x
+
+        @torch.jit.export
+        def __getstate__(self) -> Tuple[str, bool]:
+            return (self.target, self.training)
+
+        # torch.jit.load runs this; a shared mapping creates the file (and could write any bytes into it).
+        @torch.jit.export
+        def __setstate__(self, state: Tuple[str, bool]) -> None:
+            self.target = state[0]
+            self.training = state[1]
+            self.mapped = torch.from_file(state[0], shared = True, size = 1, dtype = torch.uint8)
+
+    written = tmp_path / "written_by_the_upscaler"
+    torch.jit.save(torch.jit.script(Writes(str(written))), str(tmp_path / ("scripted" + suffix)))
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    with pytest.raises((RuntimeError, ValueError)):
+        ups.upscale_with_model(Image.new("RGB", (32, 32)), "local:scripted", (64, 64), device = "cpu")
+    assert not written.exists()
+
+
+def test_a_state_dict_drop_in_loads_from_every_container(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    import numpy as np
+    from PIL import Image
+    from safetensors.torch import save_file
+
+    state = _tiny_esrgan_state()
+    torch.save(state, tmp_path / "zip.pth")
+    torch.save(state, tmp_path / "legacy.pth", _use_new_zipfile_serialization = False)
+    torch.save({"params_ema": state}, tmp_path / "wrapped.pt")
+    save_file(state, str(tmp_path / "plain.safetensors"))
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    img = Image.fromarray((torch.rand(32, 32, 3) * 255).to(torch.uint8).numpy())
+    pixels = [
+        np.asarray(ups.upscale_with_model(img, "local:" + stem, (128, 128), device = "cpu").image)
+        for stem in ("zip", "legacy", "wrapped", "plain")
+    ]
+    assert pixels[0].shape == (128, 128, 3)
+    assert all(np.array_equal(pixels[0], other) for other in pixels[1:])
+
+
+def test_a_pickle_drop_in_needs_a_torch_that_refuses_torchscript(tmp_path, monkeypatch):
+    import dataclasses
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("spandrel")
+    from PIL import Image
+    from safetensors.torch import save_file
+
+    state = _tiny_esrgan_state()
+    torch.save(state, tmp_path / "dropped.pth")
+    save_file(state, str(tmp_path / "plain.safetensors"))
+    pinned = tmp_path / "pinned.pth"
+    torch.save(state, pinned)
+    entry = dataclasses.replace(
+        ups.CATALOG[0],
+        filename = pinned.name,
+        size = pinned.stat().st_size,
+        sha256 = ups._sha256(pinned),
+    )
+    monkeypatch.setattr(ups, "CATALOG", (entry,))
+    monkeypatch.setattr(ups, "_CATALOG_BY_ID", {entry.id: entry})
+    monkeypatch.setattr(ups, "models_dir", lambda: tmp_path)
+    # torch < 2.6: weights_only = True still runs a TorchScript archive (CVE-2025-32434).
+    monkeypatch.setattr(ups, "_weights_only_refuses_torchscript", lambda: False)
+    img = Image.new("RGB", (32, 32))
+
+    def run(upscaler_id):
+        return ups.upscale_with_model(img, upscaler_id, (128, 128), device = "cpu").image.size
+
+    with pytest.raises(ValueError, match = "torch 2.6"):
+        run("local:dropped")
+    assert run("local:plain") == (128, 128)  # safetensors carries no code on any torch
+    assert run(entry.id) == (128, 128)  # the SHA-256 pin already says what the catalog file holds
+    pinned.write_bytes(b"other bytes under the catalog name")
+    assert not ups._pinned_catalog_file(pinned)
 
 
 def _fake_model_upscaler(tmp_path, monkeypatch, fn):

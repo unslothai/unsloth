@@ -129,8 +129,8 @@ test("the pin sync poll stands down under the update screen", () => {
 });
 
 test("the pin sync error toast checks for an update failure first", () => {
-  const onError = region(PIN_SYNC, "onError: (error) => {", "// Every delete path");
-  const guard = onError.indexOf("if (isPinFailureUnderDesktopUpdate(error)) return;");
+  const onError = region(PIN_SYNC, "onError: (error, editLost) => {", "// Every delete path");
+  const guard = onError.indexOf("if (!shouldReportPinSyncFailure(error, editLost)) return;");
   assert.ok(guard !== -1 && guard < onError.indexOf("toast.error"));
 });
 

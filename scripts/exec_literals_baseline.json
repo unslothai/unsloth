@@ -38,6 +38,20 @@
       "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
     },
     {
+      "file": "studio/backend/core/inference/sandbox_site/sitecustomize.py",
+      "sink": "compile",
+      "digest": "b120629e5fedabc3",
+      "count": 1,
+      "reason": "Builds setuptools' editable-install finder inside the chat sandbox from the _FINDER_TEMPLATE of the setuptools in Studio's own site-packages; the chat file's MAPPING / NAMESPACES are read with ast.literal_eval, checked to be str to str, and only reach the code through the template's own repr formatting."
+    },
+    {
+      "file": "studio/backend/core/inference/sandbox_site/sitecustomize.py",
+      "sink": "exec",
+      "digest": "dee6f4b86121ac91",
+      "count": 1,
+      "reason": "Builds setuptools' editable-install finder inside the chat sandbox from the _FINDER_TEMPLATE of the setuptools in Studio's own site-packages; the chat file's MAPPING / NAMESPACES are read with ast.literal_eval, checked to be str to str, and only reach the code through the template's own repr formatting."
+    },
+    {
       "file": "unsloth/models/_utils.py",
       "sink": "eval",
       "digest": "6f65bd10ad34f535",
@@ -305,6 +319,13 @@
     },
     {
       "file": "unsloth/models/rl.py",
+      "sink": "compile",
+      "digest": "d624dac397e24af7",
+      "count": 1,
+      "reason": "Compiles TRL's own AsyncGRPOTrainer.compute_loss, read with inspect.getsource from the installed trl package, with the written-out StableReinforce sampler KL lines from _ASYNC_GRPO_SAMPLER_KL inserted before the single `loss = per_token_loss...` reduction (and the masked-loss swap when importance_sampling_mask=True); built only when a caller passes unsloth_sampler_kl_coef > 0. Never user input or a network fetch. See tests/test_on_policy_distillation.py."
+    },
+    {
+      "file": "unsloth/models/rl.py",
       "sink": "eval",
       "digest": "040bea2f53f4a4a8",
       "count": 1,
@@ -421,6 +442,13 @@
       "digest": "e1916de418366d67",
       "count": 1,
       "reason": "Re-imports TRL trainer and config classes by name, and installs the RL trainer source this file generates. The names come from this file's own tables."
+    },
+    {
+      "file": "unsloth/models/rl.py",
+      "sink": "exec",
+      "digest": "f88a9941bf65f7e3",
+      "count": 1,
+      "reason": "Compiles TRL's own AsyncGRPOTrainer.compute_loss, read with inspect.getsource from the installed trl package, with the written-out StableReinforce sampler KL lines from _ASYNC_GRPO_SAMPLER_KL inserted before the single `loss = per_token_loss...` reduction (and the masked-loss swap when importance_sampling_mask=True); built only when a caller passes unsloth_sampler_kl_coef > 0. Never user input or a network fetch. See tests/test_on_policy_distillation.py."
     },
     {
       "file": "unsloth/models/rl_replacements.py",

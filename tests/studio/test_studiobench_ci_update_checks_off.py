@@ -19,9 +19,8 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 SWITCH = "UNSLOTH_DISABLE_UPDATE_CHECK"
-# A job drives a browser if it installs Playwright's browsers or runs studiobench; booting Studio through the
-# shared boot-studio step counts too. Windows lanes boot Studio inside their own script, so the browser half
-# is what finds them.
+# A job drives a browser if it installs Playwright browsers, runs studiobench or boots via the
+# shared boot-studio step; Windows lanes boot in their own script, so the browser regex finds them.
 _BROWSER = re.compile(r"playwright install|-m studiobench|studiobench\.")
 # Lanes that must stay covered: if discovery stops finding one, the guard has gone blind, not green.
 KNOWN = {

@@ -105,8 +105,7 @@ def test_activation_guard_still_silent_at_the_default_resolution(win_rocm, monke
 
 
 def test_linux_rocm_reading_is_untouched(monkeypatch):
-    """Control: the same numbers off Windows keep the driver's free reading, so
-    Linux ROCm and NVIDIA behaviour is byte-identical to before."""
+    """Control: off Windows the driver's free reading stays, so Linux ROCm is unchanged."""
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw.sys, "platform", "linux")
     monkeypatch.setitem(
@@ -138,9 +137,7 @@ def test_memory_plan_budget_sees_the_corrected_free(win_rocm, monkeypatch):
 
 
 def test_reclaimable_snapshot_credits_the_cache_back(win_rocm, monkeypatch):
-    """The cap is against RESERVED, and the per-generation snapshot adds torch's
-    reclaimable cache back, so a process holding 20 GiB reserved of which 6 GiB is
-    cached lands on total - allocated rather than on a pessimistic floor."""
+    """The cap uses RESERVED, and reclaimable cache is credited back, so free is total minus allocated."""
     monkeypatch.setitem(
         sys.modules,
         "torch",
@@ -187,8 +184,7 @@ def test_trusted_mem_get_info_is_a_no_op_without_the_sentinel(monkeypatch):
 
 
 def test_trusted_mem_get_info_falls_back_when_the_allocator_cannot_answer(win_rocm, monkeypatch):
-    """No allocator accounting to cap against leaves the driver figure as the only
-    reading there is, rather than a fabricated zero."""
+    """With no allocator accounting, the driver figure stands rather than a fabricated zero."""
     torch_mod = _fake_torch(16 * GiB, free_bytes = 16 * GiB)
 
     def _boom(i = None):
@@ -200,8 +196,7 @@ def test_trusted_mem_get_info_falls_back_when_the_allocator_cannot_answer(win_ro
 
 
 def test_trusted_mem_get_info_accepts_an_explicit_device_and_module(win_rocm, monkeypatch):
-    """llama.cpp slot fitting probes per ordinal and the video preflight passes the
-    resolved device module, so both call shapes have to work."""
+    """Slot fitting passes an ordinal, video preflight a module; both call shapes must work."""
     torch_mod = _fake_torch(16 * GiB, free_bytes = 16 * GiB, reserved_bytes = 4 * GiB)
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
     assert hw.trusted_mem_get_info(0) == (12 * GiB, 16 * GiB)

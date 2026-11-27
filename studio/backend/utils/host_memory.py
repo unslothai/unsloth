@@ -53,11 +53,9 @@ def _reclaimable_file_bytes(
     v1: bool,
     credit_mapped: bool = False,
 ) -> int:
-    """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
-
-    shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used.
-    ``credit_mapped``: count clean mapped pages too, as MemAvailable does; without it the reading flips as MGLRU
-    moves the same mapped pages between the lists."""
+    """Droppable page cache bytes: inactive_file + active_file minus mapped, dirty and writeback
+    (conservative); shmem/tmpfs is never counted; credit_mapped also counts clean mapped pages as
+    MemAvailable does, else MGLRU flips the reading."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
@@ -265,9 +263,8 @@ def cgroup_swap_allowance_bytes(
 def cgroup_v1_memsw_headroom_bytes(
     cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
 ) -> Optional[int]:
-    """The tightest cgroup v1 RAM+swap (``memsw``) headroom on this cgroup and its ancestors, the most RAM and swap
-    together this process can still charge; None without a finite memsw limit. Unreadable membership is read as
-    the namespace root; a finite limit whose usage cannot be read yields 0."""
+    """Tightest cgroup v1 memsw headroom (RAM plus swap) up the cgroup chain; None without a finite
+    limit, 0 if its usage is unreadable; unreadable membership uses the root."""
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
     try:
@@ -367,3 +364,41 @@ def credited_cgroup_headroom_mib() -> Optional[int]:
 def host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: min(system total, cgroup limit)."""
     return usable_mib(system_total_mib(), cgroup_limit_mib())
+
+
+def windows_commit_mib() -> Optional[tuple[int, int]]:
+    """(commit available, commit limit) MiB; ullAvailPageFile / ullTotalPageFile are system commit, not the page file."""
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD)] + [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ullTotalPhys",
+                    "ullAvailPhys",
+                    "ullTotalPageFile",
+                    "ullAvailPageFile",
+                    "ullTotalVirtual",
+                    "ullAvailVirtual",
+                    "ullAvailExtendedVirtual",
+                )
+            ]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.WinDLL("kernel32", use_last_error = True).GlobalMemoryStatusEx(
+            ctypes.byref(status)
+        ):
+            return None
+        avail, limit = int(status.ullAvailPageFile) // _MIB, int(status.ullTotalPageFile) // _MIB
+    except Exception:  # noqa: BLE001
+        return None
+    if limit <= 0 or avail < 0:
+        return None
+    return avail, limit

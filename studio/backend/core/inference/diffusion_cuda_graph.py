@@ -15,7 +15,7 @@ import threading
 import traceback
 import weakref
 import types
-from functools import update_wrapper
+from functools import WRAPPER_ASSIGNMENTS, update_wrapper
 from typing import Any, Optional
 
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
@@ -54,6 +54,24 @@ MAX_GRAPHS_PER_MODULE = 4
 
 # Three per the PyTorch docs. The warmup forces lazy allocations OUTSIDE the capture.
 WARMUP_ITERS = 3
+# A resident key's first real steps are its warm-ups, so no forward is run and thrown away before the recording (three
+# per key on the first render of a load); its WARMUP_ITERS-th + 1 step records. 0 keeps the side-stream warm-ups.
+# Only where the render runs the key on at least WARMUP_ITERS + 1 steps (note_render_steps: a render of more steps than
+# WARMUP_ITERS, one denoiser, a key that follows no step-dependent branch); any other key records on its first call
+# with side-stream warm-ups, as before, so a 1-3 step render replays from the next render on.
+# Exact while no first-call decision changes an output after a used step: INT8 attention keeps the sink path a used
+# call ran on for the load (diffusion_int8_attention._choose_path), NVFP4 tunes before the first step (below).
+REAL_WARMUP_ENV = "UNSLOTH_DIFFUSION_GRAPH_REAL_WARMUP"
+
+
+def real_warmup_enabled() -> bool:
+    return (os.environ.get(REAL_WARMUP_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
 
 _TRUE_TOKENS = ("1", "true", "yes", "on")
 
@@ -91,10 +109,9 @@ _REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
 
 
 def _image_scope(args: tuple, kwargs: dict) -> tuple:
-    """The non-text part of a call's shape: the key of its first argument, the latents in every variable-length
-    family's denoiser call (``hidden_states`` for Qwen-Image, Qwen-Image-2.1's planned step, FLUX.1 and FLUX.3, the
-    latent list for Z-Image), plus any separate reference images. Resolution, batch and reference images change it;
-    the prompt length does not."""
+    """The non-text part of a call's shape: the key of its first argument (the latents in each
+    variable-length denoiser call) plus any separate reference images; resolution, batch and
+    reference images change it, prompt length does not."""
     first = args[0] if args else next(iter(kwargs.values()), None)
     refs = tuple((name, graph_key(kwargs[name])) for name in _REFERENCE_KWARGS if name in kwargs)
     return (graph_key(first),) + refs if refs else graph_key(first)
@@ -151,6 +168,15 @@ class _ThreadGateState(threading.local):
     depth = 0
     recording = 0
     lock_held = 0
+    device_held = 0
+    device_card = None
+
+
+# Long single-card work (the deferred int8 CUTLASS timing race) holds only its card off captures, so a capture on
+# another card (a video render) never waits on it: card index -> holds (``hold_device_off_capture``), and card index
+# -> recordings (None = a capture whose card could not be read: it conflicts with every card).
+_DEVICE_HOLDS: dict = {}
+_DEVICE_DEPTH: dict = {}
 
 
 _OUTSIDE_LOCAL = _ThreadGateState()
@@ -162,6 +188,12 @@ _OUTSIDE_STUCK = [False]
 # Holds owned by threads parked in ``_capturing`` waiting to record: a parked thread issues no CUDA calls, so another
 # held thread may record while it waits (two replica workers that both want to capture do not wait each other out).
 _OUTSIDE_PARKED = [0]
+
+
+def _graph_unsafe(module: Any) -> Optional[str]:
+    """Why ``module`` must never be recorded (``_unsloth_cuda_graph_unsafe``, set by a per-step route), or None."""
+    reason = (getattr(module, "__dict__", None) or {}).get("_unsloth_cuda_graph_unsafe")
+    return str(reason) if reason else None
 
 
 class CaptureExclusionTimeout(RuntimeError):
@@ -219,20 +251,47 @@ def await_outside_drained() -> None:
         _wait_outside_drained(own)
 
 
+def _capture_card(device: Any) -> Optional[int]:
+    """The card a capture records on: ``device`` if given, else the current one; None when unreadable."""
+    try:
+        if device is None:
+            return int(_torch().cuda.current_device())
+        index = getattr(device, "index", device)
+        return None if index is None else int(index)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _device_holds(card: Optional[int]) -> int:
+    """Under ``_CAPTURE_IDLE``: other threads' single-card holds a capture on ``card`` must wait for (this thread's
+    own hold is discounted: its capture runs serially with the held work)."""
+    held = sum(_DEVICE_HOLDS.values()) if card is None else _DEVICE_HOLDS.get(card, 0)
+    own = _OUTSIDE_LOCAL.device_held
+    if own and (card is None or card == _OUTSIDE_LOCAL.device_card):
+        held -= own
+    return held
+
+
+def _wait_device_holds(card: Optional[int]) -> None:
+    """Under ``_CAPTURE_IDLE``: wait for the single-card work on ``card``, else raise ``CaptureRefused``."""
+    if _device_holds(card) <= 0:
+        return
+    if not _CAPTURE_IDLE.wait_for(lambda: _device_holds(card) <= 0, timeout = OUTSIDE_WAIT_S):
+        raise CaptureRefused(
+            f"single-card CUDA work on cuda:{card} still running after {OUTSIDE_WAIT_S:g}s; capture deferred"
+        )
+
+
 @contextlib.contextmanager
-def _capturing():
-    """Mark a capture as recording for the duration of the block.
-
-    The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
-    ordering above hold; keep this the outermost of the two context managers. Raises
-    ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
-
-    Every capture (whole step, planned or offloaded re-record, per block, per segment) enters here, so this is also
-    where a retired graph pool is handed back before anything records (``_settle_retired_pools``).
-    """
+def _capturing(device: Any = None):
+    """Mark a capture as recording: the depth must rise before torch.cuda.graph is entered, so this
+    stays the outermost context manager; raises CaptureRefused (depth untouched) if replica work
+    did not drain, and every capture settles retired pools here. ``device``: the card it records
+    on (default: the current one), which waits out only that card's ``hold_device_off_capture``."""
     global _CAPTURE_DEPTH
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     mine = getattr(_OUTSIDE_LOCAL, "recording", 0)
+    card = _capture_card(device)
     seen = _retired_pools_seen()
     with _CAPTURE_IDLE:
         for _ in range(_ENTRY_SETTLE_TRIES):
@@ -240,13 +299,15 @@ def _capturing():
             if seen is not None:
                 _settle_retired_pools(seen)
             _wait_outside_drained(own)
-            if _CAPTURE_DEPTH - mine > 0:
-                continue  # a capture entered while this one waited (the lock was released): wait it out again
+            _wait_device_holds(card)
+            if _CAPTURE_DEPTH - mine > 0 or _device_holds(card) > 0:
+                continue  # a capture or a card hold entered while this one waited (the lock was released): again
             # Retirement takes _RETIRE_LOCK, so one is either counted before this check (flush again, still under
             # the capture lock) or lands once the depth is up (due for the next capture): never in between.
             with _RETIRE_LOCK:
                 if _RETIRED_POOLS[1] >= _RETIRED_POOLS[0]:
                     _CAPTURE_DEPTH += 1
+                    _DEVICE_DEPTH[card] = _DEVICE_DEPTH.get(card, 0) + 1
                     break
                 seen = _RETIRED_POOLS[0]
         else:
@@ -260,6 +321,11 @@ def _capturing():
         _OUTSIDE_LOCAL.recording = mine
         with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
+            left = _DEVICE_DEPTH.get(card, 0) - 1
+            if left > 0:
+                _DEVICE_DEPTH[card] = left
+            else:
+                _DEVICE_DEPTH.pop(card, None)
             _CAPTURE_IDLE.notify_all()
         if _DEFERRED_RELEASES and not mine:
             drain_deferred_releases()
@@ -280,6 +346,11 @@ def recording_here() -> bool:
     return getattr(_OUTSIDE_LOCAL, "recording", 0) > 0
 
 
+def device_held_here() -> bool:
+    """Whether THIS thread is inside ``hold_device_off_capture`` (only its card is held off captures)."""
+    return _OUTSIDE_LOCAL.device_held > 0
+
+
 def _sync_device(torch: Any, device: Any) -> None:
     if device is None:
         torch.cuda.synchronize()
@@ -291,10 +362,11 @@ def synchronize_outside_capture(device: Any = None, *, refuse: bool = False) -> 
     """Device sync that waits out another thread's recording and holds captures off while it runs.
 
     After ``RETIRED_FLUSH_WAIT_S`` it raises ``CaptureRefused`` if ``refuse`` (nothing recorded yet), else syncs anyway.
-    Under ``hold_off_capture`` or this thread's own recording it syncs at once, so it never self-deadlocks.
+    Under ``hold_off_capture`` / ``hold_device_off_capture`` (whose card no capture records on) or this thread's own
+    recording it syncs at once, so it never self-deadlocks.
     Not for finalizers: one can run while its thread holds the (non-reentrant) capture lock."""
     torch = _torch()
-    if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held:
+    if _OUTSIDE_LOCAL.recording or _OUTSIDE_LOCAL.lock_held or _OUTSIDE_LOCAL.device_held:
         _sync_device(torch, device)
         return
     global _OUTSIDE_JOBS
@@ -321,11 +393,9 @@ _DEFERRED_RELEASES: "collections.deque" = collections.deque()
 
 
 def run_if_capture_idle(fn: Any) -> bool:
-    """Run ``fn()`` now under the capture lock with no capture recording, else return False without waiting.
-
-    Never blocks on the capture gate, so it is safe from a weakref finalizer: one can run on a thread already holding
-    the (non-reentrant) lock, e.g. inside a ``Condition.wait_for`` setup. ``fn`` may sync and free device memory: no
-    capture can enter while it runs."""
+    """Runs fn under the capture lock when no capture is recording, else returns False; never
+    blocks, so finalizers may call it on a thread holding the non-reentrant lock; fn may sync and
+    free device memory since no capture can enter while it runs."""
     if _OUTSIDE_LOCAL.recording:
         return False
     if _OUTSIDE_LOCAL.lock_held:
@@ -425,6 +495,43 @@ def hold_off_capture():
     finally:
         _OUTSIDE_LOCAL.lock_held = held
         _CAPTURE_LOCK.release()
+
+
+@contextlib.contextmanager
+def hold_device_off_capture(index: int):
+    """``hold_off_capture`` for long work on one card (the deferred int8 CUTLASS timing race): yields True while no
+    capture records or enters on card ``index``, without holding the process-wide lock, so a capture on another card
+    records meanwhile; a capture on this card waits for it (``OUTSIDE_WAIT_S``, then runs eager). On False a capture
+    is recording on this card (or one whose card is unknown): skip the CUDA work. The body may launch and sync on
+    ``index`` only; a process-wide call (``empty_cache``) goes through ``run_if_capture_idle``. Never blocks."""
+    card = int(index)
+    if not _CAPTURE_LOCK.acquire(blocking = False):
+        yield False
+        return
+    try:
+        safe = not _DEVICE_DEPTH.get(card, 0) and not _DEVICE_DEPTH.get(None, 0)
+        if safe:
+            _DEVICE_HOLDS[card] = _DEVICE_HOLDS.get(card, 0) + 1
+    finally:
+        _CAPTURE_LOCK.release()
+    if not safe:
+        yield False
+        return
+    held, held_card = _OUTSIDE_LOCAL.device_held, _OUTSIDE_LOCAL.device_card
+    _OUTSIDE_LOCAL.device_held = held + 1
+    _OUTSIDE_LOCAL.device_card = card
+    try:
+        yield True
+    finally:
+        _OUTSIDE_LOCAL.device_held = held
+        _OUTSIDE_LOCAL.device_card = held_card
+        with _CAPTURE_IDLE:
+            left = _DEVICE_HOLDS.get(card, 0) - 1
+            if left > 0:
+                _DEVICE_HOLDS[card] = left
+            else:
+                _DEVICE_HOLDS.pop(card, None)
+            _CAPTURE_IDLE.notify_all()
 
 
 # A retired pool's segments stay cached until empty_cache, which cannot run while a capture records, so a capture
@@ -535,10 +642,9 @@ def flush_now_locked(clear_cublas: bool = False) -> bool:
 
 
 def release_cached_outside_capture(clear_cublas: bool = False) -> bool:
-    """The one way graph memory goes back outside a capture's entry: ``empty_cache`` (and the cuBLAS workspaces) now,
-    under the capture lock with no capture recording, acknowledging the retirements counted before it; or, while
-    another thread records (either call is prohibited inside its recording and can invalidate it), counted as a
-    retired pool with the cuBLAS clear owed, so the next capture's entry flush does both."""
+    """The one way graph memory goes back outside a capture entry: empty_cache and the cuBLAS clear
+    run now under the capture lock, else (while another thread records, which forbids both) it is
+    counted as a retired pool with the clear owed to the next capture entry flush."""
     # Owed first, in one step with the cuBLAS debt: a capture entering from here on sees it due, whether or not this
     # flush gets the lock; a successful flush below acknowledges it.
     with _RETIRE_LOCK:
@@ -620,6 +726,22 @@ def _capture_stream(index: int) -> Any:
             stream = torch.cuda.Stream(device = index)
         stream = _CAPTURE_STREAMS.setdefault(index, stream)
     return stream
+
+
+@contextlib.contextmanager
+def card_graph(
+    graph: Any,
+    index: int,
+    pool: Any = None,
+):
+    """``torch.cuda.graph`` recorded on card ``index``: that card current (its sync, its allocator) and its own capture
+    stream. A bare ``torch.cuda.graph`` on a second card records on the first card's default capture stream, so the
+    graph comes out empty while the kernels run eagerly on the card they belong to."""
+    torch = _torch()
+    index = int(index)
+    with torch.cuda.device(index):
+        with _graph_with_flush(graph, pool = pool, stream = _capture_stream(index)):
+            yield
 
 
 @contextlib.contextmanager
@@ -1036,6 +1158,61 @@ def live_pool_free_bytes() -> int:
         return live_pool_bytes()
 
 
+def releasable_pool_bytes(handles: Any, device: Optional[int] = None) -> int:
+    """Unused graph-pool bytes on ``device`` (the current card when None) that ``reset_all(handles)`` hands back: the
+    whole-step pools only these handles record into (another live wrapper, such as a co-resident video pipeline's,
+    keeps a shared pool alive) and the block-graph pools these handles own. 0 when unreadable."""
+    handles = tuple(handles or ())
+    # reset() also frees a whole-step graph's per-block fallback, so its block pools count too
+    nested = []
+    pending = list(handles)
+    while pending:
+        h = pending.pop()
+        if h is None or any(h is seen for seen in nested):
+            continue
+        nested.append(h)
+        pending.append(getattr(h, "fallback_handle", None))
+    handles = tuple(nested)
+    own = {id(h) for h in handles}
+    try:
+        if device is None:
+            device = int(_torch().cuda.current_device())
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+    mine: set = set()
+    others: set = set()
+    for w in tuple(_LIVE_WRAPPERS):
+        if id(w) not in own and getattr(w, "_unsloth_capture_device", device) not in (None, device):
+            continue  # graph pools are per device: a recording on another card keeps nothing here alive
+        tokens = {
+            tuple(entry.pool_token)
+            for entry in tuple(w.cache.values())
+            if getattr(entry, "pool_token", None) is not None
+        }
+        (mine if id(w) in own else others).update(tokens)
+    pools = mine - others
+    shared = {
+        id(state)
+        for h in handles
+        if callable(getattr(h, "_all_shared", None))
+        for state in h._all_shared()
+    }
+    try:
+        free = 0
+        if pools:
+            for seg in _allocator_segments():
+                if seg.get("device", device) != device:
+                    continue
+                if tuple(seg.get("segment_pool_id") or ()) in pools:
+                    free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
+        if shared:
+            from .diffusion_block_graph import pool_bytes
+            free += int(pool_bytes(device, only = shared))
+        return max(0, free)
+    except Exception:  # noqa: BLE001 - unknown: release nothing
+        return 0
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
@@ -1165,6 +1342,14 @@ class GraphedForward:
         self.cache: dict = {}
         self.cap_hit = False
         self._warmed: dict = {}
+        # Resident only, per graph key: real steps run eagerly on capture-layout copies before the recording.
+        self._real_warm: dict = {}
+        # Keys whose real warm-ups did not finish inside one render: they record the side-stream way on their next
+        # appearance, so renders 2+ replay as before.
+        self._real_warm_closed: set = set()
+        # The denoiser steps of the render under way (note_render_steps), None when unknown: real warm-ups need more
+        # than WARMUP_ITERS of them, else the key records on its first call as before.
+        self._render_steps: Optional[int] = None
         # Keys recorded before: a placement change re-records them with no warm-up (same shapes, new addresses).
         self._recorded: dict = {}
         # Offloaded only, per graph key: seen count, eager/graph spans, verdict ('' kept, else drop reason).
@@ -1189,17 +1374,15 @@ class GraphedForward:
             "pool_bytes": 0,
             "planned_eager": 0,
             "shape_warmups": 0,
+            "real_warmups": 0,
             "evictions": 0,
             "speed_eager": 0,
             "length_eager": 0,
         }
         self.valid_token: Any = None
-        # A denoiser whose text length follows the prompt keys a graph per prompt length, so every new prompt recorded
-        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. Per
-        # image scope (resolution, batch, references: _image_scope) it records the lengths of that scope's first render
-        # only: once one of its graphs replayed (or that render ended, seal_lengths), a prompt length it never recorded
-        # runs the compiled step ungraphed (the same kernels, so the same image) and a recorded one replays. A scope
-        # seen for the first time opens its own window, so a new resolution still records as before.
+        # A text-length-keyed denoiser would record a graph per prompt; each image scope records
+        # lengths only in its first render, sealed once a graph replays or the render ends, then
+        # unseen lengths run ungraphed (same image); a new scope gets its own window.
         self.length_varies = _length_varies(module)
         self._sealed_scopes: set = set()
         self._scope_captures: dict = {}
@@ -1247,11 +1430,45 @@ class GraphedForward:
             self.module.__dict__.pop("forward", None)
             return self
         # Offload hooks installed after this wrapper wrap it: unwrap it inside their chain, keeping the hooks.
+        stock = type(self.module).forward.__get__(self.module)
         registry = getattr(self.module, "_diffusers_hook", None)
         for ref in list(getattr(registry, "_fn_refs", None) or ()):
-            if getattr(ref, "forward", None) is self:
-                ref.forward = type(self.module).forward.__get__(self.module)
+            for attr in ("forward", "original_forward"):
+                if getattr(ref, attr, None) is self:
+                    setattr(ref, attr, stock)
+        self._unlink_wrapper_metadata(stock)
         return self
+
+    # What ``update_wrapper`` copies from the class forward through this wrapper: kept on a hook wrapper.
+    _WRAPPER_METADATA = frozenset(
+        {*WRAPPER_ASSIGNMENTS, "__wrapped__", "__signature__", "__dict__"}
+    )
+
+    def _unlink_wrapper_metadata(self, stock: Any) -> None:
+        """diffusers wraps a hooked forward FROM the one it replaced (``update_wrapper``): the slot's ``__wrapped__``
+        chain still names this retired wrapper, and each link carries a copy of its ``__dict__`` (cache, stats, the
+        module). The CFG replica builder peels the root forward by ``__wrapped__`` and refuses an unknown override, so
+        point the chain at the class forward and drop the copied state."""
+        chain: list = []
+        link = self.module.__dict__.get("forward")
+        while link is not None and link is not self and len(chain) < 16:
+            chain.append(link)
+            link = getattr(link, "__wrapped__", None)
+        if link is not self:
+            return
+        mine = self.__dict__
+        for link in chain:
+            state = getattr(link, "__dict__", None)
+            if not isinstance(state, dict):
+                continue
+            for key in [
+                k
+                for k, v in state.items()
+                if k in mine and k not in self._WRAPPER_METADATA and v is mine[k]
+            ]:
+                del state[key]
+            if state.get("__wrapped__") is self:
+                state["__wrapped__"] = stock
 
     def enable(self) -> "GraphedForward":
         self.install()
@@ -1288,6 +1505,8 @@ class GraphedForward:
         self._scope_captures.clear()
         self._render_scopes.clear()
         self._open_warmups.clear()
+        self._real_warm.clear()  # new weights may compile a new variant: its first real steps warm it again
+        self._real_warm_closed.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1311,10 +1530,9 @@ class GraphedForward:
             # A pending or armed per-block fallback still keys its graphs on the resident groups' addresses: the
             # stable re-pin stays until it is known to be gone (``_engage_fallback`` / ``free``).
             _retire_stable_placement(self.placement)
-        # ``__call__`` short-circuits to eager on ``poisoned`` before it reads the cache, so every
-        # entry is now unreachable and only pins its statics, outputs and slice of the pool for the
-        # life of the load. Freeing is left to the caller's ``_release``, which runs once the failed
-        # capture's own frames are gone, so both go back in one pass.
+        # Poisoned entries are unreachable (__call__ goes eager first) yet pin statics, outputs and
+        # pool slices, so they are dropped; the caller's _release frees both in one pass once the
+        # failed capture's frames are gone.
         dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
         _note_dropped_pools(dropped)
@@ -1635,6 +1853,11 @@ class GraphedForward:
                 # The offload hooks onload the top-level weights: the step must enter through the hooked forward.
                 call = self._placed_step
 
+        if kwargs.get("kv_cache_mode") == "extract":
+            # A prefix-KV prefill (FLUX.2 klein KV step 0) builds its cache in Python and returns it beside the noise:
+            # no static buffer holds that, and a capture failing on it would poison the graphs of every plain call.
+            self.stats["refused_object"] += 1
+            return self._eager(eager_args, eager_kwargs)
         try:
             key = graph_key((args, kwargs))
             if self.protect_keyed is None:
@@ -1680,6 +1903,8 @@ class GraphedForward:
                 scope in getattr(self, "_sealed_scopes", ())
                 and (self.placement is None or key not in self._recorded)
                 and not (self.plan is not None and key in self._open_warmups)
+                # a key the first render already ran (real warm-ups it did not finish) records, as it would have then
+                and key not in getattr(self, "_real_warm_closed", ())
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
@@ -1694,6 +1919,55 @@ class GraphedForward:
                 ):
                     # The eager reference for _judge_keys, timed with CUDA events and never waited on.
                     return self._timed_eager(call, args, kwargs, key)
+            if (
+                self.placement is None
+                and self.warmup > 0
+                and real_warmup_enabled()
+                and self._real_warm.get(key, 0) < self.warmup
+                and key not in self._real_warm_closed
+                and (
+                    self._real_warm.get(key, 0) > 0
+                    # a key this render runs on every step, and on more steps than the warm-ups: it records on one
+                    # of them (a branch key may appear on 1-3 steps only, and records on its first call as before)
+                    or (
+                        not step_keyed and (getattr(self, "_render_steps", None) or 0) > self.warmup
+                    )
+                )
+                and self._real_warmup_ready(key, args, kwargs)
+            ):
+                # Resident: this real step is one of the key's warm-ups (compile, lazy allocations), run on copies
+                # laid out like the capture statics so the recording meets no new compiled variant.
+                self._real_warm[key] = self._real_warm.get(key, 0) + 1
+                while len(self._real_warm) > 4 * self.max_graphs:
+                    self._real_warm.pop(next(iter(self._real_warm)))
+                self.stats["real_warmups"] += 1
+                if self.plan is not None:
+                    self._warmed[key] = None
+                    self._open_warmups.add(key)
+                try:
+                    live = []
+                    spec = _flatten((args, kwargs), live)
+                    warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
+                    return call(*warm_args, **warm_kwargs)
+                except Exception as exc:  # noqa: BLE001 - like a failed capture: never fails the render
+                    # The copies cost memory the plain step does not need (an OOM here), or the step failed on them:
+                    # this load runs eager, as after a failed capture.
+                    self.poison(exc)
+                    self.stats["fallbacks"] += 1
+                    if self.logger is not None:
+                        self.logger.warning(
+                            "diffusion.cuda_graph: real warm-up failed on %s (%s: %s); this load runs eager",
+                            type(self.module).__name__,
+                            type(exc).__name__,
+                            exc,
+                        )
+                    exc.__traceback__ = None
+                    warm_args = warm_kwargs = live = None
+                    self._release()
+                    return self._eager(eager_args, eager_kwargs)
+            if self.poisoned:
+                # the real warm-up's NVFP4 prewarm failed: like a failed capture, this load runs eager
+                return self._eager(eager_args, eager_kwargs)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
                 # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
@@ -1828,6 +2102,37 @@ class GraphedForward:
             skip.stats["computed"] += 1
         return _rebuild(entry.out_spec, outs)
 
+    def _real_warmup_ready(self, key: Any, args: tuple, kwargs: dict) -> bool:
+        """Before a key's first real warm-up step, what ``_capture`` does before its side-stream warm-ups: NVFP4
+        GEMMs tuned at the step's row counts (an untuned eager step would run another tactic than the replays), and
+        a load with NVFP4 activation scales still calibrating left to the capture's refusal (runs eager)."""
+        if self._real_warm.get(key, 0):
+            return True
+        nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
+        if not nvfp4_layers:
+            return True
+        if _unbaked_nvfp4_layers(nvfp4_layers):
+            return False
+        live: list = []
+        _flatten((args, kwargs), live)
+        from .diffusion_nvfp4_linear import nvfp4_prewarm
+
+        try:
+            nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
+        except Exception as exc:  # noqa: BLE001 - as inside a capture: never fails the render
+            self.poison(exc)
+            self.stats["fallbacks"] += 1
+            if self.logger is not None:
+                self.logger.warning(
+                    "diffusion.cuda_graph: NVFP4 prewarm failed on %s (%s: %s); this load runs eager",
+                    type(self.module).__name__,
+                    type(exc).__name__,
+                    exc,
+                )
+            exc.__traceback__ = None
+            return False
+        return True
+
     def _statics(self, live: list) -> list:
         """Fresh copies of ``live``, as a capture records from (and the shape warm-up step runs on)."""
         torch = _torch()
@@ -1933,6 +2238,14 @@ class GraphedForward:
             and key is not None
             and int((getattr(self, "_judge", {}).get(key) or {}).get("seen", 0)) >= 1
         )
+        # Resident keys warmed by their own first real steps record at once too.
+        warm = warm or (
+            self.placement is None
+            and key is not None
+            and self.warmup > 0
+            and real_warmup_enabled()
+            and int(getattr(self, "_real_warm", {}).get(key, 0)) >= self.warmup
+        )
         with _recording_step():
             if not recapture and not warm:
                 side = torch.cuda.Stream()
@@ -1963,7 +2276,7 @@ class GraphedForward:
                 card = torch.cuda.current_device()
             try:
                 # _capturing hands back any retired pool first, so the no-flush re-record never records beside one.
-                with _capturing(), recorder(graph, pool = pool, stream = _capture_stream(card)):
+                with _capturing(card), recorder(graph, pool = pool, stream = _capture_stream(card)):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
                 # A refusal is raised before the recording begins: the graph and the pool were never touched.
@@ -2000,6 +2313,12 @@ class GraphedCompiledCall(GraphedForward):
 
     def __init__(self, module: Any, **kwargs: Any) -> None:
         compiled = getattr(module, "_compiled_call_impl", None)
+        # A static skip already fronting the compiled call (front_compiled_call at compile): graph what it fronts.
+        from .diffusion_step_skip import fronting_skip
+
+        skip = fronting_skip(module)
+        if skip is not None:
+            compiled = skip.compiled_call
         if compiled is None:
             raise RuntimeError(f"{type(module).__name__} is not whole-module compiled")
         self.compiled = compiled
@@ -2007,11 +2326,18 @@ class GraphedCompiledCall(GraphedForward):
 
     def install(self) -> "GraphedCompiledCall":
         self.module._compiled_call_impl = self
+        # A static step skip in the forward slot would run inside the captured call: it goes in front instead.
+        from .diffusion_step_skip import front_compiled_call
+
+        front_compiled_call(self.module)
         return self
 
     def uninstall(self) -> "GraphedCompiledCall":
         if getattr(self.module, "_compiled_call_impl", None) is self:
             self.module._compiled_call_impl = self.compiled
+        else:
+            from .diffusion_step_skip import unfront_compiled_call
+            unfront_compiled_call(self.module, self, self.compiled)
         return self
 
 
@@ -2622,6 +2948,90 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
     )
 
 
+# torch < 2.12, sm_89: row-wise fp8 _scaled_mm (stream-K) memsets its barrier outside capture, so replay hangs (pytorch/pytorch#177573).
+FP8_ROWWISE_STREAMK_CAPS = ((8, 9),)
+FP8_ROWWISE_STREAMK_FIXED = (2, 12)
+
+
+def _fp8_rowwise_weight(t: Any, activation: bool = False) -> bool:
+    """A torchao fp8 weight whose linear runs the row-wise ``_scaled_mm`` (dynamic activation, per-row scale)."""
+    name = type(t).__name__
+    if name == "LinearActivationQuantizedTensor":
+        inner = getattr(t, "original_weight_tensor", None)
+        return inner is not None and _fp8_rowwise_weight(inner, activation = True)
+    if name == "Float8Tensor":
+        scale = getattr(t, "scale", None)
+        dynamic = activation or getattr(t, "act_quant_kwargs", None) is not None
+    elif name == "AffineQuantizedTensor" and activation:
+        impl = getattr(t, "tensor_impl", None)
+        if "Float8" not in type(impl).__name__:
+            return False
+        scale = getattr(impl, "scale", None)
+        dynamic = True
+    else:
+        return False
+    try:
+        return bool(dynamic and scale is not None and int(scale.numel()) > 1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[str]:
+    """Why ``modules`` must not be graphed on ``device``, else None (also None when unreadable)."""
+    if sys.platform == "win32":
+        return None  # not built on Windows
+    try:
+        torch = _torch()
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return None
+        major, minor = (int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+        if (major, minor) >= FP8_ROWWISE_STREAMK_FIXED:
+            return None
+        cap = tuple(torch.cuda.get_device_capability(device))
+    except Exception:  # noqa: BLE001
+        return None
+    caps: dict = {}
+
+    def _weight_cap(w: Any) -> Any:
+        # Layer split: an sm_89 secondary card hangs too.
+        if cap in FP8_ROWWISE_STREAMK_CAPS:
+            return cap
+        d = getattr(w, "device", None)
+        if getattr(d, "type", None) != "cuda":
+            return cap
+        key = str(d)
+        if key not in caps:
+            try:
+                caps[key] = tuple(torch.cuda.get_device_capability(d))
+            except Exception:  # noqa: BLE001
+                caps[key] = None
+        return caps[key]
+
+    for module in modules or ():
+        try:
+            weights = list(module.parameters())
+        except Exception:  # noqa: BLE001
+            continue
+        for w in weights:
+            if not _fp8_rowwise_weight(w):
+                continue
+            hit = _weight_cap(w)
+            if hit in FP8_ROWWISE_STREAMK_CAPS:
+                return (
+                    f"the row-wise fp8 GEMM on this sm_{hit[0]}{hit[1]} card cannot replay in a CUDA graph under "
+                    f"torch {major}.{minor} (it hangs; fixed in torch {FP8_ROWWISE_STREAMK_FIXED[0]}."
+                    f"{FP8_ROWWISE_STREAMK_FIXED[1]}, pytorch/pytorch#177573)"
+                )
+    return None
+
+
+def _graph_device(target: Any) -> Any:
+    device = getattr(target, "torch_device", None)
+    return device if isinstance(device, str) and device.startswith("cuda") else None
+
+
 def graph_eligible(
     target: Any,
     *,
@@ -2677,6 +3087,10 @@ def graph_eligible(
         for m in _denoiser_dits(pipe)
     ):
         return False, "SageAttention is not CUDA-graph safe"
+    # a denoiser that routes per denoise step (H3's INT8 attention exact start) would replay one route for all
+    unsafe = next((r for r in (_graph_unsafe(m) for m in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        return False, unsafe
 
     try:
         cuda = getattr(_torch(), "cuda", None)
@@ -2700,6 +3114,10 @@ def graph_eligible(
                 return False, why
     except Exception as exc:  # noqa: BLE001 - the capture itself still poisons safely
         _warn(logger, "capture-safe probe", exc)
+
+    why = fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
+    if why is not None:
+        return False, why
 
     return True, "eligible"
 
@@ -2733,10 +3151,43 @@ def install_cuda_graphs(
     return installed
 
 
+def note_render_steps(handles: Any, steps: Any) -> None:
+    """A render is about to run ``steps`` denoiser steps (after img2img strength): a resident key's first real steps
+    are its warm-ups only where more than WARMUP_ITERS of them follow, so it records within this render. Unknown
+    (None), or a pipeline of several denoisers (experts that split the steps), keeps the side-stream warm-ups."""
+    handles = tuple(handles or ())
+    try:
+        count = int(steps) if steps is not None and len(handles) == 1 else None
+    except Exception:  # noqa: BLE001 - an unreadable count is an unknown one
+        count = None
+    for handle in handles:
+        try:
+            handle._render_steps = count
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
+
+
 def seal_lengths(handles: Any) -> None:
     """A render ended: a denoiser whose text length follows the prompt records no new prompt length from here on
     (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
     for handle in handles or ():
+        try:
+            handle._render_steps = None  # the next render says its own
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
+        try:
+            real = getattr(handle, "_real_warm", None)
+            if real:
+                # A key whose real warm-ups the render ended before its capture records next time, as it did before
+                # real warm-ups: the side-stream way when it ran fewer than a capture needs (renders 2+ of a 1-step
+                # render replay), at once when it ran them all and the render ended before the recording step.
+                handle._real_warm_closed.update(
+                    key
+                    for key, n in real.items()
+                    if 0 < n <= handle.warmup and key not in handle.cache
+                )
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
         try:
             if not getattr(handle, "length_varies", False):
                 continue
@@ -2758,6 +3209,15 @@ def set_bypass(handles: Any, on: bool) -> None:
             handle.set_bypass(on)
         except Exception:  # noqa: BLE001 - optimisation only
             pass
+
+
+def wrappers_over(model: Any) -> tuple:
+    """Live graph wrappers over ``model`` or its submodules, wherever their handle is stashed."""
+    try:
+        ids = {id(m) for m in model.modules()} if hasattr(model, "modules") else {id(model)}
+    except Exception:  # noqa: BLE001
+        ids = {id(model)}
+    return tuple(w for w in tuple(_LIVE_WRAPPERS) if id(getattr(w, "module", None)) in ids)
 
 
 def _holds_graphs(handle: Any) -> bool:
@@ -3032,8 +3492,11 @@ def arm_block_graphs(
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or (
-        None if split else prompt_length_reason(pipe, family)
+    why = (
+        _block_basics(target, family, cache_engaged, speed_mode, family_default)
+        # Ahead of the prompt-length reason: an env var forces past that one, never this.
+        or fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
+        or (None if split else prompt_length_reason(pipe, family))
     )
     if whole:
         uninstall_all(whole, logger = logger)
@@ -3065,6 +3528,12 @@ def arm_block_graphs(
         applied["cuda_graph"] = False
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "SageAttention is not CUDA-graph safe")
+        return ()
+    unsafe = next((r for r in (_graph_unsafe(t) for t in _denoiser_dits(pipe)) if r), None)
+    if unsafe:
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, unsafe)
         return ()
     model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
     stays = (not hooked or bool(pinned)) and not model_offload

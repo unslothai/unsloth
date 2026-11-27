@@ -376,6 +376,24 @@ test("Choose starts from the private addresses, never a public one", () => {
   assert.deepEqual(defaultLanAccessAddressSelection(null), []);
 });
 
+test("a virtual switch address is offered flagged but never pre-ticked", () => {
+  const s = withAddresses(null, {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    available_addresses: [
+      { address: WIFI, public: false },
+      // biome-ignore lint/style/useNamingConvention: API schema
+      { address: "192.168.122.1", public: false, host_only: true },
+    ],
+  });
+  assert.deepEqual(lanAccessAddressChoices(s, []).at(-1), {
+    address: "192.168.122.1",
+    public: false,
+    hostOnly: true,
+    detected: true,
+  });
+  assert.deepEqual(defaultLanAccessAddressSelection(s), [WIFI]);
+});
+
 test("a saved address that is not up right now is still offered", () => {
   const s = withAddresses(["10.9.9.9", TAILSCALE]);
   assert.deepEqual(lanAccessAddressChoices(s, [TAILSCALE]), [

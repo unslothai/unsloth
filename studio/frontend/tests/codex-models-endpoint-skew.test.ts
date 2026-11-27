@@ -18,7 +18,6 @@ type Fetch = (
   options?: { refresh?: boolean },
 ) => Promise<SubscriptionModels>;
 type Resolve = (
-  curated: string[],
   savedModels: string[],
   listed: SubscriptionModels | null,
 ) => { catalog: string[]; selected: string[] };
@@ -27,7 +26,6 @@ let vite: ViteDevServer;
 let fetchCodexSubscriptionModels: Fetch;
 let resolveCodexPickerModels: Resolve;
 
-const CURATED = ["gpt-5.4", "gpt-5.5"];
 const SAVED = ["gpt-5.4", "gpt-5.7-nova"];
 
 before(async () => {
@@ -58,7 +56,7 @@ async function listedOrNull(providerId: string): Promise<SubscriptionModels | nu
   }
 }
 
-test("an old backend's 404 degrades to the curated seed and keeps the selection", async () => {
+test("an old backend's 404 keeps the saved models and the selection", async () => {
   const restore = stubFetch(
     new Response(JSON.stringify({ detail: "Not Found" }), {
       status: 404,
@@ -68,15 +66,15 @@ test("an old backend's 404 degrades to the curated seed and keeps the selection"
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { catalog, selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { catalog, selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
-    for (const model of CURATED) assert.ok(catalog.includes(model));
+    assert.deepEqual(catalog, SAVED);
   } finally {
     restore();
   }
 });
 
-test("an old backend's SPA index.html degrades to the curated seed", async () => {
+test("an old backend's SPA index.html keeps the selection", async () => {
   const restore = stubFetch(
     new Response("<!doctype html><html><body></body></html>", {
       status: 200,
@@ -86,7 +84,7 @@ test("an old backend's SPA index.html degrades to the curated seed", async () =>
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
   } finally {
     restore();
@@ -103,7 +101,7 @@ test("a body without a source field is not mistaken for a plan catalog", async (
   try {
     const listed = await fetchCodexSubscriptionModels("provider-1");
     assert.notEqual(listed?.source, "subscription");
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
   } finally {
     restore();
@@ -135,7 +133,7 @@ test("a gateway 401 on the unknown path still keeps the selection", async () => 
   try {
     const listed = await listedOrNull("provider-1");
     assert.equal(listed, null);
-    const { selected } = resolveCodexPickerModels(CURATED, SAVED, listed);
+    const { selected } = resolveCodexPickerModels(SAVED, listed);
     assert.deepEqual(selected, SAVED);
     await new Promise((resolve) => setTimeout(resolve, 50));
   } finally {

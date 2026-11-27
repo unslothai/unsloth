@@ -12,6 +12,10 @@ def _lower_str(value):
     return value.strip().lower() if isinstance(value, str) else value
 
 
+def split_target_modules(value) -> list:
+    return [m.strip() for m in str(value or "").split(",") if m.strip()]
+
+
 class DataConfig(BaseModel):
     model_config = ConfigDict(extra = "forbid", validate_assignment = True, defer_build = True)
 
@@ -119,17 +123,31 @@ class Config(BaseModel):
                     errors.append(f"  - {flag}: {err.get('msg', 'invalid value')}")
         if errors:
             raise ConfigError("\n".join(["Invalid command line options:", *errors]))
+        # --target-modules beats the config's vision_all_linear unless --vision-all-linear is passed.
+        if (
+            split_target_modules(kwargs.get("target_modules"))
+            and kwargs.get("vision_all_linear") is None
+        ):
+            self.lora.vision_all_linear = False
+
+    def ignored_target_modules(self, use_lora: bool, is_vision: bool) -> list:
+        """The non-default target_modules that vision_all_linear overrides on this run."""
+        if not (use_lora and is_vision and self.lora.vision_all_linear):
+            return []
+        listed = split_target_modules(self.lora.target_modules)
+        default = split_target_modules(LoraConfig.model_fields["target_modules"].default)
+        return [] if listed == default else listed
 
     def model_kwargs(self, use_lora: bool, is_vision: bool) -> dict:
         """Return kwargs for trainer.prepare_model_for_training()."""
-        if use_lora and is_vision:
-            # Vision models expect a string (e.g. "all-linear"); None uses trainer defaults
+        if (
+            use_lora
+            and is_vision
+            and (self.lora.vision_all_linear or "target_modules" not in self.lora.model_fields_set)
+        ):
             target_modules = "all-linear" if self.lora.vision_all_linear else None
         else:
-            parsed = [
-                m.strip() for m in str(self.lora.target_modules).split(",") if m and m.strip()
-            ]
-            target_modules = parsed or None
+            target_modules = split_target_modules(self.lora.target_modules) or None
 
         return {
             "use_lora": use_lora,

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { IconSvgElement } from "@hugeicons/react";
-import { BubbleChatIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, FilterHorizontalIcon, TestTube01Icon } from "@hugeicons/core-free-icons";
 
 // Drop the last 2 paths (interior bubbles).
 export const TestTubeOutlineIcon = TestTube01Icon.slice(
@@ -15,6 +15,11 @@ export const MessageCircleIcon = BubbleChatIcon.slice(
   1,
 ) as typeof BubbleChatIcon;
 
+export const FilterHorizontalCircleIcon: IconSvgElement = [
+  ...FilterHorizontalIcon.slice(0, 4),
+  ["circle", { cx: "9", cy: "7", r: "3", stroke: "currentColor", strokeWidth: "1.5", key: "4" }],
+  ["circle", { cx: "15", cy: "17", r: "3", stroke: "currentColor", strokeWidth: "1.5", key: "5" }],
+];
 
 export const StarPointedIcon: IconSvgElement = [
   [
@@ -122,3 +127,23 @@ export {
   SheetIcon,
   TrashIcon,
 } from "@hugeicons/core-free-icons";
+
+const wrapStroke = {
+  stroke: "currentColor",
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  strokeWidth: "1.5",
+} as const;
+
+// Hugeicons line-wrap / line-wrap-disable (MIT), traced until @hugeicons/core-free-icons ships them (not in 4.4.0).
+export const LineWrapIcon: IconSvgElement = [
+  ["path", { d: "M5 3V21", ...wrapStroke, key: "0" }],
+  ["path", { d: "M9 12H20", ...wrapStroke, key: "1" }],
+  ["path", { d: "M15 7.5C15 7.5 20 10.81 20 12C20 13.19 15 16.5 15 16.5", ...wrapStroke, key: "2" }],
+];
+
+export const LineWrapDisableIcon: IconSvgElement = [
+  ["path", { d: "M20 3V21", ...wrapStroke, key: "0" }],
+  ["path", { d: "M9.5 8H13.5C15.433 8 17 9.567 17 11.5C17 13.433 15.433 15 13.5 15H4", ...wrapStroke, key: "1" }],
+  ["path", { d: "M7.5 11.5C7.5 11.5 4 14.08 4 15C4 15.92 7.5 18.5 7.5 18.5", ...wrapStroke, key: "2" }],
+];

@@ -6,6 +6,17 @@ export {
   useMaterialStore,
 } from "./material";
 export { MATERIAL_LABELS } from "./material-labels";
-export { MATERIALS, type WindowMaterial } from "./model";
-export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
-export { resetChatBackground, useBackgroundStore } from "./storage";
+export { MATERIALS, sanitizeAdjustments, type WindowMaterial } from "./model";
+export {
+  useChatWelcomeShown,
+  useMarkChatCompare,
+  useMarkChatWelcome,
+} from "./welcome";
+export {
+  beginBackgroundUpload,
+  finishBackgroundUpload,
+  hydrateBackground,
+  resetChatBackground,
+  useBackgroundStore,
+} from "./storage";
+export { uploadBackgroundImage } from "./upload";

@@ -76,8 +76,7 @@ def _read_bounded_text(path: Path, limit: int) -> Optional[str]:
 
 
 def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
-    # Blocks symlinked children escaping the validated directory (realpath-checked).
-    # None = trusted caller (HF cache / remote download).
+    # Blocks symlinked children escaping the validated directory; None means a trusted caller.
     return allow_roots is None or _is_path_inside_allowlist(path, allow_roots)
 
 
@@ -253,8 +252,7 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 def _variant_matches(relative_path: str, needle: str) -> bool:
     from hub.utils.gguf import gguf_variant_family, gguf_variant_key
 
-    # The variant's own key first: in a repo holding several checkpoints at one quant
-    # the bare label names every one of them, so it cannot pick between them.
+    # Own key first: a bare quant label names every checkpoint at one quant and cannot pick.
     if gguf_variant_key(relative_path).lower() == needle or relative_path.lower() == needle:
         return True
     # custom folders key a second same-quant build by its file family (#13926)
@@ -368,7 +366,9 @@ def read_default_chat_template(
     try:
         # Precedence is per-snapshot: a sidecar must not override a newer revision.
         for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            cached_template = _chat_template_from_dir(snapshot, gguf_variant)
+            # Tool sandboxes can write the Hub cache: read nothing a link leads to outside the cache root.
+            cache_root = snapshot.parent.parent.parent
+            cached_template = _chat_template_from_dir(snapshot, gguf_variant, [cache_root])
             if cached_template:
                 break
     except Exception as exc:
@@ -446,13 +446,17 @@ def read_default_chat_template(
                     if not _this_file_was_already_here(rel)
                     else nullcontext()
                 )
+                cache_dir = active_hf_hub_cache()
                 with recording:
                     path = hf_hub_download(
                         resolved,
                         rel,
                         token = hf_token,
-                        cache_dir = active_hf_hub_cache(),
+                        cache_dir = cache_dir,
                     )
+                # The returned path can be an entry already in the cache, so it gets the same rule as the walk.
+                if not _leaf_inside_allowlist(Path(path), [Path(cache_dir)]):
+                    return None
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None

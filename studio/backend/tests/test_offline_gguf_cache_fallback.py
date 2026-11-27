@@ -23,9 +23,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 def _module_available(name: str) -> bool:
-    """True if the real module can be imported. Probed rather than imported: these stubs
-    land in sys.modules for the whole session, so an empty one breaks anything imported
-    later that actually uses the module."""
+    """Probe with find_spec: an empty stub left in sys.modules breaks later real imports."""
     try:
         return _importlib_util.find_spec(name) is not None
     except (ImportError, ValueError):
@@ -219,6 +217,63 @@ class TestGgufVariantFileResolution:
         ]
 
         assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
+
+    @pytest.mark.parametrize(
+        "variant, sibling",
+        [
+            ("Q6_K", "Qwen3-8B-UD-Q6_K_XL.gguf"),
+            ("Q6_K", "Qwen_Qwen3-8B-Q6_K_L.gguf"),
+            ("Q2_K", "Qwen3-8B-Q2_K_L.gguf"),
+            ("Q2_K", "Qwen3-8B-UD-Q2_K_XL.gguf"),
+            ("Q4_K_M", "Qwen3-8B-UD-Q4_K_M.gguf"),
+        ],
+    )
+    def test_bare_quant_does_not_match_longer_sibling_quant(self, variant, sibling):
+        assert _gguf_files_for_variant([sibling], variant) == []
+        assert _gguf_files_for_variant([sibling, f"Qwen3-8B-{variant}.gguf"], variant) == [
+            f"Qwen3-8B-{variant}.gguf"
+        ]
+
+    def test_non_quant_variant_keeps_loose_match(self):
+        files = [
+            "Llama-3.2-1B-Instruct-Q4_K_M-00001-of-00002.gguf",
+            "Llama-3.2-1B-Instruct-Q4_K_M-00002-of-00002.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "00002-of-00002") == [files[1]]
+
+    @pytest.mark.parametrize(
+        "variant, files",
+        [
+            ("IQ4_XS", ["Llama-IQ4_XS-3.57bpw.gguf"]),
+            ("Q4_K_XL", ["Qwen3-8B-UD-Q4_K_XL.gguf"]),
+            (
+                "q2_k_xl",
+                [
+                    "UD-Q2_K_XL/Kimi-K2-UD-Q2_K_XL-00001-of-00002.gguf",
+                    "UD-Q2_K_XL/Kimi-K2-UD-Q2_K_XL-00002-of-00002.gguf",
+                ],
+            ),
+        ],
+    )
+    def test_bare_quant_keeps_loose_match_of_same_quant(self, variant, files):
+        assert _gguf_files_for_variant(files, variant) == files
+
+    def test_loose_match_without_own_quant_token_is_kept(self):
+        # NVFP4 is only a quant token at the end of a name, so this file has none.
+        assert _gguf_files_for_variant(["Model-NVFP4-draft.gguf"], "NVFP4") == [
+            "Model-NVFP4-draft.gguf"
+        ]
+
+    def test_cached_sibling_quant_is_not_reused_for_bare_quant(self, monkeypatch, hf_cache):
+        from core.inference.llama_cpp import cached_gguf_for_load
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        repo = "unsloth/Qwen3-0.6B-GGUF"
+        snap = _build_cache(hf_cache, repo, {"Qwen3-0.6B-UD-Q6_K_XL.gguf": 4})
+
+        assert cached_gguf_for_load(repo, "Q6_K") is None
+        assert cached_gguf_for_load(repo, "UD-Q6_K_XL") == str(snap / "Qwen3-0.6B-UD-Q6_K_XL.gguf")
 
     def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
         from utils.models.model_config import list_gguf_variants
@@ -785,8 +840,7 @@ class TestDetectGgufFromCache:
         assert _detect_gguf_from_hf_cache("unsloth/a") == "a-UD-Q4_K_XL.gguf"
 
     def test_subdir_only_quant_resolves(self, hf_cache):
-        """Regression: ``BF16/foo.gguf`` (quant only in directory). The pre-fix
-        cache scan matched on basename and missed this layout."""
+        """A subdirectory-only quant (BF16/foo.gguf) was missed by basename matching."""
         _build_cache(
             hf_cache,
             "unsloth/gpt-oss-20b-BF16",
@@ -885,7 +939,7 @@ class TestSharedHubModelInfo:
     @pytest.fixture(autouse = True)
     def hub(self, monkeypatch):
         """A fake hub whose every response identifies the call that produced it."""
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
         state = _types.SimpleNamespace(calls = [], raises = None, siblings = ("model.safetensors",))
 
         def _fake(repo_id, **kwargs):
@@ -959,7 +1013,7 @@ class TestSharedHubModelInfo:
         hub.raises = None
         with shared_hub_model_info():
             _hub_model_info("org/repo", "tok")
-            monkeypatch.setattr(mc, "_env_offline", lambda: True)
+            monkeypatch.setattr(mc, "hf_env_offline", lambda: True)
             _hub_model_info("org/repo", "tok")
 
         assert len(hub.calls) == 5
@@ -1165,8 +1219,7 @@ class TestSharedHubModelInfo:
 
 
 class _DnsState:
-    """Toggles resolver failure. The probe uses ``getaddrinfo`` (IPv4 + IPv6), so patch
-    both entry points."""
+    """The probe uses getaddrinfo (IPv4 and IPv6), so both entry points need patching."""
 
     def __init__(self, monkeypatch):
         self._mp = monkeypatch
@@ -1244,9 +1297,8 @@ class TestProbeDnsDead:
 class TestHfOfflineIfUnreachable:
     @pytest.fixture(autouse = True)
     def _no_ambient_proxy(self, clean_proxy_env):
-        """hf_dns_dead stands down when a proxy is configured, so on a runner with
-        HTTP_PROXY set the patched resolver is bypassed and the DNS-failure scenario these
-        tests mean to exercise never happens."""
+        """hf_dns_dead stands down under a proxy, so the patched resolver is bypassed when
+        HTTP_PROXY is set."""
 
     def test_dns_fail_sets_env_inside_block_only(self, dns, reachable, clean_offline_env):
         dns.fail()
@@ -1363,8 +1415,7 @@ class TestEndpointAwareOfflineDetection:
 
 
 class TestProxyOnlyEgress:
-    """With a proxy, the proxy resolves the hub host, so local DNS proves nothing and
-    must not be used to declare the hub offline."""
+    """Behind a proxy, local DNS proves nothing about the hub and must not declare it offline."""
 
     @pytest.fixture
     def dns_all_dead(self, monkeypatch):
@@ -1401,9 +1452,7 @@ class TestProxyOnlyEgress:
 
 
 class TestAllProxyIsHonoured:
-    """The Hub client (requests) honours all_proxy but urllib does not, so a proxy-only
-    setup would fail the probe's direct lookup and be called offline while real hub calls
-    succeed. Resolution must match requests' select_proxy."""
+    """The Hub client (requests) honours all_proxy, urllib does not; resolve it as select_proxy does."""
 
     @pytest.fixture(autouse = True)
     def _clean_proxy_env(self, monkeypatch):
@@ -1796,22 +1845,19 @@ class TestSpawnWindowKeepsTheParentOffline:
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
 
-        from utils.transformers_version import _env_offline
         from utils.utils import force_hf_offline, hf_env_offline
 
         with force_hf_offline():
-            assert _env_offline() is True and hf_env_offline() is True
+            assert hf_env_offline() is True
             with child_environment_for_spawn({}):
                 assert "HF_HUB_OFFLINE" not in os.environ
-                assert _env_offline() is True
                 assert hf_env_offline() is True
-            assert _env_offline() is True
+            assert hf_env_offline() is True
 
     def test_guarded_metadata_fetch_stays_local_during_a_concurrent_spawn(
         self, monkeypatch, clean_offline_env
     ):
-        """Guard on one thread, spawn window on a second, raw metadata read on a third.
-        No request may leave the process."""
+        """Guard, spawn and raw metadata read run on three threads; none may leave the process."""
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
         import threading
@@ -1898,8 +1944,7 @@ class TestProxyTimeoutIsNotExcused:
 
 
 class TestEndpointNormalisation:
-    """An empty or whitespace HF_ENDPOINT must fall back to the default hub in BOTH the
-    DNS shortcut and the HTTP probe, or the two stages disagree."""
+    """Empty/blank HF_ENDPOINT means the default hub in both DNS shortcut and HTTP probe."""
 
     @pytest.fixture(autouse = True)
     def _direct_probe(self, clean_proxy_env):
@@ -1952,8 +1997,7 @@ class TestIpv6Endpoint:
 
 
 class TestCallWithDeadline:
-    """A connect timeout applies per address and no family is raced, so a blackholed host
-    multiplies any nominal cap by the address count."""
+    """Connect timeouts apply per address, so a blackholed host multiplies the nominal cap."""
 
     def test_a_stalled_call_raises_rather_than_waiting(self):
         from utils.utils import call_with_deadline
@@ -1969,8 +2013,7 @@ class TestCallWithDeadline:
         assert call_with_deadline(lambda: "done", 5.0) == "done"
 
     def test_slow_but_finished_work_is_not_cut_off(self):
-        """The bound is the deadline given, not a shorter internal one: a first download on
-        a slow link must not be killed for being slow."""
+        """The bound is the caller's deadline, so a slow first download is not killed as slow."""
         from utils.utils import call_with_deadline
         import time as _time
 
@@ -1981,8 +2024,7 @@ class TestCallWithDeadline:
         assert call_with_deadline(_slow, 5.0) == "done"
 
     def test_the_caller_s_log_context_follows_the_work(self):
-        """Context is per-thread: without the copy, logging inside the call loses the
-        request fields it carries when the same code runs inline."""
+        """Log context is per-thread: the call must copy it, or request fields are lost."""
         from utils.utils import call_with_deadline
 
         import contextvars
@@ -1992,8 +2034,7 @@ class TestCallWithDeadline:
         assert call_with_deadline(lambda: request_id.get("missing"), 5.0) == "abc-123"
 
     def test_a_base_exception_from_the_callable_also_reaches_the_caller(self):
-        """Catching only Exception would let SystemExit die with the worker and read as a
-        silent None: an unreachable network that never happened."""
+        """Catching only Exception would let SystemExit read as a silent None."""
         from utils.utils import call_with_deadline
 
         def _exits():
@@ -2475,8 +2516,7 @@ class TestListGgufVariantsPermanentErrors:
 
 
 class TestDetectGgufFromCacheExcludesMmproj:
-    """A partial cache with only a vision projector must not route it as
-    the main model."""
+    """A cache holding only a vision projector must not be routed as the main model."""
 
     def test_mmproj_only_returns_none(self, hf_cache):
         from utils.models.model_config import _detect_gguf_from_hf_cache
@@ -2578,8 +2618,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
 
 class TestWaitForHealthRetriesOnReadError:
-    """A TCP RST mid-read while llama-server is still binding (Windows: WinError
-    10054) must not abort the health-poll loop and mask warmup as a fatal load."""
+    """A TCP reset during llama-server bind (WinError 10054) must retry, not abort the poll."""
 
     def test_read_error_then_success(self, monkeypatch):
         import httpx
@@ -2720,8 +2759,7 @@ class TestProxyDetectionWithoutRequests:
 
 
 class TestSocksProxyIsNotEgressEvidence:
-    """urllib cannot route through socks5://, so its instant failure is not proof the
-    hub is unreachable -- the Hub client reaches it through that proxy fine."""
+    """urllib cannot use socks5://, so its failure does not prove the hub is unreachable."""
 
     @pytest.fixture(autouse = True)
     def _no_ambient_proxy(self, clean_proxy_env):
@@ -2753,8 +2791,7 @@ class TestSocksProxyIsNotEgressEvidence:
 
 
 class TestProbeFailsOpenOnNonNetworkErrors:
-    """A malformed endpoint or a bug in the probe is not an answer about the network.
-    Classifying it as offline silently quarantines every load."""
+    """A malformed endpoint or probe bug says nothing about the network and must fail open."""
 
     @pytest.fixture(autouse = True)
     def _no_ambient_proxy(self, clean_proxy_env):
@@ -2830,8 +2867,7 @@ class TestProbeFailsOpenOnNonNetworkErrors:
 
 
 class TestExplicitBaseEnvIsAlsoScrubbed:
-    """child_env(base=...) is what the vision sidecar builds, from a raw os.environ
-    copy, so it has to lose the scoped offline flags too."""
+    """An explicit base in child_env(base=...) must also lose the scoped offline flags."""
 
     def test_explicit_base_loses_scoped_offline(self, monkeypatch, tmp_path):
         from utils.utils import force_hf_offline
@@ -2969,8 +3005,7 @@ class TestMetadataReadsUseTheHubProxy:
         ]
 
     def test_no_proxy_bypass_keeps_the_metadata_read_direct(self, monkeypatch, tmp_path):
-        """A CIDR NO_PROXY entry requests honours and urllib does not must not be
-        re-routed through the proxy by the metadata reads either."""
+        """CIDR NO_PROXY must keep metadata reads direct, not re-route them via the proxy."""
         import json as _json
         import threading as _threading
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3080,6 +3115,9 @@ class TestValidateGuardCoversMetadataPreflights:
         remote = {
             "check_upgrade_for_model",
             "latest_tier_active_for",
+            "latest_tier_forces_16bit",
+            "latest_tier_load_policy",
+            "latest_tier_upgrade_keeps_4bit",
             "get_base_model_from_lora_identifier",
             "_guard_chat_load_against_training",
         }
@@ -3100,9 +3138,7 @@ class TestValidateGuardCoversMetadataPreflights:
 
 
 class TestGuardIsKeyedOnWhatIsRead:
-    """A LOCAL adapter path can resolve to a REMOTE base, and the base is what gets
-    fetched. Keying the guard on the outer request would hand back a null context while
-    the preflight reads the hub."""
+    """A local adapter can resolve to a remote base, so the guard must key on the base actually fetched."""
 
     def test_predicate_contract(self):
         """_any_remote: local-only is False, anything unknown or remote is True."""
@@ -3164,7 +3200,13 @@ class TestGuardIsKeyedOnWhatIsRead:
                 continue
             targets, read = node.args[1], node.args[2]
             read_name = getattr(read, "id", None) or getattr(read, "attr", None)
-            if read_name in ("latest_tier_active_for", "_guard_chat_load_against_training"):
+            if read_name in (
+                "latest_tier_active_for",
+                "latest_tier_forces_16bit",
+                "latest_tier_load_policy",
+                "latest_tier_upgrade_keeps_4bit",
+                "_guard_chat_load_against_training",
+            ):
                 if isinstance(targets, ast.Name):
                     bad.append((read_name, node.lineno))
             if read_name == "check_upgrade_for_model":
@@ -3204,16 +3246,13 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
 
 
 class TestModelConfigPredicateHonoursTheWindow:
-    """model_config._env_offline gates detect_audio_type's raw requests.get, which the
-    patched hub constant does not cover. During hf_environment_restored_for_spawn the env
-    is back to the user's values, so an env-only predicate would fire that 15s request."""
+    """The spawn window restores the user's env, so an env-only predicate would fire a 15s raw request."""
 
     def test_predicate_is_true_inside_the_spawn_window(self, monkeypatch):
         from utils.utils import force_hf_offline
         import threading
 
-        from utils.models.model_config import _env_offline
-        from utils.utils import force_hf_offline, hf_environment_restored_for_spawn
+        from utils.utils import force_hf_offline, hf_env_offline, hf_environment_restored_for_spawn
 
         for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
             monkeypatch.delenv(key, raising = False)
@@ -3229,23 +3268,21 @@ class TestModelConfigPredicateHonoursTheWindow:
                 checked.wait(5)
 
         with force_hf_offline():
-            assert _env_offline() is True
+            assert hf_env_offline() is True
             t = threading.Thread(target = _spawn_window)
             t.start()
             assert in_window.wait(5)
-            seen["predicate_during"] = _env_offline()
+            seen["predicate_during"] = hf_env_offline()
             checked.set()
             t.join(5)
-            assert _env_offline() is True
+            assert hf_env_offline() is True
 
         assert seen["env_during"] is None
         assert seen["predicate_during"] is True
-        assert _env_offline() is False
+        assert hf_env_offline() is False
 
     def test_raw_fetch_is_skipped_during_the_window(self, monkeypatch, tmp_path):
-        """The stall this prevents: _detect_audio_from_tokenizer's own requests.get is the
-        call the gate protects, so drive that function rather than a caller that could
-        return earlier for unrelated reasons."""
+        """The gate protects _detect_audio_from_tokenizer's own requests.get, so drive that function."""
         from utils.utils import force_hf_offline
         import threading
 
@@ -3430,9 +3467,7 @@ class TestMetadataUrlsUseTheDownloadRoute:
 
 
 class TestLocalGgufWithoutABaseSkipsTheProbe:
-    """The exporter writes export_metadata.json with a null base_model for a non-LoRA
-    checkpoint. Guarding a lookup that never happens would make a wholly local load pay
-    the reachability probe."""
+    """A non-LoRA export has a null base_model, so a wholly local load must not pay the probe."""
 
     def test_guard_is_not_entered_without_a_base(self):
         import ast
@@ -3519,9 +3554,8 @@ class TestLocalLoraRemoteBaseIsInTheGuardTargets:
 
 
 class TestHungProbeHonoursFailOpenBehindAProxy:
-    """A thread still alive at the join is ambiguous behind a proxy: connect, TLS and the
-    response can each stay under `timeout` while the total runs past it. Direct, a hang
-    still means the real hub calls would hang too, so that verdict is unchanged."""
+    """Behind a proxy a hung probe fails open, as each phase can stay under the timeout; direct, a
+    hang still means the hub calls would hang too, so that verdict is unchanged."""
 
     class _Hang:
         def open(
@@ -3563,8 +3597,7 @@ class TestHungProbeHonoursFailOpenBehindAProxy:
 
 
 class TestGuardsShareOneDnsLookup:
-    """/validate opens several guards per request. The DNS shortcut is cheap only when
-    DNS is fast; on a slow resolver it costs its full timeout per guard."""
+    """Guards share one DNS lookup, since a slow resolver costs a full timeout per guard."""
 
     @pytest.fixture(autouse = True)
     def _fresh(self):

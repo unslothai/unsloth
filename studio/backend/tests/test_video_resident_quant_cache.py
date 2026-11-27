@@ -297,9 +297,14 @@ def test_an_unset_request_replays_exactly_like_auto(env, monkeypatch, requested)
 def test_the_load_maps_unset_to_auto_before_the_seed_and_the_write():
     """The write branch and the seed call see ``transformer_quant`` after load_pipeline turned unset into auto."""
     src = inspect.getsource(vid.VideoBackend.load_pipeline)
-    mapped = src.index('transformer_quant = "off" if speed_off else TQ_AUTO')
-    unset = src[mapped - 600 : mapped]
-    assert "if transformer_quant is None or str(transformer_quant).strip().lower() in (" in unset
+    mapped = src.index(
+        "transformer_quant = video_transformer_quant_request(transformer_quant, speed_mode)"
+    )
+    # unset / auto maps to auto, or to dense under Speed "off"; anything else is kept
+    for unset in (None, "", " Auto "):
+        assert vid.video_transformer_quant_request(unset, None) == "auto"
+        assert vid.video_transformer_quant_request(unset, " OFF ") == "off"
+    assert vid.video_transformer_quant_request("int8", "off") == "int8"
     seed = src.index(
         "denoiser_seed_scheme = _video_auto_denoiser_planned or _video_auto_denoiser_scheme("
     )
@@ -521,8 +526,8 @@ def test_the_load_writes_auto_resident_builds_deferred_and_keeps_explicit_writes
         assert needle in guard, needle
     assert "defer = True" in src[auto_at : auto_at + 400]
     assert "source = _base_local_dir or fetch_base," in src[auto_at : auto_at + 400]
-    assert "_start_resident_quant_write(self, pipe, _load_token)" in src
-    assert src.index("_start_resident_quant_write(") > src.index(
+    assert "_take_resident_quant_write(self, _load_token)" in src
+    assert src.index("_take_resident_quant_write(") > src.index(
         '"video.loaded: %s (%s, %s, offload=%s'
     )
 

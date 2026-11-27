@@ -69,8 +69,7 @@ def test_defaults_keep_the_old_keyword_call_working(i):
 
 
 def test_the_reference_signature_is_what_we_matched():
-    """Guards the premise: if FastLanguageModel's signature moves, these
-    two have to move with it, and the test should say so."""
+    """Guards the premise: if FastLanguageModel's signature changes, these two must follow."""
     node = _defs("unsloth_save_pretrained_merged", SAVE_PY)
     assert node, "unsloth_save_pretrained_merged not found"
     assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer", "save_method"]
@@ -93,8 +92,7 @@ def test_forwarding_path_passes_save_method_through():
 
 @pytest.mark.parametrize("i", [0, 1])
 def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
-    """Passing it positionally AND as a keyword must not raise or silently
-    prefer the wrong one."""
+    """Passing it positionally and as a keyword must not raise or silently pick the wrong one."""
     src = ST_PY.read_text(encoding = "utf-8")
     body = ast.get_source_segment(src, _defs("_save_pretrained_merged", ST_PY)[i])
     assert "if tokenizer is None:" in body
@@ -228,8 +226,7 @@ class _Merged:
 
 
 class _FakeST:
-    """A SentenceTransformer stand-in: a sequence of modules, module 0 of
-    which wraps the transformer."""
+    """A SentenceTransformer stand-in: a sequence of modules, where module 0 wraps the transformer."""
 
     def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
@@ -249,8 +246,7 @@ class _FakeST:
 
 
 def test_positional_call_completes_the_merge(tmp_path):
-    """The documented positional call. Before the fix this raised TypeError
-    before running a single statement."""
+    """Documented positional call completes the merge; no TypeError before any statement runs."""
     fn, branding = _extract(0)
     st = _FakeST()
     tok = _Tok()
@@ -334,11 +330,7 @@ def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
 
 
 def test_the_two_lora_refusals_do_not_share_a_message(tmp_path):
-    """Written because the check above can only see one of the pair at a time.
-
-    If both branches were ever collapsed onto one message, each test would still pass on its
-    own substring while the distinction that makes the advice actionable was gone.
-    """
+    """The two LoRA refusals need distinct messages, or the advice is no longer actionable."""
     fn, _ = _extract(1)
     messages = []
     for no_modules in (True, False):
@@ -356,7 +348,7 @@ def test_the_reference_normalizes_before_validating():
     body = ast.get_source_segment(
         SAVE_PY.read_text(encoding = "utf-8"), _defs("unsloth_save_model", SAVE_PY)[0]
     )
-    assert 'save_method.lower().replace(" ", "_")' in body
+    assert 'save_method.lower().strip().replace("-", "_").replace(" ", "_")' in body
 
 
 @pytest.mark.parametrize("method", ["MERGED_16BIT", "merged 16bit", "Merged_16bit"])

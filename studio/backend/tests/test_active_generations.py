@@ -582,9 +582,7 @@ _PINNED_SNAPSHOT = "/tmp/hf/hub/models--Org--Quant/snapshots/" + "d" * 40
 
 
 def test_unload_finds_a_gguf_loaded_from_a_pinned_snapshot(monkeypatch):
-    """A cached row that pins a snapshot is loaded by that path, while the status the client
-    reads back reports the repo id. An unload naming the id has to reach the same server, or
-    Eject reports success and leaves it resident."""
+    """A GGUF pinned to a snapshot reports its repo id, so unload by that id must reach it."""
     _route_gate()
     import routes.inference as inf_mod
 
@@ -945,8 +943,7 @@ def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monke
 
 
 def _install_responses_stream_mock(monkeypatch, chunks):
-    """Point the direct /v1/responses GGUF pass-through at an in-process
-    llama-server. Mirrors the harness in test_responses_tool_passthrough.py."""
+    """Points /v1/responses GGUF pass-through at an in-process llama-server."""
     import json
     from types import SimpleNamespace
 
@@ -1742,7 +1739,8 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
 
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
-    assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")
+    # message_start is sent inside the teardown try, whose finally releases the tracker.
+    assert src.index("_tracker.__enter__()") < src.index("_release_admission(tracker = _tracker)")
 
 
 def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):

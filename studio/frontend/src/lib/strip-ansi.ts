@@ -81,6 +81,17 @@ function consumeCsi(text: string, afterIntro: number): number {
   return cursor;
 }
 
+const SPECIAL = /[\x18\x1a\x1b\x80-\x9f]/g;
+
+function isSpecial(code: number): boolean {
+  return (
+    code === ESC ||
+    code === CAN ||
+    code === SUB ||
+    (code >= 0x80 && code <= 0x9f)
+  );
+}
+
 export function stripAnsi(text: string): string {
   let out = "";
   let index = 0;
@@ -109,8 +120,18 @@ export function stripAnsi(text: string): string {
       continue;
     }
     if (code !== ESC) {
-      out += text[index] ?? "";
-      index += 1;
+      // Hand scan short plain runs; a regex call costs more than a few compares.
+      let stop = index + 1;
+      const limit = Math.min(text.length, index + 32);
+      while (stop < limit && !isSpecial(text.charCodeAt(stop))) {
+        stop += 1;
+      }
+      if (stop === limit && stop < text.length) {
+        SPECIAL.lastIndex = stop;
+        stop = SPECIAL.exec(text)?.index ?? text.length;
+      }
+      out += stop === index + 1 ? text[index] : text.slice(index, stop);
+      index = stop;
       continue;
     }
     if (index + 1 >= text.length) {
@@ -167,10 +188,23 @@ export function tailToolOutput(text: string): ToolOutputTail {
   let visible = text;
   let hiddenLines = 0;
   let hiddenChars = 0;
-  const lines = visible.split("\n");
-  if (lines.length > TAIL_LINES) {
-    hiddenLines = lines.length - TAIL_LINES;
-    visible = lines.slice(hiddenLines).join("\n");
+  // The TAIL_LINES-th newline from the end starts the kept lines; no split of the whole text.
+  let cut = text.length;
+  let found = 0;
+  while (found < TAIL_LINES) {
+    cut = cut > 0 ? text.lastIndexOf("\n", cut - 1) : -1;
+    if (cut < 0) {
+      break;
+    }
+    found += 1;
+  }
+  if (cut >= 0) {
+    let at = cut;
+    while (at >= 0) {
+      hiddenLines += 1;
+      at = at > 0 ? text.lastIndexOf("\n", at - 1) : -1;
+    }
+    visible = text.slice(cut + 1);
   }
   if (visible.length > TAIL_CHARS) {
     hiddenChars = visible.length - TAIL_CHARS;

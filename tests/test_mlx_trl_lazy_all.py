@@ -275,6 +275,14 @@ for stem in ("DPO", "ORPO", "KTO", "GRPO", "CPO"):
     assert type(pickle.loads(pickle.dumps(cfg))) is config, stem
 for name in ("PatchDPOTrainer", "PatchKTOTrainer", "PatchFastRL"):
     assert getattr(unsloth, name)() is None
+import unsloth_zoo.rl_environments as rl_env
+for name in ("check_python_modules", "create_locked_down_function", "execute_with_time_limit", "Benchmarker", "is_port_open", "launch_openenv"):
+    assert getattr(unsloth, name) is getattr(rl_env, name), name
+for name in ("FastLlamaModel", "FastMistralModel", "FastQwen2Model", "FastQwen3Model", "FastFalconH1Model"):
+    assert getattr(unsloth, name) is unsloth.FastLanguageModel, name
+from datasets import Dataset
+rows = unsloth.to_sharegpt(Dataset.from_list([{"q": "a", "a": "b"}] * 2), merged_prompt="{q}", output_column_name="a")
+assert rows[0]["conversations"] == [{"from": "human", "value": "a"}, {"from": "gpt", "value": "b"}]
 
 # TRL's own positional order, ref_model and a trainer-level config field.
 cfg = trl.DPOConfig(max_steps=1, max_length=512, max_prompt_length=64)
@@ -410,6 +418,10 @@ assert trl.DPOConfig(output_dir="o").max_prompt_length == (None if modern else 5
 assert trl.DPOConfig(output_dir="o", max_prompt_length=64).max_prompt_length == 64
 grpo = trl.GRPOConfig(output_dir="o", num_generations=2, per_device_train_batch_size=2)
 assert grpo.max_completion_length == (512 if Version(trl.__version__) >= Version("1.10.0") else 256)
+assert grpo.loss_type == "dapo"
+assert trl.KTOConfig(output_dir="o").loss_type == "kto"
+assert trl.CPOConfig(output_dir="o").loss_type == "sigmoid"
+assert trl.SFTConfig(output_dir="o").loss_type == "nll"
 
 over = trl.DPOTrainer(model=model, args=trl.DPOConfig(output_dir="o"), train_dataset=[], max_grad_norm=0, dataset_order="default").args
 assert (over.max_grad_norm, over.dataset_order) == (0, "default")

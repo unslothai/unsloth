@@ -392,6 +392,24 @@ def test_a_failed_job_reports_its_error_and_keeps_it_after_the_next_job(client, 
     assert client.get(f"/v1/videos/{job['id']}").status_code == 404
 
 
+def test_a_pipeline_exception_names_its_cause_in_the_job_error(client, backend, monkeypatch):
+    def _mismatch(**kwargs):
+        raise RuntimeError(
+            "Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type) should be the same\n"
+            '  File "/home/u/.venv/diffusers/autoencoder_kl_wan.py", line 597'
+        )
+
+    monkeypatch.setattr(backend, "generate", _mismatch)
+    job = _create(client, {"prompt": "a car"}).json()
+    failed = _wait_terminal(client, job["id"])
+    assert failed["status"] == "failed"
+    assert failed["error"] == {
+        "code": "video_generation_failed",
+        "message": "Video generation failed. RuntimeError: Input type (CPUBFloat16Type) and "
+        "weight type (CUDABFloat16Type) should be the same",
+    }
+
+
 def test_an_unpolled_failure_keeps_its_error_after_the_next_job(client, backend):
     backend.fail_with = "Prompt rejected before polling."
     failed_job = _create(client, {"prompt": "bad"}).json()
@@ -1345,3 +1363,15 @@ def test_a_first_frame_without_the_i2v_class_is_refused_before_the_model_switch(
     assert resp.status_code == 400, resp.json()
     assert "WanImageToVideoPipeline" in str(resp.json())
     assert switched["completed"] is False
+
+
+def test_headless_video_jobs_never_build_the_live_previewer(client, backend, monkeypatch):
+    # /v1/videos, the chat tool and MCP all start here, and none of them shows a preview.
+    from core.inference.diffusion_preview import preview_wanted
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PREVIEW", raising = False)
+    resp = client.post("/v1/videos", json = {"prompt": "a cat", "seconds": 5})
+    assert resp.status_code == 200, resp.json()
+    assert _wait_terminal(client, resp.json()["id"])["status"] == "completed"
+    assert backend.last_generate_kwargs["live_preview"] is False
+    assert preview_wanted(backend.last_generate_kwargs["live_preview"]) is False

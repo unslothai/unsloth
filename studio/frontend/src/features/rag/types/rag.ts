@@ -7,6 +7,9 @@ export interface KnowledgeBase {
   description?: string | null;
   createdAt?: string | null;
   documentCount?: number;
+  /** Both absent from servers older than the fields. */
+  indexedCount?: number;
+  indexingCount?: number;
 }
 
 export type DocumentStatus = "pending" | "running" | "completed" | "failed";
@@ -149,6 +152,8 @@ export interface FolderSyncJob {
   removedFiles?: number;
   renamedFiles?: number;
   failedFiles?: number;
+  /** Already indexed plus this pass's checked files. */
+  syncedFiles?: number;
   error?: string | null;
 }
 

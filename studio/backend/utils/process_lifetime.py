@@ -294,8 +294,7 @@ _fork_reset_installed = False
 
 
 def _reset_after_fork() -> None:
-    """A fork child inherits both locks in whatever state they were in and a
-    _spawner whose thread does not exist here. Start clean instead of deadlocking."""
+    """Fork children inherit locks in any state and a _spawner with no thread; start clean."""
     global _spawner, _spawner_lock, _record_lock, _owner_identity, _shutdown_latch
     _spawner_lock = threading.Lock()
     # A different pid here.
@@ -472,6 +471,134 @@ def _same_identity(recorded: str, current: str) -> bool:
     return recorded == current
 
 
+# macOS: libproc answers what `ps` did, without a subprocess per adopt/forget. Sentinel = "ask ps".
+_DARWIN_ASK_PS = object()
+_DARWIN_SZOMB = 5  # sys/proc.h; ps prints 'Z' for p_stat == SZOMB
+_DARWIN_PROC_PIDTBSDINFO = 3  # sys/proc_info.h
+_darwin_libproc_state: list = []  # [] = not tried, [None] = unavailable, [(lib, struct)] = loaded
+_darwin_libproc_lock = threading.Lock()
+# ps formats lstart with strftime("%c") in the locale it inherits; these give the C-locale text.
+_DARWIN_C_TIME_LOCALES = frozenset(
+    {"C", "POSIX", "C.UTF-8", "en_US", "en_US.UTF-8", "en_US.US-ASCII", "en_US.ISO8859-1"}
+)
+
+
+def _darwin_libproc():
+    if _darwin_libproc_state:
+        return _darwin_libproc_state[0]
+    with _darwin_libproc_lock:
+        if not _darwin_libproc_state:
+            _darwin_libproc_state.append(_load_darwin_libproc())
+    return _darwin_libproc_state[0]
+
+
+def _load_darwin_libproc():
+    try:
+        import ctypes
+
+        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno = True)
+        lib.proc_pidinfo.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.proc_pidinfo.restype = ctypes.c_int
+        loaded = (lib, _darwin_bsdinfo_type())
+    except Exception:  # noqa: BLE001 - no libproc: every lookup keeps using ps
+        loaded = None
+    return loaded
+
+
+def _darwin_bsdinfo_type():
+    import ctypes
+    class ProcBsdInfo(ctypes.Structure):
+        # struct proc_bsdinfo, xnu bsd/sys/proc_info.h (MAXCOMLEN 16).
+        _fields_ = [
+            ("pbi_flags", ctypes.c_uint32),
+            ("pbi_status", ctypes.c_uint32),
+            ("pbi_xstatus", ctypes.c_uint32),
+            ("pbi_pid", ctypes.c_uint32),
+            ("pbi_ppid", ctypes.c_uint32),
+            ("pbi_uid", ctypes.c_uint32),
+            ("pbi_gid", ctypes.c_uint32),
+            ("pbi_ruid", ctypes.c_uint32),
+            ("pbi_rgid", ctypes.c_uint32),
+            ("pbi_svuid", ctypes.c_uint32),
+            ("pbi_svgid", ctypes.c_uint32),
+            ("rfu_1", ctypes.c_uint32),
+            ("pbi_comm", ctypes.c_char * 16),
+            ("pbi_name", ctypes.c_char * 32),
+            ("pbi_nfiles", ctypes.c_uint32),
+            ("pbi_pgid", ctypes.c_uint32),
+            ("pbi_pjobc", ctypes.c_uint32),
+            ("e_tdev", ctypes.c_uint32),
+            ("e_tpgid", ctypes.c_uint32),
+            ("pbi_nice", ctypes.c_int32),
+            ("pbi_start_tvsec", ctypes.c_uint64),
+            ("pbi_start_tvusec", ctypes.c_uint64),
+        ]
+
+    return ProcBsdInfo
+
+
+def _darwin_bsdinfo(pid: int):
+    """struct proc_bsdinfo for pid, None when it does not exist, _DARWIN_ASK_PS when libproc cannot say."""
+    # pid_t range only: ctypes would truncate a larger int (or a bool) into another pid.
+    if type(pid) is not int or not 0 < pid <= 0x7FFFFFFF:
+        return _DARWIN_ASK_PS
+    try:
+        loaded = _darwin_libproc()
+        if loaded is None:
+            return _DARWIN_ASK_PS
+        import ctypes
+        import errno as errno_mod
+
+        lib, struct = loaded
+        info = struct()
+        ctypes.set_errno(0)  # a failure that leaves errno alone must not read a stale ESRCH
+        # arg 1: XNU proc_pidinfo then also finds zombies (proc_info.c findzomb), as ps's sysctl does.
+        size = lib.proc_pidinfo(
+            pid, _DARWIN_PROC_PIDTBSDINFO, 1, ctypes.byref(info), ctypes.sizeof(info)
+        )
+        if size == ctypes.sizeof(info) and info.pbi_pid == pid:
+            return info
+        if size <= 0 and ctypes.get_errno() == errno_mod.ESRCH:
+            return None
+    except Exception:  # noqa: BLE001 - any native failure: ps answers as before
+        pass
+    return _DARWIN_ASK_PS
+
+
+def _darwin_c_locale_time() -> bool:
+    """Whether ps, formatting in the inherited locale, prints the C-locale text built here."""
+    if os.environ.get("PATH_LOCALE"):
+        return False  # libc may load custom locale data
+    for name in ("LC_ALL", "LC_TIME", "LANG"):
+        value = os.environ.get(name)
+        if value:
+            return value in _DARWIN_C_TIME_LOCALES
+    return True
+
+
+def _darwin_native_identity(pid: int):
+    """The `ps -o lstart=,comm=` line under TZ=UTC, from libproc; _DARWIN_ASK_PS when only ps can answer."""
+    if not _darwin_c_locale_time():
+        return _DARWIN_ASK_PS
+    info = _darwin_bsdinfo(pid)
+    if info is None or info is _DARWIN_ASK_PS:
+        return info
+    # ps lstart is strftime("%c") of pbi_start_tvsec in 28 columns; asctime is the C-locale %c.
+    try:
+        lstart = time.asctime(time.gmtime(info.pbi_start_tvsec)).ljust(28)
+    except (OverflowError, ValueError, OSError):
+        return _DARWIN_ASK_PS
+    comm = info.pbi_comm.decode("utf-8", "replace")
+    # macOS identities compare only the five lstart fields; comm is informational.
+    return f"{lstart} {comm}".strip() if comm else lstart.strip()
+
+
 def _pid_identity(pid: int) -> Optional[str]:
     # Start time pins identity so a reused pid is never signalled later.
     if _is_linux():
@@ -514,6 +641,9 @@ def _pid_identity(pid: int) -> Optional[str]:
         except Exception:
             return None
     if sys.platform == "darwin":
+        native = _darwin_native_identity(pid)
+        if native is not _DARWIN_ASK_PS:
+            return native
         try:
             import subprocess
 
@@ -775,28 +905,12 @@ def collect_descendants_known(
         # Not a question about a process, so there is nothing indeterminate about it.
         return [], True
     if not is_signalable_pid(pid):
-        # Below the floor. Every process on the host descends from init, so walking pid 1
-        # hands the whole machine to a caller that is about to SIGTERM what it gets back:
-        # a stand-in process with pid 1 in a test did exactly that and took the user's
-        # session down. Nothing under init is ours by descent.
+        # Below the floor, pid 1 is never walked: every host process descends from init, so a tree
+        # kill would reach the whole machine (a test stand-in at pid 1 took a user's session down).
         return [], True
-    # Windows records the creating pid on a process and never clears it, not even when
-    # that parent exits and its number is handed to something else, so the raw table
-    # lists strangers created by an earlier holder of this pid as children of it. A real
-    # descendant cannot predate the process that created it, so each candidate is
-    # ordered against ITS OWN immediate parent, not only against the root.
-    #
-    # The root floor alone is not enough, and the difference is a real machine:
-    # the root starts at t=100, a stranger U starts at t=200 under some unrelated
-    # pid P, P exits, at t=300 P's number is reused for a genuine Unsloth child, and
-    # U still records P as its creator. U is later than the root, so a root-only floor
-    # admits it and taskkill /T /F reaches U and everything under it. Ordering U
-    # against P's CURRENT creation time (300) rejects it, because a child cannot
-    # predate its parent. Each step of the walk carries the parent's own creation
-    # time down, so the check holds at every depth rather than only at the first.
-    #
-    # Without a readable floor this claims nothing at all, and an unreadable candidate
-    # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
+    # Windows keeps a creating pid after its parent exits and the number is reused, so each
+    # candidate is ordered against its parent's current creation time (a child cannot predate it) at
+    # every depth; with no readable floor nothing is claimed and unreadable candidates are skipped.
     if _is_windows():
         return _windows_collect_descendants_known(pid)
     # POSIX: the kernel rewrites parent links on reparent, so no floor is needed.
@@ -1339,8 +1453,7 @@ def pid_is_running(pid: "Optional[int]") -> bool:
 
 
 def _pid_is_zombie(pid: int) -> bool:
-    """An exited child nobody waited on. It answers signals like a live process,
-    so a survivor check has to tell the two apart."""
+    """Exited, unreaped child: it still answers signals, so survivor checks must exclude it."""
     if _is_windows():
         return False
     if _is_linux():
@@ -1349,6 +1462,12 @@ def _pid_is_zombie(pid: int) -> bool:
                 return fh.read().rsplit(")", 1)[1].split()[0] == "Z"
         except Exception:
             return False
+    if sys.platform == "darwin":
+        info = _darwin_bsdinfo(pid)
+        if info is None:
+            return False
+        if info is not _DARWIN_ASK_PS:
+            return info.pbi_status == _DARWIN_SZOMB
     try:
         import subprocess
         out = subprocess.run(
@@ -1459,12 +1578,9 @@ def seconds_since_quit_signal() -> Optional[float]:
 
 
 def begin_process_lifecycle() -> None:
-    """Clear the latch for an embedded host that calls run_server again.
-
-    Quitting is terminal for a CLI run, but in-process callers (studio/backend/colab.py)
-    reuse the interpreter, and a latch that never cleared would refuse every spawn of
-    the second session.
-    """
+    """Clears the shutdown latch for an embedded host that calls run_server again; quitting is
+    terminal for a CLI run, but in-process callers like studio/backend/colab.py reuse the
+    interpreter, so an uncleared latch would refuse every spawn."""
     global _quit_signal_at
     _shutdown_latch.clear()
     _quit_signal_at = None

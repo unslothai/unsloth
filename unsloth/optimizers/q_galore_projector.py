@@ -178,14 +178,7 @@ class GaLoreProjector:
         return low_rank_grad
 
     def project_back(self, low_rank_grad: torch.Tensor) -> torch.Tensor:
-        """Project a low-rank update back to full rank.
-
-        Args:
-            low_rank_grad: The low-rank gradient/update tensor.
-
-        Returns:
-            The full-rank update scaled by ``self.scale``.
-        """
+        """Project a low-rank update back to full rank, scaled by `self.scale`."""
         float_ortho = self._ortho_float_cache
         self._ortho_float_cache = None
         if float_ortho is None:
@@ -200,16 +193,7 @@ class GaLoreProjector:
 
     @staticmethod
     def _compute_orthogonal(weights: torch.Tensor, rank: int, side: str) -> torch.Tensor:
-        """Compute the top-``rank`` orthogonal matrix via truncated SVD.
-
-        Args:
-            weights: 2-D tensor (typically the gradient).
-            rank: Number of singular vectors to keep.
-            side: ``'left'`` returns U[:, :rank], ``'right'`` returns Vh[:rank, :].
-
-        Returns:
-            Orthogonal matrix of shape ``(rank, N)`` (right) or ``(M, rank)`` (left).
-        """
+        """Truncated-SVD orthogonal factor: U[:, :rank] for side 'left', Vh[:rank, :] for 'right'."""
         original_dtype = weights.dtype
         original_device = weights.device
 

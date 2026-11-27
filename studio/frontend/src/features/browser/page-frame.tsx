@@ -157,6 +157,7 @@ export function PageFrame({
   base,
   ownBase = false,
   anyOrigin = false,
+  siteCookies = false,
   refresh,
   title,
   tabId,
@@ -174,6 +175,7 @@ export function PageFrame({
   base: string | null;
   ownBase?: boolean;
   anyOrigin?: boolean;
+  siteCookies?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -241,6 +243,7 @@ export function PageFrame({
             frame,
             message.url,
             message.seq,
+            message.sameSite,
           );
         return;
       }
@@ -342,6 +345,7 @@ export function PageFrame({
             base,
             ownBase,
             anyOrigin,
+            siteCookies,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

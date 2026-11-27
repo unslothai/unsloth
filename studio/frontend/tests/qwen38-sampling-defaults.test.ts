@@ -36,6 +36,11 @@ test("Qwen3.8 reuses the Qwen3.6 sampling table in both modes", () => {
   }
 });
 
+test("an Ollama Qwen3.5 MLX tag gets the table by its checkpoint", () => {
+  const checkpoint = "/h/.studio_links/0c918e29a9/mlx/qwen3.5-4b-mlx";
+  assert.equal(resolveQwenThinkingParams(checkpoint, true)?.presencePenalty, 1.5);
+});
+
 test("the Qwen3.8 Think toggle puts 1.5 in the live chat settings", () => {
   for (const thinkingOn of [true, false]) {
     const store = useChatRuntimeStore.getState();

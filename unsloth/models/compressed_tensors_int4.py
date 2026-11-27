@@ -132,7 +132,8 @@ class Int4PackedLinear(nn.Linear):
     def weight(self):
         # The packed int32 words with `.quant_state`: the bitsandbytes contract Unsloth's kernels read.
         packed = self._parameters["weight_packed"]
-        if packed.__dict__.get("quant_state") is None:
+        # getattr, not packed.__dict__: Dynamo graph-breaks on a tensor's __dict__.
+        if getattr(packed, "quant_state", None) is None:
             self.quant_state
         return packed
 

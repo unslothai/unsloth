@@ -38,6 +38,7 @@ lock = threading.Lock()
 loading: Optional[tuple[ExtraSlot, str]] = None
 # Out of routing, but their server would not stop: still priced for VRAM and retried by every drop.
 stuck: list[ExtraSlot] = []
+primary_last_used = 0.0
 
 
 def in_slot(slot: Optional[ExtraSlot], fn: Callable):
@@ -102,33 +103,51 @@ def visible_loading() -> Optional[tuple[ExtraSlot, str]]:
 
 
 def serving_slot(requested: str, candidates: list[ExtraSlot], satisfies) -> Optional[ExtraSlot]:
-    """The slot among ``candidates`` serving ``requested``; None when the primary does (it wins a tie)."""
-    for slot in (None, *candidates):
-        if in_slot(slot, lambda: satisfies(requested)):
-            return slot
-    return None
+    """The slot among ``candidates`` serving ``requested``; None when the primary does. Two quants of
+    one repo both answer to its bare id: the one used last serves, the primary on a tie."""
+    serving = [slot for slot in (None, *candidates) if in_slot(slot, lambda: satisfies(requested))]
+    return max(serving, key = lambda s: s.last_used if s else primary_last_used, default = None)
 
 
-async def route(requested: Optional[str], satisfies) -> Optional[ExtraSlot]:
-    """Route this task to the slot serving ``requested``, if any, and hold it until the task ends."""
+def mark_used(slot: Optional[ExtraSlot]) -> None:
+    global primary_last_used
+    if slot is None:
+        primary_last_used = time.monotonic()
+    else:
+        slot.last_used = time.monotonic()
+
+
+async def route(
+    requested: Optional[str],
+    satisfies,
+    touch: bool = True,
+) -> Optional[ExtraSlot]:
+    """Route this task to the slot serving ``requested``, if any, and hold it until the task ends.
+    ``touch=False`` for reads (status polls), which must not reorder eviction."""
     routed_slot.set(None)
     if not (slots and isinstance(requested, str) and requested):
         return None
     candidates = visible()
     if not candidates:
         return None
-    slot = await asyncio.to_thread(serving_slot, requested, candidates, satisfies)
+
+    def pick():
+        slot = serving_slot(requested, candidates, satisfies)
+        return slot, slot is None and touch and in_slot(None, lambda: satisfies(requested))
+
+    slot, primary_serves = await asyncio.to_thread(pick)
     if slot is None or not reserve(slot):
+        if primary_serves:
+            mark_used(None)
         return None
     routed_slot.set(slot)
-    slot.last_used = time.monotonic()
+    if touch:
+        mark_used(slot)
     return slot
 
 
 def reserve(slot: ExtraSlot) -> bool:
-    """Hold ``slot`` against eviction until the current task ends; False once it is gone.
-    The task, not the request: a durable chat run inherits the POST that queued it, which has
-    already answered 202 by the time the run routes."""
+    """Holds the slot until the task ends, not the request: a chat run outlives the POST that queued it."""
     with lock:
         if slot not in slots:
             return False
@@ -149,9 +168,8 @@ def eviction_victims(
     gpu_indices = None,
     discrete: bool = False,
 ) -> list[ExtraSlot]:
-    """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
-    one at a time when a footprint is unknown, since the retry prices the rest. A slot still
-    answering is never a victim."""
+    """LRU idle slots freeing short_mib on gpu_indices, one at a time when a footprint is unknown
+    since the retry prices the rest; a slot still answering is never a victim."""
     candidates = [s for s in visible() if s is not exclude and in_use(s)]
     victims, freed = [], 0
     for slot in sorted(candidates, key = lambda s: s.last_used):

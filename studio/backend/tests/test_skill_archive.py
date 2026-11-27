@@ -247,6 +247,22 @@ def test_import_refuses_frontmatter_whose_merge_keys_explode(isolated_skills, fr
     assert not (home / ".agents" / "skills" / "bomb").exists()
 
 
+@pytest.mark.parametrize("frontmatter", [_nested_merges, _wide_merge])
+def test_merge_key_bound_does_not_depend_on_the_pyyaml_version(frontmatter):
+    # PyYAML 6.0.4 de-duplicates repeated merges, so the flattened size alone no longer
+    # shows the expansion; the bound must read the composed nodes.
+    loader = skills._FrontmatterLoader(frontmatter())
+    try:
+        mappings = [
+            v for _, v in loader.get_single_node().value if isinstance(v, skills.yaml.MappingNode)
+        ]
+        with pytest.raises(skills.yaml.YAMLError, match = "merge keys expand too far"):
+            for node in mappings:
+                loader.flatten_mapping(node)
+    finally:
+        loader.dispose()
+
+
 def test_small_yaml_merges_still_load(isolated_skills):
     home, _ = isolated_skills
     manifest = (

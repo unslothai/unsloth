@@ -33,13 +33,26 @@ MESSAGES = [
 ]
 
 
-def _render(template):
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
+
+
+def _render(template, **kwargs):
     environment = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     return environment.from_string(template).render(
         messages = [{"role": "user", "content": "Hi"}],
         bos_token = "<s>",
         eos_token = "</s>",
         add_generation_prompt = False,
+        **kwargs,
     )
 
 
@@ -60,6 +73,18 @@ def test_default_system_message_renders_verbatim(name):
     default = DEFAULT_SYSTEM_MESSAGE[name]
     template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, None)
     assert default in _render(template)
+
+
+@pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
+def test_system_message_is_used_when_tools_are_passed(name):
+    template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, "You are a pirate.")
+    assert "You are a pirate." in _render(template, tools = TOOLS)
+
+
+@pytest.mark.parametrize("name", TEMPLATES_WITH_SYSTEM_MESSAGE)
+def test_default_system_message_is_used_when_tools_are_passed(name):
+    template, _ = _change_system_message(CHAT_TEMPLATES[name][0], name, None)
+    assert DEFAULT_SYSTEM_MESSAGE[name] in _render(template, tools = TOOLS)
 
 
 @pytest.mark.parametrize("name", ["vicuna", "vicuna_old", "vicuna old"])

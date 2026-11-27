@@ -3,10 +3,17 @@
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the npu index pulls in its React views.
+import { useNpuDisplayNames } from "@/features/npu/use-npu-display-name";
 import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
+import {
+  ANIMATION_HOLD_MS,
+  holdGlassMotion,
+  SETTLE_MS,
+} from "@/features/chat-background/glass-motion";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { useShortcut } from "@/features/settings/hooks/use-shortcut";
@@ -262,18 +269,22 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
     wasVisibleRef.current = visible;
   }, [visible]);
+  // A host that stays mounted, so opening and closing the panel never inserts a first child of #root:
+  // Chromium then restyles the whole app root (about 1,700 elements) under Reduce motion in Glass.
   return (
-    <AnimatePresence>
-      {visible && (
-        <ApiMonitorPanel
-          key={panelKey}
-          data={data}
-          unreachable={unreachable}
-          close={close}
-          setAutoOpen={setAutoOpen}
-        />
-      )}
-    </AnimatePresence>
+    <div data-api-monitor-host="" className="contents">
+      <AnimatePresence>
+        {visible && (
+          <ApiMonitorPanel
+            key={panelKey}
+            data={data}
+            unreachable={unreachable}
+            close={close}
+            setAutoOpen={setAutoOpen}
+          />
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -289,6 +300,7 @@ function ApiMonitorPanel({
   setAutoOpen: (value: boolean) => void;
 }): ReactElement {
   const navigate = useNavigate();
+  const npuName = useNpuDisplayNames(false);
   const focusRequest = useApiMonitorOverlayStore((s) => s.focusRequest);
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
@@ -389,6 +401,9 @@ function ApiMonitorPanel({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
+        // A script-driven fade: without this its glass blur is computed again on every frame of it.
+        onAnimationStart={() => holdGlassMotion(monitorRef.current, ANIMATION_HOLD_MS)}
+        onAnimationComplete={() => holdGlassMotion(monitorRef.current, SETTLE_MS)}
         /* Panel language from the sidebar menu: soft surface, menu corner, heading font. */
         className={cn(
           // transition-none: see floating-monitor.tsx (a drop must not flash at the start spot).
@@ -535,7 +550,9 @@ function ApiMonitorPanel({
                             : "text-muted-foreground",
                         )}
                       >
-                        {entry.error ? entry.error : entry.model}
+                        {entry.error
+                          ? entry.error
+                          : (npuName(entry.model) ?? entry.model)}
                       </span>
                       <span
                         className={cn(

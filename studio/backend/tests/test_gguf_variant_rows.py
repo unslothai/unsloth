@@ -388,8 +388,7 @@ def test_the_route_model_carries_display_label_to_the_picker():
 
 
 def test_an_unqualified_row_still_reports_no_display_label():
-    """The label is only for keys a picker cannot show. A plain quant token must not grow
-    one, or every ordinary row gains a redundant second name."""
+    """The display label is only for keys a picker cannot show; a plain quant token gets none."""
     from models.models import GgufVariantDetail as RouteDetail
 
     row = RouteDetail(filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1)
@@ -474,9 +473,7 @@ def test_a_qualified_key_is_an_explicit_checkpoint_request():
 
 
 def test_the_exact_key_wins_over_the_bare_quant_label():
-    """A bare label names every checkpoint carrying that quant, so the repo-root ``Q6_K``
-    row matched the qualified files too and then took whichever sorted first -- reporting
-    the sum of every checkpoint as its size and revealing another one's file."""
+    """A bare quant label matches every checkpoint carrying that quant, so the exact key must win."""
     from routes.models import _main_variant_rank
 
     # Pass the request verbatim: folding it would strip a qualified key's path punctuation.
@@ -671,9 +668,7 @@ def test_an_ambiguous_bare_quant_gets_no_fallback():
 
 
 def test_a_bare_local_id_keeps_the_checkpoint_a_plain_load_takes():
-    """A plain local load resolves through non-recursive detect_gguf_model and always takes the
-    repo root; the /v1 index ranks on the key text and would hand a bare id an equally good
-    ``distilled/...`` row that sorts earlier. One id, two answers, different weights."""
+    """Plain loads take the repo root via non-recursive detect_gguf_model; /v1 must not pick a sibling."""
     from core.inference.openai_auto_download import preferred_quant
 
     quants = (
@@ -703,9 +698,7 @@ def test_bpw_precisions_stay_separately_selectable(tmp_path):
 
 
 def test_a_parent_only_quant_survives_the_endian_filter():
-    """_is_big_endian_gguf_path reads a quant TOKEN so it can tell a parent-only quant from a
-    big-endian build. Handing it the qualified key made it misread the path and drop the file
-    from every plan, so the advertised row could never be downloaded."""
+    """_is_big_endian_gguf_path reads a quant token, so a qualified key drops parent-only quants."""
     from types import SimpleNamespace
 
     from hub.utils.gguf_plan import build_gguf_variant_plans
@@ -720,9 +713,7 @@ def test_a_parent_only_quant_survives_the_endian_filter():
 
 
 def test_admission_resolves_a_bare_alias_instead_of_404ing():
-    """Admission rejects against its own size map before the worker plan is ever consulted, so
-    the container-directory fallback has to exist on both. Without it a legacy org/repo:Q4_K_M
-    got a 404 and the worker fix was unreachable."""
+    """Admission checks its own size map, so the alias fallback must be in both, or a bare quant 404s."""
     from core.inference.openai_auto_download import _match_variant
 
     variants = {"weights/model-Q4_K_M": 10, "weights/model-Q6_K": 20}
@@ -797,8 +788,7 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
 
 
 def test_deleting_a_container_variant_accepts_the_bare_quant_the_download_admits(tmp_path):
-    """Deleting a container variant must accept the bare quant the download admits, or weights stay
-    on disk."""
+    """Container deletes must accept the bare quant downloads admit, or weights stay on disk."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
     from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
@@ -859,8 +849,7 @@ def test_an_ambiguous_bare_quant_deletes_nothing(tmp_path):
 
 
 def test_a_bare_quant_that_is_its_own_key_still_deletes_only_itself(tmp_path):
-    """The overwhelmingly common shape: the root file's key IS the bare quant, so the alias
-    fallback must not fire and must not reach a qualified sibling."""
+    """Root key is the bare quant, so the alias fallback must not reach a qualified sibling."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -908,8 +897,7 @@ def test_a_bpw_build_keeps_its_own_identity_everywhere():
 
 
 def test_a_bpw_key_needs_no_scope_label():
-    """It reads as a label already, so the display pass must not append the whole filename to it
-    the way it does for a path-qualified key."""
+    """A bpw key already reads as a label, so display must not append the filename to it."""
     variants = [
         GgufVariantInfo(filename = "model-IQ4_XS-3.53bpw.gguf", quant = "IQ4_XS-3.53bpw", size_bytes = 1),
         GgufVariantInfo(filename = "model-IQ4_XS-3.97bpw.gguf", quant = "IQ4_XS-3.97bpw", size_bytes = 2),
@@ -946,8 +934,7 @@ def test_the_bare_alias_keeps_the_bpw_and_survives_a_dotted_stem():
 
 
 def test_a_bpw_container_build_resolves_by_its_bare_spelling(tmp_path):
-    """A shared container qualifies the key, so the persisted bare spelling has to keep resolving
-    -- and that spelling carries the bpw suffix."""
+    """A shared container qualifies the key, so the bare bpw spelling must keep resolving."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
     from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
@@ -962,8 +949,7 @@ def test_a_bpw_container_build_resolves_by_its_bare_spelling(tmp_path):
 
 
 def test_the_inference_lister_sizes_one_shard_family_not_both_copies():
-    """Duplicate shard copies of one quant must be sized once, or the VRAM guard refuses a load that
-    fits."""
+    """Shard copies of one quant must be sized once, or the VRAM guard refuses a fitting load."""
     from utils.models.model_config import _group_gguf_variant_files
 
     entries = [

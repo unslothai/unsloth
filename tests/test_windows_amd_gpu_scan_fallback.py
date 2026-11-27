@@ -208,8 +208,7 @@ def test_installer_never_exports_the_public_override():
 
 
 def test_installer_restores_the_private_handoff_after_setup():
-    """install.ps1 is documented as `irm ... | iex`, so it runs in the caller's own process and a
-    value left behind would be read as an override by the next install in that terminal."""
+    """install.ps1 runs in the caller's shell via irm | iex, so the handoff must not leak."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
@@ -222,8 +221,7 @@ def test_installer_restores_the_private_handoff_after_setup():
 
 
 def test_setup_consumes_the_handoff_only_after_its_own_inference():
-    """Order is the whole point: the installer takes the first AMD adapter with no mask and no
-    shadowing repick, both of which setup applies, so the handoff must never pre-empt it."""
+    """The handoff must never pre-empt setup's inference, which applies the mask and repick."""
     block = _arch_resolution_block(_setup_source())
     assert block.index("gfx arch inferred from GPU name") < block.index(f"$env:{HANDOFF}")
 
@@ -306,8 +304,7 @@ def test_a_single_adapter_infers_its_arch(tmp_path, name, expected):
     "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )
 def test_a_pinned_single_gpu_host_still_infers_its_arch(tmp_path, mask, var):
-    """The mask disables the $nameArches[0] rescue, so the string-indexing bug surfaced here as a
-    host with a perfectly good Radeon reporting no arch and looping the installer."""
+    """Mask disables the $nameArches[0] rescue, so the string-indexing bug shows as no arch."""
     assert _run(tmp_path, [(_RADEON, 0)], env = {var: mask})["arch"] == "gfx1151"
 
 
@@ -334,8 +331,7 @@ def test_the_handoff_fills_the_gap_when_nothing_else_resolves(tmp_path):
 
 @requires_pwsh
 def test_the_handoff_never_deposes_setups_own_inference(tmp_path):
-    """install.ps1 would forward the iGPU here: it takes the first AMD adapter, with no shadowing
-    repick. Setup's answer is the better one and has to win."""
+    """install.ps1 would forward the iGPU here, so setup's own arch inference has to win."""
     out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {HANDOFF: "gfx1103"})
     assert out["arch"] == "gfx1201"
 
@@ -366,10 +362,8 @@ def test_an_empty_handoff_is_ignored(tmp_path):
     "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )
 def test_a_mask_suppresses_the_handoff(tmp_path, var):
-    """The mask selects the unrecognized discrete card, so the inference above deliberately
-    resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
-    and forwards that very arch, and taking it would install for a GPU the mask hides from the
-    runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
+    """Under a mask, resolve no arch rather than borrow the 780M's: the installer's unmasked arch
+    would target a GPU the runtime hides (ROCR filters below HIP)."""
     # RX 580 (gfx803) has no routed arch; the RX 5700 XT now routes.
     adapters = [(_R780M, 0), ("AMD Radeon RX 580", 0)]
     assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
@@ -377,8 +371,7 @@ def test_a_mask_suppresses_the_handoff(tmp_path, var):
 
 @requires_pwsh
 def test_a_mask_suppresses_the_handoff_even_with_no_adapters_to_check_it_against(tmp_path):
-    """Setup saw no names at all, so it cannot confirm the forwarded arch is the selected device.
-    Refuse rather than guess."""
+    """No names, so setup cannot confirm the forwarded arch is the selected device; refuse."""
     assert _run(tmp_path, [], env = {"HIP_VISIBLE_DEVICES": "0", HANDOFF: "gfx1151"})["arch"] is None
 
 
@@ -451,9 +444,7 @@ def _run_installer_scan(
 
 @requires_pwsh
 def test_the_installer_skips_a_disabled_adapter(tmp_path):
-    """A disabled Radeon listed first used to win here, and a mapped arch installs ROCm wheels
-    right there, so the dead card got the wheels and the live unsupported one went to nothing.
-    Setup filters this adapter out, so forwarding its arch also made the two disagree."""
+    """Skip disabled adapters as setup does, else a dead first Radeon gets the ROCm wheels."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
     assert out["label"] == "AMD Radeon RX 580"
     assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
@@ -461,8 +452,7 @@ def test_the_installer_skips_a_disabled_adapter(tmp_path):
 
 @requires_pwsh
 def test_the_peer_scan_reuses_the_routing_scan(tmp_path):
-    """No arch is inferred for an RX 580, so the report-only peer scan runs too. It asks WMI the
-    same question as the routing scan, so one query answers both, with the same peer list."""
+    """With no arch inferred, the report-only peer scan runs too, reusing the one WMI query."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 580", 0)])
     assert out["arch"] is None
     assert out["peers"] == ["AMD Radeon RX 580"]
@@ -471,8 +461,7 @@ def test_the_peer_scan_reuses_the_routing_scan(tmp_path):
 
 @requires_pwsh
 def test_the_installer_keeps_a_parked_adapter_when_it_is_the_only_one(tmp_path):
-    """Same fallback setup makes: code 45 is routine on a muxless laptop, and with no healthy
-    peer there is nothing to prefer."""
+    """Code 45 is routine on muxless laptops, so keep the adapter when no healthy peer exists."""
     out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 45)])
     assert out["arch"] == "gfx1201"
 
@@ -740,9 +729,7 @@ def _run_handoff_lifecycle(
 def test_the_caller_environment_survives_the_setup_call(
     tmp_path, arch, inherited, fails, caller_env
 ):
-    """`irm ... | iex` runs install.ps1 in the caller's own shell, so anything set for the child
-    has to be put back -- on the failure path too, which is the one that rolls back and retries,
-    and whether or not the caller had the variable to begin with."""
+    """Runs in caller's shell: child-set vars are restored on success/failure, even if unset."""
     out = _run_handoff_lifecycle(
         tmp_path,
         arch = arch,
@@ -932,14 +919,8 @@ def test_a_real_llama_cpp_dir_is_handed_over_and_then_put_back(tmp_path, caller_
 def test_only_this_runs_arch_is_handed_to_the_child(
     tmp_path, arch, inherited, expected, caller_env
 ):
-    """A value inherited from an outer process is not this run's answer, so it is cleared rather
-    than forwarded as though the scan had produced it.
-
-    Parametrised over the caller patterns, not left on the helper's default. The default is
-    `all`, which sets every caller variable, and a clear that wrongly keyed itself off some
-    other variable's $hadPrevious flag would then find that flag true and clear anyway. The
-    empty-caller case is the one that catches it, and running only the default lost it.
-    """
+    """Inherited values are cleared, not forwarded as this run's answer; parametrise over caller
+    patterns, since only the empty-caller pattern catches a clear keyed off $hadPrevious flag."""
     out = _run_handoff_lifecycle(
         tmp_path, arch = arch, inherited = inherited, fails = False, caller_env = caller_env
     )
@@ -948,8 +929,7 @@ def test_only_this_runs_arch_is_handed_to_the_child(
 
 @requires_pwsh
 def test_these_assertions_fail_without_the_array_wraps(tmp_path):
-    """A regression test that passes on the unfixed source is not one, and the first version of
-    this file was exactly that. Undo just the two wraps and confirm the failures come back."""
+    """Undoing the two array wraps must bring the failures back, or the test proves nothing."""
     unfixed = _without_the_array_wraps(_setup_source())
     before = _run(tmp_path, [(_RADEON, 0)], source = unfixed, ps51 = True)
     pinned = _run(tmp_path, [(_RADEON, 0)], source = unfixed, env = {"HIP_VISIBLE_DEVICES": "0"})

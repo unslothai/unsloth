@@ -3,7 +3,7 @@
 
 """transformers' every_n_layers / offload gradient checkpointing options under Unsloth's checkpoint shims."""
 
-import ast, contextlib, functools, inspect, os
+import ast, builtins, contextlib, functools, inspect, os, symtable
 import pytest
 import torch
 
@@ -15,6 +15,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UTILS = os.path.join(HERE, "unsloth", "_gc_kwargs.py")
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
+CACHE_KWARG = os.path.join(HERE, "unsloth", "models", "_cache_kwarg.py")
 FUNCS = (
     "_skip_aware_flag",
     "_apply_every_n_layers",
@@ -24,6 +25,7 @@ FUNCS = (
 )
 ASSIGNS = ("_OFFLOADING_CHECKPOINT_SHIMS", "_GC_KWARGS_WARNED")
 NATIVE = "offload" in inspect.signature(PreTrainedModel.gradient_checkpointing_enable).parameters
+RENAMED = hasattr(PreTrainedModel, "activation_checkpointing_enable")
 
 
 def _load():
@@ -41,13 +43,22 @@ def _load():
 
 @pytest.fixture
 def patched():
-    original = PreTrainedModel.__dict__["gradient_checkpointing_enable"]
+    original = {
+        name: PreTrainedModel.__dict__[name]
+        for name in (
+            "gradient_checkpointing_enable",
+            "activation_checkpointing_enable",
+            "_activation_checkpointing_enable",
+        )
+        if name in PreTrainedModel.__dict__
+    }
     previous_checkpoint = hf_modeling_utils.checkpoint
     patch = _load().get("patch_gradient_checkpointing_enable_kwargs")
     if patch is not None:
         patch()
     yield
-    PreTrainedModel.gradient_checkpointing_enable = original
+    for name, function in original.items():
+        setattr(PreTrainedModel, name, function)
     hf_modeling_utils.checkpoint = previous_checkpoint
 
 
@@ -150,6 +161,73 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
 
 
 @pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_every_n_layers_survives_flag_rewrite_through_activation_checkpointing_enable(patched):
+    model = _model()
+    model.activation_checkpointing_enable(activation_checkpointing_kwargs = None, every_n_layers = 2)
+    assert _flags(model) == [True, False, True, False]
+    for module in model.modules():
+        if hasattr(module, "gradient_checkpointing"):
+            module.gradient_checkpointing = True
+    assert _flags(model) == [True, False, True, False]
+
+
+@pytest.mark.skipif(RENAMED, reason = "before transformers 5.23 the patched method is the public one")
+def test_explicit_every_n_layers_beats_the_dict_on_the_legacy_api(patched):
+    model = _model()
+    model.gradient_checkpointing_enable({"every_n_layers": 2}, every_n_layers = 1)
+    assert _flags(model) == [True, True, True, True]
+
+
+@pytest.mark.skipif(
+    not RENAMED,
+    reason = "the old name is an alias of activation_checkpointing_enable from transformers 5.23",
+)
+def test_every_n_layers_dict_through_instance_wrapper_of_old_name(patched):
+    # vision.py wraps the old name per instance (gemma3n / gemma4, forced non-reentrant).
+    model = _model()
+    original = model.gradient_checkpointing_enable
+    model.gradient_checkpointing_enable = lambda **kwargs: original(**kwargs)
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False, "every_n_layers": 2}
+    )
+    assert _flags(model) == [True, False, True, False]
+    _grads(model)
+
+
+@pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_offload_dropped_under_offloading_shim_through_activation_checkpointing_enable(
+    patched, smart_gc, monkeypatch
+):
+    entered = []
+    real = hf_modeling_utils.save_on_cpu
+
+    class Counting(real):
+        def __init__(
+            self,
+            pin_memory = False,
+            device_type = "cuda",
+        ):
+            pin_memory = pin_memory and torch.accelerator.is_available()
+            super().__init__(pin_memory = pin_memory, device_type = device_type)
+
+        def __enter__(self):
+            entered.append(1)
+            return super().__enter__()
+
+    monkeypatch.setattr(hf_modeling_utils, "save_on_cpu", Counting)
+    model = _model()
+    model.activation_checkpointing_enable(
+        activation_checkpointing_kwargs = {"use_reentrant": True}, offload = True
+    )
+    _grads(model)
+    assert entered == []
+
+
+@pytest.mark.skipif(
     not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17"
 )
 def test_native_offload_dropped_only_under_offloading_shim(patched, smart_gc, monkeypatch):
@@ -233,30 +311,31 @@ def test_every_n_layers_zero_is_rejected(patched, via_dict):
 
 def _vision_nonre_checkpoint(offload_hooks):
     """vision.py's _nonre_checkpoint (DDP vision models, DeepSeek-V4.1) with use_gradient_checkpointing = "unsloth"."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_non_reentrant_checkpoint",
+        os.path.join(HERE, "unsloth", "models", "non_reentrant_checkpoint.py"),
+    )
+    factory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(factory)
     src = open(VISION, encoding = "utf-8").read()
     for node in ast.walk(ast.parse(src)):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        if not any(isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint" for n in body):
-            continue
-        ns = {
-            "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
-            "_offload": True,
-            "_offload_activation_hooks": offload_hooks,
-            "_gc_checkpoint_owner": lambda function: None,
-        }
-        for n in body:
-            if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
-                exec(ast.get_source_segment(src, n), ns)
-            elif isinstance(n, ast.Assign) and any(
-                isinstance(t, ast.Attribute)
-                and isinstance(t.value, ast.Name)
-                and t.value.id == "_nonre_checkpoint"
-                for t in n.targets
-            ):
-                exec(ast.get_source_segment(src, n), ns)
-        return ns["_nonre_checkpoint"]
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_nonre_checkpoint" for t in node.targets)
+            and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", None) == "non_reentrant_checkpoint"
+        ):
+            ns = {
+                "non_reentrant_checkpoint": factory.non_reentrant_checkpoint,
+                "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
+                "_offload": True,
+                "_offload_activation_hooks": offload_hooks,
+                "_gc_checkpoint_owner": lambda function: None,
+            }
+            exec(ast.get_source_segment(src, node), ns)
+            return ns["_nonre_checkpoint"]
     pytest.fail("_nonre_checkpoint not found in vision.py")
 
 
@@ -294,17 +373,41 @@ def test_native_offload_dropped_under_vision_non_reentrant_offload(patched, monk
         torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
 
 
+def _free_globals(segment):
+    """Names a function's body (nested functions included) reads from module globals."""
+    found, stack = set(), [symtable.symtable(segment, "<segment>", "exec")]
+    while stack:
+        table = stack.pop()
+        if table.get_type() != "module":
+            found.update(
+                s.get_name() for s in table.get_symbols() if s.is_global() and s.is_referenced()
+            )
+        stack.extend(table.get_children())
+    return found
+
+
 def _load_remote_gc():
     src = open(LOADER_UTILS, encoding = "utf-8").read()
-    ns = {"torch": torch, "functools": functools}
+    # The torch-free cache kwarg helper loader_utils imports (transformers 5.24 renamed past_key_values to cache).
+    helper = {}
+    exec(open(CACHE_KWARG, encoding = "utf-8").read(), helper)
+    ns = {"torch": torch, "functools": functools, **{k: helper[k] for k in helper["__all__"]}}
     names = (
         "_forward_calls_checkpointing",
         "_checkpointed_layer_forward",
         "install_remote_gradient_checkpointing",
     )
-    for n in ast.parse(src).body:
-        if isinstance(n, ast.FunctionDef) and n.name in names:
-            exec(ast.get_source_segment(src, n), ns)
+    segments = [
+        ast.get_source_segment(src, n)
+        for n in ast.parse(src).body
+        if isinstance(n, ast.FunctionDef) and n.name in names
+    ]
+    assert len(segments) == len(names), names
+    # A helper loader_utils starts calling must be added above, not surface as a NameError mid-backward.
+    missing = set().union(*map(_free_globals, segments)) - set(ns) - set(names) - set(dir(builtins))
+    assert not missing, f"extracted loader_utils functions read globals this harness does not provide: {sorted(missing)}"
+    for segment in segments:
+        exec(segment, ns)
     return ns["install_remote_gradient_checkpointing"]
 
 

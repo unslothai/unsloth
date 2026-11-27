@@ -27,6 +27,9 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.llama_server_args import apply_load_mode_policy, resolve_launch_load_mode
 
 _NO_SETTINGS = (False, False)
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason = "shell script stands in for the binary"
+)
 
 
 def _fake_server(tmp_path, body: str) -> str:
@@ -81,12 +84,14 @@ def test_a_failed_help_probe_emits_no_load_flag(tmp_path):
     assert _launch_flags(caps) == []
 
 
+@posix_only
 def test_an_empty_help_probe_emits_no_load_flag(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(_fake_server(tmp_path, "exit 0"))
     assert caps["help_probe_ok"] is True and not caps["flags"]
     assert _launch_flags(caps) == []
 
 
+@posix_only
 def test_a_build_listing_only_the_old_flags_still_gets_them(tmp_path):
     help_text = "--no-mmap                do not memory-map model\n--mlock                  lock model in RAM"
     caps = LlamaCppBackend.probe_server_capabilities(
@@ -96,6 +101,7 @@ def test_a_build_listing_only_the_old_flags_still_gets_them(tmp_path):
     assert _launch_flags(caps) == ["--no-mmap"]
 
 
+@posix_only
 def test_a_build_listing_load_mode_gets_it(tmp_path):
     help_text = "--load-mode MODE         how to load the model"
     caps = LlamaCppBackend.probe_server_capabilities(
@@ -176,3 +182,45 @@ def test_no_launch_site_reads_the_raw_load_mode_cap():
     assert 'server_caps.get("supports_load_mode")' not in source
     assert "server_caps['supports_load_mode']" not in source
     assert 'server_caps["supports_load_mode"]' not in source
+
+
+# llama-server --help for --load-mode, verbatim: b11643 (ggml-org/llama.cpp#26081 added
+# "auto", which resolves to none on an iGPU) and the earlier #20834 block, default mmap.
+_LOAD_MODE_HELP_WITH_AUTO = """\
+-lm,   --load-mode MODE                 model loading mode (default: auto)
+                                        - auto: mmap, unless a device does not support it
+                                        - none: no special loading mode
+                                        - mmap: memory-map model (if mmap disabled, slower load but may reduce
+                                        pageouts if not using mlock)
+                                        - mlock: force system to keep model in RAM rather than swapping or
+                                        compressing
+                                        - mmap+mlock: mmap + force system to keep model in RAM rather than
+                                        swapping or compressing
+                                        - dio: use DirectIO if available
+                                        (env: LLAMA_ARG_LOAD_MODE)"""
+_LOAD_MODE_HELP_WITHOUT_AUTO = """\
+-lm,   --load-mode MODE                 model loading mode (default: mmap)
+                                        - none: no special loading mode
+                                        - mmap: memory-map model (if mmap disabled, slower load but may reduce
+                                        pageouts if not using mlock)
+                                        - mlock: mmap + force system to keep model in RAM rather than swapping
+                                        or compressing
+                                        - dio: use DirectIO if available
+                                        (env: LLAMA_ARG_LOAD_MODE)"""
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "help_text, auto",
+    [
+        (_LOAD_MODE_HELP_WITH_AUTO, True),
+        (_LOAD_MODE_HELP_WITHOUT_AUTO, False),
+        ("--mmap                                  memory-map model (default: auto)", False),
+    ],
+    ids = ["auto-build", "load-mode-without-auto", "legacy-flags-only"],
+)
+def test_the_probe_reads_whether_the_build_lists_load_mode_auto(tmp_path, help_text, auto):
+    caps = LlamaCppBackend.probe_server_capabilities(
+        _fake_server(tmp_path, f"cat <<'X'\n{help_text}\nX\nexit 0")
+    )
+    assert caps["supports_load_mode_auto"] is auto

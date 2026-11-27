@@ -29,9 +29,8 @@ import {
 } from "streamdown";
 import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
-// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
-// download and expand match the icons used everywhere else.
-// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
+// Streamdown's table glyphs are swapped for ours so icons match elsewhere; `strokeWidth` is
+// dropped, as SVG types it string or number while HugeiconsIcon wants a number.
 function streamdownIcon(icon: typeof Copy01Icon) {
   return function StreamdownIcon({
     size,

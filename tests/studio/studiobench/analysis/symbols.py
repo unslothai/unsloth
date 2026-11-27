@@ -20,8 +20,7 @@ NOT_BUILT = "not_built"
 # Low-count functions collide with everything; excluded and reported.
 MIN_INFORMATIVE_COUNT = 2
 
-# Some identity is expected (React leaves scheduler entry points unminified): ~0.1 for a real
-# pair against 1.0 for a same-build pair.
+# React leaves scheduler entry points unminified: ~0.1 for a real pair vs 1.0 for same-build.
 MAX_IDENTITY_MAPPING_FRACTION = 0.5
 
 # Function-name length cannot detect a development build (medians were equal); checks are structural.

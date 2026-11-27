@@ -9,7 +9,7 @@ import type { AudioToolPanel } from "./types";
 export const roformerOverlapPanel: AudioToolPanel<OverlapValue> = {
   ...roformerOverlapLogic,
   Component: ({ value, onChange, disabled }) => (
-    <div className="grid gap-1.5">
+    <div className="grid gap-2">
       <FieldLabel
         htmlFor="separate-overlap"
         className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
@@ -22,7 +22,7 @@ export const roformerOverlapPanel: AudioToolPanel<OverlapValue> = {
           onCheckedChange={(overlap) => onChange({ overlap })}
         />
       </FieldLabel>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-12 leading-normal text-muted-foreground">
         Runs the model over overlapping windows and blends them. Off is about
         three times faster. Changing it reloads the model, which takes a few
         seconds.

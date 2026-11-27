@@ -239,3 +239,64 @@ def test_real_peft_lora_injection_survives_the_installed_torchao():
     net = torch.nn.Sequential(torch.nn.Linear(8, 8))
     peft.inject_adapter_in_model(peft.LoraConfig(r = 2, target_modules = ["0"]), net)
     assert hasattr(net[0], "lora_A")
+
+
+def _fake_torchao_layer(monkeypatch, init):
+    module = types.ModuleType(patches._PEFT_TORCHAO_LAYER_MODULE)
+    module.TorchaoLoraLinear = type("TorchaoLoraLinear", (), {"__init__": init})
+    monkeypatch.setitem(sys.modules, patches._PEFT_TORCHAO_LAYER_MODULE, module)
+    monkeypatch.delenv(patches._PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV, raising = False)
+    return module.TorchaoLoraLinear
+
+
+def test_peft_019s_required_merge_callback_gets_peft_020s_default(monkeypatch):
+    seen = []
+
+    def init(self, *args, get_apply_tensor_subclass, **kwargs):  # peft 0.19.x
+        seen.append(get_apply_tensor_subclass)
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    with pytest.raises(TypeError, match = "get_apply_tensor_subclass"):
+        layer()
+    assert patches._make_peft_torchao_merge_callback_optional() is True
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    layer()
+    callback = object()
+    layer(get_apply_tensor_subclass = callback)  # a transformers hf_quantizer's callback still wins
+    assert seen == [None, callback]
+    assert layer.__init__.__wrapped__ is init
+
+
+@pytest.mark.parametrize(
+    "signature",
+    ["optional", "absent"],  # peft >= 0.20 / a layer without the keyword: left alone
+)
+def test_other_peft_layers_are_left_alone(monkeypatch, signature):
+    if signature == "optional":
+
+        def init(
+            self,
+            *args,
+            get_apply_tensor_subclass = None,
+            **kwargs,
+        ):
+            pass
+
+    else:
+
+        def init(self, *args, **kwargs):
+            pass
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    assert layer.__init__ is init
+
+
+def test_the_merge_callback_switch_keeps_the_required_keyword(monkeypatch):
+    def init(self, *args, get_apply_tensor_subclass, **kwargs):
+        pass
+
+    layer = _fake_torchao_layer(monkeypatch, init)
+    monkeypatch.setenv(patches._PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV, "0")
+    assert patches._make_peft_torchao_merge_callback_optional() is False
+    assert layer.__init__ is init

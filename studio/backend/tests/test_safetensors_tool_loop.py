@@ -1183,9 +1183,8 @@ def _ds_section(
 
 
 class TestParserDeepSeek:
-    """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
-    (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a
-    Markdown ``` ```json ``` ``` fence; V3 / V3.1 emit bare JSON."""
+    """DeepSeek markers use full-width pipes (U+FF5C) and lower-one-eighth-block (U+2581); R1 wraps
+    args in a json fence, V3 and V3.1 emit bare JSON."""
 
     @pytest.mark.parametrize(
         "text, name, args",
@@ -1297,9 +1296,8 @@ class TestParserDeepSeek:
 
 
 class TestParserGLM:
-    """GLM 4.5 / 4.6 / 4.7 coverage. Marker collides with Qwen's
-    ``<tool_call>`` but the body shape is XML kv pairs instead of JSON,
-    so the dispatch order keeps both formats working."""
+    """GLM 4.5 to 4.7 use a <tool_call> marker that collides with Qwen's, but the body is XML
+    key-value pairs, so dispatch order keeps both formats working."""
 
     def test_glm_simple_call(self):
         import json as _json
@@ -1514,9 +1512,8 @@ class TestParserKimi:
 
 
 class TestParserCrossFormatRouting:
-    """Ensure the per-format dispatch order doesn't misroute any
-    family. Real emissions for each new family + every old family
-    must still parse correctly when intermixed."""
+    """The per-format dispatch order must not misroute any family; real emissions for every new and
+    old family must still parse when intermixed."""
 
     def test_dispatch_routes_each_family_correctly(self):
         cases = [
@@ -1728,9 +1725,8 @@ def test_tool_markup_is_not_streamed_as_content(turns, expected_calls, hidden, v
 
 
 def test_split_bare_json_chain_is_owned_before_later_call_executes():
-    """A blocked first object can still own a chain with a later benign call. The first cumulative
-    snapshot must stay buffered: otherwise its raw JSON is visible before the second snapshot
-    makes the chain executable at end-of-turn."""
+    """A blocked first JSON object can still own a chain with a later benign call, so its first
+    snapshot must stay buffered or its raw JSON shows early."""
     blocked = '{"name":"terminal","parameters":{"command":"id"}}'
     later = '{"name":"web_search","parameters":{"query":"cats"}}'
     loop, exec_fn = _make_loop(
@@ -2307,8 +2303,7 @@ class TestLoopBasic:
         assert [e for e in between if e["type"] == "status"] == [], between
 
     def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
-        """bypass_permissions wins over the confirm gate, so the early provisional
-        card is preserved (no human approval is required)."""
+        """bypass_permissions wins over the confirm gate, so the early provisional card stays."""
         exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
@@ -2365,9 +2360,8 @@ class TestLoopBasic:
         assert tool_starts[0].get("awaiting_confirmation") in (False, None)
 
     def test_render_html_provisional_card_closed_on_generator_exception(self):
-        """If the model generator raises mid-stream after a provisional render_html
-        card was surfaced, the loop must close that card as errored before the
-        exception propagates, so the UI never leaves a tool spinning forever."""
+        """If the generator raises after a provisional render_html card was shown, the loop must
+        close it as errored before the exception propagates, so no tool is left spinning forever."""
         exec_fn = FakeExecuteTool([])
 
         def _gen(_messages):
@@ -2625,6 +2619,35 @@ class TestLoopBehaviour:
         )
 
         assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
+
+    def test_two_identical_unseeded_studio_generations_in_one_turn_both_run(self):
+        from core.inference import tool_facts
+
+        name = "mcp__unsloth__generate_image"
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"}, studio = True)
+        call = '<tool_call>{"name":"%s","arguments":{"prompt":"a cat"}}</tool_call>' % name
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["img1", "img2"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "two cats"}],
+                tools = [{"type": "function", "function": {"name": name}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = True,
+            )
+        )
+        tool_facts.note_mcp_tool(name, {"name": "generate_image"})
+
+        assert exec_fn.calls == [(name, {"prompt": "a cat"})] * 2
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
@@ -4792,8 +4815,7 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
 
 
 class TestStreamingDisplayStripStillMatchesTheExportedHelper:
-    """The loop runs StreamingMarkupStripper, not the exported helper; the two must agree on every
-    prefix."""
+    """The loop uses StreamingMarkupStripper, not the helper; they must agree on every prefix."""
 
     @staticmethod
     def _loop_strip(text, names = None):
@@ -4828,8 +4850,7 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
         ],
     )
     def test_the_loop_path_agrees_at_every_prefix(self, text):
-        """The loop feeds a growing buffer, so agreement has to hold at each step, not
-        only on the whole string."""
+        """Agreement must hold at every prefix, since the loop feeds a growing buffer."""
         names = {"search"}
         stripper = tool_call_parser.StreamingMarkupStripper(names)
         for i in range(1, len(text) + 1):
@@ -4918,8 +4939,7 @@ def test_mcp_images_are_left_out_without_a_sink(monkeypatch):
 
 
 def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
-    """A batch holding both an internal no-op and an image-returning call used to
-    append two role=user turns in a row, which a strict VLM template rejects."""
+    """Two role=user turns in a row are rejected by strict VLM templates, so they must merge."""
     import base64
     import io
     import json
@@ -4979,9 +4999,8 @@ def test_mcp_image_markers_merge_into_a_deferred_noop_turn(monkeypatch):
 
 
 def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
-    """The sink is seeded with what the caller attached, and the MCP payloads land
-    around it. A cap that trims from the front deleted that picture and its marker,
-    so a model asked to compare against it was handed screenshots instead."""
+    """The caller's own attachment must survive the image cap; trimming from the front deleted it,
+    so a model asked to compare against it saw only screenshots."""
     import base64
     import io
     import json
@@ -5045,9 +5064,8 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
 
 
 def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
-    """Only the caller's own attachment is spared. Sparing the whole seeded sink
-    exempted a resumed chat's replayed pictures too, so the prompt could carry a
-    second full allowance on top of them."""
+    """Only the caller's own attachment is spared; sparing the whole seeded sink also exempted a
+    resumed chat's replayed pictures, letting the prompt carry a second full allowance."""
     import base64
     import io
     import json
@@ -5068,8 +5086,7 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
     def _call(n):
         return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
 
-    # One picture per batch on a local path, so five batches on four replayed is
-    # nine against a cap of eight.
+    # Locally, five one-picture batches plus four replayed is nine, over a cap of eight.
     turns = [_call(n) for n in range(1, 6)] + ["done."]
     seen: list[list] = []
 
@@ -5106,9 +5123,8 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
 
 
 def test_the_protected_attachment_index_is_rebased_between_batches():
-    """The index names a position, and trimming earlier entries moves it. Reusing the
-    original across iterations protected the wrong payload and deleted the very
-    attachment the argument exists to keep."""
+    """The protected attachment index names a position that moves when earlier entries are trimmed,
+    so it must be rebased between batches, not reused."""
     import base64
     import io
     import json
@@ -5598,3 +5614,254 @@ def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
     _collect_events(loop)
     assert [name for name, _ in exec_fn.calls] == ["mcp_tool_search"]
     assert exec_fn.offered == [["mcp_tool_search"], ["web_search", "mcp_tool_search"]]
+
+
+@pytest.mark.parametrize("tool_choice, injected", [(None, True), ("none", False)])
+def test_mcp_matches_arrive_as_a_search_after_the_message(tool_choice, injected):
+    from core.inference.tools import build_synthetic_search_exchange
+
+    exchange = build_synthetic_search_exchange(
+        tool_name = "mcp_tool_search",
+        call_prefix = "mcp_auto_",
+        status_label = "Finding MCP tools",
+        query = "move my page",
+        text = "Loaded 1 MCP tool.",
+        sources = None,
+    )
+    seen = []
+
+    def single_turn(messages, **_kwargs):
+        seen.append([dict(m) for m in messages])
+        yield "done"
+
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "move it"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool([]),
+            tool_choice = tool_choice,
+            mcp_match_exchange = {**exchange, "names": []},
+        )
+    )
+    roles = [m["role"] for m in seen[0]]
+    if injected:
+        assert roles[-3:] == ["user", "assistant", "tool"]
+        assert seen[0][-1]["content"] == "Loaded 1 MCP tool."
+        assert any(
+            e.get("type") == "tool_end" and e["tool_name"] == "mcp_tool_search" for e in events
+        )
+    else:
+        assert roles[-1] == "user"
+
+
+@pytest.mark.parametrize("split", [True, False])
+@pytest.mark.parametrize(
+    "t1, shown",
+    [
+        ("<think>I will search.</think>", ""),
+        ("<think>I will search.</think>Let me search.", "Let me search."),
+    ],
+)
+def test_split_reasoning_content_moves_think_blocks_into_reasoning_field(split, t1, shown):
+    t2 = "<think>A</think>x<think>B</think>"
+    seen, turns = [], iter([t1, f"{t2}<function=web_search></function>", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            split_reasoning_content = split,
+        )
+    )
+    reprompt, tool_turn = [m for m in seen[2] if m["role"] == "assistant"]
+    # Unsplit, the re-prompt turn keeps the classifier's text: the visible plan, else the bare thought.
+    assert reprompt["content"] == (shown if split else (shown or t1))
+    assert reprompt.get("reasoning_content") == ("I will search." if split else None)
+    assert tool_turn["content"] == ("x" if split else t2)
+    assert tool_turn.get("reasoning_content") == ("A\nB" if split else None)
+
+
+def test_split_reasoning_content_keeps_the_intent_text_of_a_prefilled_reprompt():
+    # The prompt opened the thought, so the raw turn has no <think> to split on.
+    seen, turns = [], iter(["Plan.</think>Let me search.", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+            split_reasoning_content = True,
+        )
+    )
+    (reprompt,) = [m for m in seen[1] if m["role"] == "assistant"]
+    assert reprompt["content"] == "Let me search."
+
+
+@pytest.mark.parametrize("split", [True, False])
+@pytest.mark.parametrize(
+    "call",
+    [
+        '<|content_invoke_tool_json|>{"name":"web_search","args":{"q":"<function=s> <|end_message|>"}}<|end_message|>',
+        "<|message_model|>web_search<|content_invoke_tool_json|>{'name':'web_search','args':{'q':'s'}}<|end_message|>",
+    ],
+)
+def test_split_reasoning_content_replays_a_native_call_only_as_tool_calls(split, call):
+    # The prose opener before the call must not hide it from the cut.
+    text = 'x <|content_invoke_tool_json|> "'
+    seen, turns = [], iter([f"<think>A</think>{text}{call}y", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            split_reasoning_content = split,
+        )
+    )
+    (tool_turn,) = [m for m in seen[1] if m["role"] == "assistant"]
+    assert tool_turn["tool_calls"][0]["function"]["name"] == "web_search"
+    assert (
+        (tool_turn["content"] == f"{text}y")
+        if split
+        else ("<|content_invoke_tool_json|>{" in tool_turn["content"])
+    )
+
+
+def test_split_reasoning_content_survives_a_native_call_with_a_non_string_name():
+    turns = iter(
+        [
+            '<function name="web_search"></function><|content_invoke_tool_json|>{"name":1,"args":{}}<|end_message|>',
+            "Done.",
+        ]
+    )
+    execute = FakeExecuteTool(["ok"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = lambda messages, **_: iter([next(turns)]),
+            messages = [{"role": "user", "content": "q"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = execute,
+            split_reasoning_content = True,
+        )
+    )
+    assert [name for name, *_ in execute.calls] == ["web_search"]
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_a_resumed_turn_keeps_a_call_made_after_a_no_op(split):
+    # A resumed partial is stored as a merged copy; a call attached after a no-op's append must reach it.
+    names = ("missing_tool", "web_search")
+    calls = "".join(
+        f'<|content_invoke_tool_json|>{{"name":"{name}","args":{{"q":"{i}"}}}}<|end_message|>'
+        for i, name in enumerate(names)
+    )
+    seen, turns = [], iter([f" sunny.{calls}", "Done."])
+
+    def single_turn(messages, **_):
+        seen.append([dict(m) for m in messages])
+        yield next(turns)
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "Paris is"},
+            ],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = FakeExecuteTool(["ok"]),
+            continue_final_message = True,
+            split_reasoning_content = split,
+        )
+    )
+    resumed = [m for m in seen[1] if m["role"] == "assistant"][0]
+    assert [c["function"]["name"] for c in resumed.get("tool_calls", [])] == ["web_search"]
+
+
+def test_split_reasoning_content_leaves_the_shown_final_turn_alone():
+    call = '<|content_invoke_tool_json|>{"name":"web_search","args":{"q":"%s"}}<|end_message|>'
+
+    def shown(split):
+        turns = iter([call % "a", f"Before{call % 'b'}After"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = lambda messages, **_: iter([next(turns)]),
+                messages = [{"role": "user", "content": "q"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = FakeExecuteTool(["ok"]),
+                max_tool_iterations = 1,
+                split_reasoning_content = split,
+            )
+        )
+        return [e["text"] for e in events if e.get("type") == "content"]
+
+    # The route streams deltas, so a final snapshot shorter than the streamed one would leave the call shown.
+    assert shown(True) == shown(False)
+
+
+def test_a_python_call_runs_with_the_analysis_its_classification_made():
+    """Auto mode screens the code once: each run gets the handoff its own approval check filled."""
+    from core.inference import tools as tools_mod
+
+    seen: list = []
+
+    def _execute(
+        name,
+        arguments,
+        *,
+        python_analyses = None,
+        **_kwargs,
+    ):
+        seen.append((name, arguments.get("code"), python_analyses))
+        return "OK"
+
+    turn_iter = iter(
+        [
+            [
+                "<function=python><parameter=code>print(1)</parameter></function>"
+                "<function=python><parameter=code>print(2)</parameter></function>"
+            ],
+            ["Done."],
+        ]
+    )
+
+    def _gen(_messages):
+        yield next(turn_iter)[0]
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "run"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            execute_tool = _execute,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+    )
+
+    assert [code for _name, code, _a in seen] == ["print(1)", "print(2)"]
+    first, second = (analyses for _name, _code, analyses in seen)
+    assert isinstance(first, tools_mod.PythonCallAnalyses) and first is not second
+    assert list(first._by_source) == ["print(1)"] and list(second._by_source) == ["print(2)"]

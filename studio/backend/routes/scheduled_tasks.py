@@ -38,8 +38,11 @@ ReasoningEffort = Literal[
     "off", "lowest", "highest", "minimal", "low", "medium", "high", "xhigh", "max"
 ]
 ProjectId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
+McpServerId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
+McpServerIds = Annotated[list[McpServerId], Field(max_length = 64)]
+ThreadId = Annotated[str, Field(max_length = 128), AfterValidator(_not_blank)]
 # Fields an update may set back to null, unlike the rest, where null means unchanged.
-_CLEARABLE = ("model", "reasoningEffort", "projectId")
+_CLEARABLE = ("model", "reasoningEffort", "projectId", "threadId")
 
 
 class ScheduledTaskCreate(BaseModel):
@@ -57,6 +60,9 @@ class ScheduledTaskCreate(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[ProjectId] = None
+    webSearch: bool = False
+    mcpServerIds: McpServerIds = Field(default_factory = list)
+    threadId: Optional[ThreadId] = None
 
 
 class ScheduledTaskUpdate(BaseModel):
@@ -74,6 +80,9 @@ class ScheduledTaskUpdate(BaseModel):
     allowModelLoad: Optional[bool] = None
     archiveSuccessful: Optional[bool] = None
     projectId: Optional[ProjectId] = None
+    webSearch: Optional[bool] = None
+    mcpServerIds: Optional[McpServerIds] = None
+    threadId: Optional[ThreadId] = None
 
 
 class RunNowRequest(BaseModel):
@@ -118,6 +127,9 @@ class ScheduledTask(BaseModel):
     allowModelLoad: bool = False
     archiveSuccessful: bool = False
     projectId: Optional[str] = None
+    webSearch: bool = False
+    mcpServerIds: McpServerIds = Field(default_factory = list)
+    threadId: Optional[str] = None
     status: Literal["active", "paused", "completed"]
     nextRunAt: Optional[int] = None
     createdAt: int
@@ -151,6 +163,17 @@ def _existing_project(project_id: Optional[str]) -> Optional[str]:
     if project_id is not None and studio_db.get_chat_project(project_id) is None:
         raise HTTPException(status_code = 400, detail = "Project not found")
     return project_id
+
+
+def _existing_chat(thread_id: Optional[str]) -> Optional[str]:
+    from storage import studio_db
+
+    if thread_id is None:
+        return None
+    thread = studio_db.get_chat_thread(thread_id)
+    if thread is None or thread.get("pairId"):
+        raise HTTPException(status_code = 400, detail = "Chat not found")
+    return thread_id
 
 
 def _next_run(task: dict, now: int) -> Optional[int]:
@@ -208,6 +231,9 @@ def create_scheduled_task(
         "allowModelLoad": payload.allowModelLoad,
         "archiveSuccessful": payload.archiveSuccessful,
         "projectId": _existing_project(payload.projectId),
+        "webSearch": payload.webSearch,
+        "mcpServerIds": list(dict.fromkeys(payload.mcpServerIds)),
+        "threadId": _existing_chat(payload.threadId),
         "createdAt": now,
         "updatedAt": now,
     }
@@ -254,8 +280,12 @@ def update_scheduled_task(
     changes.update(
         {key: getattr(payload, key) for key in _CLEARABLE if key in payload.model_fields_set}
     )
+    if "mcpServerIds" in changes:
+        changes["mcpServerIds"] = list(dict.fromkeys(changes["mcpServerIds"]))
     if changes.get("projectId") is not None:
         _existing_project(changes["projectId"])
+    if changes.get("threadId") is not None:
+        _existing_chat(changes["threadId"])
     now = db.now_ms()
     # Only on schedule, time zone or enabled changes: a rename or resent value keeps an overdue run due.
     updated = db.update_task(task_id, changes, lambda task: _next_run(task, now))

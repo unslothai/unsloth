@@ -20,9 +20,13 @@ export interface ProjectRecord {
   id: string;
   name: string;
   instructions?: string;
+  mcpServerIds?: string[] | null;
   rootPath?: string | null;
   sandboxPath?: string | null;
   workingFolder?: string | null;
+  workingFolderStatus?: "ok" | "missing" | "replaced" | null;
+  workingFolderDisplay?: string | null;
+  workingFolderBranch?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
