@@ -1251,6 +1251,27 @@ def test_vllm_backend_scores_per_module_lora_scale_on_vllm_that_applies_it(
         assert "0.32" in result.output and "model" not in vllm_env
 
 
+@pytest.mark.parametrize("vllm_version, expected", [("0.31.0", None), ("0.32.0", 64)])
+def test_vllm_backend_sizes_max_lora_rank_to_every_rank_pattern_on_vllm_that_validates_it(
+    vllm_env, tmp_path, monkeypatch, vllm_version, expected
+):
+    # gate_proj is not adapted, but vLLM 0.32+ still checks its rank against max_lora_rank
+    monkeypatch.setattr(
+        evalmod, "version", lambda name: vllm_version if name == "vllm" else "0.4.13"
+    )
+    adapter = _rank_adapter(
+        tmp_path,
+        r = 8,
+        lora_alpha = 16,
+        target_modules = ["q_proj", "v_proj"],
+        rank_pattern = {"gate_proj": 64},
+        alpha_pattern = {"gate_proj": 128},
+    )
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
+
+
 def _write_lora_header(
     adapter,
     modules,
