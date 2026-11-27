@@ -218,6 +218,25 @@ def test_a_working_directory_override_starts_discovery(monkeypatch, tmp_path, na
     assert wr._managed_route_host({name: str(work), "UV_CONFIG_FILE": "mirror.toml"}) is False
 
 
+def test_discovery_walks_from_the_desktop_installer_directory(monkeypatch, tmp_path):
+    # Desktop starts install.ps1 in %USERPROFILE%\\.unsloth, and its discovery walks up from there
+    # with no override set.
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    profile = {"USERPROFILE": str(tmp_path)}
+    (tmp_path / ".unsloth" / "sub").mkdir(parents = True)
+    assert wr._managed_route_host(profile) is True
+    mirror = "index-url = 'https://mirror.example/simple'\n"
+    (tmp_path / ".unsloth" / "uv.toml").write_text(mirror, encoding = "utf-8")
+    assert wr._managed_route_host(profile) is False
+    assert wr._managed_route_host({**profile, "UV_NO_CONFIG": "1"}) is True
+    # A relative working directory resolves against it too.
+    assert wr._managed_route_host({**profile, "UV_WORKING_DIR": "sub"}) is False
+    (tmp_path / ".unsloth" / "uv.toml").unlink()
+    # Found walking up, in the profile itself.
+    (tmp_path / "uv.toml").write_text(mirror, encoding = "utf-8")
+    assert wr._managed_route_host(profile) is False
+
+
 def test_the_mirror_gate_matches_install_ps1():
     install = (Path(__file__).resolve().parents[3] / "install.ps1").read_text(encoding = "utf-8")
     body = re.search(r"function Test-PypiUnslothAdmitsTorch \{.*?\n    \}", install, re.S).group(0)
