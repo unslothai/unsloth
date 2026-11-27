@@ -366,7 +366,6 @@ def _route_client(monkeypatch, backend):
 
 
 def _request(stream: bool) -> dict:
-    # The Open WebUI filter from the issue.
     return {
         "messages": [{"role": "user", "content": "Is the living room light on?"}],
         "tools": [LIVE_CONTEXT],

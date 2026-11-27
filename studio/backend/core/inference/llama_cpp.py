@@ -43496,7 +43496,6 @@ class LlamaCppBackend:
                     yield _build_metadata_event(_iter_usage, _iter_timings, "tool_calls")
                     return
 
-                # ── Execute tool calls ──
                 # Progress made: reset stall counters and restore thinking.
                 _length_continuations = 0
                 _thought_before_retries = ""
@@ -43511,8 +43510,7 @@ class LlamaCppBackend:
                 _it = _iter_timings or {}
                 _accumulated_predicted_ms += _it.get("predicted_ms", 0)
                 _accumulated_predicted_n += _it.get("predicted_n", 0)
-                # Refreshes the context meter from the usage llama-server already reported (no
-                # recount). Sent once the first tool is running, so it never delays a tool.
+                # Reuses llama-server's reported usage (no recount); sent after the first tool starts.
                 _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
