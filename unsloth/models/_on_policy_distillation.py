@@ -9,6 +9,9 @@
 - GRPO ``unsloth_distillation_coef``: adds ``A_t = -coef * (log q(x_t) - log p_teacher(x_t))`` (no discount) to the
   environment advantages, where ``q`` is the sampler that drew the tokens. The teacher is the adapter-off base
   (``unsloth_distillation_teacher = "base"``) or a model passed as ``GRPOTrainer(..., teacher_model = ...)``.
+  Opt-in ``unsloth_distillation_terminal_tokens`` (e.g. ``"<|im_end|>,<|endoftext|>"``): a sampled token in that set is
+  scored as the set's summed probability under both student and teacher, so a teacher that ends turns with another
+  stop token (an adapter-off Base under a chat template) does not penalise the student's stop.
 - AsyncGRPO ``unsloth_sampler_kl_coef``: Tinker's StableReinforce KL to the sampler, ``coef * sum_t k(q, p)``."""
 
 import contextlib
@@ -310,6 +313,8 @@ def score_completion_logps(
     rows_per_chunk = None,
     sync_chunks = False,
     columns_per_chunk = None,
+    terminal_ids = None,
+    terminal_gap = False,
 ):
     """Per-token log-probs of ``completion_ids`` under ``model`` in the completion layout ``[B, C]``.
 
@@ -317,7 +322,10 @@ def score_completion_logps(
     (#11885), and with right padding the causal mask alone already keeps pads out of every real token's context.
 
     ``sync_chunks``: every rank runs the largest chunk count of any rank, padding with one-token forwards, for models
-    whose forwards are collectives (``forwards_are_collective``). The chunk count follows the rank's own length."""
+    whose forwards are collectives (``forwards_are_collective``). The chunk count follows the rank's own length.
+
+    ``terminal_ids``: where the target is one of these ids, the log of their summed probability replaces the token's.
+    With ``terminal_gap`` the result is that value minus the token's own log-prob there and 0 everywhere else."""
     input_ids = torch.cat([prompt_ids, completion_ids], dim = 1)
     attention_mask = torch.cat([prompt_mask, completion_mask], dim = 1).to(torch.long)
     B, L = input_ids.shape
@@ -411,10 +419,17 @@ def score_completion_logps(
                     picked = picked / temperature
                 logps = torch.log_softmax(picked, dim = -1)
                 del picked
-                out[rows, cols] = (
-                    logps.gather(-1, targets[:, cols].unsqueeze(-1)).squeeze(-1).to(out.device)
-                )
-                del logps
+                token = logps.gather(-1, targets[:, cols].unsqueeze(-1)).squeeze(-1)
+                if terminal_ids is not None:
+                    ids_t = terminal_ids.to(logps.device)
+                    merged = torch.logsumexp(logps.index_select(-1, ids_t), dim = -1)
+                    is_terminal = torch.isin(targets[:, cols], ids_t)
+                    if terminal_gap:
+                        token = torch.where(is_terminal, merged - token, torch.zeros_like(token))
+                    else:
+                        token = torch.where(is_terminal, merged, token)
+                out[rows, cols] = token.to(out.device)
+                del logps, token
             del logits
     finally:
         if prior_hidden_states is None:
@@ -565,10 +580,16 @@ def grpo_setup_distillation(trainer, teacher_model = None):
         )
     trainer._unsloth_distillation_coef = coef
     trainer._unsloth_distillation_teacher = None
+    trainer._unsloth_distillation_terminal_ids = None
+    terminal = getattr(args, "unsloth_distillation_terminal_tokens", None)
     if coef == 0.0:
         if teacher_model is not None:
             raise ValueError(
                 "Unsloth: GRPOTrainer got a teacher_model but unsloth_distillation_coef is 0."
+            )
+        if terminal:
+            raise ValueError(
+                "Unsloth: unsloth_distillation_terminal_tokens is set but unsloth_distillation_coef is 0."
             )
         return coef
     # Per-token advantages must be realigned to the zoo's left-packed loss layout.
@@ -601,7 +622,91 @@ def grpo_setup_distillation(trainer, teacher_model = None):
                 "compares per-token log-probs, so the teacher needs the student's tokenizer."
             )
     trainer._unsloth_distillation_teacher = teacher
+    if terminal:
+        trainer._unsloth_distillation_terminal_ids = _resolve_terminal_ids(trainer, terminal)
+        # The student's own mass on the other terminal tokens is rescored at args.temperature.
+        _refuse_unreconstructable_sampler(trainer, rescoring = True)
+        _refuse_terminal_sampler_edits(trainer)
     return coef
+
+
+def _refuse_terminal_sampler_edits(trainer):
+    # vLLM edits that change the relative odds of the terminal tokens (by output history or by id) are not in the
+    # student rescoring, so log q(token) + log p(set) - log p(token) would not be the sampler's log q(set).
+    args = getattr(trainer, "args", None)
+    used = set()
+    for source in (
+        args,
+        getattr(args, "vllm_sampling_params", None),
+        getattr(args, "generation_kwargs", None),
+    ):
+        if source is None:
+            continue
+        read = (
+            source.get
+            if isinstance(source, dict)
+            else (lambda k, d = None, src = source: getattr(src, k, d))
+        )
+        for key in ("presence_penalty", "frequency_penalty"):
+            if float(read(key, 0.0) or 0.0) != 0.0:
+                used.add(key)
+        for key in ("logit_bias", "allowed_token_ids", "bad_words"):
+            if read(key, None):
+                used.add(key)
+    if used:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_terminal_tokens rescores the student's terminal mass without "
+            f"{', '.join(sorted(used))}, so it would not match the sampler. Leave those unset or drop the terminal set."
+        )
+
+
+def _resolve_terminal_ids(trainer, terminal):
+    """``unsloth_distillation_terminal_tokens`` (comma separated string, or a list of tokens / ids) -> LongTensor."""
+    items = terminal.split(",") if isinstance(terminal, str) else list(terminal)
+    tokenizer = getattr(trainer, "processing_class", None)
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    vocab = _vocab_size(_unwrap(trainer.model))
+    ids = []
+    for item in items:
+        if isinstance(item, str):
+            item = item.strip()
+            if not item:
+                continue
+            convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if convert is None:
+                raise ValueError(
+                    f"Unsloth: unsloth_distillation_terminal_tokens got {item!r} but the trainer has no tokenizer to "
+                    "map it; pass token ids instead."
+                )
+            token_id = convert(item)
+            unk = getattr(tokenizer, "unk_token_id", None)
+            if not isinstance(token_id, int) or (
+                unk is not None
+                and token_id == unk
+                and item != getattr(tokenizer, "unk_token", None)
+            ):
+                raise ValueError(
+                    f"Unsloth: unsloth_distillation_terminal_tokens: {item!r} is not a single token of this tokenizer."
+                )
+        else:
+            token_id = item
+        if (
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
+            or token_id < 0
+            or (vocab is not None and token_id >= vocab)
+        ):
+            raise ValueError(
+                f"Unsloth: unsloth_distillation_terminal_tokens: {item!r} is not a token id of this model."
+            )
+        if token_id not in ids:
+            ids.append(token_id)
+    if len(ids) < 2:
+        raise ValueError(
+            "Unsloth: unsloth_distillation_terminal_tokens needs at least two distinct tokens, for example "
+            "'<|im_end|>,<|endoftext|>'."
+        )
+    return torch.tensor(ids, dtype = torch.long)
 
 
 def grpo_add_distillation_advantages(trainer, output):
@@ -625,11 +730,15 @@ def grpo_add_distillation_advantages(trainer, output):
     if rescore:
         # No sampling logprobs: the policy sampled the tokens itself, at the trainer's temperature.
         _refuse_unreconstructable_sampler(trainer, rescoring = True)
+    terminal = getattr(trainer, "_unsloth_distillation_terminal_ids", None)
+    # Sampling logprobs under a terminal set: one student pass adds its mass on the set's other tokens at the stops.
+    gap = terminal is not None and not rescore
+    student_pass = rescore or gap
     # Every rank joins this all_reduce, rescoring or not.
-    any_rescore = _max_over_ranks(int(rescore), completion_ids.device) if sync else rescore
-    if any_rescore:
+    any_pass = _max_over_ranks(int(student_pass), completion_ids.device) if sync else student_pass
+    if any_pass:
         # A rank that has its sampling logprobs while another rescores runs padding forwards only (zero rows).
-        rows = slice(None) if rescore else slice(0, 0)
+        rows = slice(None) if student_pass else slice(0, 0)
         scored = score_completion_logps(
             student,
             prompt_ids[rows],
@@ -639,8 +748,13 @@ def grpo_add_distillation_advantages(trainer, output):
             temperature = getattr(trainer.args, "temperature", 1.0),
             autocast_dtype = dtype,
             sync_chunks = sync,
+            terminal_ids = terminal,
+            terminal_gap = gap,
         )
-        student_logps = scored if rescore else student_logps
+        if rescore:
+            student_logps = scored
+        elif gap:
+            student_logps = student_logps.to(torch.float32) + scored.to(student_logps.device)
     # The teacher is scored untempered: the advantage is then the reverse KL of the sampler against the teacher.
     teacher_logps = score_completion_logps(
         teacher,
@@ -651,6 +765,7 @@ def grpo_add_distillation_advantages(trainer, output):
         temperature = 1.0,
         autocast_dtype = dtype,
         sync_chunks = sync,
+        terminal_ids = terminal,
     )
     mask = completion_mask
     tool_mask = output.get("tool_mask", None)

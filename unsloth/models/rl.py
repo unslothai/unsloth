@@ -3958,6 +3958,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         default = 'base',
         metadata = {'help': "Teacher for unsloth_distillation_coef: 'base' is the LoRA student's base model with the adapter disabled. Pass any other teacher as GRPOTrainer(teacher_model = model)."},
     )
+    unsloth_distillation_terminal_tokens : Optional[str] = field(
+        default = None,
+        metadata = {'help': "Opt-in for unsloth_distillation_coef: comma separated stop tokens (e.g. '<|im_end|>,<|endoftext|>') scored as one stop action, their summed probability, for both student and teacher. None scores every token as itself."},
+    )
     unsloth_sampler_kl_coef : Optional[float] = field(
         default = 0.0,
         metadata = {'help': 'StableReinforce: adds coef * KL(sampler || policy) per sampled token (Tinker uses 0.01). 0 disables it.'},
@@ -3969,12 +3973,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_call += (
             "unsloth_distillation_coef = 0.0,"
             "unsloth_distillation_teacher = 'base',"
+            "unsloth_distillation_terminal_tokens = None,"
             "unsloth_sampler_kl_coef = 0.0,"
             "unsloth_sampler_kl_estimator = 'k1',"
         )
         max_seq_length_post += (
             "\n        self.unsloth_distillation_coef = unsloth_distillation_coef"
             "\n        self.unsloth_distillation_teacher = unsloth_distillation_teacher"
+            "\n        self.unsloth_distillation_terminal_tokens = unsloth_distillation_terminal_tokens"
             "\n        self.unsloth_sampler_kl_coef = unsloth_sampler_kl_coef"
             "\n        self.unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator"
         )
