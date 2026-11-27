@@ -626,6 +626,12 @@ def triton_runs_on_device(index = 0):
         try:
             ok = _triton_probe(index)
         except Exception as error:
+            oom = getattr(torch, "OutOfMemoryError", None)
+            if (isinstance(oom, type) and isinstance(error, oom)) or "out of memory" in str(
+                error
+            ).lower():
+                # A full card says nothing about the toolchain: no Triton for this call, probe again next time.
+                return False
             ok = False
             logger.info(
                 f"Unsloth: Triton cannot run on ROCm device {index} ({type(error).__name__}: "
