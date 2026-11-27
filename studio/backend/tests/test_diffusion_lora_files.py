@@ -744,7 +744,8 @@ def _tiny_qwen21_pipe():
     return _Pipe(transformer), transformer
 
 
-def test_a_packed_qwen21_gate_up_lora_lands_like_the_pre_split_file(tmp_path):
+@pytest.mark.parametrize("use_dora", [False, True])
+def test_a_packed_qwen21_gate_up_lora_lands_like_the_pre_split_file(tmp_path, use_dora):
     """ai-toolkit's fused ``img_mlp.gate_up`` used to load every other module while PEFT dropped both MLP halves."""
     from safetensors.torch import save_file
 
@@ -761,15 +762,28 @@ def test_a_packed_qwen21_gate_up_lora_lands_like_the_pre_split_file(tmp_path):
             packed[f"diffusion_model.{stem}gate_up.lora_A.weight"] = a
             packed[f"diffusion_model.{stem}gate_up.lora_B.weight"] = b
             half = module.out_features
+            magnitude = torch.linspace(0.3, 1.3, 2 * half)
+            if use_dora:
+                packed[f"diffusion_model.{stem}gate_up.lora_magnitude_vector.weight"] = magnitude
             for part, rows in (("gate_layer", b[:half]), ("proj", b[half:])):
                 split[f"transformer.{stem}{part}.lora_A.weight"] = a.clone()
                 split[f"transformer.{stem}{part}.lora_B.weight"] = rows.contiguous()
+                if use_dora:
+                    values = magnitude[:half] if part == "gate_layer" else magnitude[half:]
+                    split[f"transformer.{stem}{part}.lora_magnitude_vector.weight"] = values.clone()
         elif name.endswith(("attn.to_q", "img_mlp.out")):
             a, b = torch.randn(2, module.in_features), torch.randn(module.out_features, 2)
             packed[f"diffusion_model.{name}.lora_A.weight"] = a
             packed[f"diffusion_model.{name}.lora_B.weight"] = b
             split[f"transformer.{name}.lora_A.weight"] = a.clone()
             split[f"transformer.{name}.lora_B.weight"] = b.clone()
+            if use_dora:
+                magnitude = torch.linspace(0.4, 1.4, module.out_features)
+                packed[f"diffusion_model.{name}.lora_magnitude_vector.weight"] = magnitude
+                split[f"transformer.{name}.lora_magnitude_vector.weight"] = magnitude.clone()
+    if use_dora:
+        # PEFT DoRA uses Diffusers keys; the ai-toolkit converter does not support magnitude vectors.
+        packed = {k.replace("diffusion_model.", "transformer.", 1): v for k, v in packed.items()}
     save_file(packed, tmp_path / "packed.safetensors")
     save_file(split, tmp_path / "split.safetensors")
 
@@ -786,3 +800,25 @@ def test_a_packed_qwen21_gate_up_lora_lands_like_the_pre_split_file(tmp_path):
         x = torch.randn(3, module.in_features)
         with torch.no_grad():
             assert torch.equal(got[name](x), module(x)), name
+
+
+@pytest.mark.parametrize("suffix", ["lora_magnitude_vector", "lora_magnitude_vector.weight"])
+def test_qwen21_dora_magnitude_rows_follow_the_gate_up_split(suffix):
+    stem = "transformer.transformer_blocks.0.img_mlp."
+    magnitude = torch.arange(12, dtype = torch.float32)
+    out = lf._qwen21_split_gate_up({stem + "gate_up." + suffix: magnitude})
+    assert torch.equal(out[stem + "gate_layer." + suffix], magnitude[:6])
+    assert torch.equal(out[stem + "proj." + suffix], magnitude[6:])
+    for bad, message in (
+        (torch.ones(5), "odd row count"),
+        (torch.tensor(1.0), "output-row dimension"),
+    ):
+        with pytest.raises(ValueError, match = message):
+            lf._qwen21_split_gate_up({stem + "gate_up." + suffix: bad})
+
+
+def test_qwen21_refuses_fused_dora_scale_instead_of_loading_plain_lora():
+    with pytest.raises(ValueError, match = "magnitudes would be dropped"):
+        lf._qwen21_split_gate_up(
+            {"transformer.transformer_blocks.0.img_mlp.gate_up.dora_scale": torch.ones(12)}
+        )
