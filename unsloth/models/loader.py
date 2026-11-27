@@ -35,6 +35,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .onthefly_quant import onthefly_lowbit_load
 from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
 from .float8_training import (
     convert_model_to_float8_training,
@@ -1365,6 +1366,7 @@ class FastLanguageModel(FastLlamaModel):
         return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
+    @onthefly_lowbit_load
     @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return
@@ -2378,6 +2380,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @onthefly_lowbit_load
     @tensor_parallel_env_load
     @fsdp2_sharded_load_env
     @tokenizers_v1_on_return

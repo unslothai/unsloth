@@ -512,6 +512,43 @@ _add(
     )
 )
 
+_W4A16_GATES = {
+    "sm75": Gate("unprobed", "fp16 activations (no bfloat16 there)"),
+    "sm80": Gate("unprobed"),
+    "sm89": Gate("unprobed"),
+    "sm90": Gate("unprobed", "H100 is not available to test on"),
+    "sm100": Gate(
+        "explicit", evidence = "LoRA correctness on tiny Qwen3 / Qwen3-MoE, " + _PROBE_B200
+    ),
+    "sm120": Gate("unprobed"),
+    "rocm": Gate("unprobed", "the Triton dequant runs; the fused kernel is off on ROCm"),
+}
+for _fmt, _gran, _scale, _note in (
+    ("nvfp4", "block1x16", "e4m3", "fp32 global scale per tensor, 4over6 block scales by default"),
+    (
+        "mxfp4",
+        "block1x32",
+        "e8m0",
+        "OCP MXFP4 values in the NVFP4 kernel layout (e8m0 scales stored as e4m3 under a power-of-two "
+        "global scale, bfloat16 when the block exponents span more than 17 octaves)",
+    ),
+):
+    _add(
+        Recipe(
+            name = f"onthefly_{_fmt}_w4a16",
+            kind = "frozen_base",
+            modes = ("lora",),
+            fwd = GemmPolicy(None, _op("e2m1", _gran, _scale)),
+            dgrad = GemmPolicy(None, _op("e2m1", _gran, _scale)),
+            input_dtypes = ("bf16", "fp16"),
+            compile = "opaque",
+            backend = f"unsloth.kernels.nvfp4 (load_in_4bit = '{_fmt}': quantized at load from a 16-bit checkpoint)",
+            gates = dict(_W4A16_GATES),
+            notes = "W4A16: the weight is dequantized to the activation dtype (or decoded inside the fused "
+            "Triton GEMM), no FP4 tensor-core GEMM; " + _note,
+        )
+    )
+
 _FP8_LORA_RUNS = (
     "Qwen3 LoRA r=16, seq 2048, bs 2, 200 steps on alpaca-cleaned, eval every 50 steps on 32 held-out "
     "rows, 2 seeds, vs bf16 LoRA in the same Colab VM"
