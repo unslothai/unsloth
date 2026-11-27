@@ -30568,7 +30568,16 @@ def _shorten_turn_tool_results(
         _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
     )
     start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
-    for message in messages[start + 1 :]:
+    # The newest call's results stay whole even under a trailing assistant prefill.
+    newest = next(
+        (
+            i
+            for i in range(len(messages) - 1, start, -1)
+            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+        ),
+        len(messages),
+    )
+    for message in messages[start + 1 : newest]:
         if message.get("role") != "tool" or id(message) in anchors:
             continue
         if count(messages) <= target:

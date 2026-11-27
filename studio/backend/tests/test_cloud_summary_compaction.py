@@ -1606,3 +1606,26 @@ def test_an_overflow_mid_tool_loop_recovers_by_shortening_the_turns_results(thre
     assert len(results) == 6 and all(f"STEP {n}" in r for n, r in enumerate(results, 1))
     assert any(m["role"] == "user" and m["content"] == "Run the six steps." for m in final)
     assert any(c.get("choices") and c["choices"][0]["delta"].get("content") == "ok" for c in chunks)
+
+
+def test_an_overflow_resuming_a_tool_turn_keeps_its_newest_result_whole():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run one step."},
+        *_tool_turn(1, 3_000),
+        {"role": "assistant", "content": "Le résultat"},
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+        continue_final_message = True,
+    )
+    assert chat[-2]["content"] in json.dumps(chats[-1]["messages"])
