@@ -35,6 +35,11 @@ from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata, is_appledouble_metadata
 
+from core.training.diffusion_caption_files import (
+    caption_sidecar_index,
+    find_caption_sidecar,
+    metadata_caption_files,
+)
 from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
@@ -100,7 +105,6 @@ _IMAGE_RESOLUTION_MULTIPLE: dict[str, int] = {
 }
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-_CAPTION_EXTS = (".txt", ".caption")
 # diffusers' canonical single-file LoRA name, so load_lora_weights(dir) finds it.
 DEFAULT_LORA_FILENAME = "pytorch_lora_weights.safetensors"
 
@@ -1709,10 +1713,7 @@ def discover_image_caption_pairs(
 
     # 1. metadata.jsonl / captions.jsonl (either name accepted).
     meta_caption: dict[str, str] = {}
-    for meta_name in ("metadata.jsonl", "captions.jsonl"):
-        meta_path = root / meta_name
-        if not meta_path.is_file():
-            continue
+    for meta_path in metadata_caption_files(root):
         # Skip a bad upload (invalid UTF-8 or non-object JSON) so the instance_prompt fallback still applies.
         # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
@@ -1735,22 +1736,20 @@ def discover_image_caption_pairs(
             if key and value is not None:
                 meta_caption[str(key)] = str(value)
 
+    sidecars = caption_sidecar_index(root)
     pairs: list[tuple[str, str]] = []
     for img in images:
         caption: Optional[str] = None
         sidecar_present = False
         # An EMPTY sidecar is a tombstone: suppresses the metadata caption.
-        for ext in _CAPTION_EXTS:
-            sidecar = img.with_suffix(ext)
-            if sidecar.is_file():
-                sidecar_present = True
-                try:
-                    caption = sidecar.read_text(encoding = "utf-8").strip()
-                except (OSError, UnicodeError):
-                    # An unreadable sidecar reads as the empty tombstone, so the instance_prompt fallback applies
-                    # instead of a 500.
-                    caption = ""
-                break
+        sidecar = find_caption_sidecar(img, sidecars)
+        if sidecar is not None:
+            sidecar_present = True
+            try:
+                caption = sidecar.read_text(encoding = "utf-8").strip()
+            except (OSError, UnicodeError):
+                # Unreadable reads as the empty tombstone: instance_prompt fallback, not a 500.
+                caption = ""
         # Metadata keyed by basename or as_posix path (Windows-safe); a sidecar, even empty, wins.
         if not sidecar_present:
             caption = meta_caption.get(img.name) or meta_caption.get(
