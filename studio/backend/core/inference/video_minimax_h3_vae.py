@@ -35,10 +35,14 @@ LEVER_TILE_BATCH = "tile_batch"
 LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
-# ROCm: a single-frame encode runs each causal Conv3d as the Conv2d of its last temporal tap (exact: the other taps
-# only ever see the prepended zero frames). MIOpen's Conv3d is the slow part of a gfx1151 reference-image encode.
+# ROCm: any T = 1 call of an encoder causal Conv3d (a single-frame encode, or a conv that sees one frame after
+# temporal downsampling) runs as the Conv2d of its last temporal tap. Mathematically exact, not bitwise (bf16 within
+# one ulp): the other taps only ever see the prepended zero frames. MIOpen's Conv3d is the slow part of a gfx1151
+# reference-image encode. Like the CUDA fused encoder it stays off under speed_mode="off".
 LEVER_ROCM_SINGLE_FRAME_ENCODER = "rocm_single_frame_encoder"
 H3_ROCM_SINGLE_FRAME_ENV = "UNSLOTH_H3_ROCM_SINGLE_FRAME_ENCODER"
+# per-VAE {lever: calls that took it}, so a run can prove a runtime lever engaged (not just installed)
+H3_VAE_LEVER_CALLS_ATTR = "_unsloth_h3_vae_lever_calls"
 
 _TILE_BATCH_MAX = 4
 _TILE_BATCH_BYTES_PER_TILE = 256 * 2**20
@@ -1518,11 +1522,20 @@ def _triton_jit_toolchain_ok() -> bool:
         return True
 
 
-def _single_frame_conv_forward(conv: Any) -> Any:
-    """``conv.forward`` with a T = 1 input lowered to a Conv2d over the last temporal tap; other shapes run stock."""
+def h3_vae_lever_calls(vae: Any) -> dict[str, int]:
+    """Calls per runtime lever that took the fast path on ``vae`` (empty when none engaged)."""
+    return dict(getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None) or {})
+
+
+def _single_frame_conv_forward(conv: Any, calls: Optional[dict] = None) -> Any:
+    """``conv.forward`` with any T = 1 call lowered to a Conv2d over the last temporal tap; other shapes run stock.
+
+    Each lowered call bumps ``conv._unsloth_rocm_single_frame_calls`` and ``calls[LEVER_ROCM_SINGLE_FRAME_ENCODER]``.
+    """
     import torch.nn.functional as F
 
     stock = conv.forward
+    conv._unsloth_rocm_single_frame_calls = 0
 
     def forward(hidden_states: Any) -> Any:
         kt = conv.kernel_size[0]
@@ -1547,6 +1560,11 @@ def _single_frame_conv_forward(conv: Any) -> Any:
                 dilation = tuple(conv.dilation[1:]),
                 groups = conv.groups,
             )
+            conv._unsloth_rocm_single_frame_calls += 1
+            if calls is not None:
+                calls[LEVER_ROCM_SINGLE_FRAME_ENCODER] = (
+                    calls.get(LEVER_ROCM_SINGLE_FRAME_ENCODER, 0) + 1
+                )
             return out.unsqueeze(2)
         return stock(hidden_states)
 
@@ -1568,12 +1586,18 @@ def _install_rocm_single_frame_encoder(vae: Any) -> int:
     encoder = getattr(vae, "encoder", None)
     if encoder is None:
         return 0
+    calls = getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None)
+    if not isinstance(calls, dict):
+        calls = {}
     n = 0
     for module in encoder.modules():
         if type(module).__name__ != "MiniMaxH3VideoCausalConv3d" or "forward" in module.__dict__:
             continue
-        module.forward = _single_frame_conv_forward(module)
+        module.forward = _single_frame_conv_forward(module, calls)
         n += 1
+    if n > 0:
+        calls.setdefault(LEVER_ROCM_SINGLE_FRAME_ENCODER, 0)
+        setattr(vae, H3_VAE_LEVER_CALLS_ATTR, calls)
     return n
 
 
@@ -1637,9 +1661,10 @@ def apply_h3_vae_speedups(
     planned = plan_h3_vae_levers(speed_mode, workflow = workflow, consumer_gpu = consumer_gpu)
     engaged: list[str] = []
     if not planned or not cuda_fast_path_available(vae):
-        # Independent of the speed plan: the lowering changes only the conv algorithm, not the math.
+        # Not bitwise (bf16 within one ulp), so like the CUDA fused encoder it stays off when the plan is empty
+        # (speed_mode="off" or the H3 VAE fast path disabled); any other tier engages it.
         try:
-            if _install_rocm_single_frame_encoder(vae) > 0:
+            if planned and _install_rocm_single_frame_encoder(vae) > 0:
                 engaged.append(LEVER_ROCM_SINGLE_FRAME_ENCODER)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             if logger is not None:
