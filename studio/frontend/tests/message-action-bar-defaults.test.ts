@@ -20,7 +20,7 @@ const KEY = "unsloth_chat_preferences";
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 
 function component(name: string): string {
-  const start = THREAD.indexOf(`const ${name}: FC = () => {`);
+  const start = THREAD.search(new RegExp(`const ${name}: FC(?:<[^>]*>)? = \\(`));
   assert.notEqual(start, -1, `${name} is gone; this test needs rewriting`);
   return THREAD.slice(start, THREAD.indexOf("\n};", start));
 }

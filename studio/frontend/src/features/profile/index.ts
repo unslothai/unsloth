@@ -16,3 +16,4 @@ export {
   validGreetingUpload,
 } from "./greeting";
 export { resizeImageFileToDataUrl } from "./utils/resize-image-file";
+export { addressName } from "./utils/address-name";

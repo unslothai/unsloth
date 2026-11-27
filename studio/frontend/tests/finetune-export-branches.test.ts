@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { characterChatTranscript } from "../src/features/characters/export-transcript.ts";
 import vm from "node:vm";
 import ts from "@typescript/typescript6";
 
@@ -87,6 +88,7 @@ function loadBuilder(
     savedBranchHead: (id: string, raw: StoredMessage[]) =>
       resolveSavedBranchHead(raw, savedHeads[id]),
     orderByParentChain,
+    characterChatTranscript,
     unwrapPastedTextContent,
   } as Record<string, unknown>;
   vm.runInNewContext(javascript, context);

@@ -989,3 +989,159 @@ def test_an_ordinary_text_thread_is_still_admitted():
     legacy stream and the whole feature would quietly stop working while these tests stayed green."""
     messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
     assert _sanitize_request(_model(messages = messages))["stream"] is True
+
+
+def test_a_character_reply_keeps_its_speaker_through_a_cancel(chat_home):
+    speaker = {
+        "roleplay": {
+            "kind": "reply",
+            "speakerId": "mira",
+            "speakerName": "Mira",
+            "plan": ["mira", "bo"],
+        }
+    }
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = "assistant-1",
+        request_payload = _request(),
+        roleplay = speaker["roleplay"],
+    )
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["metadata"]["roleplay"] == speaker["roleplay"]
+    assert stored["metadata"]["generationRunId"] == "run-1"
+    runs_db.request_cancel("run-1", "alice")
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["metadata"]["roleplay"] == speaker["roleplay"]
+
+
+def test_a_speaker_record_is_validated():
+    fields = dict(
+        runId = "run-1",
+        threadId = "thread-1",
+        userMessageId = "user-1",
+        assistantMessageId = "assistant-1",
+        requestPayload = _request(),
+    )
+    with pytest.raises(ValueError):
+        CreateChatGenerationRun(
+            **fields, assistantRoleplay = {"kind": "reply", "speakerId": "", "speakerName": "x"}
+        )
+    model = CreateChatGenerationRun(
+        **fields, assistantRoleplay = {"kind": "reply", "speakerId": "mira", "speakerName": "Mira"}
+    )
+    assert model.assistantRoleplay.speakerId == "mira"
+
+
+def _speaker_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes.chat_generation_runs import router
+
+    app = FastAPI()
+    app.include_router(router, prefix = "/api/chat-generation-runs")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    return TestClient(app)
+
+
+def _run_body(**overrides):
+    body = {
+        "runId": "run-1",
+        "threadId": "thread-1",
+        "userMessageId": "user-1",
+        "assistantMessageId": "assistant-1",
+        "requestPayload": _request(),
+    }
+    body.update(overrides)
+    return body
+
+
+def test_the_route_stores_the_speaker_on_the_reply(chat_home):
+    speaker = {"kind": "reply", "speakerId": "mira", "speakerName": "Mira", "plan": ["mira", "bo"]}
+    with _speaker_client() as client:
+        response = client.post(
+            "/api/chat-generation-runs", json = _run_body(assistantRoleplay = speaker)
+        )
+        assert response.status_code == 202, response.text
+        stored = studio_db.get_chat_message("thread-1", "assistant-1")
+        assert stored["metadata"]["roleplay"] == speaker
+        assert stored["metadata"]["generationRunId"] == "run-1"
+        # The same run id with another speaker is a different request, not a silent replay.
+        other = {**speaker, "speakerId": "bo", "speakerName": "Bo"}
+        retry = client.post("/api/chat-generation-runs", json = _run_body(assistantRoleplay = other))
+        assert retry.status_code == 409
+        same = client.post("/api/chat-generation-runs", json = _run_body(assistantRoleplay = speaker))
+        assert same.status_code == 202 and same.json()["created"] is False
+
+
+@pytest.mark.parametrize(
+    "speaker",
+    [
+        {"kind": "reply", "speakerId": "mira", "extra": 1},
+        {"kind": "reply", "speakerId": "mira", "plan": ["x"] * 17},
+        {"kind": "reply", "speakerId": "m" * 65},
+        {"kind": "opening", "speakerId": "mira"},
+    ],
+)
+def test_the_route_refuses_a_malformed_speaker(chat_home, speaker):
+    with _speaker_client() as client:
+        response = client.post(
+            "/api/chat-generation-runs", json = _run_body(assistantRoleplay = speaker)
+        )
+    assert response.status_code == 422
+
+
+def test_a_run_without_a_speaker_hashes_as_before():
+    args = dict(
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = "assistant-1",
+        request_payload = _request(),
+    )
+    assert runs_db.canonical_request(**args) == runs_db.canonical_request(**args, roleplay = None)
+    assert (
+        runs_db.canonical_request(**args)[1]
+        != runs_db.canonical_request(**args, roleplay = {"speakerId": "m"})[1]
+    )
+
+
+def test_a_plain_run_drops_a_speaker_left_on_its_reply(chat_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [],
+            "metadata": {"roleplay": {"kind": "reply", "speakerId": "old"}, "keep": 1},
+            "createdAt": 3,
+        }
+    )
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = "assistant-1",
+        request_payload = _request(),
+    )
+    metadata = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
+    assert "roleplay" not in metadata and metadata["keep"] == 1
+
+
+def test_a_speaker_cannot_overwrite_the_run_fields(chat_home):
+    runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = "assistant-1",
+        request_payload = _request(),
+        roleplay = {"speakerId": "m", "generationRunId": "forged"},
+    )
+    metadata = studio_db.get_chat_message("thread-1", "assistant-1")["metadata"]
+    assert metadata["generationRunId"] == "run-1"

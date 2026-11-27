@@ -31684,8 +31684,13 @@ async def _proxy_to_external_provider(
                             if not bucket:
                                 _CANCEL_REGISTRY.pop(key, None)
 
+        _codex_body = _codex_stream()
+        _codex_stops = _normalize_stop_sequences(payload.stop)
+        if _codex_stops:
+            # Codex is not sent stop sequences either, so the cut is made here as for other providers.
+            _codex_body = _sse_frames_with_stops(_codex_body, _codex_stops, model)
         return StreamingResponse(
-            _codex_stream(),
+            _codex_body,
             media_type = "text/event-stream",
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -32433,6 +32438,16 @@ async def _proxy_to_external_provider(
         # Stops FastFlowLM for a waiting swap; a durable run has no client disconnect, so this is its only Stop.
         if managed is not None or getattr(cancel_event, "durable", False):
             gen = _stop_on_cancel(gen, cancel_event)
+        _stop = _normalize_stop_sequences(payload.stop)
+        # Providers are not sent stop sequences, so the cut is made here; a connection-model route
+        # relays its own (_StopSequenceFilter), which also reports which sequence hit.
+        if (
+            _stop
+            and payload.stream
+            and not _non_stream_custom_responses
+            and _connection_model_ref(payload.model) is None
+        ):
+            gen = _enforce_stop_sequences(gen, _stop, model)
         disconnect_task = asyncio.create_task(_watch_disconnect()) if run_studio_tool_loop else None
 
         def _managed_cut_short() -> bool:
@@ -46372,6 +46387,146 @@ class _StopSequenceFilter:
         return out
 
 
+class _ThinkAwareStops:
+    """Stops for visible text only: the provider proxy relays thinking as <think>...</think> in
+    content, and a speaker label quoted in reasoning must not end the reply."""
+
+    _MARKERS = {False: "<think>", True: "</think>"}
+
+    def __init__(self, stops: Any) -> None:
+        self.stop = _StopSequenceFilter(stops)
+        self.thinking = False
+        self.tag = ""  # a possible marker split across chunks
+
+    @property
+    def hit(self) -> Optional[str]:
+        return self.stop.hit
+
+    @property
+    def held(self) -> str:
+        return self.stop.held + self.tag
+
+    def feed(self, text: str) -> str:
+        text, self.tag, out = self.tag + text, "", []
+        while text and self.stop.hit is None:
+            marker = self._MARKERS[self.thinking]
+            index = text.find(marker)
+            if index < 0:
+                keep = next(
+                    (
+                        n
+                        for n in range(min(len(marker) - 1, len(text)), 0, -1)
+                        if marker.startswith(text[-n:])
+                    ),
+                    0,
+                )
+                body, self.tag = text[: len(text) - keep], text[len(text) - keep :]
+                out.append(body if self.thinking else self.stop.feed(body))
+                break
+            body, text = text[:index], text[index + len(marker) :]
+            if self.thinking:
+                out.append(body + marker)
+            else:
+                out.append(self.stop.feed(body))
+                if self.stop.hit is not None:
+                    break
+                out.append(self.stop.flush() + marker)
+            self.thinking = not self.thinking
+        return "".join(out)
+
+    def flush(self) -> str:
+        out, self.tag = self.stop.flush() + self.tag, ""
+        return out
+
+
+async def _enforce_stop_sequences(gen, stops: list[str], model: str):
+    """Applies ``stops`` to the OpenAI SSE lines of a provider that was not sent them."""
+    stop = _ThinkAwareStops(stops)
+    last_id = None
+
+    def text_chunk(text: str) -> str:
+        return "data: " + json.dumps(
+            {
+                "id": last_id or f"chatcmpl-{uuid.uuid4().hex}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+            }
+        )
+
+    def held_chunk() -> Optional[str]:
+        held = stop.flush()
+        return text_chunk(held) if held else None
+
+    try:
+        async for line in gen:
+            if _is_openai_sse_done(line):
+                held = held_chunk()
+                if held:
+                    yield held
+                yield line
+                return
+            chunk = None
+            if line.startswith("data:"):
+                try:
+                    chunk = json.loads(line[5:].strip())
+                except ValueError:
+                    chunk = None
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                yield line
+                continue
+            last_id = chunk.get("id") or last_id
+            choice = choices[0]
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else None
+            if delta is not None and isinstance(delta.get("content"), str):
+                delta["content"] = stop.feed(delta["content"])
+            tool_boundary = chunk.get("_toolEvent") is not None or bool(
+                (delta or {}).get("tool_calls")
+            )
+            if tool_boundary and stop.held and stop.hit is None:
+                # Text before a tool goes out before it: the chat records where in the reply each call came.
+                yield text_chunk(((delta or {}).pop("content", None) or "") + stop.flush())
+            if choice.get("finish_reason") is not None and stop.held:
+                # The reply ended partway into a stop sequence, so what was held back is text.
+                choice["delta"] = {
+                    **(delta or {}),
+                    "content": ((delta or {}).get("content") or "") + stop.flush(),
+                }
+            if stop.hit is not None:
+                choice["finish_reason"] = None
+                yield "data: " + json.dumps(chunk)
+                choice["delta"] = {}
+                choice["finish_reason"] = "stop"
+                yield "data: " + json.dumps(chunk)
+                yield "data: [DONE]"
+                return
+            yield "data: " + json.dumps(chunk)
+        # A provider that closes without [DONE] still gets the text held back as a possible stop.
+        held = held_chunk()
+        if held:
+            yield held
+    finally:
+        # Ends the provider request once the stop is seen.
+        await gen.aclose()
+
+
+async def _sse_frames_with_stops(frames, stops: list[str], model: str):
+    """``_enforce_stop_sequences`` over framed SSE events, each ending in a blank line."""
+
+    async def lines():
+        async for frame in frames:
+            yield frame.rstrip("\n")
+
+    try:
+        async for line in _enforce_stop_sequences(lines(), stops, model):
+            yield f"{line}\n\n"
+    finally:
+        # Closing the line view does not close the stream under it: end the provider request too.
+        await frames.aclose()
+
+
 def _split_connection_text(chunk: dict, think: Any, stop: _StopSequenceFilter) -> dict:
     """Native thinking arrives as <think> markup in content (the Studio chat's form): hand it to the
     emitter as reasoning_content, and apply the stop sequences to what remains visible."""
@@ -46656,7 +46811,7 @@ async def _anthropic_messages_via_connection(
         "tools": anthropic_tools_to_openai(payload.tools or []) or None,
         "tool_choice": anthropic_tool_choice_to_openai(payload.tool_choice),
         "max_tokens": payload.max_tokens,
-        "stop": payload.stop_sequences or None,
+        # No stop here: _anthropic_events_from_openai_sse cuts at it and reports which sequence hit.
         "temperature": payload.temperature,
         "top_p": payload.top_p,
         "top_k": payload.top_k,

@@ -25,6 +25,28 @@ test("auto-compact on sends truncate_oldest and no policy of its own", () => {
   );
 });
 
+test("a character chat compacts by dropping its oldest turns, without a checkpoint", () => {
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true, rolling: true }),
+    { context_overflow: "truncate_oldest", context_policy: "rolling" },
+  );
+  // Off stays off, and /compact is still the user's own checkpoint.
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: false, rolling: true }),
+    { context_overflow: "error" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true, rolling: true, compactNow: true }),
+    { context_overflow: "truncate_oldest", compact_context: true },
+  );
+  // The reply and the context meter's count both send it, so the meter prices the same prompt.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /rolling: characterRun != null/);
+  // The meter's history reports whether it was built from a character run, and its extras pass that on.
+  assert.match(adapter, /rolling: characterRun != null,\n  \};/);
+  assert.match(adapter, /localCompactionFields\(state, rolling\)/);
+});
+
 test("auto-compact off sends an explicit error overflow policy", () => {
   assert.deepEqual(
     ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: false }),
@@ -58,7 +80,7 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
-  assert.match(adapter, /isManagedEngine: state\.loadedEngine !== "auto"/);
+  assert.match(readSrc("features/chat/utils/local-request-fields.ts"), /isManagedEngine: state\.loadedEngine !== "auto"/);
   // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
   assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
@@ -78,7 +100,7 @@ test("an NPU model compacts like a local GGUF, and /compact reaches it", () => {
     { context_overflow: "truncate_oldest", compact_context: true },
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
+  assert.match(readSrc("features/chat/utils/local-request-fields.ts"), /isNpu: isNpuModelId\(state\.params\.checkpoint\)/);
   assert.match(adapter, /isNpuForCompaction = isNpuModelId\(params\.checkpoint\)/);
   assert.match(adapter, /isNpu: isNpuForCompaction/);
   assert.match(adapter, /isGgufForCompaction \|\| isMlxForCompaction \|\| isNpuForCompaction/);

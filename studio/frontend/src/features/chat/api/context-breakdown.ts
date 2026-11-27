@@ -25,8 +25,8 @@ export async function countContext(
   if (refusal) throw new Error(refusal);
   const checkpoint = start.params.checkpoint;
   const signature = branchSignature(branch);
-  const history = await buildLocalTokenCountHistory(branch, threadId);
-  const extras = await buildLocalTokenCountExtras(threadId, history.messages);
+  const { rolling, ...history } = await buildLocalTokenCountHistory(branch, threadId);
+  const extras = await buildLocalTokenCountExtras(threadId, history.messages, rolling);
   const counted = await countChatInputTokens({
     model: checkpoint,
     ...history,

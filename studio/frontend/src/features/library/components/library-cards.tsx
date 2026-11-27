@@ -20,7 +20,8 @@ import {
 } from "../file-kind";
 import { streamsPreview } from "../file-name";
 import { formatCardTime, formatItemCount } from "../format";
-import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
+import { useSeen } from "@/hooks/use-seen";
+import { useColumnCount, useLibraryThumbnail } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
 import { CARD_MIN_HEIGHT, CARD_SHADOW, GLASS_CONTROL, GLASS_SURFACE, OVERLAY_CONTROL, RAISED_SURFACE, SELECTED_TINT } from "../surface";

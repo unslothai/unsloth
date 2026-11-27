@@ -35,6 +35,8 @@ export type ViewerImage = {
   /** Shown as is when `load` fails, e.g. a remote image whose host doesn't allow CORS reads. */
   fallbackUrl?: string;
   source?: string;
+  /** At fit size a click on the picture closes the viewer, as for a portrait; zoomed in, it stays. */
+  closeOnClick?: boolean;
 };
 
 type ImageViewerState = {
@@ -193,6 +195,7 @@ function ViewerBody() {
       setZoom({ key: image.key, value: fitZoom(), fit: true });
   });
   const fitted = Boolean(zoom?.fit && image && zoom.key === image.key);
+  const closesOnClick = fitted && image?.closeOnClick === true;
   // biome-ignore lint/correctness/useExhaustiveDependencies: refit only when fit mode or the image's size changes
   useEffect(() => {
     const stage = stageRef.current;
@@ -278,9 +281,11 @@ function ViewerBody() {
                 height: event.currentTarget.naturalHeight || 1,
               })
             }
+            onClick={() => closesOnClick && close()}
             className={cn(
               "m-auto max-w-none rounded-lg shadow-2xl",
               scale === null && "invisible",
+              closesOnClick && "cursor-zoom-out",
             )}
             style={
               size && scale !== null

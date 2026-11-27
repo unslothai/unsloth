@@ -49,7 +49,7 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
-import { useCopyFeedback } from "../hooks/use-copy-feedback";
+import { useCopyFeedback } from "@/hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,

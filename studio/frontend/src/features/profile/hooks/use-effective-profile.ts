@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken, OWNER_USERNAME } from "@/features/auth";
+import { addressName } from "../utils/address-name";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { useUserProfileStore } from "../stores/user-profile-store";
 
@@ -18,11 +19,10 @@ export function useEffectiveProfile() {
   const sessionSub = decodeJwtSubject(getAuthToken());
   const dn = displayName.trim();
   const login = loginDisplayName(sessionSub);
-  const addressName = nickname.trim() || dn.split(/\s+/)[0] || login;
   return {
     sessionSub,
     displayTitle: dn || login || "Unsloth",
-    addressName,
+    addressName: addressName({ nickname, displayName }, login),
     avatarDataUrl,
   };
 }

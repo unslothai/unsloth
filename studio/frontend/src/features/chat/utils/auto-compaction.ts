@@ -3,7 +3,7 @@
 
 /**
  * Local GGUF, MLX, NPU and managed engine auto-compaction is on or off only; the server chooses how it
- * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint").
+ * compacts (UNSLOTH_CONTEXT_POLICY, default "checkpoint"), except that character chats ask for rolling.
  */
 
 export const DEFAULT_AUTO_COMPACT_ENABLED = true;
@@ -16,8 +16,11 @@ export function ggufCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
+  // Character chats: rolling, since a checkpoint would turn old roleplay lines into standing instructions.
+  rolling?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";
+  context_policy?: "rolling";
   compact_context?: true;
 } {
   if (
@@ -35,6 +38,7 @@ export function ggufCompactionRequestFields(options: {
     // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
   }
+  if (options.rolling) return { context_overflow: "truncate_oldest", context_policy: "rolling" };
   // omit context_policy so the server applies UNSLOTH_CONTEXT_POLICY
   return { context_overflow: "truncate_oldest" };
 }

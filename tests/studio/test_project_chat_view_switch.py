@@ -30,6 +30,7 @@ SOURCES = (PROVIDER, STORE, QUEUE)
 
 BOUND_NAMES = {
     "aui",
+    "chatActive",
     "checkpoint",
     "loadedContextLength",
     "initialThreadId",
@@ -170,10 +171,16 @@ export const world: any = {
   remoteIds: {} as Record<string, string>,
   // Threads the runtime store no longer holds an entry for, so getItemById throws.
   missingThreadIds: {} as Record<string, boolean>,
+  // Threads deleted in this session, as the tombstone storage records them.
+  deletedThreadIds: {} as Record<string, boolean>,
   // Which component's effects are replaying right now, so a module-level call can be
   // attributed to a caller. Set by the emulator, never read by the sliced source.
   component: "none",
 };
+
+function isChatThreadDeleted(threadId: string): boolean {
+  return Boolean(world.deletedThreadIds[threadId]);
+}
 
 const state: any = {
   activeThreadId: null,
@@ -412,10 +419,13 @@ function renderThreadAutoSwitch(props: any): void {
   const syncActiveThreadId = (props.syncActiveThreadId ?? true) && !props.backgrounded;
   const paused = Boolean(props.backgrounded);
   const isLoading = props.isLoading ?? false;
+  // ChatActiveContext: false while the Chat route is hidden or the view is backgrounded.
+  const chatActive = props.chatActive ?? !props.backgrounded;
   // Subscribed through useAuiState, so a render sees whatever assistant-ui holds now.
   const mainThreadId = world.mainThreadId;
   const scope: any = {
     aui,
+    chatActive,
     isLoading,
     mainThreadId,
     newThreadSwitchStateRef,
@@ -2445,3 +2455,51 @@ def test_back_from_a_nonce_chats_own_row_keeps_that_chat():
         out["mintedOnReturn"] == 0
     ), "the remembered chat was already current, so nothing needed opening at all"
     assert out["unhandled"] == 0
+
+
+LEAVE_AND_RETURN = """
+await renderSettled({ initialThreadId: "t1" });
+const opened = snapshot().activeThreadId;
+// Leaving Chat: __root clears the id while this view stays mounted.
+seed({ activeThreadId: null });
+await renderSettled({ initialThreadId: "t1", chatActive: false });
+const whileAway = snapshot().activeThreadId;
+__BEFORE_RETURN__
+await renderSettled({ initialThreadId: "t1", chatActive: true });
+console.log(JSON.stringify({
+  opened,
+  whileAway,
+  returned: snapshot().activeThreadId,
+  switches: world.switchedToThread.length,
+  unhandled: unhandled.length,
+}));
+"""
+
+
+def test_returning_to_the_same_saved_thread_after_leaving_chat_reattaches_it():
+    """Back on the same ?thread=, none of the switch deps change, so only the resume effect can restore the id."""
+    out = _run(
+        "renderSettled, world, seed, snapshot",
+        LEAVE_AND_RETURN.replace("__BEFORE_RETURN__", ""),
+    )
+    assert out["opened"] == "t1"
+    assert out["whileAway"] is None, "the id must stay cleared while Chat is hidden"
+    assert out["returned"] == "t1", "coming back must reattach the chat on screen"
+    assert out["switches"] == 1, "the thread was already main, so nothing is switched again"
+    assert out["unhandled"] == 0
+
+
+def test_the_return_never_overwrites_a_live_id():
+    out = _run(
+        "renderSettled, world, seed, snapshot",
+        LEAVE_AND_RETURN.replace("__BEFORE_RETURN__", 'seed({ activeThreadId: "other" });'),
+    )
+    assert out["returned"] == "other"
+
+
+def test_a_thread_deleted_while_away_is_not_reattached():
+    out = _run(
+        "renderSettled, world, seed, snapshot",
+        LEAVE_AND_RETURN.replace("__BEFORE_RETURN__", 'world.deletedThreadIds["t1"] = true;'),
+    )
+    assert out["returned"] is None

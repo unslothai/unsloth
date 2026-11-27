@@ -180,7 +180,7 @@ test("only a python turn asks for copies, and every tool-only file has a reader"
   const adapter = read("api/chat-adapter.ts");
   assert.match(
     adapter,
-    /supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.includes\("python"\)\s*\? withSandboxAttachmentPaths\(survivingMessages\)[^;]*;\s*(\/\/[^\n]*\n\s*)*(?:const|let) outboundMessages = renderedMessages/,
+    /supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.includes\("python"\)\s*\? withSandboxAttachmentPaths\(survivingMessages\)[^;]*;\s*(\/\/[^\n]*\n\s*)*(?:const|let) outboundMessages = (?:characterOutbound\(characterRun, )?renderedMessages/,
   );
   assert.equal(adapter.split("{ sandbox_attachments: sandboxAttachments }").length, 3);
   for (const extension of TOOL_ONLY_ATTACHMENT_EXTENSIONS.split(",")) {

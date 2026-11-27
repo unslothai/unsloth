@@ -19,7 +19,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { listMcpTools } from "../../api";
-import { ChipInput } from "../../components/chip-input";
+import { ChipInput } from "@/components/chip-input";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import type { LlmMcpProviderConfig, McpEnvVar, ToolProfileConfig } from "../../types";
 import { FieldLabel } from "../shared/field-label";

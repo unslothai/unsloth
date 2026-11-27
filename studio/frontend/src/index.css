@@ -6972,8 +6972,8 @@ html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]
   background: transparent;
 }
 /* The header is see-through here, so the thread fades out under it; the second layer keeps a classic scrollbar's strip. */
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *),
-html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *),
+html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   mask-image:
     linear-gradient(to bottom, transparent var(--thread-header-offset, -1.5rem), #000 calc(var(--thread-header-offset, -1.5rem) + 1.5rem)),
     linear-gradient(#000, #000);
@@ -6982,7 +6982,7 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
   mask-repeat: no-repeat;
 }
 /* Masks the thread only inside the composer's rounded box; side strips and top-corner layers keep text beside it. */
-:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *) {
+:is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-viewport:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   --clip: var(--thread-composer-clip, 0px);
   --fade: var(--thread-composer-fade, 0px);
   --radius: var(--thread-composer-radius, 0px);
@@ -7016,8 +7016,8 @@ html[data-glass="macos"] .aui-thread-viewport:not(.chat-full-view-dock *) {
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .compare-pane-fade {
   visibility: hidden;
 }
-/* On the root, not the masked viewport, so the header strip gets the same shade. */
-html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) {
+/* On the root, not the masked viewport, so the header strip gets the same shade. The visual novel panel brings its own rounded glass. */
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *, .character-novel-dialogue *) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
 html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] .aui-thread-root:not(.chat-full-view-dock *) > .aui-thread-viewport {
@@ -8265,6 +8265,146 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-outline-off][data-wallpaper-outline-off][data-wallpaper-outline-off] .glass-lens .glass-lens-rim,
 :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-outline-off][data-wallpaper-outline-off][data-wallpaper-outline-off] .glass-lens::after {
   display: none;
+}
+
+/* Character chats, visual novel view: figures fade into the dialogue panel and breathe while speaking. */
+.character-novel-figure {
+  /* Tailwind's scale utility sets the scale property, so it is listed alongside transform. */
+  transition: scale 650ms cubic-bezier(.2,.8,.2,1), transform 650ms cubic-bezier(.2,.8,.2,1), opacity 450ms ease, filter 650ms ease;
+  filter: drop-shadow(0 26px 34px rgb(0 0 0 / .32));
+}
+.character-novel-figure-picture {
+  -webkit-mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  mask-composite: intersect;
+}
+/* The dialogue panel's size and the figure strip's top, shared by the panel and the solo figure's fit. */
+.character-novel {
+  --character-novel-panel-h: 52%;
+  --character-novel-panel-min: calc(440px * var(--ui-space-scale, 1));
+  --character-novel-strip-top: 3.5rem;
+}
+/* Solo figure: ~1.85x the scene above the panel, clamped. */
+@media (min-width: 768px) {
+  .character-novel-figures-solo {
+    bottom: clamp(4%, calc(100% - var(--character-novel-strip-top) - 1.85 * (100% - max(var(--character-novel-panel-h), var(--character-novel-panel-min)) - var(--character-novel-strip-top))), 34%);
+  }
+  .character-novel-figures-solo .character-novel-figure {
+    max-width: 60%;
+  }
+}
+/* Group scenes name the figure in front just above the dialogue panel, which hides its base:
+   the panel's top (its height, at least the minimum) less the figure strip's bottom. */
+.character-novel-figure-name {
+  bottom: calc(max(52cqh, var(--character-novel-panel-min)) - 34cqh + 0.75rem);
+}
+@media (max-width: 767.98px) {
+  .character-novel-figure-name {
+    bottom: calc(max(58cqh, var(--character-novel-panel-min)) - 44cqh + 0.75rem);
+  }
+}
+/* Waiting characters stand a step back, shaded rather than see-through. */
+.character-novel-figure-waiting {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.78) saturate(.75);
+}
+.character-novel-figure-waiting:hover {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.95) saturate(1);
+}
+/* The dialogue panel: messages fade in under its top edge and out above the speaker bar (one 2.625rem row over
+   the composer), so none show through the bar or the composer. The second layer keeps a classic scrollbar's strip. */
+.character-novel-dialogue .aui-thread-viewport {
+  --novel-dock: calc(var(--thread-composer-clip, 0px) + 2.625rem);
+  -webkit-mask-image:
+    linear-gradient(to bottom, transparent 0, #000 1.25rem, #000 calc(100% - var(--novel-dock) - 1rem), transparent calc(100% - var(--novel-dock))),
+    linear-gradient(#000, #000);
+  mask-image:
+    linear-gradient(to bottom, transparent 0, #000 1.25rem, #000 calc(100% - var(--novel-dock) - 1rem), transparent calc(100% - var(--novel-dock))),
+    linear-gradient(#000, #000);
+  -webkit-mask-size: 100% 100%, min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%;
+  mask-size: 100% 100%, min(var(--thread-scrollbar-gutter, 10px), var(--classic-scrollbar-width, 0px)) 100%;
+  -webkit-mask-position: 0 0, right;
+  mask-position: 0 0, right;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+.character-novel-dialogue .thread-bottom-fade {
+  display: none;
+}
+/* Short panel: give back the composer gap so the last reply ends at the speaker bar. */
+.character-novel-dialogue .aui-thread-bottom-spacer {
+  margin-top: -24px;
+  pointer-events: none;
+}
+.character-novel-dialogue .aui-thread-viewport-footer {
+  margin-top: calc(-28px * var(--ui-space-scale, 1));
+}
+/* A short window can't fit the panel's minimum: keep its share of the height so the composer stays visible. */
+@media (max-height: 560px) {
+  .character-novel-dialogue {
+    min-height: 0;
+  }
+}
+/* A cut-out picture stands in the scene: no card or side fades, so its own outline casts the shadow. */
+.character-novel-figure-picture[data-cutout] {
+  border-radius: 0;
+  -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+  mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+}
+/* In stage view its own outline casts the shadow. */
+.character-stage-figure[data-cutout] img {
+  filter: drop-shadow(0 22px 28px rgb(0 0 0 / .3));
+}
+.character-novel-figure:focus-visible .character-novel-figure-picture {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.character-novel-figure-speaking {
+  animation: character-novel-figure-breathe 3.2s ease-in-out infinite;
+}
+@keyframes character-novel-figure-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-5px) scale(1.006); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .character-novel-figure { transition: none; }
+  .character-novel-figure-speaking { animation: none; }
+}
+
+/* Keep the 0x0 keyboard stop off its own line after a frame. */
+.character-reply + .aui-assistant-reveal-sentinel,
+.character-user + .aui-user-reveal-sentinel {
+  display: block;
+}
+
+/* The bar brings its own backdrop where the composer fade turns clear. */
+.character-speaker-bar::before {
+  content: "";
+  position: absolute;
+  inset: -0.75rem -0.5rem -0.5rem;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--background) 72%, transparent);
+}
+/* The novel panel fades its messages out above the bar instead: a backdrop would read as a band on its glass. */
+.character-novel-dialogue .character-speaker-bar::before {
+  display: none;
+}
+
+/* Stage view: keep the conversation centered beside the docked picture when there's room.
+   100cqw is the chat area; the picture is clamp(240px, 30%, 440px). */
+@media (min-width: 768px) {
+  .character-stage-layout .aui-thread-viewport,
+  .character-stage-layout .aui-thread-composer-dock {
+    --stage-picture: clamp(240px, 30cqw, 440px);
+    --stage-recenter: min(var(--stage-picture), max(0px, 100cqw - var(--stage-picture) - var(--thread-max-width, 48rem) - 2.5rem));
+  }
+  .character-stage-layout .aui-thread-viewport {
+    padding-right: calc(1.25rem + var(--stage-recenter));
+  }
+  .character-stage-layout .aui-thread-composer-dock {
+    right: calc(var(--thread-scrollbar-gutter, 10px) + var(--stage-recenter));
+  }
 }
 
 /* MessagePrimitive's slack helper clears inline flex-shrink on viewport updates.

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import ts from "@typescript/typescript6";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { addressName } from "../src/features/profile/utils/address-name.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
 // Load the shipped modules so the constant under test is the one the app ships.
@@ -34,6 +35,7 @@ const { loginDisplayName } = loadWithStubs<{
   loginDisplayName: (sub: string | null) => string;
 }>(new URL("../src/features/profile/hooks/use-effective-profile.ts", import.meta.url), {
   "@/features/auth": { getAuthToken: () => null, OWNER_USERNAME },
+  "../utils/address-name": { addressName },
   "../utils/jwt-subject": { decodeJwtSubject: () => null },
   "../stores/user-profile-store": { useUserProfileStore: () => "" },
 });

@@ -128,6 +128,8 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
 
     local_src = src.replace(external_body, "")
     assert "nudge_tool_calls: runtime.nudgeToolCalls" in local_src
+    # Character chats keep it off in both arms, so --enable-tools cannot turn it back on.
+    assert "stop: characterRun.stop, nudge_tool_calls: false" in local_src
     assert "run_tools_locally: true" not in local_src
 
 

@@ -97,6 +97,8 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Last and under "More", so they join every saved layout without moving anything.
   "tasks",
   "translate",
+  // Same: appended unpinned, so assistant-only users see no change.
+  "characters",
 ] as const;
 
 export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
@@ -143,6 +145,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   api: false,
   tasks: false,
   translate: false,
+  characters: false,
 };
 
 /** Every previously shipped layout, so a migration can tell an untouched install from an

@@ -12,12 +12,13 @@ export const UserMessageFooter: FC<PropsWithChildren> = ({ children }) => (
   </div>
 );
 
-export const UserMessageActionBar: FC<PropsWithChildren> = ({ children }) => (
+/** showTime false: the message already shows its time elsewhere, as a character chat's name line does. */
+export const UserMessageActionBar: FC<PropsWithChildren<{ showTime?: boolean }>> = ({ children, showTime = true }) => (
   <ActionBarPrimitive.Root
     autohide="always"
     className="aui-user-action-bar-root contents text-chat-icon-fg"
   >
-    <UserMessageTime />
+    {showTime ? <UserMessageTime /> : null}
     <div className="aui-user-action-controls flex shrink-0 gap-1 [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover">
       {children}
     </div>

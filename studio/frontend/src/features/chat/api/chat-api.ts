@@ -25,7 +25,7 @@ import { dismissCarveoutAdviceForModel, showCarveoutAdvice } from "@/features/ig
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports
 import { checkDiskSpace } from "@/features/settings/low-disk-check";
-import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody, readFastApiError } from "@/lib/format-fastapi-error";
 import {
   type ModelRuntime,
   withModelLoadNotice,
@@ -2344,13 +2344,34 @@ export async function* streamChatCompletions(
   }
 }
 
+/** One non-streamed local completion's text; a failure throws the server's message, else `${failure} (status)`. */
+export async function completeChat(
+  payload: Omit<OpenAIChatCompletionsRequest, "stream">,
+  options: { signal?: AbortSignal; failure: string },
+): Promise<string> {
+  const response = await authFetch("/api/inference/chat/completions", {
+    method: "POST",
+    signal: options.signal,
+    // A speech model would echo the prompt back as content; refuse instead.
+    headers: { "Content-Type": "application/json", "X-Unsloth-Require-Text": "1" },
+    body: JSON.stringify({ ...payload, stream: false }),
+  });
+  if (!response.ok) throw new Error(await readFastApiError(response, options.failure));
+  const data = (await response.json()) as { choices?: { message?: { content?: string | null } }[] };
+  return data.choices?.[0]?.message?.content ?? "";
+}
+
 export async function generateAudio(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
+  options: { requireText?: boolean } = {},
 ): Promise<AudioGenerationResponse> {
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.requireText ? { "X-Unsloth-Require-Text": "1" } : {}),
+    },
     body: JSON.stringify({ ...payload, stream: false }),
     signal,
   });

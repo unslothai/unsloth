@@ -26,7 +26,7 @@ import {
   uploadLibraryFiles,
 } from "./api";
 import { useLibraryFavoritesStore } from "./favorites-store";
-import { clearCachedObjectUrls } from "./object-url-cache";
+import { clearCachedObjectUrls } from "@/lib/object-url-cache";
 
 type ItemPatch = { name?: string; favorite?: boolean; folderId?: string | null };
 type FolderPatch = { name?: string; parentId?: string | null };

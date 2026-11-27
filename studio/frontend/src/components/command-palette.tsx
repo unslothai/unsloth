@@ -46,6 +46,7 @@ import {
   TestTube01Icon,
   ApiIcon,
   Clock01Icon,
+  WinkingIcon,
   Download01Icon,
   AiTranslateIcon,
 } from "@hugeicons/core-free-icons";
@@ -319,6 +320,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={AiTranslateIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.translate")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/characters" }))}
+            keywords={["characters", "roleplay", "persona", "card", "group chat"]}
+          >
+            <HugeiconsIcon icon={WinkingIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.characters")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}

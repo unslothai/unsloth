@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { useIsCharacterChat } from "@/features/characters/chat/use-thread-scene";
+// eslint-disable-next-line no-restricted-imports -- The characters barrel reaches back into @/features/chat (an import cycle).
+import { consumeCastReveal, useCastReveal } from "@/features/characters/chat/cast-reveal";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -138,6 +142,11 @@ import {
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
 import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
+
+// Only character chats show it, so ordinary chats do not load it.
+const CharacterChatPanel = lazy(() =>
+  import("@/features/characters/chat/character-chat-panel").then((m) => ({ default: m.CharacterChatPanel })),
+);
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
 const CHAT_SETTINGS_TOP =
@@ -322,6 +331,8 @@ function CollapsibleSection({
   children,
   defaultOpen = false,
   first = false,
+  reveal = false,
+  onRevealed,
 }: {
   label: string;
   /** Makes the label an external link; link and chevron are siblings, not <a> in <button>. */
@@ -331,11 +342,21 @@ function CollapsibleSection({
   children?: ReactNode;
   defaultOpen?: boolean;
   first?: boolean;
+  /** Opens the section and scrolls it into view, whatever was saved; onRevealed then clears it. */
+  reveal?: boolean;
+  onRevealed?: () => void;
 }) {
   const [open, setOpen] = useState(() => {
     const saved = loadCollapsibleState();
     return Object.hasOwn(saved, label) ? saved[label] : defaultOpen;
   });
+  if (reveal && !open) setOpen(true);
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!reveal) return;
+    sectionRef.current?.scrollIntoView({ block: "nearest" });
+    onRevealed?.();
+  }, [reveal, onRevealed]);
 
   const toggle = () => {
     const next = !open;
@@ -351,6 +372,7 @@ function CollapsibleSection({
 
   return (
     <div
+      ref={sectionRef}
       className={cn(
         !first && "border-t border-[rgb(0_0_0_/_calc(0.13*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.09*var(--contrast-edge-gain,1)))]",
       )}
@@ -496,6 +518,9 @@ export function ChatSettingsPanel({
   const t = useT();
   const params = useChatRuntimeStore((s) => s.params);
   const setParams = useChatRuntimeStore((s) => s.setParams);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const characterChat = useIsCharacterChat(activeThreadId);
+  const castReveal = useCastReveal((state) => state.pending);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -899,7 +924,6 @@ export function ChatSettingsPanel({
       activeExternalProvider.providerType,
       externalSelection?.modelId,
     );
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const openAiApiKeyForSection =
     activeExternalProvider && !activeExternalProvider.hasApiKey
       ? getExternalProviderApiKey(activeExternalProvider.id) || null
@@ -1195,8 +1219,15 @@ export function ChatSettingsPanel({
         )}
       >
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
+        {characterChat && activeThreadId ? (
+          <CollapsibleSection label={t("characters.panel.title")} defaultOpen={true} first={true} reveal={castReveal} onRevealed={consumeCastReveal}>
+            <Suspense fallback={null}>
+              <CharacterChatPanel key={activeThreadId} threadId={activeThreadId} />
+            </Suspense>
+          </CollapsibleSection>
+        ) : null}
         {(hasModelContent || modelConfig) && (
-              <CollapsibleSection label="Model" defaultOpen={true} first={true}>
+              <CollapsibleSection label="Model" defaultOpen={true} first={!characterChat}>
             <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (

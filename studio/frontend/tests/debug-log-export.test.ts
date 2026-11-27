@@ -185,7 +185,7 @@ function makeWorld(options: {
       TooltipContent: () => null,
       TooltipTrigger: passthrough,
     },
-    "@/features/hub/hooks/use-copy-feedback": {
+    "@/hooks/use-copy-feedback": {
       useCopyFeedback: () => ({ copied: false, copy: async () => {} }),
     },
     "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },

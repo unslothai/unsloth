@@ -19,7 +19,8 @@ import {
   acquireObjectUrl,
   cachedObjectUrlCount,
   clearCachedObjectUrls,
-} from "../src/features/library/object-url-cache.ts";
+  peekObjectUrl,
+} from "../src/lib/object-url-cache.ts";
 import { parentFolder } from "../src/features/library/paths.ts";
 import { isLoopbackHost, revealLabelFor } from "../src/features/library/reveal-label.ts";
 import {
@@ -349,4 +350,15 @@ test("a moved folder's files are read again by the galleries and the Library", (
   const move = /async function move\([\s\S]*?\n {2}\}\n/.exec(readSrc("features/settings/tabs/library-tab.tsx"))?.[0] ?? "";
   assert.match(move, /notifyGalleryChanged\(location\.key\)/);
   assert.match(move, /useLibraryStore\.getState\(\)[\s\S]*\.refresh\(\)/);
+});
+
+test("a loaded object URL can be read back at once for a reader that is remounting", async () => {
+  clearCachedObjectUrls();
+  assert.equal(peekObjectUrl("peek-key"), undefined);
+  const held = acquireObjectUrl("peek-key", async () => new Blob(["x"]));
+  const url = await held.url;
+  assert.equal(peekObjectUrl("peek-key"), url);
+  held.release();
+  clearCachedObjectUrls();
+  assert.equal(peekObjectUrl("peek-key"), undefined);
 });

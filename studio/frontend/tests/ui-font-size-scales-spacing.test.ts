@@ -55,7 +55,7 @@ test("every tailwind spacing utility goes through it", () => {
 
 test("a measured cutoff moves with the box it measures", () => {
   // min-h-9 scales, so a fixed 44px threshold misreads an empty chip field as wrapped.
-  const chips = readSrc("features/recipe-studio/components/chip-input.tsx");
+  const chips = readSrc("components/chip-input.tsx");
   assert.match(chips, /element\.clientHeight > 44 \* uiSpaceScale/);
   assert.match(chips, /\}, \[values\.length, draft, uiSpaceScale\]\);/);
 });

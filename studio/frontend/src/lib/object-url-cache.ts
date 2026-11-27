@@ -10,6 +10,7 @@ interface Entry {
   url: Promise<string>;
   bytes: number;
   users: number;
+  resolved?: string;
 }
 
 const objectUrls = new Map<string, Entry>();
@@ -54,7 +55,8 @@ export function acquireObjectUrl(
         created.bytes = blob.size;
         cachedBytes += blob.size;
       }
-      return URL.createObjectURL(blob);
+      created.resolved = URL.createObjectURL(blob);
+      return created.resolved;
     });
     created.url.then(trim, () => objectUrls.get(key) === created && evict(key));
     entry = created;
@@ -73,6 +75,11 @@ export function acquireObjectUrl(
       if (held.users === 0) trim();
     },
   };
+}
+
+/** The URL already loaded for `key`, so a remounting reader can show it before paint; hold it with acquireObjectUrl. */
+export function peekObjectUrl(key: string): string | undefined {
+  return objectUrls.get(key)?.resolved;
 }
 
 export function cachedObjectUrlCount(): number {

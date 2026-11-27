@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import { mergeCharacters, pickPersona } from "../src/features/characters/meta.ts";
+import type { Character, ChatScene, Persona } from "../src/features/characters/types.ts";
+
+const read = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+
+function character(id: string, updatedAt = 1): Character {
+  return {
+    id, name: id, description: "", personality: "", scenario: "", firstMes: "", alternateGreetings: [],
+    mesExample: "", systemPrompt: "", postHistoryInstructions: "", creatorNotes: "", creator: "",
+    characterVersion: "", tags: [], talkativeness: 0.5, favorite: false, depthPrompt: null, characterBook: null,
+    extensions: {}, hasAvatar: false, avatarType: null, avatarRev: 0, createdAt: 1, updatedAt, lastChatAt: null,
+    chatCount: 0, cardSpec: null,
+  };
+}
+
+test("a library refetch keeps unchanged records, and the whole map when nothing changed", () => {
+  const previous = { a: character("a"), b: character("b") };
+  assert.equal(mergeCharacters(previous, [character("a"), character("b")]), previous);
+  const edited = mergeCharacters(previous, [character("a"), character("b", 2)]);
+  assert.notEqual(edited, previous);
+  assert.equal(edited.a, previous.a);
+  assert.equal(edited.b.updatedAt, 2);
+  assert.deepEqual(Object.keys(mergeCharacters(previous, [character("a")])), ["a"]);
+});
+
+test("the sidebar loads the character mark lazily, off the startup chunk", () => {
+  const sidebar = read("components/app-sidebar.tsx");
+  assert.doesNotMatch(sidebar, /^import [^;]*from "@\/features\/characters/m);
+  assert.match(sidebar, /lazy\(\(\) =>\s*import\("@\/features\/characters\/sidebar-mark"\)/);
+});
+
+test("the library is fetched for the sidebar only once a character chat exists", () => {
+  const mark = read("features/characters/sidebar-mark.tsx");
+  assert.match(mark, /refreshIndex\(\)\s*\.then\(/);
+  assert.match(mark, /Object\.keys\(store\.chatIndex\)\.length > 0\)/);
+});
+
+test("a reply draft refuses a speech model's echoed prompt", () => {
+  const api = read("features/chat/api/chat-api.ts");
+  const complete = api.slice(api.indexOf("export async function completeChat"), api.indexOf("export async function generateAudio"));
+  assert.match(complete, /"X-Unsloth-Require-Text": "1"/);
+});
+
+test("a character turn refuses a speech-only model instead of reading the prompt aloud", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /runSignal,\s*(\/\/[^\n]*\n\s*)*\{ requireText: Boolean\(characterRun\) \},\s*\);/);
+  const api = read("features/chat/api/chat-api.ts");
+  const audio = api.slice(api.indexOf("export async function generateAudio"));
+  assert.match(audio, /options\.requireText \? \{ "X-Unsloth-Require-Text": "1" \}/);
+});
+
+test("ordinary chats keep main's thread scaffolding", () => {
+  const thread = read("components/assistant-ui/thread.tsx");
+  assert.match(thread, /inCharacterChat && "aui-thread-bottom-spacer",/);
+  assert.doesNotMatch(thread, /"aui-thread-bottom-spacer shrink-0"/);
+});
+
+test("a send re-reads the cast and personas, at most once per chat in a short window", () => {
+  const runtime = read("features/characters/chat-runtime.ts");
+  assert.match(runtime, /if \(args\.revalidate\) await revalidateParticipants\(scene\);/);
+  assert.match(runtime, /getCharacter\(member\.characterId\)/);
+  assert.match(runtime, /if \(last !== undefined && Date\.now\(\) - last < REVALIDATE_MS\) return;/);
+});
+
+test("a resumed reply's prefill goes through the character run", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /characterRun\s*\? characterRun\.prefill\(continuation\.partial\)\s*: continuation\.partial;/);
+});
+
+test("a reply subscribes to its own speaker, not the whole library", () => {
+  const parts = read("features/characters/chat/message-parts.tsx");
+  assert.doesNotMatch(parts, /useCharactersStore\(\(s\) => s\.characters\)/);
+});
+
+test("a scene text field keeps typed text, and saves only typed text when left", () => {
+  const panel = read("features/characters/chat/character-chat-panel.tsx");
+  const field = panel.slice(panel.indexOf("function SavedTextarea"));
+  assert.match(field, /if \(!typed\.current\) setDraft\(value\);/);
+  assert.match(field, /onChange=\{\(event\) => \{\s*typed\.current = true;/);
+  assert.match(field, /onBlur=\{\(\) => \{\s*if \(!typed\.current\) return;\s*typed\.current = false;/);
+});
+
+test("the chat page loads the character panel and picker only when they open", () => {
+  const sheet = read("features/chat/chat-settings-sheet.tsx");
+  assert.doesNotMatch(sheet, /^import [^;]*from "@\/features\/characters\/chat\/character-chat-panel"/m);
+  assert.match(sheet, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/character-chat-panel"\)/);
+  const thread = read("components/assistant-ui/thread.tsx");
+  assert.doesNotMatch(thread, /^import [^;]*from "@\/features\/characters\/chat\/start-picker"/m);
+  assert.match(thread, /lazy\(\(\) =>\s*import\("@\/features\/characters\/chat\/start-picker"\)/);
+});
+
+test("a saved chat keeps who it speaks as when a default persona appears later", () => {
+  const persona = (id: string, isDefault: boolean) => ({ id, name: id, isDefault }) as Persona;
+  const scene = (personaId: string | null) => ({ threadId: "t", personaId, settings: {}, cast: [] }) as ChatScene;
+  const personas = [persona("alex", true), persona("sam", false)];
+  assert.equal(pickPersona(null, personas)?.id, "alex", "a new chat takes the default");
+  assert.equal(pickPersona(scene(null), personas), null, "a chat saved as the account stays the account");
+  assert.equal(pickPersona(scene("sam"), personas)?.id, "sam");
+  assert.equal(pickPersona(scene("gone"), personas)?.id, "alex", "a missing pick falls back to the default");
+  assert.equal(pickPersona(null, []), null);
+});
+
+test("a chat with no cast left goes through the ordinary fallback, and audio replies keep the speaker", () => {
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  // The send and the token count both go through characterOutbound.
+  assert.match(adapter, /characterOutbound\(characterRun, renderedMessages\)/);
+  assert.match(adapter, /characterOutbound\(characterRun, survivingMessages\)/);
+  const runtime = read("features/characters/chat-runtime.ts");
+  assert.match(runtime, /: alternatingTurns\(messages\)/);
+  assert.equal((adapter.match(/\.\.\.audioMetadata,/g) ?? []).length, 2);
+});
+
+test("View prompt shows and copies the project block a send puts ahead of the character prompt", () => {
+  const inspector = read("features/characters/chat/prompt-inspector.tsx");
+  assert.match(inspector, /await import\("@\/features\/chat\/api\/chat-adapter"\)/);
+  assert.match(inspector, /project \? \[\{ label: "Project", text: project \}\] : \[\]/);
+  assert.match(inspector, /copy\(\[project, run\.system\.trim\(\)\]\.filter\(Boolean\)\.join\("\\n\\n"\)\)/);
+  const adapter = read("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /export function projectInstructionsFor\(threadId: string\): Promise<string> \{\s*return withProjectInstructions\(threadId, "", undefined, \{ agentsMd: true \}\);/);
+});

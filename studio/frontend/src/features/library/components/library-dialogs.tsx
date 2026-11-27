@@ -111,40 +111,6 @@ function NameForm({
   );
 }
 
-export function ConfirmDeleteDialog({
-  open,
-  title,
-  description,
-  confirmLabel,
-  onConfirm,
-  onOpenChange,
-}: {
-  open: boolean;
-  title: string;
-  description: string;
-  confirmLabel: string;
-  onConfirm: () => void;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const t = useT();
-  return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent onOverlayClick={() => onOpenChange(false)}>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={onConfirm}>
-            {confirmLabel}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
 export function UnsavedChangesDialog({
   error,
   onRetry,

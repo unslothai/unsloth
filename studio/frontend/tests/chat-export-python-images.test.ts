@@ -20,6 +20,7 @@ import {
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
 import { unwrapPastedTextContent } from "../src/features/chat/utils/pasted-text.ts";
+import { characterChatTranscript } from "../src/features/characters/export-transcript.ts";
 import { conversationModelLabel } from "../src/features/chat/utils/conversation-markdown-export.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -114,6 +115,7 @@ async function exportedBodies(turns: unknown[] = TURNS) {
     conversationExportBasename: () => "plot",
     conversationModelLabel,
     orderByParentChain,
+    characterChatTranscript,
     unwrapPastedTextContent,
     toolResultModelText: (result: { text?: unknown }) => result?.text ?? result,
     contentBlocksToMarkdownBlocks,

@@ -14,6 +14,7 @@ import {
   ApiIcon,
   Clock01Icon,
   AiTranslateIcon,
+  WinkingIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
@@ -48,6 +49,7 @@ const ITEM_META: Record<
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
   tasks: { icon: Clock01Icon, labelKey: "shell.navigation.tasks" },
   translate: { icon: AiTranslateIcon, labelKey: "shell.navigation.translate" },
+  characters: { icon: WinkingIcon, labelKey: "shell.navigation.characters" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
