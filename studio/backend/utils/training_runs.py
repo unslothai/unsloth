@@ -74,7 +74,6 @@ def build_default_output_dir_name(
     *,
     timestamp: Optional[int] = None,
 ) -> str:
-    """Build the default training output folder name."""
     from utils.paths import default_run_dir_name
 
     timestamp_part = str(int(time.time() if timestamp is None else timestamp))
@@ -97,7 +96,6 @@ def build_default_output_dir_name(
 
 
 def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional[str]:
-    """Return the encoded model segment from a default run folder name."""
     parts = str(output_dir_name or "").rsplit("_", 1)
     # isascii() first: str.isdigit() accepts every Unicode decimal digit.
     if len(parts) != 2 or not (parts[1].isascii() and parts[1].isdigit()):
@@ -133,7 +131,6 @@ def base_model_from_run_dir_name(dir_name: str) -> Optional[str]:
 
 
 def extract_project_name(config: Any) -> Optional[str]:
-    """Read and normalize a project name from a stored config dict."""
     if not isinstance(config, dict):
         return None
     return normalize_project_name(config.get("project_name"))

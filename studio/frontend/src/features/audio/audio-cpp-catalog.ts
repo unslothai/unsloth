@@ -510,8 +510,3 @@ export function audioCppModelSpeaks(id: string | null | undefined): boolean {
 /** Music length the backend clamps to, whatever max_tokens asks for. */
 export const AUDIO_CPP_MUSIC_MIN_SECONDS = 5;
 export const AUDIO_CPP_MUSIC_MAX_SECONDS = 240;
-
-export function audioCppSizeLabel(sizeBytes: number): string {
-  const mb = sizeBytes / MB;
-  return mb < 1000 ? `${Math.round(mb)} MB` : `${(mb / 1024).toFixed(1)} GB`;
-}

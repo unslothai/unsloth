@@ -92,7 +92,6 @@ class Placement(ToolOutput):
 
 
 class MusicModeBounds(ToolOutput):
-    # A music mode's duration_s range and default, in seconds.
     id: RouteText
     min_s: Optional[float] = None
     max_s: Optional[float] = None
@@ -434,7 +433,6 @@ class AudioResult(ToolOutput):
     model: Optional[RouteText] = None
     group_id: Optional[RouteText] = None
     clips: list[AudioClip] = []
-    # Options sent that the model does not take; they were left out.
     ignored_options: list[RouteText] = []
     # Values Unsloth Studio used instead of the ones asked for, such as a clamped duration_s.
     applied: dict[str, float] = {}

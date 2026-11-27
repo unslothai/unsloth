@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Enhance prompt": the FLUX.3 prompt upsampler rewrites a short request into the detailed caption the model was
-// trained on. Pure logic only (no "@/" imports) so node:test can load it directly.
+// Enhance prompt: FLUX.3 upsampler; pure logic, no @/ imports, so node:test can load it.
 
 /** Every upsampler route, in one place. */
 export const PROMPT_UPSAMPLER_ROUTES = {
@@ -133,8 +132,7 @@ export function upsamplerNeedsDownload(status: PromptUpsamplerStatus): boolean {
   );
 }
 
-/** An earlier quant serves; a model with no projector counts when it is not the default file (the Download then
- * fetches both, not the projector alone). */
+/** An earlier quant serves; projector-less non-default models count; Download fetches both. */
 export function upsamplerServesEarlierQuant(status: PromptUpsamplerStatus): boolean {
   if (!status.downloaded || status.current_downloaded) return false;
   return (
@@ -189,8 +187,7 @@ export function shouldWarmUpsampler(
   return enabled && status !== null && status.supported && status.downloaded && !status.download.downloading;
 }
 
-/** Warm outcomes that clear on their own (a render, a load, training or a GPU handover in progress, a request
- *  holding the server): the panel asks again a little later. Memory, placement and setup outcomes do not. */
+/** Transient warm outcomes (render, load, GPU handover) retry; memory or setup ones do not. */
 export const WARM_RETRY_OUTCOMES: ReadonlySet<string> = new Set([
   "generating",
   "loading",
@@ -241,8 +238,7 @@ export function readEnhanceChoices(): Record<string, boolean> {
   }
 }
 
-/** Store the choice for one family. A choice equal to the family default is dropped, so a changed default reaches
- *  users who never touched the toggle. */
+/** Choice equal to the family default is dropped, so changed defaults reach untouched users. */
 export function withEnhanceChoice(
   choices: Record<string, boolean>,
   familyKey: string,
@@ -289,8 +285,7 @@ export function hasEnhancedPrompt(image: {
   return Boolean(caption) && caption !== image.prompt.trim();
 }
 
-/** Two 32-bit hashes (FNV-1a, djb2) over the whole data URL: the same-format headers and trailers of two different
- *  images often match, so the ends alone do not tell them apart. */
+/** Two 32-bit hashes (FNV-1a, djb2) over the whole data URL, since the ends often match. */
 export function referenceDigest(src: string): string {
   let fnv = 0x811c9dc5;
   let djb = 5381;
@@ -302,8 +297,7 @@ export function referenceDigest(src: string): string {
   return `${src.length}:${(fnv >>> 0).toString(16)}:${(djb >>> 0).toString(16)}`;
 }
 
-// The stale check runs on every render: digests of the images the last call named, and only those, so a removed
-// image is not kept alive by the cache.
+// Digests only for images the last call named, so removed images are not kept alive.
 let referenceDigests = new Map<string, string>();
 
 /** Drop the cached digests (and with them the uploads they are keyed on) once no preview is shown. */

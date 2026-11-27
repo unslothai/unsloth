@@ -29,8 +29,7 @@ def test_the_key_is_created_through_the_real_endpoint():
 
 
 def test_the_session_token_is_set_aside_while_the_key_is_driven():
-    """Vacuity 1. Leaving the session token in place makes the call succeed for
-    a reason that has nothing to do with the key."""
+    """Set the session token aside: left in place, the call succeeds regardless of the key."""
     body = _assert_api_key_body()
     assert "saved = self.studio.token" in body
     assert "self.studio.token = saved" in body, "the session token must be restored"
@@ -52,16 +51,14 @@ def test_the_session_token_is_set_aside_while_the_key_is_driven():
 
 
 def test_a_corrupted_key_must_be_rejected():
-    """Vacuity 2. Without this, a server that ignores the Authorization header
-    entirely passes the positive check."""
+    """A server that ignores the Authorization header would pass the positive check."""
     body = _assert_api_key_body()
     assert "bad_key_status" in body
     assert "a corrupted API key was accepted" in body
 
 
 def test_the_raw_key_is_registered_as_a_secret_before_it_is_used():
-    """It reaches request headers and, on failure, error strings that travel
-    home in the evidence bundle."""
+    """The key reaches request headers and the evidence bundle, so register it before use."""
     body = _assert_api_key_body()
     add_at = body.index("self.secrets.add(raw_key)")
     use_at = body.index("self.studio.token = raw_key")
@@ -69,8 +66,7 @@ def test_the_raw_key_is_registered_as_a_secret_before_it_is_used():
 
 
 def test_the_session_token_is_restored_even_when_the_call_raises():
-    """The token restore must sit in a finally: an exception mid-check would otherwise leave the
-    session authenticated as a corrupted key and fail later assertions."""
+    """Restore the token in a finally, or an exception leaves the session on a corrupted key."""
     tree = ast.parse(_assert_api_key_body())
     tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
     restores = [
@@ -83,8 +79,7 @@ def test_the_session_token_is_restored_even_when_the_call_raises():
 
 
 def test_it_runs_before_the_long_gpu_work():
-    """It needs only a logged-in session. After a 20-minute training run, a
-    training failure would hide whether API keys work at all."""
+    """Must run before the long training, so a training failure cannot hide whether keys work."""
     api_at = SRC.index("self.assert_api_key()")
     train_at = SRC.index("trained = self.assert_training()")
     assert api_at < train_at

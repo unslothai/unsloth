@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Mirrors /load's pass-through resolution so the resident shortcut judges what
- * the server receives.
+ * Mirrors /load's pass-through resolution so the resident shortcut judges what the server receives.
  */
 
 import assert from "node:assert/strict";

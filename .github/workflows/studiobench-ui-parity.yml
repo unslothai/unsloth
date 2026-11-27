@@ -21,8 +21,7 @@ on:
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/vite.config.ts'
-      # Picker rows come from the backend. routes/video.py and routes/rag.py are deliberately
-      # absent.
+      # Picker rows come from backend; routes/video.py and routes/rag.py deliberately absent.
       - 'studio/backend/hub/**'
       - 'studio/backend/picker/**'
       - 'studio/backend/utils/models/**'
@@ -87,9 +86,8 @@ permissions:
 
 jobs:
   arms:
-    # Two arms on two runners. Scenes cannot be sharded: both builds must share one browser
-    # session. ui_parity confines the null's excuses to what the scored runner reproduces
-    # (in_arm_repeatability, confine_to_runner).
+    # Cannot shard scenes, so both builds share one browser session; ui_parity confines the null's
+    # excuses to what the scored runner reproduces (in_arm_repeatability, confine_to_runner).
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     # Backstop above the per-step caps (44), so a hang names its step.
@@ -300,9 +298,8 @@ jobs:
               sys.exit(1)
           PY
 
-      # --reps 2 is load-bearing: derive_unstable needs 2 observations, else the measured set is
-      # empty and scoring silently falls back to the declared list. --windowed-arm on both sides:
-      # a thread may mount only the rows near the reader; a fully mounted side is unaffected.
+      # --reps 2 is load-bearing: derive_unstable needs 2 observations, else scoring silently falls
+      # back to declared list; --windowed-arm on both sides (threads mount only near rows).
       - name: Drive both sides through one session
         timeout-minutes: 9
         run: |
@@ -349,8 +346,7 @@ jobs:
           kill "${STUDIO_a_PID:-0}" 2> /dev/null || true
           kill "${STUDIO_b_PID:-0}" 2> /dev/null || true
 
-      # Delete shots whose arms matched (72 PNGs per job otherwise). Keep actions with a missing
-      # digest. Never fatal.
+      # Delete shots of actions whose arms matched; keep missing-digest actions. Never fatal.
       - name: Drop the shots of actions whose two arms matched
         if: always()
         continue-on-error: true
@@ -399,8 +395,7 @@ jobs:
           pattern: studiobench-parity-*
           path: artifacts
 
-      # Find the payload: upload-artifact roots multi-path uploads at their common ancestor.
-      # ui_parity.shards_of takes a directory per shard.
+      # Multi-path uploads root at common ancestor; ui_parity.shards_of takes a dir per shard.
       - name: Lay the shards out where ui_parity looks for them
         run: |
           set -euo pipefail
@@ -447,10 +442,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Assert each (rung, action) the excuse could change was DECIDED by the null; else the
-      # measured set is empty and scoring falls back to the declared list. Do not require that
-      # the null found differences. --min-reps must match the verdict.
-      # sweep/selftest/test_studiobench_null_audit.py covers both directions.
+      # Null must decide each rung/action an excuse may change (else scoring falls back to declared
+      # list); it need not find differences; --min-reps must match the verdict.
       - name: The null control decided the actions it exercised
         run: |
           python -m tests.studio.studiobench.sweep.ui_parity \
@@ -539,8 +532,7 @@ jobs:
           fi
           exit "$rc"
 
-      # Only on failure. Pairs come from the same session as the differing digests; re-driving
-      # the film would usually show two identical pages.
+      # Pairs come from the digests' own session; re-driving usually shows identical pages.
       - name: Draw the before/after pairs for what turned it red
         if: failure() || steps.verdict.outputs.declared_diff == 'true'
         env:

@@ -157,7 +157,6 @@ MUTANTS = {
     "slope_rate_slice": ("module.slope_rate[head]", "module.slope_rate[:heads]"),
     "diagonal_decay_slice": ("module.diagonal_decay[:, head]", "module.diagonal_decay[:, :heads]"),
     "query_decay_slice": ("module.query_decay[head]", "module.query_decay[:heads]"),
-    # A partial block read with the tail of the query decay instead of its head.
     "partial_block_query_decay": ("query_decay[:, :n]", "query_decay[:, -n:]"),
     # The carried state is not decayed between blocks.
     "undecayed_state": ("state * torch.exp(-slope * n)", "state"),
@@ -167,7 +166,6 @@ MUTANTS = {
         "qkv.reshape(bsz, local_len, 3, module.num_attention_heads, dim).transpose(2, 3)"
         ".reshape(bsz, local_len, module.num_attention_heads, 3 * dim)",
     ),
-    # Output gate applied before the full-width norm.
     "gate_before_norm": (
         "out = module.norm(out.reshape(bsz, local_len, -1))\n"
         "    out = torch.sigmoid(module.output_gate(hidden_states)) * out",
@@ -283,8 +281,7 @@ def test_lightning_mutants_break_parity(mutant):
 
 
 def _batch(dp_rank, vocab = 64):
-    """Right padded rows of unequal length; labels stop before position 12, so the CP=2 rank 1
-    shard has none and position 10's target (token 11) crosses the CP=2 seam."""
+    """Labels end before 12: CP=2 rank 1 has none; position 10's target (token 11) crosses the CP=2 seam."""
     g = torch.Generator().manual_seed(10 + dp_rank)
     ids = torch.randint(1, vocab, (2, SEQ), generator = g)
     lengths = [(SEQ, 9), (17, SEQ)][dp_rank]
@@ -405,7 +402,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
         assert calls["lightning"] == runs * layer_types.count("linear_attention"), calls
         assert calls["attention"] == runs * layer_types.count("full_attention"), calls
 
-    # Outputs: valid positions of the gathered CP shards against the reference.
     gathered = [torch.empty_like(out.logits) for _ in range(cp_size)]
     dist.all_gather(gathered, out.logits.detach().contiguous(), group = manager.group)
     logits = torch.cat(gathered, dim = 1)[:, :SEQ]
@@ -457,8 +453,7 @@ MODEL_CASES = {
     "m2_dp2_cp2": ("m2", 2, 4, False, {}),
     # MiniMax with full attention layers only: no Lightning mixer, so main's generic Ulysses route alone.
     "m1_full_attention_only_cp2": ("m1", 2, 2, False, {"layer_types": ["full_attention"] * 2}),
-    # The parallel_capabilities MoE x cp cells (aux loss off): eager attention, HF checkpointing,
-    # full finetuning, attention LoRA and LoRA on the fused experts, CP 2 and DP2 x CP2.
+    # MoE x cp cells (aux loss off): eager attn, HF checkpointing, full FT, attn/expert LoRA.
     "m1_cp2_eager_checkpoint": (
         "m1",
         2,

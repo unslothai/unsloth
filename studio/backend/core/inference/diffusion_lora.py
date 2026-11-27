@@ -51,8 +51,7 @@ class LoraCatalogEntry:
     fine_tuned: bool = False
     # Id of the loras/diffusion adapter this custom-folder file is an export of: listed once, still resolvable.
     copy_of: Optional[str] = None
-    # Two-expert video models (Wan2.2-A14B): weight_name adapts the high-noise transformer, this file the low-noise
-    # transformer_2. Set only on pairs, which load only on a two-expert family.
+    # Low-noise transformer_2 file of a two-expert video pair (Wan2.2-A14B); set only on pairs.
     weight_name_2: Optional[str] = None
     # Step-distilled adapters: the publisher's (steps, guidance), applied as the generation defaults when picked.
     recommended_steps: Optional[int] = None
@@ -240,8 +239,7 @@ def _is_dir(p: Path) -> bool:
 
 
 def _scan_folder_roots() -> list[Path]:
-    """The Models folder, its cache home and registered custom folders, each with its direct
-    sub-folders (where an export lands; hub repo folders skipped) and any ComfyUI ``loras`` folders."""
+    """Models, cache, custom folders and direct sub-folders (no hub repos) plus ComfyUI loras."""
     from hub.utils.comfy_models import comfy_lora_scan_roots
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -274,8 +272,7 @@ def _scan_folder_roots() -> list[Path]:
 
 
 def _account_allows():
-    """Managed accounts only see adapters (and sidecars) resolving inside paths they may read, so a
-    symlink cannot pull another account's or the host's file into listing, generation or export."""
+    """Managed accounts only see adapters inside readable paths, so symlinks cannot leak files."""
     from hub.services.models import account_access
 
     if not account_access.managed_account():
@@ -291,8 +288,7 @@ def _account_allows():
 
 
 def _open_pinned(path: Path):
-    """Open ``path`` and prove the handle is the file now at its resolved, account-readable location,
-    so swapping a link between the catalog scan and the copy cannot redirect the read."""
+    """Open path and check the handle is the resolved file, so a swapped link cannot redirect."""
     f = open(path, "rb")
     try:
         real = os.path.realpath(path)
@@ -318,8 +314,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
     root_dir = loras_dir()
     allows = _account_allows()
     files = [p for p in _weight_files(root_dir) if allows(p)]
-    # Two files sharing a stem but differing in extension collide on id (== stem), so a colliding stem keeps the full
-    # filename.
+    # Same-stem files across extensions collide on id (== stem); they keep the full filename.
     stem_counts: dict[str, int] = {}
     for p in files:
         stem_counts[p.stem] = stem_counts.get(p.stem, 0) + 1
@@ -360,8 +355,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
                 originals.setdefault(signature, (entry_id, p))
         elif signature in originals and _same_ends(originals[signature][1], p):
             copy_of = originals[signature][0]
-        # A ``<stem>.json`` sidecar (written by the trainer on publish) records the adapter's family + default weight so
-        # it is family-gated instead of "unknown". Best-effort.
+        # The <stem>.json sidecar gives family and default weight, best-effort (else unknown).
         families, weight_default = _read_lora_sidecar(p)
         entries.append(
             LoraCatalogEntry(
@@ -412,8 +406,7 @@ def _has_lora_sidecar(path: Path) -> bool:
 
 
 def is_image_lora_file(path: Path) -> bool:
-    """Sidecar-marked image LoRA, or a .safetensors of LoRA tensors not beside a model marker (a chat
-    adapter has the same keys). Model scanners use this to keep image LoRAs out of model listings."""
+    """Sidecar-marked image LoRA, or a LoRA-tensor .safetensors with no model marker beside it."""
     if path.suffix.lower() not in _ALL_EXTS:
         return False
     if _has_lora_sidecar(path):
@@ -450,13 +443,11 @@ def _read_lora_sidecar(weight_path: Path) -> tuple[tuple[str, ...], float]:
 def list_loras(
     *, family: Optional[str] = None, include_copies: bool = False
 ) -> list[LoraCatalogEntry]:
-    """Merged curated and local catalog, optionally family-filtered; cheap (one directory scan plus
-    the in-memory curated list), with network touched only by resolve() for a hub adapter."""
+    """Curated and local catalog, optionally family-filtered; cheap, network only in resolve()."""
     merged = [e for e in list(_CURATED) + _scan_local() if include_copies or not e.copy_of]
     if family:
         fam = family.strip().lower()
         merged = [e for e in merged if not e.families or fam in {f.lower() for f in e.families}]
-    # Stable order: local first, then by display name.
     merged.sort(key = lambda e: (e.source != "local", e.display_name.lower()))
     return merged
 
@@ -505,9 +496,8 @@ def _staging_name(dest_dir: Path, stem: str) -> str:
 
 
 def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
-    """Copy a listed local adapter (by catalog id, never a path) into dest_dir with an image LoRA
-    <stem>.json sidecar; returns the weight file; a stem used by other bytes, another weight
-    format or a foreign .json gets a suffix."""
+    """Copy a listed local adapter (by catalog id, not a path) to dest_dir with a <stem>.json
+    sidecar, returning the weight file; a stem used by other bytes, format or .json is suffixed."""
     import filecmp
     import shutil
 
@@ -703,7 +693,6 @@ def _pick_repo_weight_file(
     safes = [f for f in files if f.lower().endswith(".safetensors") and "/" not in f]
     if len(safes) == 1:
         return safes[0]
-    # Prefer a lora-hinting filename, else the first safetensors, else a gguf.
     for f in safes:
         if "lora" in f.lower():
             return f
@@ -775,9 +764,7 @@ def resolve_specs(
     return out
 
 
-# sd.cpp maps FLUX.1 q/k/v(/proj_mlp) onto fused weights as numbered pieces, stops at the first missing
-# piece, and on quantized GGUFs drops a fused target its pieces do not cover. Staging adds rank-1 zero
-# pairs for missing pieces so e.g. a to_q/to_k/to_v-only adapter keeps its single-block updates.
+# Gaps in fused FLUX.1 q/k/v stop sd.cpp and GGUFs drop them; zero pairs keep partial updates.
 _FLUX1_SPLIT_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
 _FLUX1_SPLIT_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("transformer_blocks", ("attn.to_q", "attn.to_k", "attn.to_v")),
@@ -793,8 +780,7 @@ _SAFETENSORS_DTYPE_BYTES = {
     "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
 }  # fmt: skip
 _FLUX1_MLP_RATIO = 4
-# Shapes come from the adapter's own header. Real FLUX.1 pieces (hidden 3072, rank 1) add well under 1 MiB in
-# total, so a header claiming more is not a FLUX.1 adapter and is staged as-is instead of padded.
+# Real FLUX.1 pieces (hidden 3072, rank 1) total under 1 MiB; a bigger header is not padded.
 _FLUX1_MAX_SPLIT_PAD_BYTES = 256 * 1024 * 1024
 
 
@@ -986,7 +972,6 @@ def inject_prompt_tags(prompt: str, resolved: list[ResolvedLora]) -> str:
 
 
 def _fmt_weight(w: float) -> str:
-    # Stable, compact float formatting (no trailing zeros): 1.0 -> "1", 0.75 -> "0.75".
     s = f"{w:.4f}".rstrip("0").rstrip(".")
     return s or "0"
 

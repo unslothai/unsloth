@@ -47,7 +47,6 @@ if [[ $ROCM -eq 1 ]]; then
     IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
     # 7.2 is the floor: rocm6.4 tops out below what unsloth-zoo needs, and RDNA4 needs 7.x.
     ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
-    # the index follows the base unless named (7.2.4 -> rocm7.2)
     TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm${ROCM_VERSION%.*}}"
 else
     IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
@@ -55,8 +54,7 @@ else
     UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 fi
 
-# Resolve refs to a commit: docker caches RUN layers by command string, so "main" would
-# never rebuild.
+# Resolve refs to commits: docker caches RUN layers by command string, so main never rebuilds.
 resolve_git_ref() {
     local repo="$1" ref="$2" ls_out sha
     printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' && { printf '%s' "$ref"; return 0; }

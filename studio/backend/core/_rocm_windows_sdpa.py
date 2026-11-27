@@ -47,8 +47,7 @@ def _math_off() -> None:
 
 
 def _wide_cuda_head(query: Any) -> bool:
-    # Device first, and size(-1) for a nested query: a strided NestedTensor raises on ``.shape`` (its ragged sizes),
-    # which would fail a call the stock dispatch takes.
+    # Device first; size(-1) for a nested query, since strided NestedTensor .shape raises.
     if getattr(getattr(query, "device", None), "type", None) != "cuda":
         return False
     if getattr(query, "is_nested", False):

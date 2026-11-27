@@ -109,10 +109,8 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
         return None
     int_to_float, float_to_int, map_to_unsloth_16bit = tables
     lower = model_name.strip().lower()
-    # unsloth/ ids are not fixed points: INT_TO_FLOAT and BAD_MAPPINGS can still remap them,
-    # and the security scan must check the repo the loader actually fetches.
+    # INT_TO_FLOAT and BAD_MAPPINGS can remap unsloth/ ids; scan must check the fetched repo.
     if load_in_4bit:
-        # 4-bit resolves via FLOAT_TO_INT_MAPPER alone and keeps explicit -bnb-4bit names.
         mirror = None if lower.endswith("-bnb-4bit") else float_to_int.get(lower)
     else:
         mirror = int_to_float.get(lower) or map_to_unsloth_16bit.get(lower)

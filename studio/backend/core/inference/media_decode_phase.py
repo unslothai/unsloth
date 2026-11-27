@@ -60,8 +60,7 @@ def decode_phase(
 
 @contextlib.contextmanager
 def denoise_phase(pipe: Any, on_denoise: Any):
-    """Call ``on_denoise`` once when the loop is entered: every diffusers pipeline opens
-    ``self.progress_bar`` right after the prompt encode and latent setup. A HOST position."""
+    """Call on_denoise once at loop entry, where diffusers opens self.progress_bar; host-side."""
     original = getattr(pipe, "progress_bar", None)
     if not callable(original):
         yield

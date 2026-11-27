@@ -88,7 +88,6 @@ jobs:
     name: Chat UI Tests
     runs-on: windows-latest
     timeout-minutes: 45
-    # Default to Git Bash; PowerShell steps override per step.
     defaults:
       run:
         shell: bash
@@ -111,8 +110,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
-          # No `cache: 'npm'`: setup-node's restore silently aborts the job on Windows when the npm
-          # cache path does not exist (npm/cli#7308).
+          # No npm cache: setup-node aborts Windows jobs if the path is absent (npm/cli#7308)
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
@@ -142,8 +140,7 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
+        # Main only: PR caches serve one PR and evict main's copies from the near-full cache.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -202,8 +199,7 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # install.ps1 runs as a CHILD process: its [Console]::Out output and setup.ps1's markers
-          # then reach Tee-Object. -Command because $ProgressPreference is not inherited.
+          # Child process: output to Tee-Object; -Command: $ProgressPreference not inherited
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
           # Timestamps go to the step log only; logs/install.log keeps raw output.
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -342,8 +338,7 @@ jobs:
           # suite can print its stuck wait; SIGKILL 60s later for native Windows processes.
           lane_timeout=1500
 
-          # System32\timeout.exe is also on PATH with different semantics, so require coreutils
-          # `timeout` (verified via --version) or fail loudly.
+          # System32 timeout.exe on PATH has different semantics; require coreutils timeout.
           lane_timeout_bin=""
           for candidate in /usr/bin/timeout timeout; do
             if "$candidate" --version >/dev/null 2>&1; then

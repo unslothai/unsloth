@@ -78,6 +78,20 @@ def xpu_is_integrated() -> bool:
         return False
 
 
+def cuda_is_integrated(device: Any = None) -> bool:
+    """Integrated NVIDIA GPU (DGX Spark, Jetson); False on ROCm (APUs classified apart) and on any error."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
+            return False
+        return device_integrated_status(device) is True
+    except Exception:  # noqa: BLE001 - unclassifiable: keep the discrete path
+        return False
+
+
 def host_pinning_allowed(device: Any = None) -> bool:
     return not device_is_integrated(device)
 
@@ -114,8 +128,7 @@ def _resolve_get_last_error() -> Any:
         return None
     import os
 
-    # Lookup goes through torch's own extension (searches only its dependency tree): a global lookup
-    # could hit a second libcudart from another package or LD_PRELOAD.
+    # Use torch's own extension: a global lookup could hit a second libcudart or LD_PRELOAD.
     fn = getattr(ctypes.CDLL(torch._C.__file__), sym, None)
     if fn is not None:
         return fn

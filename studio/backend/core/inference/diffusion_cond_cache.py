@@ -20,8 +20,7 @@ _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
 
 
 def cache_dir() -> Optional[str]:
-    """The configured cache directory, or None when the cache is off. A blank
-    value means off (matching the trainers' ``cond_cache_dir`` semantics)."""
+    """Cache dir, or None when off; blank means off, like the trainers' ``cond_cache_dir``."""
     value = (os.environ.get(_ENV_DIR) or "").strip()
     return value or None
 
@@ -40,8 +39,7 @@ _SLOT_TENSOR = -2
 
 
 def _flatten(result: Any) -> Optional[list]:
-    """Flatten an encode_prompt result tuple of tensors, None and tensor-lists into [layout_tensor,
-    *tensors] for the cache, or None if anything else is present (those calls are not cached)."""
+    """Flatten encode_prompt to [layout_tensor, *tensors]; None if anything else is present."""
     if not isinstance(result, tuple) or not result:
         return None
     layout: list[int] = []
@@ -65,8 +63,7 @@ def _flatten(result: Any) -> Optional[list]:
 
 
 def _unflatten(stored: tuple, device: Any) -> tuple:
-    """Rebuild the ``encode_prompt`` result from a cached ``_flatten`` record,
-    moving every tensor to ``device`` (dtype is preserved as stored)."""
+    """Rebuild from a ``_flatten`` record; tensors go to ``device``, dtype kept as stored."""
     layout = stored[0].tolist()
     tensors = list(stored[1:])
     out: list[Any] = []
@@ -93,8 +90,7 @@ def install(
     te_quant: Any = None,
     logger: Any = None,
 ) -> bool:
-    """Instance-level wrapper of pipe.encode_prompt, so it dies with the pipe and never mutates the
-    class."""
+    """Per-instance wrapper of pipe.encode_prompt; dies with the pipe, never mutates the class."""
     root = cache_dir()
     if root is None:
         return False
@@ -177,8 +173,6 @@ def install(
 
 
 def _target_device(pipe: Any, bound: inspect.BoundArguments) -> Any:
-    """The device a hit's tensors must land on: the caller's explicit ``device``
-    argument when given, else the pipeline's execution device, else CPU."""
     device = bound.arguments.get("device")
     if device is not None:
         return device

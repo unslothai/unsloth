@@ -15,9 +15,8 @@ import {
 import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 
 /**
- * Opens an indexed document from `children` (a button): in Studio's browser when it can show the
- * format and files open there. Otherwise viewable files use the attachment viewer, the rest a new tab.
- * A PDF opens at `page` (1-based) in either viewer.
+ * Opens an indexed document in Studio's browser when it can show the format and files open there,
+ * else viewable files use the attachment viewer, others a new tab; PDFs open at 1-based page.
  */
 export function RagDocumentTrigger({
   documentId,

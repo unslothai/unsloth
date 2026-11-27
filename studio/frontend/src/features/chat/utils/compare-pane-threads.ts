@@ -88,7 +88,7 @@ export type ComparePairReadState =
   | { status: "pending" }
   | { status: "retry" }
   | { status: "unreadable" }
-  | { status: "ready"; variant: CompareVariant };
+  | { status: "ready"; variant: CompareVariant; threads: ThreadRecord[] };
 
 /** Every outcome reaches a rendered state: a failure retries once, then shows a visible surface. */
 export function comparePairReadState(
@@ -102,5 +102,5 @@ export function comparePairReadState(
   const variant = compareVariantForPair(outcome.threads, checkpointIsLora);
   return variant === null
     ? { status: "pending" }
-    : { status: "ready", variant };
+    : { status: "ready", variant, threads: outcome.threads };
 }

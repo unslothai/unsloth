@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Kernel install helpers; imports only stdlib, wheel_utils and child_stdio so torch-less hosts can
-import; CLI is wheel-only with --no-deps"""
+"""Kernel install helpers importable without torch; CLI installs wheels only, with --no-deps."""
 
 from __future__ import annotations
 
@@ -153,9 +152,8 @@ def _cuda_source_build_timeout() -> int:
     return value if value > 0 else 7200
 
 
-# Overall deadline for a CUDA source build, far looser than HIP's; a slow one (causal-conv1d on
-# aarch64 can compile for over an hour) must not be aborted, and it is read at import so the lock
-# wait covers it.
+# Overall CUDA source build deadline, far looser than HIP's; a slow build (causal-conv1d on aarch64
+# can compile over an hour) must not be aborted; read at import so the lock wait covers it.
 SOURCE_BUILD_TIMEOUT_CUDA = _cuda_source_build_timeout()
 # The real runner, captured at import: a caller handing in anything else (a test double, or
 # subprocess.run patched over) gets exactly that called.
@@ -228,8 +226,7 @@ _LOCK_CONTENDED = frozenset(
 )
 
 
-# How long an optional acceleration (causal-conv1d, an optional mamba-ssm wheel, flash-attn) waits
-# for another process's install of it before the load goes on without it.
+# How long an optional kernel waits for another process's install before loading without it.
 OPTIONAL_KERNEL_LOCK_WAIT = 120
 
 
@@ -578,8 +575,7 @@ def install_kernel(
     install_without_gpu: bool = False,
     skipped: list[str] | None = None,
 ) -> int:
-    # install_without_gpu: no visible GPU yet (an image build for the GPU it will run on) still
-    # installs. Each kernel left uninstalled for this machine is appended to *skipped*.
+    # install_without_gpu installs with no visible GPU; skipped kernels go to *skipped*.
     distribution = KERNELS[name][0]
     check = _load_check(name)
 
@@ -589,8 +585,7 @@ def install_kernel(
             skipped.append(name)
         return 0
 
-    # A copy that already loads (a ROCm source build, a GPU-hidden image builder's earlier install)
-    # is success whatever the wheel, GPU and network checks below would say.
+    # A copy that already loads succeeds whatever the wheel, GPU and network checks say.
     if not dry_run and _installed_version(distribution) is not None and _loads(check, run):
         print(f"Unsloth: {name} already installed and loads.")
         return 0

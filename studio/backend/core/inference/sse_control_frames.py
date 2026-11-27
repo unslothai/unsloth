@@ -105,7 +105,6 @@ def sanitize_provider_sse_line(line: str) -> str | None:
 
 
 def _sse_payload(line: str) -> dict[str, Any] | None:
-    """The JSON object a ``data:`` line carries, or None if it carries none."""
     if not line.startswith("data:"):
         return None
     raw = line[5:].strip()
@@ -216,8 +215,7 @@ class ServerToolCallStripper:
         self._owes_finish = True
 
     def end_turn(self) -> None:
-        """Clears the withheld-call flag so the next turn's finish reasons are not stripped; the
-        debt stays."""
+        """Clears the withheld flag so next turn's finish reasons are kept; the debt stays."""
         self._pending_call = False
 
     def strip(self, line: str) -> str | None:

@@ -45,7 +45,6 @@ _ASSET_BACKEND_TOKENS = (
 
 
 def normalize_backend(value: Any) -> Optional[str]:
-    """Return a canonical backend name, or None for an unknown value."""
     if not isinstance(value, str) or not value.strip():
         return None
     backend = value.strip().lower()
@@ -63,7 +62,6 @@ def normalize_backend_request(value: Any) -> Optional[str]:
 
 
 def is_requestable_backend(value: Any) -> bool:
-    """Whether this build knows how to install ``value``."""
     return normalize_backend_request(value) is not None
 
 
@@ -74,7 +72,6 @@ def backend_for_install_kind(install_kind: Any) -> Optional[str]:
 
 
 def install_kinds_for_backend(backend: Any) -> frozenset[str]:
-    """Return every install kind that satisfies ``backend``."""
     normalized = normalize_backend(backend)
     if normalized is None:
         return frozenset()
@@ -110,7 +107,6 @@ def backend_from_asset_name(asset: Any) -> Optional[str]:
 
 
 def marker_backend(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """What the install described by ``marker`` runs on, or None if unknowable."""
     if not marker:
         return None
     recorded = normalize_backend(marker.get("backend"))

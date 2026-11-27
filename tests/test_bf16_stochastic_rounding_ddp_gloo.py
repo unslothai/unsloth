@@ -62,9 +62,10 @@ def _digest(tensors):
     return h.hexdigest()[:16]
 
 
-def _worker(rank, world, port, out, root, device, optim, fused):
+def _worker(rank, world, port, out, root, device, optim, fused, fused_bnb):
     try:
         os.environ["UNSLOTH_BF16_SR_FUSED"] = fused
+        os.environ["UNSLOTH_BF16_SR_FUSED_BNB"] = fused_bnb
         os.environ.pop("UNSLOTH_BF16_STOCHASTIC_ROUNDING", None)
         dist = _init(rank, world, port)
         path = os.path.join(root, "unsloth/optimizers/bf16_stochastic_rounding.py")
@@ -100,6 +101,7 @@ def _worker(rank, world, port, out, root, device, optim, fused):
                     "steps": gathered,
                     "fused": opt.__dict__.get("_unsloth_sr_fused_steps", 0),
                     "rounds": opt.__dict__.get("_unsloth_sr_triton_rounds", 0),
+                    "bnb_fused": opt.__dict__.get("_unsloth_sr_bnb_fused_steps", 0),
                 }
             )
         dist.destroy_process_group()
@@ -107,21 +109,43 @@ def _worker(rank, world, port, out, root, device, optim, fused):
         out.put({"error": traceback.format_exc()[-3000:]})
 
 
+# (device, optim, FUSED, FUSED_BNB, one-pass AdamW steps, round-kernel rounds, one-kernel bnb steps)
 CASES = [
-    pytest.param("cpu", "adamw", "1", 0, 0, id = "cpu-adamw-float32-route"),
+    pytest.param("cpu", "adamw", "1", "1", 0, 0, 0, id = "cpu-adamw-float32-route"),
     pytest.param(
-        "cuda", "adamw", "1", STEPS * 4, 0, id = "cuda-adamw-one-pass", marks = pytest.mark.gpu
+        "cuda", "adamw", "1", "1", STEPS * 4, 0, 0, id = "cuda-adamw-one-pass", marks = pytest.mark.gpu
     ),
-    pytest.param("cuda", "adamw", "0", 0, 0, id = "cuda-adamw-float32-route", marks = pytest.mark.gpu),
     pytest.param(
-        "cuda", "adamw8bit", "1", 0, STEPS * 4, id = "cuda-bitsandbytes", marks = pytest.mark.gpu
+        "cuda", "adamw", "0", "1", 0, 0, 0, id = "cuda-adamw-float32-route", marks = pytest.mark.gpu
+    ),
+    pytest.param(
+        "cuda",
+        "adamw8bit",
+        "1",
+        "1",
+        0,
+        0,
+        STEPS * 4,
+        id = "cuda-bitsandbytes",
+        marks = pytest.mark.gpu,
+    ),
+    pytest.param(
+        "cuda",
+        "adamw8bit",
+        "1",
+        "0",
+        0,
+        STEPS * 4,
+        0,
+        id = "cuda-bitsandbytes-float32-copy",
+        marks = pytest.mark.gpu,
     ),
 ]
 
 
-@pytest.mark.parametrize("device, optim, fused, fused_steps, rounds", CASES)
+@pytest.mark.parametrize("device, optim, fused, fused_bnb, fused_steps, rounds, bnb_fused", CASES)
 def test_ddp_replicas_stay_synced_with_stochastic_rounding(
-    device, optim, fused, fused_steps, rounds
+    device, optim, fused, fused_bnb, fused_steps, rounds, bnb_fused
 ):
     if device == "cuda":
         if not has_real_cuda():
@@ -133,7 +157,7 @@ def test_ddp_replicas_stay_synced_with_stochastic_rounding(
         pytest.importorskip("triton")
     if optim == "adamw8bit":
         pytest.importorskip("bitsandbytes")
-    results = _spawn(_worker, ROOT, device, optim, fused)
+    results = _spawn(_worker, ROOT, device, optim, fused, fused_bnb)
     assert len(results) == 1 and "error" not in results[0], results
     r = results[0]
     ranks = r["steps"]
@@ -141,4 +165,4 @@ def test_ddp_replicas_stay_synced_with_stochastic_rounding(
         assert a[2] and b[2], f"weights left bfloat16 at step {step}"
         assert a[0] == b[0], f"gradients not synced at step {step}: {a[0]} vs {b[0]}"
         assert a[1] == b[1], f"replicas differ after step {step}"
-    assert r["fused"] == fused_steps and r["rounds"] == rounds, r
+    assert r["fused"] == fused_steps and r["rounds"] == rounds and r["bnb_fused"] == bnb_fused, r

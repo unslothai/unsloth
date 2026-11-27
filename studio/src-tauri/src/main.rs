@@ -2620,6 +2620,7 @@ fn main() {
             native_file_dialogs::finish_native_file_save,
             native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::finish_native_file_save_from_url,
             native_file_dialogs::pick_native_download_directory,
             native_file_dialogs::save_native_file_in_directory,
             native_file_dialogs::release_native_download_directory,

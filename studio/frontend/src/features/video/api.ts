@@ -66,6 +66,8 @@ export interface VideoGenerationDefaults {
   supports_audio_flow_shift?: boolean;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface VideoStatus {
   loaded: boolean;
   /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
@@ -107,8 +109,7 @@ export interface VideoStatus {
   has_audio: boolean;
   supports_cfg: boolean;
   supports_keyframes?: boolean;
-  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
-  // Absent on older backends, which read supports_keyframes for both.
+  // First frame: all i2v families; last: MiniMax-H3 only; older backends: supports_keyframes.
   supports_first_frame?: boolean;
   supports_last_frame?: boolean;
   supports_references?: boolean;
@@ -125,6 +126,10 @@ export interface VideoStatus {
   baked_loras?: string[];
   baked_lora_specs?: LoraSpecInput[];
   lora_refusal?: string | null;
+  // "baked" when the load merged its LoRA set into the denoiser; absent on an older backend.
+  lora_fuse?: string | null;
+  // Multi-card placement and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
 }
 
 export interface VideoGenerateProgress {
@@ -217,9 +222,8 @@ export interface VideoGenerateRequest {
   // Omitted = the server default (on).
   live_preview?: boolean;
   negative_prompt?: string;
-  // Width, height, num_frames and fps default per family; when sent they must match its rules:
-  // num_frames on the k times frame_step plus 1 lattice, and width and height a preset or on
-  // resolution_multiple within the custom_size bounds, else 422.
+  // Width, height, num_frames and fps default per family; if sent, num_frames is k times frame_step
+  // plus 1, width/height a preset or resolution_multiple in custom_size bounds, else 422.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -230,7 +234,6 @@ export interface VideoGenerateRequest {
   // Omit both dimensions to match the source aspect.
   first_frame?: string;
   last_frame?: string;
-  // Grouped in the model's image, video, then audio order.
   reference_images?: string[];
   reference_videos?: VideoReferenceVideo[];
   reference_audios?: string[];

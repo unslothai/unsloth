@@ -34,8 +34,7 @@ export function openLink(url: string): boolean {
   while (end > start && url.charCodeAt(end - 1) <= 0x20) end--;
   url = url.slice(start, end);
 
-  // `https:host` (no slashes) is absolute too: open it as a web link instead of letting native navigation replace
-  // Studio's page.
+  // https:host (no slashes) is absolute: open as a web link so Studio's page is not replaced.
   if (/^https?:/i.test(url) && !url.includes("://")) {
     try {
       url = new URL(url).href;
@@ -54,7 +53,6 @@ export function openLink(url: string): boolean {
     }
   }
 
-  // Anchor links scroll within the page, don't open externally
   if (url.startsWith("#")) {
     window.location.hash = url;
     return true;

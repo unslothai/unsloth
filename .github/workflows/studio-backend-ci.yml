@@ -124,12 +124,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 full run, plus 3.11 for the files with a pre-3.12 sys.version_info branch.
-        #
-        # Shards root at `tests/` and differ only in ignores: `--ignore=FILE` does not filter explicit arguments.
-        # `rest` is the remainder, so new files land in exactly one shard (test_ci_backend_pytest_shards.py).
-        # Ranges balance the 1500 s backstop: a-k hit it on 2026-10-23, g-r on 2026-11-09 (g-l ~40%, m-r ~60%),
-        # a-f on 2026-11-13, so test_diffusion* (~60% of a-f) has its own shard.
+        # 3.13 runs the full suite, 3.11 only files with a pre-3.12 sys.version_info branch; shards
+        # differ only in ignores (--ignore=FILE does not filter explicit arguments); rest catches
+        # new files (test_ci_backend_pytest_shards.py); ranges balanced vs 1500 s backstop;
+        # test_diffusion* split out.
         include:
           - python: '3.13'
             scope: full
@@ -201,12 +199,8 @@ jobs:
             studio/backend/requirements/*.txt
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
-        # Bound apt retries; 25 minutes covers both calls' 1450s worst case.
-        #
-        # Background: apt (system packages) and the pip install below (this job's
-        # Python) touch nothing in common, so the ~10 s of apt overlaps the ~80 s of
-        # pip. Collected right before the first pytest step, which is the first thing
-        # that needs bwrap.
+        # Apt retries are bounded: 25 minutes covers both calls' 1450 s worst case; apt overlaps pip
+        # and is collected before the first bwrap-dependent pytest step.
         id: bubblewrap
         background: true
         timeout-minutes: 25
@@ -242,8 +236,7 @@ jobs:
           UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
           # No uv.toml or user config may add an index or change how it resolves.
           UV_NO_CONFIG: '1'
-          # The tests here never had uv on PATH; installed into a separate target and called by
-          # path, it stays invisible to them.
+          # Installed to a separate target and called by path, so uv stays off PATH for tests.
           UV: ${{ runner.temp }}/uv-tool/bin/uv
         run: |
           python -m pip install --upgrade pip
@@ -254,9 +247,8 @@ jobs:
             pyyaml jinja2 mammoth unpdf requests \
             'numpy<3' 'pytest<9.2' pytest-asyncio pytest-xdist pytest-timeout httpx \
             soundfile librosa
-          # pytest 9.2.0 deletes torch config keys when undoing monkeypatch.setattr (reads the old value
-          # from __dict__, which torch's ConfigModule does not use), breaking every later config read.
-          # soundfile + librosa, or the no-torchcodec decode test silently skips.
+          # pytest 9.2.0 breaks later torch config reads after monkeypatch.setattr undo; without
+          # soundfile and librosa the no-torchcodec decode test silently skips.
           "$UV" pip install --system --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchaudio<2.11'
           # Tracks pyproject.toml's cap.
@@ -310,7 +302,6 @@ jobs:
             -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
-        # The twelve serial files, one process.
         if: matrix.scope == 'full' && matrix.shard == 'a-f'
         working-directory: studio/backend
         # Relative timing tests run serially in one process.
@@ -411,11 +402,9 @@ jobs:
               --ignore-glob=tests/test_fsdp2*.py
               --ignore-glob=tests/test_[!f]*gloo*.py
               --ignore-glob=tests/test_f[!s]*gloo*.py
-          # The catch-all then ran 1213 to 2092 s of its 2100 s cap on 2026-10-29 (median about
-          # 1750 s), and was interrupted after passing on a slow runner. Measured per file, the
-          # diffusion, kaggle and security folders plus top-level test_d/i/m/s/u files are about
-          # half of it. No *gloo* or fsdp2 file starts with d, i, m, s or u, so the glob cannot
-          # take a file another shard also names (tests/test_ci_repo_cpu_shards.py checks it).
+          # rest-2 takes diffusion, kaggle, security and top-level test_d/i/m/s/u files as the
+          # catch-all neared its cap; no gloo or fsdp2 file starts with d, i, m, s or u, so the glob
+          # cannot take a file another shard names (tests/test_ci_repo_cpu_shards.py checks it).
           - shard: rest-2
             selection: >-
               tests/diffusion
@@ -596,8 +585,7 @@ jobs:
           [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
           export suite_logs
           suite_logs=$(mktemp -d "$RUNNER_TEMP/shell-suites.XXXXXX")
-          # Each suite already owns its fixtures. Keep its output and exit status
-          # separate, then collect every result even when another suite fails.
+          # Suites own fixtures; keep output and status apart; collect all even on failure.
           failed=0
           printf '%s\0' "${suites[@]}" | xargs -0 -P 4 -n 1 bash -c '
               s=$1

@@ -86,7 +86,6 @@ def get_managed_private_provider_urls_allowed() -> bool:
 
 
 def set_managed_private_provider_urls_allowed(value: Any) -> bool:
-    """Persist whether managed accounts may dial private provider addresses."""
     parsed = _coerce_bool(value)
     if parsed is None:
         raise ValueError("The managed-account private provider URL setting must be true or false.")

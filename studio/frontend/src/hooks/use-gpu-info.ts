@@ -54,6 +54,9 @@ export interface GpuInfo {
   nvfp4Diffusion: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") this host runs natively. Empty until system info arrives. */
   checkpointQuantFormats: readonly string[];
+  /** Checkpoint kinds that load but run dequantized to 16-bit ("fp8_rowwise": per-channel FP8 on a torch build without
+   * the row-wise FP8 GEMM). Empty until system info arrives, and on older backends. */
+  checkpointQuantDequantOnly?: readonly string[];
   /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
   quantisedStreaming?: boolean;
   extraOffloadFitTiers?: Readonly<
@@ -66,8 +69,7 @@ export interface GpuInfo {
   dedicatedMemoryTotalGb: number;
   /** Image/video loads live on ONE device, so their fit math must not use the multi-GPU sum. */
   maxDeviceMemoryGb: number;
-  /** Lowest visible ordinal, where a bare "cuda" diffusion load lands; NOT maxDeviceMemoryGb on a
-   * heterogeneous host. */
+  /** Lowest visible ordinal, where bare "cuda" diffusion lands; not maxDeviceMemoryGb if mixed. */
   loadDeviceMemoryGb: number;
   loadDeviceSharedMemory: boolean;
   /** Includes Linux ROCm APUs, which report only unified_memory; offload frees nothing on either. */
@@ -126,8 +128,7 @@ function appleUnifiedLoadBudgetGb(
     finiteNonNegative(data?.memory?.available_gb);
   // The Metal inventory cannot see the resident's share, so a switch keeps the live budget.
   if (afterUnload && !metalInventory) {
-    // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
-    // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
+    // Resident Metal buffers free on unload; other apps count; unknown usage: ceiling only.
     const usedGb = finiteNonNegative(device.vram_used_gb);
     freeGb = freeGb !== null && usedGb !== null ? freeGb + usedGb : null;
   }
@@ -151,6 +152,7 @@ const DEFAULT_GPU: GpuInfo = {
   denseQuantSchemes: [],
   nvfp4Diffusion: false,
   checkpointQuantFormats: [],
+  checkpointQuantDequantOnly: [],
   quantisedStreaming: false,
   name: "Unknown",
   memoryTotalGb: 0,
@@ -183,6 +185,9 @@ function toGpuInfo(
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
     checkpointQuantFormats: normalizeDenseQuantSchemes(
       data?.checkpoint_quant_formats,
+    ),
+    checkpointQuantDequantOnly: normalizeDenseQuantSchemes(
+      data?.checkpoint_quant_dequant_only,
     ),
     quantisedStreaming: data?.quantised_streaming === true,
     extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
@@ -311,19 +316,33 @@ function toGpuDevices(
     }));
 }
 
-/** Keep the previous array when unchanged: polls re-probe memory, and consumers memoise picker
- * options on this list. */
+function sameSchemes(
+  held: readonly string[],
+  fresh: readonly string[],
+): boolean {
+  return (
+    held === fresh ||
+    (held.length === fresh.length &&
+      held.every((scheme, index) => scheme === fresh[index]))
+  );
+}
+
+/** Keep array identity when unchanged: consumers memoise pickers and disk probes on these. */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
-  const held = current.denseQuantSchemes;
-  const fresh = next.denseQuantSchemes;
-  if (held === fresh) return next;
-  if (
-    held.length === fresh.length &&
-    held.every((scheme, index) => scheme === fresh[index])
-  ) {
-    return { ...next, denseQuantSchemes: held };
-  }
-  return next;
+  const keepDense =
+    current.denseQuantSchemes !== next.denseQuantSchemes &&
+    sameSchemes(current.denseQuantSchemes, next.denseQuantSchemes);
+  const keepCheckpoint =
+    current.checkpointQuantFormats !== next.checkpointQuantFormats &&
+    sameSchemes(current.checkpointQuantFormats, next.checkpointQuantFormats);
+  if (!keepDense && !keepCheckpoint) return next;
+  return {
+    ...next,
+    ...(keepDense ? { denseQuantSchemes: current.denseQuantSchemes } : {}),
+    ...(keepCheckpoint
+      ? { checkpointQuantFormats: current.checkpointQuantFormats }
+      : {}),
+  };
 }
 
 const RAM_DRIFT_TOLERANCE_GB = 0.25;
@@ -443,8 +462,7 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
 /** Empty when there is nothing to choose; diffusion checkpoints are never sharded. */
 export function useDiffusionGpuChoices(): SystemGpuDevice[] {
   const devices = useGpuDevices(true);
-  // Memoized: a fresh array per render cascaded into the GGUF picker re-POSTing download plans
-  // on every status poll.
+  // Memoized: fresh arrays each render made the GGUF picker re-POST download plans every poll.
   return useMemo(() => {
     const context = pinnableGpuContext(devices, true);
     return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];

@@ -91,7 +91,6 @@ def test_symlinked_snapshot_is_served_from_a_flat_link_farm(hub):
         flat = farm / name
         assert flat.is_file() and not flat.is_symlink()
     assert not (farm / "gguf").exists()
-    # A file below the root keeps its place there.
     assert (farm / "voices" / "manifest.json").read_bytes() == manifest
 
 

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Search index over evicted turns in a per-thread RAG scope; transcript untouched; cumulative,
-never reset per compaction; entry points no-op on failure."""
+"""Per-thread index of evicted turns; transcript untouched; never reset; no-op on failure."""
 
 from __future__ import annotations
 
@@ -99,7 +98,6 @@ _session: contextvars.ContextVar[Optional[_RecallSession]] = contextvars.Context
 
 @contextmanager
 def recall_session():
-    """Recalls inside share one session; a nested entry joins the outer one."""
     if _session.get() is not None:
         yield
         return
@@ -304,7 +302,6 @@ def _without_retrieval(group: list[dict]) -> list[dict]:
                     keep_calls.append(call)
             if len(keep_calls) != len(calls):
                 if not keep_calls and not _text_of(message.get("content")).strip():
-                    # Nothing left of it but the search.
                     continue
                 message = {**message, "tool_calls": keep_calls}
         if str(message.get("role") or "") == "tool":
@@ -573,8 +570,7 @@ def hold_inference() -> Callable[[], None]:
 
 
 def _pause_prewarm() -> None:
-    """Stop the gap worker and wait out its batch in flight; it restarts at the next stream's end. Bounded, so a
-    wedged embedder can never hold a generation back."""
+    """Stops gap worker; bounded wait for its batch so wedged embedder cannot hold generation."""
     _prewarm_stop.set()
     worker = _prewarm_worker
     if worker is not None and worker is not threading.current_thread():
@@ -666,8 +662,7 @@ def _prewarm_thread(
     messages: list[dict],
     stopped: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Embed this thread's not-yet-archived turns into the vector cache, oldest first (the next to be
-    evicted). Writes nothing to the archive, so an edit or rewind cannot strand a stale row."""
+    """Embeds unarchived turns oldest first; writes nothing to the archive, so none goes stale."""
     if not can_archive(thread_id):
         return
     from core.inference.context_window import group_turns
@@ -724,8 +719,7 @@ def _yielding(count: Callable[[str], int]) -> Callable[[str], int]:
 
 
 def _embedder_busy() -> bool:
-    """Whether another caller holds a lock the encode path would wait on: model load / backend build, the ST
-    compute lock, or the llama-server backend's serve lock. Probed without blocking."""
+    """Probes non-blockingly whether another caller holds a lock the encode path would wait on."""
     locks = [embeddings._backend_lock, embeddings._lock, embeddings._compute_lock]
     serve = getattr(embeddings._backend, "_serve_lock", None)
     if serve is not None:
@@ -738,8 +732,7 @@ def _embedder_busy() -> bool:
 
 
 def _embedder_free() -> bool:
-    """Wait for the embedder without queueing on its locks: a queued worker cannot see a stop, so a generation
-    would wait behind another caller's (e.g. ingestion's) whole batch."""
+    """Waits for the embedder without queueing on its locks; a queued worker cannot see a stop."""
     while _embedder_busy():
         if _gap_closed():
             return False
@@ -1011,7 +1004,6 @@ def _archive_turns(
                 raise
             # Surplus only, not a restamp (restamping would renumber a pre-column row). Runs after the new row exists, so the count is what the scope holds.
             _retire_surplus(conn, scope, digest, seats)
-            # Restamp ordinals against the remaining seats once a copy is retired, skipping NULLs.
             if stale is not None:
                 _restamp(conn, scope, digest, seats, skip_null = True)
             conn.commit()
@@ -1482,8 +1474,7 @@ def _strip_search_image_tokens(text: str) -> str:
 
 
 def _sanitised_assistant_text(text: str) -> str:
-    """Strips image tokens and audio data URIs, as the serializer does, so replies match their
-    transcript."""
+    """Strips image tokens and audio data URIs as the serializer does, to match the transcript."""
     return _REPLAY_AUDIO_DATA_URI.sub("[audio]", _strip_search_image_tokens(text))
 
 
@@ -1729,8 +1720,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # Tool calls are matched as a needle in a haystack, never by equality; other messages
-        # compare exactly; one split point is tolerated.
+        # Tool calls match as a substring, not equality; others exactly; one split is allowed.
         if not is_call:
             return stored == live
 
@@ -1761,7 +1751,6 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         if prefix_stop == 0:
             return False
 
-        # Within that range, find the first split whose tail occurs in stored.
         left, right = 0, prefix_stop
         while left < right:
             mid = (left + right) // 2
@@ -1831,8 +1820,7 @@ def _write_copy(
 
 
 def _live_positions(live: Optional[list[dict]]) -> Optional[list[list[str]]]:
-    """The fitted conversation grouped exactly as ``_transcript_positions`` groups the stored one,
-    so a live turn can be matched by the same rules a stored seat is."""
+    """Groups live turns exactly as _transcript_positions groups stored ones, for matching."""
     if live is None:
         return None
     try:
@@ -1960,7 +1948,6 @@ def _widen_span(conn, scope: str, digest: str, span: int) -> None:
 
 
 def has_archive(thread_id: str) -> bool:
-    """Whether anything has ever been archived for this thread."""
     if not thread_id or not enabled():
         return False
     conn = None
@@ -2008,8 +1995,7 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
 def branch_message_texts(
     messages: Optional[list[dict]], roles: Optional[tuple[str, ...]] = None
 ) -> Optional[list[str]]:
-    """Taken from the request, not the stored DAG, which keeps abandoned siblings; one string per
-    message."""
+    """From the request, since the stored DAG keeps abandoned siblings; one string per message."""
     if roles:
         messages = [
             message for message in (messages or []) if str(message.get("role") or "") in roles
@@ -2092,7 +2078,6 @@ def _probe_entries(text: str) -> list[tuple[str, bool]]:
 
 
 def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
-    """Whether one archived chunk still exists in the saved thread."""
     probes = _probes_for(text)
     if not probes or not transcript:
         return False
@@ -2129,7 +2114,6 @@ def _scan_probes(
                 ):
                     return None
                 if opened_at is None:
-                    # Same exemption at the front of the run as inside it.
                     opened_at = 0 if partial_ok else found
                     opened_index = index
                 cursor = found + len(probe)
@@ -2300,8 +2284,7 @@ def _above_floor(hits: list, min_dense_score: float) -> list:
 
 
 def _ends_first_within_ties(conn, hits: list) -> list:
-    """Alternates newest and oldest within tied scores, since newest-first alone loses the original
-    value."""
+    """Alternates newest and oldest within ties; newest-first alone loses the original value."""
     if not config.CONVERSATION_QUERY_FOCUS:
         # Reordering is selection, so it stays behind the rollback knob.
         return hits
@@ -2415,7 +2398,6 @@ def _lexical_pass_uncached(
 
 
 def _both_ends(oldest: list, newest: list) -> list:
-    """One candidate list from a run fetched from each end, oldest side first, no repeats."""
     seen = {hit.chunk_id for hit in oldest}
     return oldest + [hit for hit in newest if hit.chunk_id not in seen]
 
@@ -2719,7 +2701,6 @@ def _recall(
 
 
 def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
-    """The scope's documents, optionally cut at ``created_before`` (see `delete_for_thread`)."""
     if not created_before:
         return ("SELECT id, stored_path FROM documents WHERE scope=?", (scope,))
     return (
@@ -2825,8 +2806,7 @@ def copy_thread_documents(
 
 
 def thread_has_documents(thread_id: str) -> bool:
-    """Whether the thread has uploads that did not fail. Read over a metadata connection so a fork
-    can still report them when vec0 cannot load and nothing can be copied."""
+    """Whether the thread has non-failed uploads; reads metadata only, so vec0 need not load."""
     if not rag_db.rag_db_path().is_file():
         return False
     conn = rag_db.get_metadata_connection()
