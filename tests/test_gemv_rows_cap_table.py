@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Per-architecture NF4 GEMV row cap and the T4 handoff to bitsandbytes gemm_4bit."""
+"""Per-architecture NF4 GEMV row cap and the handoff to bitsandbytes gemm_4bit above it."""
 
 import pytest
 import torch
@@ -20,7 +20,7 @@ def _fresh(monkeypatch, arch):
 @pytest.mark.parametrize(
     "arch, cap, bnb_from",
     [
-        ((7, 5), 4, 4),
+        ((7, 5), 4, 5),
         ((8, 0), 2, 3),
         ((8, 9), 4, 5),
         ((12, 0), 4, 5),
@@ -42,7 +42,7 @@ def test_gemv_rows_env_override_keeps_t4_batch_4_on_the_gemv(monkeypatch):
     assert U._GEMV_ROWS_BNB_FROM[0] == 5
 
 
-def test_t4_batch_4_steps_aside_when_the_bnb_gemm_applies(monkeypatch):
+def test_rows_from_a_bnb_handoff_step_aside_when_the_bnb_gemm_applies(monkeypatch):
     _fresh(monkeypatch, (7, 5))
     monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
     asked = []

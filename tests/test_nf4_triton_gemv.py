@@ -529,11 +529,13 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         "list_state2",
     ],
 )
-def test_t4_batch_4_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
+def test_a_bnb_handoff_at_4_rows_leaves_the_gemv_only_for_a_bnb_gemm_that_runs(case, monkeypatch):
     utils = _utils_with_kernels()
     _bnb_gemm_utils()
     monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
     monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM", {})
+    # The handoff T4 had before the GEMV shared its tiles across rows; the routing it implies is still tested.
+    monkeypatch.setattr(utils, "_GEMV_ROWS_BNB_FROM_BY_ARCH", {(7, 5): 4})
     monkeypatch.setattr(utils, "_GEMV_MAX_ROWS", 4)
     if case == "env_override":
         monkeypatch.setenv("UNSLOTH_GEMV_MAX_ROWS", "4")
