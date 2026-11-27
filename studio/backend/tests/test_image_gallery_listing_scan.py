@@ -234,5 +234,5 @@ def test_a_broken_symlink_sorts_last_and_is_not_listed():
     try:
         os.symlink(directory / "missing.png.gone", directory / "broken.png")
     except (OSError, NotImplementedError):
-        pytest.skip("no symlinks here")
+        pytest.skip(reason = "creating symlinks needs Developer Mode or admin on Windows")
     assert [r["id"] for r in images.list_images()] == ["img1", "img0"] == _glob_order()
