@@ -343,3 +343,20 @@ def test_ep_packed_inkling2_reads_only_local_experts_and_matches_full_load():
         assert set(got) == set(want) and any(".experts." in k and "lora_" in k for k in got)
         for k in want:
             assert torch.equal(got[k], want[k]), k
+
+
+def test_packed_stacks_follow_the_device_map():
+    """Each experts module's stacks go where the device map puts that module, not where the first parameter is."""
+    pytest.importorskip("transformers.integrations.accelerate")
+    loader = _loader()
+    device_map = {"model.language_model.layers.0": 0, "model.language_model.layers.1": 1, "": "cpu"}
+    model = torch.nn.Module()
+    name = "model.language_model.layers.1.mlp.experts"
+    assert loader._device_of(model, name, device_map) == torch.device("cuda:1")
+    assert loader._device_of(
+        model, "model.language_model.layers.0.mlp.experts", device_map
+    ) == torch.device("cuda:0")
+    assert loader._device_of(
+        model, "model.language_model.layers.5.mlp.experts", device_map
+    ) == torch.device("cpu")
+    assert loader._offloads_to_disk({"": "disk"}) and not loader._offloads_to_disk({"": 0})

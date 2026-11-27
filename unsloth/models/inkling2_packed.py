@@ -218,11 +218,26 @@ def _ep_cut(model, module):
     return cut(model, module) if callable(cut) else None
 
 
-def _device_of(module, model):
-    for p in list(module.parameters()) + list(model.parameters()):
+def _device_of(model, name, device_map):
+    """Where the device map puts the experts module `name` (its own stacks are already taken out of the model)."""
+    if isinstance(device_map, dict) and device_map:
+        try:
+            from transformers.integrations.accelerate import get_device
+            device = get_device(device_map, f"{name}.gate_up_proj", valid_torch_device = True)
+            return torch.device(f"cuda:{device}" if isinstance(device, int) else device)
+        except Exception:
+            pass
+    parent = model.get_submodule(name.rpartition(".")[0]) if "." in name else model
+    for p in parent.parameters():
         if p.device.type != "meta":
             return p.device
     return torch.device("cpu")
+
+
+def _offloads_to_disk(device_map):
+    return isinstance(device_map, dict) and any(
+        str(v) in ("disk", "meta") for v in device_map.values()
+    )
 
 
 def _drop_expert_converters(weight_mapping):
@@ -231,12 +246,16 @@ def _drop_expert_converters(weight_mapping):
     return kept if len(kept) < len(weight_mapping or []) else None
 
 
-def _fill(model, plan):
+def _fill(
+    model,
+    plan,
+    device_map = None,
+):
     from .packed_expert_loader import _mark_cut
     files = {}
     for item in plan:
         module = item["module"]
-        device = _device_of(module, model)
+        device = _device_of(model, item["name"], device_map)
         for stack in ("gate_up_proj", "down_proj"):
             param = _build(item, stack, item["cut"], files, item["dtype"], device)
             param._is_hf_initialized = (
@@ -272,7 +291,13 @@ def install_inkling2_packed_expert_loading() -> bool:
 
     def _load_pretrained_model(model, state_dict, checkpoint_files, load_config, *args, **kwargs):
         plan = None
-        if inkling2_packed_experts_enabled() and state_dict is None and checkpoint_files:
+        if (
+            inkling2_packed_experts_enabled()
+            and state_dict is None
+            and checkpoint_files
+            # disk offload dispatches before the fill could place the stacks; transformers' path is kept there
+            and not _offloads_to_disk(getattr(load_config, "device_map", None))
+        ):
             try:
                 plan = _plan(model, checkpoint_files)
                 kept = (
@@ -310,7 +335,7 @@ def install_inkling2_packed_expert_loading() -> bool:
         try:
             result = original(model, state_dict, checkpoint_files, load_config, *args, **kwargs)
             with torch.no_grad():
-                _fill(model, plan)
+                _fill(model, plan, getattr(load_config, "device_map", None))
         except BaseException:
             for module, stack, param in originals:
                 module.__dict__.pop(stack, None)
