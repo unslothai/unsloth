@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import math
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -13,6 +16,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MAX_EARLY_STOPPING_PATIENCE = 1000
+_EARLY_STOPPING_STATE = "studio_early_stopping.safetensors"
 # Past this the CPU copy of the best weights costs more host RAM than it is worth (a full finetune of a 1B model).
 MAX_BEST_WEIGHTS_BYTES = 2 << 30
 
@@ -30,7 +34,11 @@ def early_stopping_patience(value: Any) -> int:
     return min(int(patience), MAX_EARLY_STOPPING_PATIENCE)
 
 
-def create_early_stopping_callback(patience: int, user_stopped = None):
+def create_early_stopping_callback(
+    patience: int,
+    user_stopped = None,
+    resume_from_checkpoint = None,
+):
     """HF TrainerCallback: counts evaluations whose eval_loss is not below the best so far, stops the run after
     ``patience`` of them in a row, and, like load_best_model_at_end (and zoo's MLX trainer), copies the best
     evaluation's trainable weights back when the run finishes, so the final save holds them.
@@ -48,6 +56,76 @@ def create_early_stopping_callback(patience: int, user_stopped = None):
             self.restored = False
             self._best_weights: Optional[dict] = None
             self._too_large = False
+
+        def on_train_begin(self, args, state, control, **kwargs):
+            if not resume_from_checkpoint:
+                return
+            source = Path(resume_from_checkpoint) / _EARLY_STOPPING_STATE
+            if not source.is_file() or source.is_symlink():
+                return
+            try:
+                from safetensors import safe_open
+
+                with safe_open(source, framework = "pt", device = "cpu") as saved:
+                    meta = saved.metadata() or {}
+                    if int(meta["checkpoint_step"]) != state.global_step:
+                        return
+                    best_step = int(meta["best_step"]) if meta["best_step"] else None
+                    best_loss = float(meta["best_loss"]) if meta["best_loss"] else None
+                    bad_evals = int(meta["bad_evals"])
+                    too_large = meta["too_large"] == "1"
+                    if not 0 <= bad_evals or (
+                        best_step is not None and not 0 <= best_step <= state.global_step
+                    ):
+                        raise ValueError("invalid early-stopping progress")
+                    if best_loss is not None and not math.isfinite(best_loss):
+                        raise ValueError("invalid early-stopping loss")
+                    # Bound restored tensors before allocating them.
+                    if source.stat().st_size > MAX_BEST_WEIGHTS_BYTES + 16 * 1024 * 1024:
+                        raise ValueError("early-stopping weights exceed the checkpoint limit")
+                    weights = {name: saved.get_tensor(name) for name in saved.keys()}
+                self.best_step, self.best_loss = best_step, best_loss
+                self.bad_evals, self._too_large = bad_evals, too_large
+                self._best_weights = weights or None
+            except Exception as exc:
+                logger.warning(f"Could not restore early-stopping progress: {exc}")
+
+        def save_checkpoint(self, output_dir, step):
+            folder = Path(output_dir) / f"checkpoint-{step}"
+            if not folder.is_dir():
+                return
+            pending = None
+            try:
+                from safetensors.torch import save_file
+
+                with tempfile.NamedTemporaryFile(dir = folder, suffix = ".tmp", delete = False) as file:
+                    pending = Path(file.name)
+                save_file(
+                    {
+                        name: value.contiguous()
+                        for name, value in (self._best_weights or {}).items()
+                    },
+                    pending,
+                    metadata = {
+                        "checkpoint_step": str(step),
+                        "best_step": "" if self.best_step is None else str(self.best_step),
+                        "best_loss": "" if self.best_loss is None else str(self.best_loss),
+                        "bad_evals": str(self.bad_evals),
+                        "too_large": "1" if self._too_large else "0",
+                    },
+                )
+                os.replace(pending, folder / _EARLY_STOPPING_STATE)
+            except Exception as exc:
+                logger.warning(f"Could not save early-stopping progress: {exc}")
+                if pending is not None:
+                    try:
+                        pending.unlink(missing_ok = True)
+                    except OSError:
+                        pass
+
+        def on_save(self, args, state, control, **kwargs):
+            if state.is_world_process_zero:
+                self.save_checkpoint(args.output_dir, state.global_step)
 
         def on_evaluate(
             self,
@@ -90,10 +168,11 @@ def create_early_stopping_callback(patience: int, user_stopped = None):
             **kwargs,
         ):
             # User stops never restore, even at patience's limit; optimizer state is current.
+            if user_stopped is not None and user_stopped():
+                # Studio's manual stop writes its resume checkpoint after on_train_end.
+                return
             best, self._best_weights = self._best_weights, None
             finished = self.stopped_at is not None or state.global_step >= state.max_steps
-            if user_stopped is not None and user_stopped():
-                finished = False
             if not finished or self.best_step == state.global_step or best is None or model is None:
                 return
             try:
@@ -151,6 +230,7 @@ def attach_early_stopping(
     trainer,
     value: Any,
     user_stopped = None,
+    resume_from_checkpoint = None,
 ):
     patience = early_stopping_patience(value)
     if patience == 0:
@@ -162,7 +242,11 @@ def attach_early_stopping(
     ):
         logger.info("Early stopping is off: this run has no evaluation to watch\n")
         return None
-    callback = create_early_stopping_callback(patience, user_stopped = user_stopped)
+    callback = create_early_stopping_callback(
+        patience,
+        user_stopped = user_stopped,
+        resume_from_checkpoint = resume_from_checkpoint,
+    )
     trainer.add_callback(callback)
     logger.info(f"Early stopping on: patience of {patience} evaluations\n")
     return callback

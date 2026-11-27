@@ -341,6 +341,36 @@ def test_mlx_early_stop_is_named_in_the_final_status():
     )
 
 
+def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(tmp_path):
+    from transformers import TrainerCallback
+
+    stopped = False
+
+    class StopAfterSecondSave(TrainerCallback):
+        def on_evaluate(self, args, state, control, **kwargs):
+            nonlocal stopped
+            if state.global_step == 2:
+                stopped = True
+                control.should_training_stop = True
+
+    original = _trainer(tmp_path)
+    callback = attach_early_stopping(original, 2, user_stopped = lambda: stopped)
+    original.add_callback(StopAfterSecondSave())
+    original.train()
+    assert original.state.global_step == 2
+    original._save_checkpoint(original.model, trial = None)
+    callback.save_checkpoint(original.args.output_dir, original.state.global_step)
+    checkpoint = tmp_path / "checkpoint-2"
+    assert original.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 2))
+
+    resumed = _trainer(tmp_path)
+    restored = attach_early_stopping(resumed, 2, resume_from_checkpoint = checkpoint)
+    resumed.train(resume_from_checkpoint = str(checkpoint))
+    assert resumed.state.global_step == 3
+    assert restored.best_step == 1
+    assert resumed.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 1))
+
+
 def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):
     # Zoo's MLX trainer restores the best adapters whenever the run finishes; the CUDA path keeps the same contract.
     trainer = _trainer(tmp_path, eval_target = 1.0, max_steps = 5, eval_steps = 2)
