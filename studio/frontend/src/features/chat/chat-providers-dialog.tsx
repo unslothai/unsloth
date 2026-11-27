@@ -2933,6 +2933,17 @@ export function ChatProvidersSettings({
                   }
 
                   setEditingProviderId(id);
+                  const disabled = useExternalProvidersStore
+                    .getState()
+                    .disabledProviders.find((provider) => provider.id === id);
+                  // Model listings are unavailable while the connection is switched off.
+                  if (disabled) {
+                    setAvailableModels(
+                      withSavedModelIds(disabled.availableModels ?? [], disabled.models),
+                    );
+                    setSelectedModelIds(disabled.models);
+                    return;
+                  }
                   const models = await listProviderModels({
                     providerType: "github_copilot",
                     providerId: id,

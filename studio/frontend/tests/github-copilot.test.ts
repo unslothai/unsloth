@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
+import { readSrc } from "./helpers/kit.ts";
 
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 
@@ -94,4 +95,67 @@ test("text-only SDK connection hides unsupported model controls", () => {
 			.supportsReasoning,
 		false,
 	);
+});
+
+test("reconnecting a switched-off Copilot keeps its selected models", async () => {
+	const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+	const callback = dialog.match(
+		/<GitHubCopilotConnect\b[\s\S]*?onChanged=\{(async \(id, connected\) => \{[\s\S]*?\n\s+\})\}\s*\/>/,
+	)?.[1];
+	assert.ok(callback);
+	const provider = {
+		id: "connection",
+		models: ["claude-sonnet", "gpt-fast"],
+		availableModels: ["auto", "claude-sonnet", "gpt-fast"],
+	};
+	let disabled = true;
+	let selected: string[] = [];
+	let available: string[] = [];
+	const updates: { models: string[]; availableModels: string[] }[] = [];
+	const noop = () => {};
+	const scope = {
+		codexCatalogRequestRef: { current: 0 },
+		formCheckRequestRef: { current: 0 },
+		providersRef: { current: [] },
+		setFormCheck: noop,
+		useConnectionChecksStore: { getState: () => ({ clearCheck: noop }) },
+		setModelsLoading: noop,
+		syncExternalProvidersFromBackend: async () => (disabled ? [] : [provider]),
+		onProvidersChange: noop,
+		setAvailableModels: (models: string[]) => {
+			available = models;
+		},
+		setSelectedModelIds: (models: string[]) => {
+			selected = models;
+		},
+		setEditingProviderId: noop,
+		listProviderModels: async () => {
+			if (disabled) throw new Error("Provider 'GitHub Copilot' is disabled.");
+			return provider.availableModels.map((id) => ({ id }));
+		},
+		useExternalProvidersStore: {
+			getState: () => ({ disabledProviders: disabled ? [provider] : [] }),
+		},
+		withSavedModelIds: (catalog: string[], models: string[]) => [
+			...new Set([...catalog, ...models]),
+		],
+		updateProviderConfig: async (_id: string, config: (typeof updates)[number]) => {
+			updates.push(config);
+		},
+	};
+	const onChanged = new Function(...Object.keys(scope), `return (${callback});`)(
+		...Object.values(scope),
+	) as (id: string, connected: boolean) => Promise<void>;
+
+	await onChanged(provider.id, true);
+	assert.deepEqual(selected, provider.models);
+	assert.deepEqual(available, provider.availableModels);
+	assert.deepEqual(updates, []);
+
+	disabled = false;
+	await onChanged(provider.id, true);
+	assert.deepEqual(updates, [{
+		models: provider.models,
+		availableModels: provider.availableModels,
+	}]);
 });
