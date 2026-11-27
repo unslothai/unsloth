@@ -22,7 +22,11 @@ from core.inference import mcp_client
 
 
 class _HeaderMismatch(Exception):
-    def __init__(self, message: str, code: int = -32020):
+    def __init__(
+        self,
+        message: str,
+        code: int = -32020,
+    ):
         super().__init__(message)
         self.error = SimpleNamespace(code = code, message = message)
 
@@ -60,7 +64,12 @@ def test_call_tool_retries_once_after_header_mismatch_exception():
     lists = 0
 
     class _Client:
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             calls.append((name, dict(args)))
             if len(calls) == 1:
                 raise _HeaderMismatch(
@@ -95,7 +104,12 @@ def test_call_tool_retries_once_after_is_error_header_mismatch():
     lists = 0
 
     class _Client:
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -134,7 +148,12 @@ def test_non_header_errors_are_not_retried():
     lists = 0
 
     class _Client:
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             nonlocal calls
             calls += 1
             raise RuntimeError("rate limited")
@@ -160,7 +179,12 @@ def test_call_tool_sync_recovers_from_header_mismatch(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args, raise_on_error = True):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             nonlocal calls
             calls += 1
             if calls == 1:
