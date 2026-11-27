@@ -6394,7 +6394,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert src.index("_vulkan_igpu_ids = (") < src.index(
         "_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)"
     )
-    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 8
 
 
 def test_the_oversized_readings_share_their_preflights_ram_snapshot():
