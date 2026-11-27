@@ -6611,18 +6611,18 @@ def _lora_gguf_converter_input(model, tokenizer, lora_dir, scratch_dir):
         r = ranks.get(get_pattern_key(ranks, name), config["r"])
         scale = alphas.get(get_pattern_key(alphas, name), alpha) / (r**0.5 if rslora else r)
         weights[key] = (B.float() * (scale * r / gguf_alpha)).to(B.dtype)
-    for stale in ("adapter_model.bin", "adapter_model.safetensors"):
-        if os.path.exists(os.path.join(scratch_dir, stale)):
-            os.remove(os.path.join(scratch_dir, stale))
+    # A fresh folder: `source` may be scratch_dir, and Windows cannot replace a file it just read.
+    out = os.path.join(scratch_dir, "gguf")
+    os.makedirs(out, exist_ok = True)
     save_file(
         {k: v.contiguous() for k, v in weights.items()},
-        os.path.join(scratch_dir, "adapter_model.safetensors"),
+        os.path.join(out, "adapter_model.safetensors"),
         metadata = {"format": "pt"},
     )
     config.update(lora_alpha = gguf_alpha, use_rslora = False, alpha_pattern = {})
-    with open(os.path.join(scratch_dir, "adapter_config.json"), "w", encoding = "utf-8") as f:
+    with open(os.path.join(out, "adapter_config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2)
-    return scratch_dir
+    return out
 
 
 @_model_parallel_refuses_save("save_pretrained_gguf")
