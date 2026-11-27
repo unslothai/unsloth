@@ -2771,3 +2771,26 @@ def test_scan_folder_retains_the_native_media_alias(tmp_path, monkeypatch):
     pick = mas.resolve_local_media_model("publisher/FLUX.1-dev", task = mas.IMAGE_TASK)
     assert pick is not None
     assert pick.model_path == str(checkpoint)
+
+
+def test_media_repo_prefers_active_cache_across_formats(catalog, tmp_path):
+    repo = "unsloth/Z-Image-Turbo"
+    inactive_repo, inactive_snapshot = _hf_cache_repo(
+        tmp_path / "inactive", repo, files = ["model_index.json"]
+    )
+    active_repo, active_snapshot = _hf_cache_repo(
+        tmp_path / "active", repo, files = ["z-image-turbo-Q4_K_M.gguf"]
+    )
+    active = _gguf_image_info(repo, active_repo)
+    active.active_cache = True
+    catalog.extend([
+        _info(repo, inactive_repo, task = mas.IMAGE_TASK, source = "hf_cache"),
+        active,
+    ])
+    pick = mas.resolve_local_media_model(repo, task = mas.IMAGE_TASK)
+    assert pick is not None and pick.gguf_filename == "z-image-turbo-Q4_K_M.gguf"
+
+    (active_snapshot / "z-image-turbo-Q4_K_M.gguf").unlink()
+    mas.invalidate_index()
+    pick = mas.resolve_local_media_model(repo, task = mas.IMAGE_TASK)
+    assert pick is not None and pick.model_path == str(inactive_snapshot)

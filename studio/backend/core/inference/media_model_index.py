@@ -299,8 +299,21 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
     except Exception as exc:  # noqa: BLE001 -- a failed scan must not 500 the generation
         logger.debug("media auto-switch: local model scan failed: %s", exc)
         return index
-    for info in candidates:
+    def is_active_cache(info) -> bool:
+        return info.source == "hf_cache" and getattr(info, "active_cache", None) is True
+
+    active_picks: dict[str, MediaModelPick] = {}
+    for info in sorted(candidates, key = lambda row: not is_active_cache(row)):
         try:
+            active = is_active_cache(info)
+            if (
+                not active
+                and info.source == "hf_cache"
+                and info.model_id
+                and info.model_id.strip().lower() in active_picks
+            ):
+                continue
+            picks = active_picks if active else index
             # a cancelled or incomplete pull still lists, and loading it fails predictably
             if _pull_is_incomplete(info):
                 continue
@@ -312,23 +325,25 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             # an hf cache repo keeps its weights, and its model_index.json, under snapshots/<sha>
             on_disk = Path(info.path).expanduser()
             load_dir = _resolve_load_dir(on_disk)
-            if _add_gguf_picks(index, info, keys, on_disk, load_dir):
+            if _add_gguf_picks(picks, info, keys, on_disk, load_dir):
                 continue
             if load_dir.is_file():
                 if load_dir.suffix.lower() == ".safetensors" and _loader_can_open(
                     str(load_dir.parent), load_dir.name
                 ):
                     _register(
-                        index,
+                        picks,
                         keys,
                         MediaModelPick(keys[0], str(load_dir.parent), load_dir.name, "single_file"),
                     )
                 continue
             if not _loadable_directory(load_dir):
                 continue
-            _register(index, keys, MediaModelPick(keys[0], str(load_dir)))
+            _register(picks, keys, MediaModelPick(keys[0], str(load_dir)))
         except Exception as exc:  # noqa: BLE001 -- one unreadable model must not hide the rest
             logger.debug("media auto-switch: skipped %s: %s", getattr(info, "id", "?"), exc)
+    for name, pick in active_picks.items():
+        _register(index, (name,), pick)
     return index
 
 
