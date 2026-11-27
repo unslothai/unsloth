@@ -142,8 +142,10 @@ def test_the_check_tells_keyed_from_keyless(selector, flagged):
 
 
 def test_no_frontend_rule_ends_a_sibling_relation_on_a_keyless_compound():
+    C.css_rules.cache_clear()  # another test may have cached a synthetic tree in this worker
     rules = C.css_rules()
     assert len(rules) > 1000, "found too few CSS rules under studio/frontend/src to trust the scan"
+    assert all(path.startswith("studio/frontend/src/") for path, *_ in rules)
     offenders = [f"{path}:{line}: {raw}" for path, line, raw, _ in rules if keyless_sibling(raw)]
     assert offenders == [], (
         "These rules end a sibling relation on a compound with no class, id or attribute, so Chromium "
