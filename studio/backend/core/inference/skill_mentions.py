@@ -146,8 +146,11 @@ def load_mentioned_skills(
     protected_message_ids = None,
     permission_upgrade = None,
 ):
-    """Rebuild every user @mention's complete manifest (never a partial one) into the system message,
-    oldest first, on each request so the prompt cache holds. Caller gates on read_skill."""
+    """Inject complete manifests before generation; never a partial one. Caller gates on read_skill.
+
+    Every user @mention is rebuilt into the system message on each request, oldest first, so later
+    turns resend the same system prompt until a skill is newly mentioned, edited or disabled.
+    """
     if not messages or not any(
         tool.get("function", {}).get("name") == "read_skill" for tool in (tools or [])
     ):
