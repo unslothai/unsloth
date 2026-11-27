@@ -1255,8 +1255,7 @@ function Install-UnslothStudio {
         return ($clauses -join ',')
     }
 
-    # The torch requirement a companion wheel declares: the index's PEP 658 metadata file when it serves one, else the
-    # wheel's own METADATA (the wheel is a few MB). "" when it cannot be read; memoised.
+    # Torch requirement a companion wheel declares (PEP 658 .metadata, else the wheel's METADATA); "" if unreadable.
     function Get-WoaWheelTorchRequirement {
         param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
         if (-not $WheelUrl) { return "" }
