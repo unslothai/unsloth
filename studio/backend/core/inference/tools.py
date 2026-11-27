@@ -10036,7 +10036,6 @@ _ISOLATED_CMD_GIT_ENV = {
 
 
 def _windows_pathext(git_ext: str) -> tuple[str, ...]:
-    # Keep a trusted Git launcher such as a .CMD shim resolvable.
     extensions = _WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS
     if git_ext and git_ext not in extensions:
         return (*extensions, git_ext)
