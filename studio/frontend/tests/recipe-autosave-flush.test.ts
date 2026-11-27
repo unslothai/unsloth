@@ -891,3 +891,28 @@ test("reopening after an exit save whose answer was lost reads the recipe again"
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["again"] });
 });
+
+test("an older save landing does not clean uploads while a newer save is unsettled", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  s.uploads.pending.push("in-newer");
+  await s.server.releaseOldest();
+  assert.equal(s.uploads.removed.length, 0);
+  await s.server.release();
+  assert.ok(s.uploads.removed.includes("in-newer"));
+});
+
+test("an older save answering last keeps a newer lost save's uncertainty", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  const first = s.server.landOldestWithoutReply();
+  await s.server.cancelOldest(true);
+  await first.answer();
+  assert.equal(s.db.getCachedRecipe("r1"), null);
+});

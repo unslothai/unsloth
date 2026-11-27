@@ -349,7 +349,10 @@ export function useRecipePersistence({
             setFailedSignature(null);
             savedRef.current.saved = signature;
             setSavedSignature(signature);
-            drainQueuedUploadCleanups(payload, closedQueue.current ?? undefined);
+            // A newer save still unsettled may reference uploads this older payload dropped.
+            if (seq === savedRef.current.seq) {
+              drainQueuedUploadCleanups(payload, closedQueue.current ?? undefined);
+            }
           },
           (error: unknown) => {
             // A newer save already landed, so this content is superseded, not rejected.

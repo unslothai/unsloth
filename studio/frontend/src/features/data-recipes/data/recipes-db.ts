@@ -78,7 +78,8 @@ export function primeRecipeCache(record: RecipeRecord): void {
 
 const pendingSaves = new Map<string, Set<Promise<unknown>>>();
 // A save lost to the network may have landed: the cached record cannot seed an editor until reread.
-const uncertainRecipes = new Set<string>();
+// Maps id to the newest version a lost save may have written.
+const uncertainRecipes = new Map<string, number>();
 
 /** Resolves once no save for `id` is pending; null when none is. */
 export function settleRecipeSaves(id: string): Promise<void> | null {
@@ -133,7 +134,9 @@ async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
       keepalive: input.keepalive ? release !== null : undefined,
     });
   } catch (error) {
-    if (!(error instanceof RecipeApiError)) uncertainRecipes.add(id);
+    if (!(error instanceof RecipeApiError)) {
+      uncertainRecipes.set(id, Math.max(uncertainRecipes.get(id) ?? 0, now));
+    }
     // A losing copy's 409 must not evict a save at or past this version that already landed.
     if (
       error instanceof RecipeApiError &&
@@ -147,7 +150,7 @@ async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
     release?.();
   }
   mutationVersion += 1;
-  uncertainRecipes.delete(id);
+  if ((uncertainRecipes.get(id) ?? 0) <= record.updatedAt) uncertainRecipes.delete(id);
   // Saves can overlap when a closing page sends its last edit; a late reply must not roll back.
   if ((recentRecipeCache.get(id)?.updatedAt ?? -1) > record.updatedAt) {
     return record;
