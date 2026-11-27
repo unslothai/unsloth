@@ -1083,7 +1083,14 @@ def _install_tier_record(trainer):
         def on_save(self, args, state, control, **kwargs):
             trainer = ref()
             tier = getattr(trainer, _TIER, None) if trainer is not None else None
-            folder = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            root = args.output_dir
+            run_dir = getattr(trainer, "_get_output_dir", None) if trainer is not None else None
+            if callable(run_dir):
+                try:  # hyperparameter search trials save under output_dir/run-<id>
+                    root = run_dir(trial = getattr(trainer, "_trial", None))
+                except Exception:
+                    root = args.output_dir
+            folder = os.path.join(root, f"checkpoint-{state.global_step}")
             if tier in (None, "standard") or not os.path.isdir(folder):
                 return
             try:
