@@ -7593,15 +7593,18 @@ def _tensor_parallel_trainer_pre(model):
     return tp_trainer_setup(model, phase = "pre")
 
 
-def _unsloth_tp_skip_dpo_ref_adapter(model):
-    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
-    tp = _is_unsloth_tensor_parallel(model)
-    if not tp:
-        try:
-            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
-        except ValueError:
-            tp = False
-    if not tp:
+def _unsloth_env_size(name):
+    try:
+        return int(os.environ.get(name, "1") or 1)
+    except ValueError:
+        return 1
+
+
+def _unsloth_tp_skip_ref_adapter(model, trainer = "DPOTrainer"):
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" adapter copy
+    (DPOTrainer, KTOTrainer), False off tp; raises if trained (tp DTensor shards cannot seed a "ref" copy).
+    Expert parallel keeps the copy: its expert LoRA rows are plain local parameters, so the copy is exact."""
+    if not (_is_unsloth_tensor_parallel(model) or _unsloth_env_size("UNSLOTH_TP_SIZE") > 1):
         return False
     nonzero, device = 0, torch.device("cpu")
     params = dict(model.named_parameters(remove_duplicate = False))
@@ -7648,12 +7651,17 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
         nonzero = int(flag.item())
     if nonzero:
         raise ValueError(
-            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            f"Unsloth: {trainer} with ref_model = None on a tensor parallel PEFT model whose adapter is already "
             'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
-            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            f"from tensor parallel shards. Start {trainer.replace('Trainer', '')} from a fresh adapter (the base model is then the reference), "
             "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
         )
     return True
+
+
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """The name trainer caches compiled before KTO was covered import."""
+    return _unsloth_tp_skip_ref_adapter(model, "DPOTrainer")
 
 
 def _refuse_model_parallel_export(model, method):

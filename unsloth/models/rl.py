@@ -599,9 +599,9 @@ try:
 except Exception:
     def _unsloth_dataset_column_names(dataset): return dataset.column_names
 try:
-    from unsloth.models._utils import _unsloth_tp_skip_dpo_ref_adapter
+    from unsloth.models._utils import _unsloth_tp_skip_ref_adapter
 except Exception:
-    def _unsloth_tp_skip_dpo_ref_adapter(model): return False
+    def _unsloth_tp_skip_ref_adapter(model, trainer = None): return False
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -4690,7 +4690,7 @@ def _allow_list_train_dataset(function, source, trainer_file):
     return source
 
 
-# TRL >= 1.0 DPOTrainer copies ".default." into a "ref" adapter (1.0-1.6 peft_config["default"], 1.7+ default_config).
+# TRL >= 1.0 DPOTrainer / >= 1.10 KTOTrainer copy ".default." into a "ref" adapter (DPO 1.0-1.6 peft_config["default"], else default_config).
 _DPO_REF_ADAPTER_BLOCK = re.compile(
     r"^(?P<indent>[ \t]*)model\.add_adapter\(\s*[\"']ref[\"']\s*,\s*"
     r"(?:default_config|model\.peft_config\[\s*[\"']default[\"']\s*\])\s*\)[ \t]*\n"
@@ -4745,12 +4745,14 @@ def _skip_rl_ref_adapter(init):
     return "\n".join(lines)
 
 
-def _guard_dpo_ref_adapter_for_tp(init):
+def _guard_ref_adapter_for_tp(init, trainer = "DPOTrainer"):
+    """Guard TRL's "ref" adapter copy (DPO >= 1.0, KTO >= 1.10) so a tp model skips or refuses it."""
+
     def _guard(match):
         indent = match.group("indent")
         lines = match.group(0).split("\n")
         body = "\n".join("    " + line if line.strip() else line for line in lines)
-        return f"{indent}if not _unsloth_tp_skip_dpo_ref_adapter(model):\n{body}"
+        return f"{indent}if not _unsloth_tp_skip_ref_adapter(model, {trainer!r}):\n{body}"
 
     return _DPO_REF_ADAPTER_BLOCK.sub(_guard, init, count = 1)
 
@@ -4817,8 +4819,8 @@ def patch_functions(
     if trainer_file in ("grpo_trainer", "rloo_trainer"):
         init = _skip_rl_ref_adapter(init)
 
-    if trainer_file == "dpo_trainer":
-        init = _guard_dpo_ref_adapter_for_tp(init)
+    if trainer_file in ("dpo_trainer", "kto_trainer"):
+        init = _guard_ref_adapter_for_tp(init, RLTrainer_name)
 
     if "args.use_vllm" in init and "model" in init and "args" in init:
         # .*? matches the first match, .+? the final one.
