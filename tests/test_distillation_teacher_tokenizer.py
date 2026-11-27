@@ -120,6 +120,11 @@ def test_token_maps_added_tokens_and_specials():
         _fast_tokenizer(base, added = ["<e1>", "<e2>"], eos = "<e2>"),
     )
     assert errors == [] and notes and "eos_token_id" in notes[0]
+    # Registering an existing token as special on one side only keeps the token -> id map: warned, not refused.
+    registered = _fast_tokenizer(base)
+    registered.add_special_tokens({"additional_special_tokens": ["c"]})
+    errors, notes = opd.tokenizer_mismatches(registered, _fast_tokenizer(base))
+    assert errors == [] and any("registrations" in n for n in notes)
     # A pad token only the student has (Unsloth may add one) is not a mismatch.
     padded = _fast_tokenizer(base, added = ["<pad>"])
     padded.pad_token = "<pad>"

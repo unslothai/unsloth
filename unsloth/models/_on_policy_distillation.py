@@ -255,7 +255,7 @@ def tokenizer_mismatches(student_tokenizer, teacher_tokenizer):
 
     Errors: any token mapped to a different id (``get_vocab()`` includes added tokens), so the teacher's log-prob of
     an id is about another string. A token only the student has that is its own pad token is ignored (Unsloth may add
-    one). Warnings: differing bos / eos / pad ids over the same vocabulary (a Base student of an Instruct teacher ends
+    one). Warnings: added-token registrations or bos / eos / pad ids that differ over the same vocabulary (a Base student of an Instruct teacher ends
     turns with another token); the scored ids still mean the same strings."""
     student = _text_tokenizer(student_tokenizer)
     teacher = _text_tokenizer(teacher_tokenizer)
@@ -274,10 +274,11 @@ def tokenizer_mismatches(student_tokenizer, teacher_tokenizer):
         if s_added.get(i) != t_added.get(i) and s_added.get(i) not in ignore
     )
     if added and not diffs:
+        # Same token -> id map, only the added / special registration differs: the scored ids mean the same strings.
         shown = ", ".join(
             f"id {i}: student {s_added.get(i)!r} vs teacher {t_added.get(i)!r}" for i in added[:5]
         )
-        errors.append(f"added tokens differ: {shown}")
+        notes.append(f"added token registrations differ: {shown}")
     for role in ("bos", "eos", "pad"):
         s_id = getattr(student, f"{role}_token_id", None)
         t_id = getattr(teacher, f"{role}_token_id", None)
