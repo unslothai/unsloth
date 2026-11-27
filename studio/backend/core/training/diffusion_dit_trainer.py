@@ -539,6 +539,33 @@ def _apply_int8_w8a8(
         return False
 
 
+def _build_int8_base(
+    transformer,
+    on_event,
+    cfg,
+    device = None,
+    fp16_amp: bool = False,
+) -> bool:
+    """Quantize the frozen int8 base; True when it is W8A8, False when it fell back to torchao weight-only. The fp16
+    path and the ROCm W8A8 opt-in have no weight-only fallback (ROCm refuses torchao int8; the Windows-ROCm stub's
+    quantize_ is a no-op that would train a dense base), so a failed W8A8 conversion raises there instead."""
+    if _int8_w8a8(cfg) and _apply_int8_w8a8(
+        transformer, on_event, cfg.resolved_family, device = device
+    ):
+        return True
+    if fp16_amp:
+        raise ValueError(
+            "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
+        )
+    if torch_is_rocm():
+        raise ValueError(
+            "int8 W8A8 could not be built on this ROCm GPU (int8 GEMM probe failed or no eligible linear layers), "
+            "and torchao weight-only int8 is not supported on ROCm; use base_precision='nf4', 'bf16', or 'auto'."
+        )
+    _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+    return False
+
+
 # Small-M linears stay bf16 (casts outweigh GEMM); final_layer is Krea 2's output projection.
 _LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
 
@@ -4448,15 +4475,8 @@ def _train_dit(
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
     w8a8_on = lowp_swap == "int8_w8a8" or (
         base_precision == "int8"
-        and _int8_w8a8(cfg)
-        and _apply_int8_w8a8(transformer, on_event, cfg.resolved_family, device = device)
+        and _build_int8_base(transformer, on_event, cfg, device = device, fp16_amp = fp16_amp)
     )
-    if base_precision == "int8" and not w8a8_on:
-        if fp16_amp:
-            raise ValueError(
-                "int8 W8A8 could not be built on this GPU; use base_precision='nf4' or 'auto'."
-            )
-        _int8_quantize_base(transformer, cfg.resolved_family, device = device)
     if fp16_amp and w8a8_on:
         fp16_report.update(prepare_fp16_base(transformer))
     if base_precision == "int8":

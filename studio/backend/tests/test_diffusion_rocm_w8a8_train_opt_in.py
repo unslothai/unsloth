@@ -137,3 +137,39 @@ def test_route_passes_the_resume_config_to_the_preflight():
         and getattr(n.func, "id", None) == "training_precision_preflight_error"
     ]
     assert calls and all(any(k.arg == "cfg" for k in c.keywords) for c in calls)
+
+
+@pytest.fixture
+def int8_build(rocm):
+    """_build_int8_base with the W8A8 conversion result pinned and the torchao weight-only fallback recorded."""
+    calls = []
+    rocm.setattr(dit, "_int8_quantize_base", lambda *a, **k: calls.append(a))
+    rocm.setenv(swap.ROCM_W8A8_TRAIN_ENV, "1")
+
+    def run(converted, **kw):
+        rocm.setattr(dit, "_apply_int8_w8a8", lambda *a, **k: converted)
+        return dit._build_int8_base(
+            object(), None, _cfg(base_precision = "int8"), device = "cuda", **kw
+        )
+
+    return run, calls
+
+
+def test_rocm_opt_in_w8a8_conversion_failure_is_fatal(int8_build):
+    run, calls = int8_build
+    with pytest.raises(ValueError, match = "could not be built on this ROCm GPU"):
+        run(False)
+    assert calls == []  # never the torchao weight-only base (a no-op stub on Windows ROCm)
+
+
+def test_rocm_opt_in_w8a8_conversion_success_trains_w8a8(int8_build):
+    run, calls = int8_build
+    assert run(True) is True and calls == []
+
+
+def test_cuda_w8a8_failure_still_falls_back_to_weight_only(int8_build, monkeypatch):
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: False)
+    run, calls = int8_build
+    assert run(False) is False and len(calls) == 1
+    with pytest.raises(ValueError, match = "could not be built on this GPU"):
+        run(False, fp16_amp = True)
