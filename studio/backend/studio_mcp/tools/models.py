@@ -80,7 +80,7 @@ H3Task = Annotated[
 Device = Annotated[
     Optional[Literal["auto", "cpu", "gpu"]],
     Field(
-        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset leaves the choice to Unsloth Studio.'
+        description = 'llm, tts and audio: where the model runs. "cpu" keeps the GPU free, so a resident image or video model stays loaded; to keep the chat model loaded as well, also pass alongside=true. For kind "llm" it needs a GGUF model, and a vision GGUF still uses the GPU for its projector. "gpu" is never moved to the CPU silently; placement.device reports where the model ended up. Unset or "auto" leaves the choice to Unsloth Studio, which applies a saved placement. Saved llama.cpp arguments for the model (Settings > API), such as -ngl 0, still apply under "gpu".'
     ),
 ]
 Alongside = Annotated[
@@ -646,7 +646,7 @@ async def load_model(
     text_encoder_quant: TextEncoderQuant = None,
     h3_task: H3Task = None,
     max_seq_length: Optional[int] = None,
-    load_in_4bit: bool = True,
+    load_in_4bit: Optional[bool] = None,
     device: Device = None,
     alongside: Alongside = None,
     kv_cache_type: KvCacheType = None,
@@ -667,11 +667,11 @@ async def load_model(
     """Load a model into Unsloth Studio, downloading it first if needed, and report progress while it loads.
     ``kind`` unset infers the kind from the catalog or the model's task (a checkpoint or export is "llm"); "llm" covers chat, vision, embedding and audio models, and the "tts" and "audio" kinds list_models reports load the same way; "image" and "video" load the generation models and "stt" a speech-to-text model (downloaded first when needed).
     ``model`` is an id from list_models or a Hugging Face repo id; ``variant`` picks a GGUF quantization such as Q4_K_M.
-    ``max_seq_length`` 0 or unset lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only).
+    ``max_seq_length`` 0 lets Unsloth Studio choose the context, and ``load_in_4bit`` picks 4-bit weights (both llm only); an llm setting left unset comes from the model's saved load settings in Unsloth Studio, else its default.
     ``hf_token`` is for gated repos.
     The call waits up to ``wait_s`` seconds (at most 240); set the client's tool timeout above that, or pass wait_s=50 under Codex's 60 s default.
     A load that is still running then returns ``loaded`` false, ``status`` "loading" and a ``job_id``: it keeps running in Unsloth Studio, and get_job(kind="load", id=job_id, wait_s=…) follows it to the same result.
-    Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call (without ``variant``) for a chat model Unsloth Studio is already loading.
+    Calling load_model again with the same arguments while that load runs follows it instead of starting another, and so does a call without ``variant`` or other load options for a chat model Unsloth Studio is already loading.
     Loading may unload other models to make room, for example a chat model to fit an image model; ``evicted`` lists them and ``evicted_slots`` gives each one's kind."""
     caller = current_caller()
     deadline = loading.deadline_after(wait_s)

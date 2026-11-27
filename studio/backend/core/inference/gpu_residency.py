@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, Iterable, Optional
 
@@ -22,6 +23,9 @@ K3_RETRY_AFTER_S = 15
 
 MEDIA_OWNERS = (arb.DIFFUSION, arb.VIDEO)
 _MEDIA_KIND = {arb.DIFFUSION: "image", arb.VIDEO: "video"}
+image_swap_owns_chat_load_gate: ContextVar[bool] = ContextVar(
+    "image_swap_owns_chat_load_gate", default = False
+)
 
 
 class MediaNeed(dict):
@@ -642,7 +646,7 @@ def chat_load_in_flight() -> bool:
         from core.inference import llama_keepwarm, model_slots
         from core.inference.llama_cpp import chat_load_active
         return bool(
-            llama_keepwarm._load_lock.locked()
+            (llama_keepwarm._load_lock.locked() and not image_swap_owns_chat_load_gate.get())
             or chat_load_active()
             or model_slots.loading is not None
         )
@@ -809,8 +813,9 @@ def foreign_on(owner: str, account_id: Optional[str]) -> int:
             import sys
 
             video = sys.modules.get("core.inference.video")
-            running = video.generation_account_in_flight() if video is not None else None
-            return int(running is not None and running != account_id)
+            from hub.services.models.account_access import _video_holders
+
+            return int(any(holder != account_id for holder in _video_holders(video)))
     except Exception as exc:  # noqa: BLE001 - unknown reads as busy, so nothing is torn down under a stream
         logger.warning("gpu_residency: could not count generations on %s: %s", owner, exc)
         return 1

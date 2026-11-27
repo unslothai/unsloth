@@ -28,7 +28,6 @@ def test_addmm_impl_casts_dense_weight(monkeypatch, weight_dtype):
     # Positional parts after X: W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype.
     dq._addmm_impl(out, X, None, None, None, None, None, None, 64, 256, [N, K], weight_dtype)
     torch.testing.assert_close(out, expected, rtol = 0, atol = 0)
-    # The cached dense weight is read, never written.
     assert torch.equal(dense, dense_before)
 
 

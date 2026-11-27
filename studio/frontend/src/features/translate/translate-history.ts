@@ -15,8 +15,6 @@ export type TranslateHistoryEntry = {
 };
 
 export const TRANSLATE_HISTORY_MAX_ENTRIES = 100;
-/** A longer translation is not kept: the list lives in localStorage, a few megabytes in all. */
-export const TRANSLATE_HISTORY_MAX_CHARS = 20_000;
 export const TRANSLATE_HISTORY_TOTAL_CHARS = 1_000_000;
 export const TRANSLATE_HISTORY_FILE_NAME = "UnslothTranslateFullHistory.txt";
 
@@ -67,12 +65,7 @@ export function addHistoryEntry(
   entry: Omit<TranslateHistoryEntry, "id" | "at">,
   now: number = Date.now(),
 ): TranslateHistoryEntry[] {
-  if (
-    entry.output.trim() === "" ||
-    entry.source.length + entry.output.length > TRANSLATE_HISTORY_MAX_CHARS
-  ) {
-    return [...history];
-  }
+  if (entry.output.trim() === "") return [...history];
   const rest = history.filter(
     (item) => !(item.source === entry.source && item.target === entry.target),
   );
@@ -104,6 +97,24 @@ const englishName = (code: string | null): string =>
     ? "Detected language"
     : (TRANSLATE_LANGUAGES.find((language) => language.code === code)?.name ??
       code);
+
+const CHAT_RECENT_ENTRIES = 5;
+/** Five entries at the former 20,000-character entry cap: older entries stop being added past it. */
+const CHAT_RECENT_CHARS = 100_000;
+
+/** The newest entries that fit the chat budget; the newest is always included. */
+export function recentForChat(
+  history: readonly TranslateHistoryEntry[],
+): TranslateHistoryEntry[] {
+  let chars = 0;
+  let keep = 0;
+  for (const entry of history.slice(0, CHAT_RECENT_ENTRIES)) {
+    chars += entry.source.length + entry.output.length;
+    if (chars > CHAT_RECENT_CHARS && keep > 0) break;
+    keep += 1;
+  }
+  return history.slice(0, keep);
+}
 
 export function buildChatHandoff(
   entries: readonly Pick<

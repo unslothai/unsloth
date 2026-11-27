@@ -77,8 +77,7 @@ def test_the_gate_by_execution(dtype, expected):
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_cuda_really_does_accept_float32_as_an_autocast_dtype():
-    """The premise: if torch ever rejects or ignores float32 as an autocast dtype, the fix above is
-    no longer load-bearing and this test says so."""
+    """If torch rejects or ignores float32 autocast, the fix above is no longer load-bearing."""
     with torch.autocast(device_type = "cuda", dtype = torch.float32):
         assert torch.is_autocast_enabled("cuda") is True
         assert torch.get_autocast_dtype("cuda") == torch.float32

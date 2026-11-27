@@ -32,8 +32,7 @@ _MEASURED = [
 
 @pytest.mark.parametrize("n_heads, head_dim, doc_len, last_ok", _MEASURED)
 def test_guard_matches_the_measured_crash_threshold(n_heads, head_dim, doc_len, last_ok):
-    """The predicted limit must sit within one document of the observed one, and must never
-    sit ABOVE it -- a guard that trips late is a guard that does not exist."""
+    """Predicted limit must sit within one document of the observed one, never above it."""
 
     def trips(n_docs):
         return ad._varlen_backward_overflows_int32(n_docs, n_docs * doc_len, n_heads, head_dim)
@@ -186,8 +185,7 @@ def test_padded_tail_segment_counts_toward_the_bound(monkeypatch, backend):
     q = torch.zeros((1, 16, total, 128), requires_grad = True)
     config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1)
     ad.run_attention(config = config, context = context, Q = q, K = q, V = q)
-    # SDPA attends packed rows one segment length at a time (#12740): the 8127 one-token
-    # documents and the padded tail are two calls, and neither may reach the varlen kernel.
+    # Per segment SDPA (#12740): 8127 one-token docs and padded tail, two calls, never varlen.
     assert taken and set(taken) == {ad.SDPA}
 
 
@@ -205,8 +203,7 @@ def test_forward_only_is_never_downgraded(monkeypatch, backend):
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatch, backend):
-    """Checkpoint's no_grad forward and grad-enabled recompute must pick the same backend; keying
-    the guard on tensors alone lets the passes differ, so backward sees unreported activations."""
+    """Forward and recompute must pick the same backend; tensor-only keys let them differ."""
 
     def go(grad_enabled):
         with torch.set_grad_enabled(grad_enabled):

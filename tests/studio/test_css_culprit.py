@@ -3,6 +3,7 @@
 
 """The long-chat gate's source hints: selector text -> CSS rule, and the :has() shape check."""
 
+import pytest
 import sys
 from pathlib import Path
 
@@ -25,6 +26,14 @@ SOURCE = """\
   .aui-thread-viewport:has(.aui-thread-welcome-center) { gap: 0; }
 }
 """
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_synthetic_tree():
+    """css_rules() is cached per process: left filled, the synthetic tree outlives the test, and on the same xdist
+    worker a later scan of the real frontend CSS reads these four rules instead."""
+    yield
+    culprit.css_rules.cache_clear()
 
 
 def _use(tmp_path, monkeypatch):

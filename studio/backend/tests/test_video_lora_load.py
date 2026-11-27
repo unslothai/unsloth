@@ -262,7 +262,7 @@ def test_a_lora_for_the_loaded_family_resolves_through_the_catalog(catalog):
     assert resolved == (("my-wan", str(path), 0.75, None),)
 
 
-def test_load_refusal_by_family_and_path():
+def test_load_refusal_by_family_and_path(monkeypatch):
     ltx2 = detect_video_family("", override = "ltx-2")
     wan = detect_video_family("", override = "wan2.2-ti2v-5b")
     h3 = detect_video_family("", override = "minimax-h3")
@@ -273,11 +273,16 @@ def test_load_refusal_by_family_and_path():
         assert "GGUF" in video_lora.load_refusal(fam, "gguf", None)
         assert "single-file" in video_lora.load_refusal(fam, "single_file", None)
         assert video_lora.dense_transformer_quant(fam, None, [("x", 1.0)]) is None
-    # MiniMax-H3: unset precision would seed the hosted quantized denoiser, so a LoRA load pins the released one.
+    # MiniMax-H3 keeps LoRAs as an unmerged side branch: the hosted quantized denoiser stays a valid pick.
     assert video_lora.load_refusal(h3, "pipeline", None) is None
     assert video_lora.load_refusal(h3, "pipeline", "none") is None
+    assert video_lora.load_refusal(h3, "pipeline", "int8") is None
+    assert video_lora.dense_transformer_quant(h3, None, [("x", 1.0)]) is None
+    # With the side branch off the LoRA bakes into bf16, so an unset precision pins the released denoiser.
+    monkeypatch.setenv(video_lora.SIDE_BRANCH_ENV, "0")
     assert "bfloat16" in video_lora.load_refusal(h3, "pipeline", "int8")
     assert video_lora.dense_transformer_quant(h3, None, [("x", 1.0)]) == "none"
+    monkeypatch.delenv(video_lora.SIDE_BRANCH_ENV)
     assert video_lora.dense_transformer_quant(h3, None, None) is None
     assert video_lora.dense_transformer_quant(h3, None, [("x", 0.0)]) is None
     moe = types.SimpleNamespace(name = "wan2.2-t2v-a14b", label = "Wan2.2 A14B", is_moe = True)

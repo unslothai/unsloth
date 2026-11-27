@@ -89,7 +89,8 @@ def _prepend_zero_frames(module: Any, args: tuple) -> Optional[tuple]:
     return (torch.cat([zeros, x], dim = 2), *args[1:])
 
 
-_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d"})
+# Same causal ``_padding`` + F.pad forward: Wan 2.x and the Qwen-Image VAE.
+_CAUSAL_PAD_CLASSES = frozenset({"WanCausalConv3d", "QwenImageCausalConv3d"})
 
 
 def _zero_buffer_causal_conv(
@@ -126,6 +127,58 @@ def _zero_buffer_causal_conv(
     return torch.nn.Conv3d.forward(module, buffer)
 
 
+def _zero_buffer_qwen_conv(
+    module: Any,
+    x: Any,
+    cache_x: Any = None,
+) -> Any:
+    """Qwen-Image VAE: the zero buffer only on one-frame, no-cache calls (the measured image path); multi-frame
+    and cached calls keep the stock forward, whose MPS numerics against the zero buffer are unmeasured."""
+    if cache_x is not None or x.dim() != 5 or x.shape[2] != 1:
+        return type(module).forward(module, x, cache_x)
+    return _zero_buffer_causal_conv(module, x, cache_x)
+
+
+_CAUSAL_PAD_FORWARDS = {"QwenImageCausalConv3d": _zero_buffer_qwen_conv}
+
+# MiniMax-H3's VAE conv (and the image VAE's copy of it): spatial F.pad, then the causal frames as a second F.pad.
+_H3_CAUSAL_CLASSES = frozenset({"MiniMaxH3VideoCausalConv3d", "MiniMaxH3ImageCausalConv3d"})
+
+
+def h3_causal_pad(x: Any, spatial: int, mode: str, front: int) -> Any:
+    """The H3 conv input: ``spatial`` pixels each side in ``mode``, then ``front`` zero frames concatenated ahead.
+    The same values as the stock frame-axis F.pad, which on MPS (torch 2.13) returns wrong data for a 5-D tensor:
+    max |diff| 3.1 against CPU on a [1, 64, 5, 256, 544] decoder activation, 99.8% of elements off."""
+    import torch
+    import torch.nn.functional as F
+
+    if spatial > 0:
+        x = F.pad(x, (spatial, spatial, spatial, spatial, 0, 0), mode = mode)
+    if front > 0:
+        x = torch.cat([x.new_zeros((*x.shape[:2], front, *x.shape[3:])), x], dim = 2)
+    return x
+
+
+def _cat_front_h3_conv(module: Any, hidden_states: Any) -> Any:
+    """``MiniMaxH3VideoCausalConv3d.forward`` with the causal zero frames concatenated instead of F.pad-ed."""
+    front = int(getattr(module, "temporal_padding", 0) or 0)
+    if front <= 0 or hidden_states.dim() != 5:
+        return type(module).forward(module, hidden_states)
+    import torch.nn.functional as F
+
+    padded = h3_causal_pad(
+        hidden_states, int(module.spatial_padding or 0), module.spatial_padding_mode, front
+    )
+    return F.conv3d(
+        padded,
+        module.weight,
+        module.bias,
+        stride = module.stride,
+        padding = 0,
+        dilation = module.dilation,
+    )
+
+
 def install_frame_pad_fix(
     pipe: Any,
     target: DiffusionDeviceTarget,
@@ -151,7 +204,15 @@ def install_frame_pad_fix(
                 and len(getattr(module, "_padding", ())) == 6
                 and "forward" not in module.__dict__
             ):
-                module.forward = types.MethodType(_zero_buffer_causal_conv, module)
+                forward = _CAUSAL_PAD_FORWARDS.get(name, _zero_buffer_causal_conv)
+                module.forward = types.MethodType(forward, module)
+            elif (
+                name in _H3_CAUSAL_CLASSES
+                and hasattr(module, "temporal_padding")
+                and hasattr(module, "spatial_padding_mode")
+                and "forward" not in module.__dict__
+            ):
+                module.forward = types.MethodType(_cat_front_h3_conv, module)
             else:
                 continue
             module._unsloth_frame_pad_fix = True
@@ -421,6 +482,22 @@ def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
             f"(visible: {visible}). Clear the GPU selection to use the default device."
         )
     return sorted(dict.fromkeys(ordinals))
+
+
+def physical_gpu_id_for_ordinal(ordinal: Optional[int]) -> Optional[int]:
+    """The PHYSICAL GPU id (the UI's and ``gpu_ids``' index space) of torch ``ordinal``, the inverse of
+    :func:`resolve_selected_cuda_ordinals`: under ``CUDA_VISIBLE_DEVICES=1,0`` ordinal 0 is physical 1. None when the
+    ordinal is unknown or the mask cannot be read as numeric ids; never raises (status reads it)."""
+    if ordinal is None:
+        return None
+    try:
+        from utils.hardware.hardware import get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        index = int(ordinal)
+        return int(visible[index]) if 0 <= index < len(visible) else None
+    except Exception:  # noqa: BLE001 -- an unreadable mask names no card
+        return None
 
 
 _UNPLANNED = object()

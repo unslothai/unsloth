@@ -101,3 +101,14 @@ def test_no_triton_keeps_the_old_answer():
     with cuda, hip, patch, mock.patch.dict(sys.modules, {"triton": None}):
         assert U.triton_runs_on_device(0) is True
     assert calls == []
+
+
+def test_the_probe_kernel_finds_triton_language_in_its_module_globals():
+    # Triton < 3.4 resolves a kernel's names through fn.__globals__ only: a kernel defined in the probe
+    # with a local `import triton.language as tl` fails with NameError and FlexAttention is turned off.
+    pytest.importorskip("triton.language")
+    from unsloth.models._triton_probe_kernel import _add_one
+
+    fn = getattr(_add_one, "fn", _add_one)
+    assert fn.__code__.co_freevars == ()
+    assert "tl" in fn.__globals__ and "tl" in fn.__code__.co_names

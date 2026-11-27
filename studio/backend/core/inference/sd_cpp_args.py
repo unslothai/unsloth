@@ -46,6 +46,27 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
 
 
+# Qwen-Image-Edit refs at QwenImageEditPlusPipeline's 384 x 384 area (upstream sd.cpp#2433); the pinned
+# build clamps sides to 384..560 px (400 vs 196 vision tokens). min == max takes sd.cpp's area branch.
+QWEN_EDIT_REF_IMAGE_ARGS = "vlm_size=147456"
+QWEN_EDIT_REF_AREA_ENV = "UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA"
+_REF_IMAGE_ARGS_BY_FAMILY: dict[str, str] = {"qwen-image-edit": QWEN_EDIT_REF_IMAGE_ARGS}
+
+
+def ref_image_args_for_family(family_name: Optional[str], has_refs: bool) -> Optional[str]:
+    """sd.cpp ``ref_image_args`` for a run with refs; ``UNSLOTH_SD_CPP_QWEN_EDIT_REF_AREA=0`` disables."""
+    if not has_refs:
+        return None
+    if (os.environ.get(QWEN_EDIT_REF_AREA_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    return _REF_IMAGE_ARGS_BY_FAMILY.get(family_name or "")
+
+
 # sd-cli image-gen mode (older txt2img); img2img is the same mode with --init-img.
 DEFAULT_MODE = "img_gen"
 
@@ -1539,6 +1560,7 @@ def build_img_gen_request(
     custom_sigmas: Optional[list[float]] = None,
     hires: Optional[dict] = None,
     extra_sample_args: Optional[str] = None,
+    ref_image_args: Optional[str] = None,
 ) -> dict:
     """Guidance is split: FLUX distilled values go to distilled_guidance, real CFG scales to txt_cfg."""
     if not str(prompt).strip():
@@ -1585,6 +1607,8 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
+        if ref_image_args:
+            req["ref_image_args"] = str(ref_image_args)
     if qwen_image_layers is not None:
         req["qwen_image_layers"] = int(qwen_image_layers)
     if hires:

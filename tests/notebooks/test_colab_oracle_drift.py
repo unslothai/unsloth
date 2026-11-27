@@ -38,8 +38,7 @@ UPSTREAM = {
 
 @pytest.fixture
 def oracle(tmp_path, monkeypatch):
-    """A snapshot dir that matches upstream, plus a stubbed fetch. Mutate the
-    returned dict to make upstream differ from what is committed on disk."""
+    """Snapshot matches upstream, fetch is stubbed; mutate the returned dict to cause drift."""
     upstream = dict(UPSTREAM)
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
         (tmp_path / snapshot_name).write_text(UPSTREAM[upstream_name], encoding = "utf-8")
@@ -88,8 +87,7 @@ def test_pip_drift_is_advisory_without_strict(oracle):
     ],
 )
 def test_non_rule_oracles_never_fail_strict(oracle, capsys, name, drifted):
-    """An Ubuntu security bump or an R release must not turn the cron red:
-    nothing resolves a rule against these two files."""
+    """An Ubuntu bump or R release must not turn the cron red: no rule reads these two files."""
     upstream, snapshot_dir = oracle
     upstream[name] = drifted
     assert _diff(snapshot_dir, strict = True) == 0
@@ -123,14 +121,12 @@ def test_full_lists_every_drifted_entry(oracle, capsys):
 
 
 def test_strict_oracle_is_the_one_lint_pins_against(oracle):
-    """--colab-pin is fed COLAB_FALLBACK_FILE, the snapshot whose drift is fatal; the strict oracle
-    must stay that same file or the tripwire guards the wrong one."""
+    """--colab-pin is fed COLAB_FALLBACK_FILE, so the strict oracle must be that same file."""
     assert nv.COLAB_ORACLE_FILES[nv.COLAB_STRICT_ORACLE] == nv.COLAB_FALLBACK_FILE.name
 
 
 def test_refresh_all_writes_every_snapshot(oracle, tmp_path):
-    """The acknowledgement path: one command has to be able to clear a drift
-    report, or the snapshots rot until --strict fires on them."""
+    """One refresh command must clear a drift report, or snapshots rot until --strict fires."""
     upstream, _ = oracle
     for key in upstream:
         upstream[key] = upstream[key].replace("2.10.0", "2.11.0").replace("4.5.3", "4.6.0")
@@ -156,12 +152,10 @@ def test_refresh_without_all_still_writes_only_pip(oracle, tmp_path):
 
 
 def test_workflow_diffs_before_it_refreshes():
-    """The ordering bug itself: refresh-colab overwrites the committed pip
-    snapshot, so a diff placed after it compares upstream with upstream."""
+    """Diff must run before refresh-colab, which overwrites the pip snapshot it compares."""
     wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
     for job in ("static", "static-with-pypi"):
         rest = wf.split(f"\n  {job}:", 1)[1]
-        # Up to the next job key, the next line indented exactly two.
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
 
@@ -203,8 +197,7 @@ def test_refresh_all_is_atomic(oracle, tmp_path, monkeypatch):
 
 
 def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path, monkeypatch):
-    """Same guarantee when the destination did not exist yet: no half-populated
-    directory is left behind for a later --strict to read as clean."""
+    """On a fresh dir too, no half-written snapshot may survive for --strict to read as clean."""
     upstream, _ = oracle
 
     def dead(url, timeout = None):
@@ -217,8 +210,7 @@ def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path
 
 
 def test_cron_lint_survives_a_strict_drift_failure():
-    """The strict step exits 1 on a Colab rotation, so steps after it need if: always() to keep the
-    live-PyPI lint running on drift days."""
+    """Steps after the strict step need if: always() so the live-PyPI lint runs on drift days."""
     wf = (REPO_ROOT / ".github/workflows/notebooks-ci.yml").read_text(encoding = "utf-8")
     rest = wf.split("\n  static-with-pypi:", 1)[1]
     nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
@@ -341,8 +333,7 @@ def test_a_rule_bearing_oracle_that_will_not_fetch_still_fails_the_refresh(oracl
 def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
     oracle, tmp_path, name, payload
 ):
-    """A refresh must not acknowledge a payload the rules cannot read: upstream and snapshot would
-    both lack the key and colab-diff would go quiet on that rotation."""
+    """Refresh must not acknowledge a payload the rules cannot read, or colab-diff goes quiet."""
     upstream, _ = oracle
     upstream[name] = payload
     out_dir = tmp_path / "rotated"
@@ -381,8 +372,7 @@ def test_a_failed_write_restores_the_whole_snapshot_set(oracle, tmp_path, monkey
 
 
 def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_path, monkeypatch):
-    """Nothing to restore means nothing left behind: a fresh directory stays empty of the
-    half-written generation rather than keeping the one file that landed."""
+    """Nothing to restore: a failed write leaves the fresh dir empty, not the one file landed."""
     upstream, _ = oracle
     out_dir = tmp_path / "fresh"
 

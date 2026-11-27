@@ -139,7 +139,6 @@ def test_placed_model_shards_onto_the_local_rank_gpu(native_env, monkeypatch):
         native._shard_device(_FakeModel([_T("cuda:0"), Params4bit("cuda:0")]))
     with pytest.raises(RuntimeError, match = "split over several GPUs"):
         native._shard_device(_FakeModel([_T("cuda:0"), _T("cuda:1")], device_map = {"a": 0, "b": 1}))
-    # Quantized weights already on this rank's GPU are fine.
     assert native._shard_device(_FakeModel([Params4bit("cuda:1"), _T("cuda:0")])) == torch.device(
         "cuda", 1
     )
@@ -174,7 +173,6 @@ def test_parallelism_config_and_tp_models_are_refused(native_env, monkeypatch):
         args = types.SimpleNamespace(parallelism_config = real, **BASE_ARGS)
         with pytest.raises(RuntimeError, match = "parallelism_config"):
             native.native_fsdp2_trainer_setup(model = _tiny_llama(), phase = "pre", training_args = args)
-    # A plain shard over every rank is what native FSDP2 does: sharding proceeds.
     args = types.SimpleNamespace(parallelism_config = pc(dp_shard_size = 2), **BASE_ARGS)
     with pytest.raises(_Stop):
         native.native_fsdp2_trainer_setup(model = _tiny_llama(), phase = "pre", training_args = args)

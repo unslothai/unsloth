@@ -169,8 +169,7 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
 
 @pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
 def test_an_explicit_choice_is_never_overwritten(value):
-    """Someone who wants TF in-process keeps it, in any spelling Transformers
-    accepts as true."""
+    """Explicit USE_TF/USE_FLAX values survive, in any spelling Transformers accepts."""
     environ = {"USE_TF": value, "USE_FLAX": value}
     _exec_guard({}, environ)
     assert environ["USE_TF"] == value
@@ -179,8 +178,7 @@ def test_an_explicit_choice_is_never_overwritten(value):
 
 @pytest.mark.parametrize("value", ["AUTO", "auto", "Auto"])
 def test_auto_is_overwritten_because_transformers_reads_it_as_enabled(value):
-    """`AUTO` is what an unset variable means to Transformers: enable if installed,
-    the exact state this guard prevents and the one `setdefault` used to keep."""
+    """AUTO reads as enabled to Transformers, so it is overwritten; setdefault would keep it."""
     environ = {"USE_TF": value, "USE_FLAX": value}
     _exec_guard({}, environ)
     assert environ["USE_TF"] == "0"
@@ -226,8 +224,7 @@ def test_transformers_reads_the_variable_from_the_environment(value):
 
 
 def test_the_variables_are_written_even_once_transformers_is_loaded():
-    """Inert against a fully imported Transformers, but the partly-imported case
-    below needs them, and this branch cannot tell the two apart."""
+    """Harmless after a full import, but a partial import needs them; the branch can't tell."""
     environ = {}
     _exec_guard({"transformers": object()}, environ)
     assert environ == {"USE_TF": "0", "USE_FLAX": "0"}
@@ -309,8 +306,7 @@ def _run_env_branch(tmp_path, preamble, site, **env):
 
 
 def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_path):
-    """The env-var branch has to honour an in-use backend too, and `setdefault`
-    cannot: nothing set USE_TF, so there is no explicit value to defer to."""
+    """Env-var branch must honour an in-use backend; setdefault can't, as nothing set USE_TF."""
     site = _working_tensorflow(tmp_path)
     out = _run_env_branch(tmp_path, "import tensorflow", site)
     assert out.returncode == 0, out.stderr[-3000:]
@@ -378,8 +374,7 @@ def test_the_cached_flag_is_cleared_against_a_real_transformers(tmp_path):
 
 
 def test_an_opt_in_that_was_consumed_and_restored_still_counts(tmp_path):
-    """Transformers reads these once, at its own import, so a variable that was set,
-    consumed and restored is still an opt-in `os.environ` no longer shows."""
+    """Transformers reads these once at import, so a consumed, restored opt-in still counts."""
     out = _run_guard(
         tmp_path,
         'del os.environ["FORCE_TF_AVAILABLE"]',
@@ -469,8 +464,7 @@ def test_a_cached_opt_in_also_blocks_the_partial_window_write():
 
 
 def test_the_subprocess_environment_drops_every_backend_variable(monkeypatch):
-    """A runner that exports one of these must not decide the cases for us:
-    `USE_TORCH=1` in the parent makes every "BEFORE True" case fail."""
+    """Backend variables are removed from the subprocess env, or USE_TORCH=1 fails every case."""
     # Spelled out, so shortening `_BACKEND_ENV` fails here instead of narrowing.
     names = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
     for name in names:
@@ -511,8 +505,7 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
 
 
 def test_the_snapshot_transformers_kept_counts_as_an_opt_in():
-    """Each variable in the name Transformers files it under: env `USE_FLAX` is
-    stored as `USE_JAX`, so looking for a cached `USE_FLAX` finds nothing."""
+    """USE_FLAX is stored as USE_JAX in the snapshot, so a USE_FLAX lookup finds nothing."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
     modules = {"transformers": object(), "transformers.utils.import_utils": import_utils}
     for flag, cached in (
@@ -542,8 +535,7 @@ def test_the_default_snapshot_is_not_an_opt_in():
 
 
 def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
-    """The window between `import_utils` copying the environment into `USE_TF` /
-    `USE_JAX` (its lines 102-104) and deriving the flags (264 / 355)."""
+    """Overwrites a snapshot between import_utils lines 102-104 (copy) and 264 / 355 (flags)."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
     import_utils.USE_TF = "AUTO"
     import_utils.FORCE_TF_AVAILABLE = "AUTO"

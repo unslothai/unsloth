@@ -66,8 +66,7 @@ def _run(
 
 
 def _device_kept():
-    # No handler device: the swapped scaler keeps the old scaler's device (a "cuda" default on a CPU or
-    # XPU run is a disabled scaler, so float16 would train without loss scaling).
+    # No handler: keep the old device, since cuda on CPU/XPU would disable float16 scaling.
     native = _load_native()
     old = torch.amp.GradScaler("cpu", init_scale = 2.0**8)
     trainer = types.SimpleNamespace(

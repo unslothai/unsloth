@@ -38,8 +38,7 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Was deselected while the zoo fixture did not stub model.trainable_parameters(). The zoo
-# fixed the fixture, and it passes on CPU in the serial mlx group, so it must run there.
+# Zoo fixed its stub for trainable_parameters(); it passes on CPU, so it runs in serial mlx.
 MLX_FORMERLY_DESELECTED = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"
@@ -188,8 +187,7 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
 
 
 def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() -> None:
-    """The mlx group is passed unquoted, so an empty glob makes the command collect the whole
-    rootdir, green and far slower; the step must stop when the glob matches nothing."""
+    """An empty unquoted mlx glob collects all of rootdir silently; the step must stop instead."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ -z "$mlx_group" ]' in text, (
         "nothing checks that the mlx group glob matched anything, so an empty glob "
@@ -325,8 +323,7 @@ def test_the_shared_preamble_is_not_also_inlined() -> None:
 
 
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:
-    """Exit 5 is tolerated, so each isolated file must be named in the log: an expected module-level
-    skip and a file that stopped collecting both exit 5 and stay green."""
+    """Isolated files must be named in the log: exit 5 is tolerated for skips and no-collects."""
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         assert f'_keep "$?" {path}' in text, (

@@ -1489,6 +1489,10 @@ def _make_router(original):
                 except torch.cuda.OutOfMemoryError:
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                 except Exception as exc:
+                    # Non-reentrant checkpointing ends a recompute by raising through the forward, and a
+                    # CheckpointError is a forward / recompute mismatch: neither is a kernel failure.
+                    if type(exc).__name__ in ("_StopRecomputationError", "CheckpointError"):
+                        raise
                     LARGE_HEAD_ENGAGED["fallback"] += 1
                     _SELF_CHECK[(str(query.device), query.dtype)] = False
                     _warn_once(
