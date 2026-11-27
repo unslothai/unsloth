@@ -187,7 +187,6 @@ def _run(job: _Job) -> None:
             try:
                 doc = None
                 if identity == scanned_for and time.monotonic() - scanned_at < _RESCAN_SECONDS:
-                    # Between scans only the next document is re-read, under the same predicate.
                     while queue and doc is None:
                         doc = _stale_document(conn, queue[0], identity)
                         if doc is None or not pending(doc, identity):

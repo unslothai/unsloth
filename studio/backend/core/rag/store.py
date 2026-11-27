@@ -617,7 +617,6 @@ def vec_rowids_by_document(conn: sqlite3.Connection, scope: str) -> dict[str, li
 
 
 def _verified_vec_rowids(conn, scope: str, chunk_ids: list[str], rowids) -> list[int] | None:
-    """``rowids`` if they are exactly the vectors of ``chunk_ids`` in ``scope``, else None."""
     if not rowids or len(rowids) != len(chunk_ids):
         return None
     rows = []
