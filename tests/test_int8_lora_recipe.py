@@ -26,12 +26,22 @@ def test_registry_entry():
 )
 def test_env_request(monkeypatch, value, on):
     monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", value)
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
     assert f8t.int8_lora_requested() is on
     assert f8t.float8_training_request(None) == ("int8_lora" if on else None)
     assert f8t.float8_training_request(False) == ("int8_lora" if on else False)
     # an explicit float8_training wins, and full finetuning never takes the LoRA base
     assert f8t.float8_training_request("fp8_lora") == "fp8_lora"
     assert f8t.float8_training_request(None, full_finetuning = True) is None
+
+
+@pytest.mark.parametrize("gpu", ["sm80", "sm89", "sm75", None])
+def test_env_opt_in_on_unsupported_gpu_stays_16bit(monkeypatch, capsys, gpu):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(P, "current_gpu_class", lambda: gpu)
+    assert f8t.int8_lora_unavailable() is not None
+    assert f8t.float8_training_request(None) is None
+    assert "ignored here" in capsys.readouterr().out
 
 
 def test_env_unset_changes_nothing(monkeypatch):

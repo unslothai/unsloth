@@ -433,10 +433,33 @@ def int8_lora_requested() -> bool:
     )
 
 
+def int8_lora_unavailable(gpu = "current"):
+    """Why the int8 LoRA base cannot run on this GPU class (registry gate, Triton, device), else None."""
+    if gpu == "current":
+        gpu = _precision.current_gpu_class()
+    if gpu is None:
+        return "no CUDA GPU is visible"
+    gate = _precision.get_recipe(INT8_LORA_RECIPE).gate(gpu)
+    if gate.status == "refused":
+        return f"{gpu}: {gate.reason}"
+    try:
+        from ..kernels import int8_lora
+    except ImportError as exc:
+        return f"the int8 kernels do not import ({exc})"
+    return int8_lora.int8_lora_supported(torch.device("cuda"))
+
+
 def float8_training_request(float8_training, full_finetuning = False):
     """The LoRA frozen-base request: the float8_training kwarg, or 'int8_lora' when UNSLOTH_LORA_BASE_INT8=1
-    and the kwarg is unset."""
+    and the kwarg is unset. The environment opt-in never fails a load: where the int8 base cannot run it says
+    why and training stays 16 bit (float8_training = 'int8_lora' refuses instead)."""
     if float8_training in (None, False) and not full_finetuning and int8_lora_requested():
+        why = int8_lora_unavailable()
+        if why is not None:
+            print(
+                f"Unsloth: UNSLOTH_LORA_BASE_INT8=1 is ignored here ({why}); training stays in 16 bit."
+            )
+            return float8_training
         return "int8_lora"
     return float8_training
 
