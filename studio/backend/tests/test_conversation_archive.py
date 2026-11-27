@@ -5465,3 +5465,46 @@ def test_a_web_read_that_clips_to_itself_has_no_legacy_copy():
     ]
     text, legacy_hash = conversation_archive._render_turn(group)
     assert text.endswith("A ...") and legacy_hash is None
+
+
+def test_a_paragraph_inserted_into_a_long_web_read_leaves_the_old_copy_off_branch(conn):
+    paragraphs = [f"Paragraph {i} " + " ".join(f"w{i}x{j}" for j in range(250)) for i in range(8)]
+
+    def read(page):
+        return [
+            _assistant_call("web_search", json.dumps({"url": "https://example.com/r"})),
+            {"role": "tool", "tool_call_id": "c1", "content": page},
+        ]
+
+    from storage import studio_db
+
+    _save_thread(THREAD, [])
+    page = "\n\n".join(paragraphs)
+    studio_db.upsert_chat_message(
+        {
+            "id": "read",
+            "threadId": THREAD,
+            "role": "assistant",
+            "createdAt": 1,
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "web_search",
+                    "args": {"url": "https://example.com/r"},
+                    "result": page,
+                }
+            ],
+        }
+    )
+    original = read(page)
+    assert conversation_archive.archive_turns(THREAD, original, branch = original) == 1
+    (document_id,) = [r["id"] for r in conn.execute("SELECT id FROM documents").fetchall()]
+
+    def on_branch(group):
+        transcript = conversation_archive.branch_message_texts(group)
+        return conversation_archive._document_on_live_branch(conn, document_id, transcript, {})
+
+    assert on_branch(original)
+    edited = paragraphs[:5] + ["A correction was issued."] + paragraphs[5:]
+    assert not on_branch(read("\n\n".join(edited)))

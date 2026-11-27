@@ -2303,11 +2303,11 @@ def _document_on_live_branch(
         # Never fail a recall on the strictness pass: fall back to what the candidate chunk itself said.
         cache[document_id] = True
         return True
-    matched = _document_matches_one_run(rows, transcript, message_count, index)
-    if not matched and (full_read := _join_web_read_chunks(rows)) is not None:
-        matched = _document_matches_one_run([{"text": full_read}], transcript, message_count, index)
-    cache[document_id] = matched
-    return matched
+    # A rejoined web read decides alone: chunks matched one by one can skip a paragraph inserted between them.
+    full_read = _join_web_read_chunks(rows)
+    candidate = rows if full_read is None else [{"text": full_read}]
+    cache[document_id] = _document_matches_one_run(candidate, transcript, message_count, index)
+    return cache[document_id]
 
 
 def _document_matches_one_run(
