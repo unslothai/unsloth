@@ -25,6 +25,7 @@ import {
 import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { getHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import { openLink } from "@/lib/open-link";
 import { snapInlinePadding } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
@@ -139,8 +140,8 @@ interface ModelSelectorProps {
   };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
-  /** A page Search Hub opens instead of a Hub search, for a picker whose models no Hub filter lists. */
-  hubLink?: string;
+  /** Repo Search Hub opens on the configured Hub instead of a search, for models no Hub filter lists. */
+  hubRepo?: string;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -659,7 +660,7 @@ export function ModelSelector({
   cpuLoad,
   moreModels,
   hubCapability,
-  hubLink,
+  hubRepo,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -669,6 +670,7 @@ export function ModelSelector({
   const openedByTouch = useRef(false);
   const navigate = useNavigate();
   const t = useT();
+  const hubName = useHubName();
   const [uncontrolled, setUncontrolled] = useState("");
 
   const selected = value ?? uncontrolled;
@@ -787,8 +789,8 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    if (hubLink) {
-      openLink(hubLink);
+    if (hubRepo) {
+      openLink(`${getHfEndpoint()}/${hubRepo}`);
       return;
     }
     void navigate({
@@ -836,7 +838,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
-        browseHubHint={hubLink ? "Open these models on Hugging Face" : undefined}
+        browseHubHint={hubRepo ? `Open ${hubRepo} on ${hubName}` : undefined}
         onBrowseHub={
           task && communityModelPolicy === "none" && !hubCapability
             ? undefined
