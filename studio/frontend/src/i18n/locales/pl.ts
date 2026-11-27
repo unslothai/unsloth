@@ -4811,6 +4811,7 @@ export const pl = {
       unsupportedFileType: "Nieobsługiwany typ pliku",
       uploadOneFileType: "Prześlij jeden plik typu {types}.",
       datasetUploaded: "Przesłano zbiór danych",
+      importSemicolonCsv: "Użyj średnika jako separatora dla .csv",
       evalDatasetUploaded: "Przesłano zbiór danych ewaluacyjnych",
       uploadOneFileAtATime: "Przesyłaj jeden plik naraz",
       uploadSingleFileDescription:

@@ -624,9 +624,15 @@ def _finish_upload(
                     except OverflowError:
                         # Python versions that store this as C long cap it at 2 GiB on Windows.
                         csv.field_size_limit(2**31 - 1)
-                _convert_semicolon_csv(
-                    partial_path, converted_path, max_bytes, max_label, csv_delimiter
-                )
+                try:
+                    _convert_semicolon_csv(
+                        partial_path, converted_path, max_bytes, max_label, csv_delimiter
+                    )
+                except UnicodeDecodeError:
+                    # Excel's regional "CSV (semicolon)" export writes the ANSI code page.
+                    _convert_semicolon_csv(
+                        partial_path, converted_path, max_bytes, max_label, csv_delimiter, "cp1252"
+                    )
             finally:
                 csv.field_size_limit(field_limit)
         return _publish_upload(converted_path, stored_path)
@@ -658,10 +664,30 @@ def _csv_records(source, delimiter):
         yield row
 
 
-def _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, delimiter):
+class _ByteCountingWriter:
+    __slots__ = ("file", "written")
+
+    def __init__(self, file):
+        self.file = file
+        self.written = 0
+
+    def write(self, text):
+        data = text.encode("utf-8")
+        self.written += len(data)
+        return self.file.write(data)
+
+
+def _convert_semicolon_csv(
+    partial_path,
+    converted_path,
+    max_bytes,
+    max_label,
+    delimiter,
+    encoding = "utf-8-sig",
+):
     with (
-        partial_path.open(encoding = "utf-8-sig", newline = "") as source,
-        converted_path.open("w", encoding = "utf-8", newline = "") as target,
+        partial_path.open(encoding = encoding, newline = "") as source,
+        converted_path.open("wb") as target,
     ):
         # Excel also accepts a delimiter directive before the header.
         if source.readline().rstrip("\r\n").lower() != "sep=;":
@@ -670,16 +696,17 @@ def _convert_semicolon_csv(partial_path, converted_path, max_bytes, max_label, d
         header = next(rows, None)
         if header is None:
             raise ValueError("Missing CSV header.")
-        writer = csv.writer(target, lineterminator = "\r\n")
+        out = _ByteCountingWriter(target)
+        writer = csv.writer(out, lineterminator = "\r\n")
         writer.writerow(header)
         for row in rows:
             missing = len(header) - len(row)
             if missing < 0:
                 raise ValueError("A row has more fields than the header.")
             writer.writerow(row + [""] * missing if missing else row)
-            if target.tell() > max_bytes:
+            if out.written > max_bytes:
                 raise _upload_too_large(max_label)
-        if target.tell() > max_bytes:
+        if out.written > max_bytes:
             raise _upload_too_large(max_label)
 
 

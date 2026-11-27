@@ -4463,6 +4463,7 @@ export const hi = {
       unsupportedFileType: "असमर्थित फ़ाइल प्रकार",
       uploadOneFileType: "एक {types} फ़ाइल अपलोड करें।",
       datasetUploaded: "डेटासेट अपलोड किया गया",
+      importSemicolonCsv: ".csv के लिए अर्धविराम को विभाजक के रूप में उपयोग करें",
       evalDatasetUploaded: "Eval डेटासेट अपलोड किया गया",
       uploadOneFileAtATime: "एक बार में एक फ़ाइल अपलोड करें",
       uploadSingleFileDescription:

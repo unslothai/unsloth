@@ -4418,6 +4418,7 @@ export const ja = {
       unsupportedFileType: "サポートされていないファイル形式です",
       uploadOneFileType: "{types} ファイルを1つアップロードしてください。",
       datasetUploaded: "データセットをアップロードしました",
+      importSemicolonCsv: ".csv の区切り文字にセミコロンを使用",
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",

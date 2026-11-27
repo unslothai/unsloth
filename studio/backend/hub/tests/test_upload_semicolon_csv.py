@@ -104,3 +104,33 @@ def test_semicolon_csv_keeps_long_fields_and_pads_short_rows(isolate_upload_dir)
     expected = b'instruction,output\r\n"' + long_field + b'",yes\r\nshort,\r\n'
     assert Path(response.stored_path).read_bytes() == expected
     assert csv.field_size_limit() >= 131_072
+
+
+def test_semicolon_csv_reads_excel_ansi_export(isolate_upload_dir):
+    source = "sep=;\r\nfrage;antwort\r\nGrüße, Welt?;Größe: 5 €\r\n".encode("cp1252")
+    response = asyncio.run(
+        datasets_route.upload_dataset(
+            UploadFile(BytesIO(source), filename = "excel.csv"),
+            native_path_lease = None,
+            current_subject = "test-user",
+            csv_delimiter = ";",
+        )
+    )
+    expected = 'frage,antwort\r\n"Grüße, Welt?",Größe: 5 €\r\n'.encode()
+    assert Path(response.stored_path).read_bytes() == expected
+
+
+def test_semicolon_csv_padding_cannot_exceed_upload_limit(isolate_upload_dir):
+    header = ";".join(f"c{i}" for i in range(20_000)).encode()
+    source = header + b"\r\n" + b"x\r\n" * 200
+    with pytest.raises(HTTPException, match = "upload too large") as exc:
+        asyncio.run(
+            datasets_route.upload_dataset(
+                UploadFile(BytesIO(source), filename = "excel.csv"),
+                native_path_lease = None,
+                current_subject = "test-user",
+                csv_delimiter = ";",
+            )
+        )
+    assert exc.value.status_code == 413
+    assert list(isolate_upload_dir.iterdir()) == []

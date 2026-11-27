@@ -4746,6 +4746,7 @@ export const fa = {
       unsupportedFileType: "نوع فایل پشتیبانی نمی‌شود",
       uploadOneFileType: "یک فایل {types} آپلود کنید.",
       datasetUploaded: "مجموعه‌داده آپلود شد",
+      importSemicolonCsv: "استفاده از نقطه‌ویرگول به‌عنوان جداکننده برای .csv",
       evalDatasetUploaded: "مجموعه‌دادهٔ ارزیابی آپلود شد",
       uploadOneFileAtATime: "هر بار فقط یک فایل آپلود کنید",
       uploadSingleFileDescription:

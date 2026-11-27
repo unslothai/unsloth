@@ -52,7 +52,7 @@ function SemicolonCsvOption({
         disabled={disabled}
         onCheckedChange={(value) => onChange(value === true)}
       />
-      {t("datasetImport.semicolonCsv")}
+      {t("studio.dataset.importSemicolonCsv")}
     </label>
   );
 }

@@ -4811,6 +4811,7 @@ export const nl = {
       unsupportedFileType: "Niet-ondersteund bestandstype",
       uploadOneFileType: "Upload één {types}-bestand.",
       datasetUploaded: "Dataset geüpload",
+      importSemicolonCsv: "Puntkomma als scheidingsteken gebruiken voor .csv",
       evalDatasetUploaded: "Evaluatiedataset geüpload",
       uploadOneFileAtATime: "Upload één bestand tegelijk",
       uploadSingleFileDescription:

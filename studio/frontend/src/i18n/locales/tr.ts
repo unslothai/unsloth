@@ -4759,6 +4759,7 @@ export const tr = {
       unsupportedFileType: "Desteklenmeyen dosya türü",
       uploadOneFileType: "Bir {types} dosyası yükleyin.",
       datasetUploaded: "Veri kümesi yüklendi",
+      importSemicolonCsv: ".csv için ayırıcı olarak noktalı virgül kullan",
       evalDatasetUploaded: "Değerlendirme veri kümesi yüklendi",
       uploadOneFileAtATime: "Tek seferde bir dosya yükleyin",
       uploadSingleFileDescription:

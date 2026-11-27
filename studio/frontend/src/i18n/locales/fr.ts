@@ -4516,6 +4516,7 @@ export const fr = {
       unsupportedFileType: "Type de fichier non pris en charge",
       uploadOneFileType: "Téléversez un fichier {types}.",
       datasetUploaded: "Jeu de données téléversé",
+      importSemicolonCsv: "Utiliser le point-virgule comme séparateur pour les .csv",
       evalDatasetUploaded: "Jeu de données d'évaluation téléversé",
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:

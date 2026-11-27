@@ -4534,6 +4534,7 @@ export const zhTW = {
       unsupportedFileType: "不支援的檔案類型",
       uploadOneFileType: "請上傳一個 {types} 檔案。",
       datasetUploaded: "已上傳資料集",
+      importSemicolonCsv: "對 .csv 使用分號作為分隔符號",
       evalDatasetUploaded: "已上傳評估資料集",
       uploadOneFileAtATime: "一次只能上傳一個檔案",
       uploadSingleFileDescription: "訓練資料集上傳僅接受單一檔案。",

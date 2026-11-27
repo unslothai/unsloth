@@ -4508,6 +4508,7 @@ export const de = {
       unsupportedFileType: "Nicht unterstützter Dateityp",
       uploadOneFileType: "Laden Sie eine {types}-Datei hoch.",
       datasetUploaded: "Datensatz hochgeladen",
+      importSemicolonCsv: "Semikolon als Trennzeichen für .csv verwenden",
       evalDatasetUploaded: "Eval-Datensatz hochgeladen",
       uploadOneFileAtATime: "Laden Sie jeweils eine Datei hoch",
       uploadSingleFileDescription:

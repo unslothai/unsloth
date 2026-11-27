@@ -2,9 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
-  datasetImport: {
-    semicolonCsv: "Use semicolon delimiter for .csv",
-  },
   turns: {
     label: "Turn {number}",
     bookmarkedLabel: "Turn {number}, bookmarked",
@@ -4470,6 +4467,7 @@ export const en = {
       unsupportedFileType: "Unsupported file type",
       uploadOneFileType: "Upload one {types} file.",
       datasetUploaded: "Dataset uploaded",
+      importSemicolonCsv: "Use semicolon delimiter for .csv",
       evalDatasetUploaded: "Eval dataset uploaded",
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
