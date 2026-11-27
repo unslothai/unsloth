@@ -30934,14 +30934,17 @@ def _fit_external_context(
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
+    unsummarised: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
-    replays a /compact epoch on a request that may not start one."""
+    replays a /compact epoch on a request that may not start one. ``unsummarised`` is ``messages``
+    before a summary replaced its oldest turns, so those are archived and recalled too."""
     from core.inference.context_window import (
         _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        evicted_messages,
         fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
@@ -31040,11 +31043,22 @@ def _fit_external_context(
         # The catalogue is chosen before this fit, so the turn that first evicts has no
         # search_conversation: recall inline, as the local plain path does, or a question about
         # an evicted attachment on that turn gets "I have no record of it".
+        archived_first = 0
+        if unsummarised and thread_id and evicted_messages(unsummarised, messages):
+            # The archive is capped oldest first: a summarised backlog would defer what this fit cut.
+            archived_first = _archive_and_recall(
+                fitted,
+                messages,
+                branch_messages = unsummarised,
+                thread_id = str(thread_id),
+                style = "inline",
+                recall_done = True,
+            )["counts"].get("archived_messages", 0)
         recall = _archive_and_recall(
             fitted,
-            messages,
+            unsummarised or messages,
             # The loop's own conversation filters, or tool results this turn evicted are unrecallable.
-            branch_messages = messages,
+            branch_messages = unsummarised or messages,
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
@@ -31060,6 +31074,10 @@ def _fit_external_context(
         )
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
+        if archived_first:
+            truncation["archived_messages"] = (
+                truncation.get("archived_messages", 0) + archived_first
+            )
     return fitted, truncation, max_tokens
 
 
@@ -31307,6 +31325,7 @@ async def _finish_external_compaction(
             branch = branch,
             tool_loop = tool_loop,
             keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
+            unsummarised = plan.messages,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -31318,17 +31337,6 @@ async def _finish_external_compaction(
                 truncation["boundary_messages"] = plan.covered + int(
                     evicted.get("boundary_messages") or evicted["dropped_messages"]
                 )
-                # The fit archived only what it cut from the summarised prompt.
-                archived = await asyncio.to_thread(
-                    _archive_and_recall,
-                    current,
-                    plan.messages,
-                    branch_messages = plan.messages,
-                    thread_id = thread_id,
-                    style = "inline",
-                    recall_done = True,
-                )
-                truncation.update(archived["counts"])
         elif evicted:
             # Nothing could be dropped: the prompt is still too long, and any summary still stands.
             refusal = evicted
