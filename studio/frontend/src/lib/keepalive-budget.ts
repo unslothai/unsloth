@@ -4,7 +4,6 @@
 // Fetch caps total in-flight keepalive bodies at 64 KiB; larger bodies go without keepalive.
 const KEEPALIVE_BODY_BUDGET_BYTES = 60 * 1024;
 
-// `copies` bodies sent at once share the budget.
 export function isUnderKeepaliveBudget(body: string, copies = 1): boolean {
   const budget = KEEPALIVE_BODY_BUDGET_BYTES / copies;
   // JSON is at least one byte per UTF-16 unit, so short bodies skip encoding.

@@ -137,7 +137,6 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
               baseUpdatedAt,
               updatedAt,
               keepalive: input.keepalive,
-              // The first copy keeps keepalive alone; the second only when both fit.
               keepaliveCopies: i + 1,
             }),
           ),
