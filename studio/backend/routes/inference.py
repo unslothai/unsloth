@@ -19372,8 +19372,7 @@ async def load_model_gated(
                                         await asyncio.to_thread(current_policy) == "fit"
                                         and not _unified_metal_host()
                                     ):
-                                        # The first restore tries the same layout that already fit.
-                                        # Actual memory pressure can still require a normal Fit load.
+                                        # Retry the layout that already fit; real memory pressure still falls back to Fit.
                                         impl_kwargs = {**impl_kwargs, "restoring_chat_swap": False}
                                         continue
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)

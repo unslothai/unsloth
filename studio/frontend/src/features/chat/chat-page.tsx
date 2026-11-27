@@ -3457,8 +3457,7 @@ export function ChatPage({
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
   }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
-  // The Images pill can use the image or video model loaded in Unsloth. Re-read when Chat becomes active,
-  // when any load settles, when either is ejected, and after an image tool restores chat.
+  // Re-read media readiness on activation, load settle, eject, and after an image tool restores chat.
   useEffect(() => {
     let disposed = false;
     let controller: AbortController | null = null;
