@@ -15716,6 +15716,7 @@ class VideoBackend:
                         guidance = guidance,
                         guidance_2 = guidance_2,
                         flow_shift = shift,
+                        audio_flow_shift = audio_shift,
                     )
                 else:
                     logger.info("video.batch: renders alone (%s)", declined)
@@ -16194,7 +16195,7 @@ class VideoBackend:
                     "guidance": merged["guidance"],
                     "guidance_2": rider.gen_kwargs.get("guidance_2", gen_kwargs.get("guidance_2")),
                     "seed": merged["seed"],
-                    "has_audio": False,
+                    "has_audio": bool(merged.get("has_audio", False)),
                     "conditioning": merged["conditioning"],
                     "flow_shift": merged.get("flow_shift"),
                     "audio_flow_shift": merged.get("audio_flow_shift"),
@@ -17836,19 +17837,29 @@ class VideoBackend:
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
                 rider_results: list = []
+                batch_audio = getattr(output, "audio", None) if riders and fam.has_audio else None
                 for index, rider in enumerate(riders, start = 1):
                     if rider.cancel.is_set():
                         rider_results.append(None)
                         continue
-                    # Batch families have no soundtrack (video_batch.BATCH_FAMILIES).
+                    # LTX-2.5's soundtrack is per row too (its audio latents ride the batch); Wan has none.
+                    rider_audio = (
+                        batch_audio[index]
+                        if batch_audio is not None and len(batch_audio) > index
+                        else None
+                    )
                     rider_results.append(
                         {
                             "mp4_bytes": self._encode_mp4(
-                                output.frames[index], out_fps, None, None
+                                output.frames[index],
+                                out_fps,
+                                rider_audio,
+                                pipe if rider_audio is not None else None,
                             ),
                             "seed": int(rider.seed),
                             "negative_prompt": rider.negative_prompt,
                             "num_frames": len(output.frames[index]),
+                            "has_audio": rider_audio is not None,
                         }
                     )
                 # A clip not streamed during its decode is encoded on the CPU after the lock is released (NVENC
