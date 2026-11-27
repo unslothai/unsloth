@@ -20,6 +20,8 @@ export type TranslatePromptOptions = {
   tone: TranslateTone;
   custom?: string | null;
   keepNames?: boolean;
+  /** The picked source language's code; null for automatic. */
+  sourceCode?: string | null;
   names?: readonly NameSpelling[];
 };
 

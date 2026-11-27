@@ -275,6 +275,7 @@ export function translatePromptOptions(
     tone: prefs.tone,
     custom: customPromptOf(prefs),
     keepNames: prefs.keepNames,
+    sourceCode: prefs.from === AUTO_SOURCE ? null : prefs.from,
   };
 }
 

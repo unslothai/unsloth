@@ -528,7 +528,9 @@ export async function runTranslation(
     const parts = chunks.filter((chunk) => chunk.text).length;
     const keepNames =
       options.prompt.keepNames === true &&
-      namesAreCapitalised(detectTranslateLanguage(text));
+      namesAreCapitalised(
+        options.prompt.sourceCode ?? detectTranslateLanguage(text),
+      );
     const spellings = new Map<string, string | null>();
     const annotated = new Set<string>();
     let part = 0;

@@ -174,7 +174,11 @@ function loadRunner(sent: string[]) {
   );
 }
 
-async function run(source: string, keepNames: boolean) {
+async function run(
+  source: string,
+  keepNames: boolean,
+  sourceCode: string | null = null,
+) {
   const sent: string[] = [];
   const prompt = {
     sourceName: null,
@@ -182,6 +186,7 @@ async function run(source: string, keepNames: boolean) {
     mode: "automatic" as const,
     tone: "default" as const,
     keepNames,
+    sourceCode,
   };
   const { output } = await loadRunner(sent).runTranslation({
     text: source,
@@ -237,4 +242,10 @@ test("on, German source: capitals mark nouns, so nothing extra is asked", async 
   const { sent } = await run(german, true);
   assert.equal(sent.length, 1);
   assert.ok(!sent[0].startsWith("Reference"));
+});
+
+test("on, German picked: a sentence too short to detect still asks nothing extra", async () => {
+  assert.equal(detect.detectTranslateLanguage("Ich brauche Hilfe."), null);
+  const { sent } = await run("Ich brauche Hilfe.", true, "de");
+  assert.equal(sent.length, 1);
 });
