@@ -35,13 +35,9 @@ LEVER_TILE_BATCH = "tile_batch"
 LEVER_CANVAS = "canvas"
 LEVER_INT8_DECODER = "int8_decoder"
 LEVER_FP16_ACCUM = "fp16_accum"
-# ROCm: any T = 1 call of an encoder causal Conv3d (a single-frame encode, or a conv that sees one frame after
-# temporal downsampling) runs as the Conv2d of its last temporal tap. Mathematically exact, not bitwise (bf16 within
-# one ulp): the other taps only ever see the prepended zero frames. MIOpen's Conv3d is the slow part of a gfx1151
-# reference-image encode. Like the CUDA fused encoder it stays off under speed_mode="off".
+# ROCm: T = 1 causal Conv3d runs as Conv2d of its last tap (other taps see only zero pad; exact, not bitwise).
 LEVER_ROCM_SINGLE_FRAME_ENCODER = "rocm_single_frame_encoder"
 H3_ROCM_SINGLE_FRAME_ENV = "UNSLOTH_H3_ROCM_SINGLE_FRAME_ENCODER"
-# per-VAE {lever: calls that took it}, so a run can prove a runtime lever engaged (not just installed)
 H3_VAE_LEVER_CALLS_ATTR = "_unsloth_h3_vae_lever_calls"
 
 _TILE_BATCH_MAX = 4
@@ -1523,15 +1519,11 @@ def _triton_jit_toolchain_ok() -> bool:
 
 
 def h3_vae_lever_calls(vae: Any) -> dict[str, int]:
-    """Calls per runtime lever that took the fast path on ``vae`` (empty when none engaged)."""
     return dict(getattr(vae, H3_VAE_LEVER_CALLS_ATTR, None) or {})
 
 
 def _single_frame_conv_forward(conv: Any, calls: Optional[dict] = None) -> Any:
-    """``conv.forward`` with any T = 1 call lowered to a Conv2d over the last temporal tap; other shapes run stock.
-
-    Each lowered call bumps ``conv._unsloth_rocm_single_frame_calls`` and ``calls[LEVER_ROCM_SINGLE_FRAME_ENCODER]``.
-    """
+    """``conv.forward`` with T = 1 calls lowered to a Conv2d over the last temporal tap."""
     import torch.nn.functional as F
 
     stock = conv.forward
@@ -1572,7 +1564,7 @@ def _single_frame_conv_forward(conv: Any, calls: Optional[dict] = None) -> Any:
 
 
 def _install_rocm_single_frame_encoder(vae: Any) -> int:
-    """Lower the encoder's causal convs for single-frame inputs; returns how many were wrapped (0 = not engaged)."""
+    """Returns how many encoder convs were wrapped."""
     if _env(H3_ROCM_SINGLE_FRAME_ENV) in _FALSE:
         return 0
     try:
@@ -1661,8 +1653,7 @@ def apply_h3_vae_speedups(
     planned = plan_h3_vae_levers(speed_mode, workflow = workflow, consumer_gpu = consumer_gpu)
     engaged: list[str] = []
     if not planned or not cuda_fast_path_available(vae):
-        # Not bitwise (bf16 within one ulp), so like the CUDA fused encoder it stays off when the plan is empty
-        # (speed_mode="off" or the H3 VAE fast path disabled); any other tier engages it.
+        # not bitwise, so off when the plan is empty (speed_mode="off")
         try:
             if planned and _install_rocm_single_frame_encoder(vae) > 0:
                 engaged.append(LEVER_ROCM_SINGLE_FRAME_ENCODER)

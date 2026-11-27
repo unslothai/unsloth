@@ -15,8 +15,6 @@ CausalConv = H3.MiniMaxH3VideoCausalConv3d
 
 
 class AutoencoderKLMiniMaxH3(torch.nn.Module):
-    """Stand-in carrying the class name the lever keys on and an encoder of causal convs."""
-
     def __init__(self, convs):
         super().__init__()
         self.encoder = torch.nn.Sequential(*convs)
@@ -29,7 +27,7 @@ def _convs():
         CausalConv(8, 8, (3, 3, 3), stride = (1, 2, 2), spatial_padding = 1, temporal_padding = 2),
         CausalConv(8, 8, (2, 1, 1), stride = (2, 1, 1), spatial_padding = 0, temporal_padding = 1),
         CausalConv(8, 4, (1, 1, 1), stride = 1, spatial_padding = 0, temporal_padding = 0),
-        CausalConv(4, 4, (1, 3, 3), stride = 1, spatial_padding = 1, temporal_padding = 0),  # kt 1: stock
+        CausalConv(4, 4, (1, 3, 3), stride = 1, spatial_padding = 1, temporal_padding = 0),
     ]
 
 
@@ -40,7 +38,7 @@ def rocm(monkeypatch):
     monkeypatch.setattr(H, "is_rocm_torch", lambda _torch: True)
 
 
-_LOWERED = (True, True, True, False, False)  # kt > 1 causal convs lower; kt 1 runs stock
+_LOWERED = (True, True, True, False, False)
 
 
 @pytest.mark.parametrize("idx", range(5))
@@ -68,9 +66,9 @@ def test_lowered_conv_matches_stock_in_float64(idx, monkeypatch):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        dict(spatial_padding = 1, temporal_padding = 0),  # non-causal
-        dict(spatial_padding = 1, temporal_padding = 1),  # partial causal pad
-        dict(spatial_padding = 1, temporal_padding = 2, dilation = (2, 1, 1)),  # temporal dilation
+        dict(spatial_padding = 1, temporal_padding = 0),
+        dict(spatial_padding = 1, temporal_padding = 1),
+        dict(spatial_padding = 1, temporal_padding = 2, dilation = (2, 1, 1)),
     ],
 )
 def test_non_causal_or_dilated_conv_runs_stock(kwargs):
@@ -108,16 +106,14 @@ def test_install_wraps_every_encoder_conv_on_rocm(rocm):
     assert H._install_rocm_single_frame_encoder(vae) == 5
     assert H.h3_vae_lever_calls(vae) == {H.LEVER_ROCM_SINGLE_FRAME_ENCODER: 0}
     torch.testing.assert_close(vae.encoder(x), want, rtol = 1e-12, atol = 1e-12)
-    # the three kt > 1 convs took the lowering, the two kt 1 convs ran stock
     assert H.h3_vae_lever_calls(vae) == {H.LEVER_ROCM_SINGLE_FRAME_ENCODER: 3}
     assert [c._unsloth_rocm_single_frame_calls for c in vae.encoder] == [1, 1, 1, 0, 0]
     vae.encoder(torch.randn(1, 3, 4, 16, 16, dtype = torch.float64))
-    # T 4 -> 2 after the temporal stride 2 conv: no conv saw T = 1, nothing more lowered
     assert H.h3_vae_lever_calls(vae) == {H.LEVER_ROCM_SINGLE_FRAME_ENCODER: 3}
     vae.encoder(torch.randn(1, 3, 2, 16, 16, dtype = torch.float64))
     # T 2 -> 1 after the temporal stride 2 conv: the later convs see T = 1, but are kt 1 and stay stock
     assert H.h3_vae_lever_calls(vae) == {H.LEVER_ROCM_SINGLE_FRAME_ENCODER: 3}
-    assert H._install_rocm_single_frame_encoder(vae) == 0  # already wrapped
+    assert H._install_rocm_single_frame_encoder(vae) == 0
 
 
 def test_t1_conv_inside_a_multi_frame_encode_takes_the_lowering(rocm):
