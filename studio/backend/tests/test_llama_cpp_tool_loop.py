@@ -3774,7 +3774,7 @@ def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatc
     must still search the archive for what the user asked (#16187)."""
     from core.rag import conversation_archive
 
-    rounds = 3
+    rounds = 4
     payloads: list[dict] = []
     streams = [
         [
@@ -5666,8 +5666,7 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     )
 
     assert len(calls) == 2, calls
-    assert len(payloads) == 4, len(payloads)
-    assert "tools" not in payloads[3]
+    assert len(payloads) == 3, len(payloads)
     # The final pass may not call tools (it keeps the schemas for the cache). Its controller feedback stays in
     # the latest tool result rather than opening a newer user turn.
     assert payloads[2]["tool_choice"] == "none", payloads[2].get("tool_choice")

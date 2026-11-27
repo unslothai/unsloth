@@ -8,7 +8,6 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Settings = {
   maxChars: number;
-  automatic: boolean;
   defaultChars: number;
   minChars: number;
   maxAllowedChars: number;
@@ -17,7 +16,7 @@ type Settings = {
 
 type Api = {
   loadToolResultLimit: (fallback: string) => Promise<Settings>;
-  updateToolResultLimit: (maxChars: number | null, fallback: string) => Promise<Settings>;
+  updateToolResultLimit: (maxChars: number, fallback: string) => Promise<Settings>;
   toolResultLimitChoices: (settings: Settings) => number[];
 };
 
@@ -73,7 +72,6 @@ test("loads the limit from the settings route", async () => {
     minChars: 2000,
     maxAllowedChars: 200000,
     lockedByEnvironment: false,
-    automatic: false,
   });
 });
 
@@ -103,7 +101,6 @@ test("choices keep the presets in range and add a value that is not one", () => 
     minChars: 2000,
     maxAllowedChars: 200000,
     lockedByEnvironment: false,
-    automatic: false,
   };
   assert.deepEqual(api.toolResultLimitChoices(base), [
     4000, 8000, 16000, 32000, 64000, 128000, 200000,
@@ -112,12 +109,4 @@ test("choices keep the presets in range and add a value that is not one", () => 
     api.toolResultLimitChoices({ ...base, maxChars: 50000, lockedByEnvironment: true }),
     [4000, 8000, 16000, 32000, 50000, 64000, 128000, 200000],
   );
-});
-
-
-test("automatic can be loaded and restored explicitly", async () => {
-  const { api, calls } = loadApi(() => json({ ...API_BODY, automatic: true }));
-  assert.equal((await api.loadToolResultLimit("fallback")).automatic, true);
-  assert.equal((await api.updateToolResultLimit(null, "fallback")).automatic, true);
-  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { max_chars: null });
 });

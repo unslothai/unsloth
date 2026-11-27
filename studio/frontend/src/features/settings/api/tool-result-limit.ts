@@ -15,7 +15,6 @@ export const TOOL_RESULT_LIMIT_CHOICES = [
 
 export type ToolResultLimitSettings = {
   maxChars: number;
-  automatic: boolean;
   defaultChars: number;
   minChars: number;
   maxAllowedChars: number;
@@ -25,7 +24,6 @@ export type ToolResultLimitSettings = {
 type ApiToolResultLimitSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   max_chars: number;
-  automatic?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   default_chars?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -41,7 +39,6 @@ export function toolResultLimitFromApi(
 ): ToolResultLimitSettings {
   return {
     maxChars: settings.max_chars,
-    automatic: settings.automatic ?? false,
     defaultChars: settings.default_chars ?? DEFAULT_TOOL_RESULT_MAX_CHARS,
     minChars: settings.min_chars ?? 2000,
     maxAllowedChars: settings.max_allowed_chars ?? 200000,
@@ -72,7 +69,7 @@ export async function loadToolResultLimit(
 }
 
 export async function updateToolResultLimit(
-  maxChars: number | null,
+  maxChars: number,
   fallbackMessage: string,
 ): Promise<ToolResultLimitSettings> {
   const res = await authFetch(ROUTE, {

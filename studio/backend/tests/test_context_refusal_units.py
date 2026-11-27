@@ -148,19 +148,15 @@ def test_a_respawn_refit_that_refuses_is_not_lost_when_the_retry_is_refused():
 
 
 def test_the_respawn_refits_record_the_refusal_rather_than_only_forwarding_it():
-    """Each refit must record refusals before transport can raise."""
-    import ast
+    """Source pin: refit callbacks sit in generate_chat_completion_with_tools, unreachable by behaviour."""
     import inspect
-    import textwrap
 
     from core.inference.llama_cpp import LlamaCppBackend
 
-    body = textwrap.dedent(inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools))
-    functions = {
-        node.name: node for node in ast.walk(ast.parse(body)) if isinstance(node, ast.FunctionDef)
-    }
+    body = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
     for callback in ("_refit_iteration_after_respawn", "_refit_final_after_respawn"):
-        chunk = ast.get_source_segment(body, functions[callback])
+        start = body.index(f"def {callback}(")
+        chunk = body[start : start + 4000]
         assert (
             "context_refusal.record_fit(truncation)" in chunk
         ), f"{callback} must record the fit itself; forwarding is gated on `fits`"

@@ -2286,14 +2286,6 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
-def _recovery_notice_tail(messages: list[dict], notice: dict, status: str) -> list[dict]:
-    """Keep user turns alternating without altering the tool exchange or user content."""
-    if messages and messages[-1].get("role") in ("user", "tool"):
-        # Strict templates can skip tool exchanges when checking role alternation.
-        return [{"role": "assistant", "content": status}, notice]
-    return [notice]
-
-
 # A readable local name for the shared `context_window` policy, not a second implementation.
 _retrieval_budget = retrieval_budget
 
@@ -41749,8 +41741,6 @@ class LlamaCppBackend:
             yield from _initial_search_events()
 
         _accumulated_completion_tokens = 0
-        # Unknown hidden usage consumes allowance without inventing measured token counts.
-        _unreported_evidence_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
         # GGUF buffers reasoning; emit server-side timing before answer text.
@@ -41846,10 +41836,8 @@ class LlamaCppBackend:
 
         def _answer_is_call_only(answer: str) -> bool:
             """Only calls, judged as the display strips them: markup and a leading Llama 3 bare-JSON call."""
-            if not auto_heal_tool_calls:
+            if not auto_heal_tool_calls or not answer.strip():
                 return False
-            if not answer.strip():
-                return _final_structured_call
             # The strip also drops non-call text (a raw [THINK] block), so require a call outside the reasoning.
             lead = _LEAD_RAW_THINK_RE.sub("", answer[_lead_think_span(answer) :], count = 1).lstrip()
             gate = _enabled_names_gate
@@ -42014,8 +42002,6 @@ class LlamaCppBackend:
         _forced_tool_call_pending = False
         # Turns cut off mid-thought: continue in a fresh turn with thinking off, the one setting that guarantees visible output; compaction cannot help.
         _length_continuations = 0
-        # Separate from successful tool turns: failed generations must be bounded too.
-        _truncated_tool_retries = 0
         _thought_before_retries = ""
         _effective_enable_thinking = enable_thinking
         # An explicit effort wins over enable_thinking, so clear it too.
@@ -42122,124 +42108,7 @@ class LlamaCppBackend:
             window = self._effective_context_length or 0
             if window and max_tokens >= window:
                 return None
-            return max(
-                0,
-                max_tokens
-                - _accumulated_completion_tokens
-                - _unreported_evidence_tokens
-                - spent_this_attempt,
-            )
-
-        from core.inference.working_evidence import WorkingEvidence
-
-        _working_evidence = WorkingEvidence(_request_branch)
-        _working_evidence_seconds = 0.0
-
-        def _archive_current_context(
-            current,
-            before,
-            *,
-            handover_budget = None,
-            pending_probe = None,
-            **archive_kwargs,
-        ):
-            nonlocal _working_evidence_seconds
-            nonlocal _accumulated_completion_tokens
-            nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
-            result = _archive_and_recall(current, before, **archive_kwargs)
-            if (
-                context_overflow != "truncate_oldest"
-                or not self._effective_context_length
-                or _working_evidence_seconds >= 60.0
-                or (cancel_event and cancel_event.is_set())
-            ):
-                return result
-            expired = threading.Event()
-            combined = _CombinedCancelEvent(expired, cancel_event) if cancel_event else expired
-
-            def generate_record(record_messages, limit):
-                nonlocal _working_evidence_seconds
-                nonlocal _accumulated_completion_tokens
-                nonlocal _accumulated_predicted_ms, _accumulated_predicted_n
-                nonlocal _unreported_evidence_tokens
-                usage_reported = False
-                started = time.monotonic()
-                timer = threading.Timer(max(0.01, 60.0 - _working_evidence_seconds), expired.set)
-                timer.daemon = True
-                timer.start()
-                try:
-                    report = _compaction_reporter(perf_callback)
-                    if report is not None:
-                        report()
-                    for event in self.generate_chat_completion(
-                        record_messages,
-                        temperature = 0,
-                        seed = seed,
-                        max_tokens = limit,
-                        enable_thinking = False,
-                        context_overflow = None,
-                        cancel_event = combined,
-                        _allow_respawn_retry = False,
-                    ):
-                        if isinstance(event, dict) and event.get("type") == "metadata":
-                            usage = (
-                                _backfill_usage_from_timings(
-                                    event.get("usage"), event.get("timings")
-                                )
-                                or {}
-                            )
-                            usage_reported = (
-                                usage_reported or usage.get("completion_tokens") is not None
-                            )
-                            _accumulated_completion_tokens += int(
-                                usage.get("completion_tokens") or 0
-                            )
-                            timing = event.get("timings") or {}
-                            _accumulated_predicted_ms += float(timing.get("predicted_ms") or 0)
-                            _accumulated_predicted_n += int(timing.get("predicted_n") or 0)
-                        yield event
-                finally:
-                    timer.cancel()
-                    if not usage_reported:
-                        _unreported_evidence_tokens += limit
-                    _working_evidence_seconds += time.monotonic() - started
-
-            count_prompt = archive_kwargs.get("count_tokens") or (
-                lambda fitted: self.count_chat_tokens(
-                    neutralize_control_markup_in_messages(
-                        self._countable_messages(fitted), _markup_cache, self.markup_profile
-                    ),
-                    None,
-                    _last_sent_tools or tools,
-                    strict = True,
-                    chat_template_kwargs = _reasoning_kw,
-                )
-            )
-            updated, anchor = _working_evidence.preserve(
-                result["conversation"],
-                before,
-                context_length = self._effective_context_length,
-                prompt_budget = handover_budget
-                if handover_budget is not None
-                else prompt_budget(self._effective_context_length, max_tokens),
-                pending_probe = pending_probe,
-                count_summary = lambda record: self.count_chat_tokens(
-                    neutralize_control_markup_in_messages(record, None, self.markup_profile),
-                    strict = True,
-                    chat_template_kwargs = self._request_reasoning_kwargs(False, None, None),
-                ),
-                count_prompt = count_prompt,
-                generate = generate_record,
-                cancelled = combined.is_set,
-                completion_budget = _loop_budget_left(0),
-            )
-            if anchor is not None:
-                current[:] = updated
-                result["conversation"] = current
-                result["anchored"] = [*result["anchored"], anchor]
-                result["counts"] = {**result["counts"], "working_evidence": True}
-                _rolling_anchor_ids.add(id(anchor))
-            return result
+            return max(0, max_tokens - _accumulated_completion_tokens - spent_this_attempt)
 
         # A forced function applies until the model produces it; execution or denial resolves it.
         _forced_choice_resolved = _auto_satisfies_forced_choice
@@ -42392,27 +42261,9 @@ class LlamaCppBackend:
 
             _reasoning_kw = _round_reasoning_kw()
             # On a continuation only the remainder of the caller's cap; read before the payload.
-            _iteration_is_continuation = _continuation_max_tokens is not None
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
-            conversation, _evidence_anchor = _working_evidence.refresh(
-                conversation,
-                count_prompt = lambda fitted: self.count_chat_tokens(
-                    neutralize_control_markup_in_messages(
-                        self._countable_messages(fitted), _markup_cache, self.markup_profile
-                    ),
-                    None,
-                    safe_tools,
-                    strict = True,
-                    chat_template_kwargs = _reasoning_kw,
-                ),
-                prompt_budget = prompt_budget(
-                    self._effective_context_length or 0, _iteration_max_tokens
-                ),
-            )
-            if _evidence_anchor is not None:
-                _rolling_anchor_ids.add(id(_evidence_anchor))
             _preflight_context_length = None
             _preflight_succeeded = False
             if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -42558,12 +42409,9 @@ class LlamaCppBackend:
                             truncation.get("prompt_tokens_after") or 0
                         ) - sum(self._estimate_countable_message(m) for m in conversation)
                     if truncation:
-                        _recalled = _archive_current_context(
+                        _recalled = _archive_and_recall(
                             conversation,
                             _before_fit,
-                            handover_budget = prompt_budget(
-                                self._effective_context_length, _iteration_max_tokens
-                            ),
                             branch_messages = _extend_live_branch(_before_fit),
                             query_messages = _request_branch,
                             thread_id = thread_id,
@@ -42690,13 +42538,7 @@ class LlamaCppBackend:
             )
             # A continuation spends the caller's output budget once, not per attempt.
             if _continuation_max_tokens is not None:
-                # Preflight evidence generation may have spent more of the caller's cap.
-                _remaining_cap = _loop_budget_left(0)
-                payload["max_tokens"] = (
-                    min(_continuation_max_tokens, _remaining_cap)
-                    if _remaining_cap is not None
-                    else _continuation_max_tokens
-                )
+                payload["max_tokens"] = _continuation_max_tokens
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
@@ -42760,12 +42602,9 @@ class LlamaCppBackend:
                     if truncation:
                         # Cards with a first tool_args event; later fragments stream so big payloads don't look frozen.
                         truncation.update(
-                            _archive_current_context(
+                            _archive_and_recall(
                                 conversation,
                                 _before_respawn_fit,
-                                handover_budget = prompt_budget(
-                                    self._effective_context_length, _iteration_max_tokens
-                                ),
                                 thread_id = thread_id,
                                 style = "inline",
                                 recall_done = True,
@@ -42774,10 +42613,6 @@ class LlamaCppBackend:
                                 background = True,
                             )["counts"]
                         )
-                    if _iteration_is_continuation:
-                        _remaining_cap = _loop_budget_left(0)
-                        if _remaining_cap is not None:
-                            payload["max_tokens"] = min(payload["max_tokens"], _remaining_cap)
                     payload["messages"] = neutralize_control_markup_in_messages(
                         conversation, _markup_cache, self.markup_profile
                     )
@@ -44005,52 +43840,6 @@ class LlamaCppBackend:
                                 "result": TRUNCATED_TOOL_TURN_MESSAGE,
                                 "provenance": provisional_tool_provenance(_pname),
                             }
-                    # A context-full generation can be retried from the intact prompt.
-                    # Discard the entire cut turn, including complete siblings: a partial
-                    # edit must never be healed into an executable replacement.
-                    _cut_usage = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                    _cut_spent = int(_cut_usage.get("completion_tokens") or 0)
-                    _cut_window = self._effective_context_length or 0
-                    _cut_cap = _loop_budget_left(_cut_spent or int(payload.get("max_tokens") or 0))
-                    if (
-                        _iter_finish_reason == "length"
-                        and _cut_window
-                        and int(_cut_usage.get("prompt_tokens") or 0) + _cut_spent >= _cut_window
-                        and _cut_cap != 0
-                        and _truncated_tool_retries < 2
-                    ):
-                        _retry_note = {
-                            "role": "user",
-                            "content": (
-                                "Your last tool-call generation filled the context window "
-                                "before it finished. NONE of that turn's calls were executed. "
-                                "Retry with one short, complete tool call. Read a smaller page "
-                                "or use concise code to extract the needed fields. For a large "
-                                "file, create a small part and append subsequent parts in "
-                                "separate calls; do not repeat a whole-file rewrite. "
-                                "Keep each call's arguments brief."
-                            ),
-                        }
-                        _retry_messages = list(conversation) + _recovery_notice_tail(
-                            conversation, _retry_note, "The tool-call generation was interrupted."
-                        )
-                        if _loop_continuation_fits(_retry_messages, safe_tools, _reasoning_kw):
-                            conversation[:] = _retry_messages
-                            continue_final_message = False
-                            _truncated_tool_retries += 1
-                            _accumulated_completion_tokens += _cut_spent
-                            _cut_timing = _iter_timings or {}
-                            _accumulated_predicted_ms += _cut_timing.get("predicted_ms", 0)
-                            _accumulated_predicted_n += _cut_timing.get("predicted_n", 0)
-                            if _cut_cap is not None:
-                                _continuation_max_tokens = _cut_cap
-                            _continuation_credits += 1
-                            yield {"type": "status", "text": ""}
-                            yield {
-                                "type": "status",
-                                "text": "Retrying with a smaller tool call",
-                            }
-                            continue
                     # Empty status resets the route cursor; send only text not already streamed.
                     display = _strip_tool_markup(cumulative_display, final = True, force = True)
                     notice = display[len(_last_emitted) :] + ("\n\n" if display else "")
@@ -44492,14 +44281,9 @@ class LlamaCppBackend:
                                 and _pending_fitted[-1] is _pending_probe
                             ):
                                 conversation[:] = _pending_fitted[:-1]
-                                _archived = _archive_current_context(
+                                _archived = _archive_and_recall(
                                     conversation,
                                     _pending_before,
-                                    pending_probe = _pending_probe,
-                                    handover_budget = tool_result_budget(
-                                        self._effective_context_length, _iteration_max_tokens, 0
-                                    )
-                                    - _result_reserve,
                                     thread_id = thread_id,
                                     branch_messages = _extend_live_branch(_pending_before),
                                     query_messages = _request_branch,
@@ -45197,7 +44981,7 @@ class LlamaCppBackend:
                             + min(2048, self._effective_context_length // 4),
                             reply_returns = True,
                         )
-                        _after_tool_recall = _archive_current_context(
+                        _after_tool_recall = _archive_and_recall(
                             conversation,
                             conversation,
                             thread_id = thread_id,
@@ -45443,21 +45227,6 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        conversation, _evidence_anchor = _working_evidence.refresh(
-            conversation,
-            count_prompt = lambda fitted: self.count_chat_tokens(
-                neutralize_control_markup_in_messages(
-                    self._countable_messages(fitted), None, self.markup_profile
-                ),
-                None,
-                _final_tools,
-                strict = True,
-                chat_template_kwargs = _reasoning_kw,
-            ),
-            prompt_budget = prompt_budget(self._effective_context_length or 0, _final_max_tokens),
-        )
-        if _evidence_anchor is not None:
-            _rolling_anchor_ids.add(id(_evidence_anchor))
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
         if context_overflow == "truncate_oldest" and self._effective_context_length:
@@ -45509,7 +45278,7 @@ class LlamaCppBackend:
                 )
                 _sticky_boundary_applied = True
                 if truncation:
-                    _recalled = _archive_current_context(
+                    _recalled = _archive_and_recall(
                         conversation,
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
@@ -45638,17 +45407,6 @@ class LlamaCppBackend:
                 _refit_tail = _new
                 _refit_tail_merged = True
 
-        def _final_refit_messages(messages):
-            rebuilt = list(
-                neutralize_control_markup_in_messages(messages, None, self.markup_profile)
-            )
-            if _refit_tail:
-                if _refit_tail_merged and trailing_assistant_text(rebuilt) is not None:
-                    rebuilt[-1:] = _refit_tail
-                else:
-                    rebuilt.extend(_refit_tail)
-            return rebuilt
-
         def _refit_final_after_respawn() -> None:
             nonlocal conversation
             _before_respawn_fit = conversation
@@ -45693,28 +45451,9 @@ class LlamaCppBackend:
                 if truncation:
                     # Archive only; see the iteration respawn refit above.
                     truncation.update(
-                        _archive_current_context(
+                        _archive_and_recall(
                             conversation,
                             _before_respawn_fit,
-                            # Match continuation admission, including the restored partial answer.
-                            handover_budget = (
-                                self._effective_context_length
-                                - _reply_floor(self._effective_context_length)
-                                if _refit_tail
-                                else prompt_budget(
-                                    self._effective_context_length, stream_payload["max_tokens"]
-                                )
-                            ),
-                            count_tokens = lambda fitted: self.count_chat_tokens(
-                                self._countable_messages(_final_refit_messages(fitted)),
-                                None,
-                                _final_tools,
-                                strict = True,
-                                chat_template_kwargs = stream_payload.get("chat_template_kwargs"),
-                                continue_final_message = bool(
-                                    stream_payload.get("continue_final_message")
-                                ),
-                            ),
                             thread_id = thread_id,
                             style = "inline",
                             recall_done = True,
@@ -45723,17 +45462,20 @@ class LlamaCppBackend:
                             background = True,
                         )["counts"]
                     )
-                if _final_call_retried or _final_length_continuations:
-                    _remaining_cap = _loop_budget_left(0)
-                    if _remaining_cap is not None:
-                        stream_payload["max_tokens"] = min(
-                            stream_payload["max_tokens"], _remaining_cap
-                        )
                 # Recorded, not only forwarded, for the same reason as the iteration refit above.
                 from core.inference import context_refusal  # noqa: PLC0415
 
                 context_refusal.record_fit(truncation)
-                _refit_messages = _final_refit_messages(conversation)
+                # Copy because neutralization may return `conversation` itself.
+                _refit_messages = list(
+                    neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
+                )
+                if _refit_tail:
+                    # A merged tail replaces the trailing assistant prefill.
+                    if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
+                        _refit_messages[-1:] = _refit_tail
+                    else:
+                        _refit_messages.extend(_refit_tail)
                 stream_payload["messages"] = _refit_messages
                 if _refit_tail:
                     # Recheck the restored tail against the replacement window.
@@ -45788,7 +45530,6 @@ class LlamaCppBackend:
 
         # A caller cap yields only its remainder, never a fresh one, so continuations cannot exceed the limit; None when unset or the whole window.
         _final_length_continuations = 0
-        _final_structured_call = False
         _continue_final = False
         _final_replayed_chars = 0
         _final_call_retried = False
@@ -45816,7 +45557,7 @@ class LlamaCppBackend:
             _this_attempt = (
                 _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
             ).get("completion_tokens", 0) or int(stream_payload.get("max_tokens") or 0)
-            return _loop_budget_left(_this_attempt)
+            return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
 
         def _continuation_would_be_served(
             candidate_messages,
@@ -45936,9 +45677,6 @@ class LlamaCppBackend:
                                     _fr = choices[0].get("finish_reason")
                                     if _fr:
                                         _metadata_finish_reason = _fr
-
-                                    if delta.get("tool_calls"):
-                                        _final_structured_call = True
 
                                     reasoning = delta.get("reasoning_content", "")
                                     if reasoning:
@@ -46312,13 +46050,10 @@ class LlamaCppBackend:
                         _prov_entry = _lead_wrap = _final_reasoning_started_at = None
                         _final_reasoning_summary_emitted = False
                         _final_answer_stripper.reset()
-                        _final_structured_call = False
                         _continue_final = True
                         yield {"type": "status", "text": "", "new_pass": True}
                     else:
-                        if _answer_is_call_only(answer_text) or (
-                            _final_call_retried and not answer_text.strip()
-                        ):
+                        if _answer_is_call_only(answer_text):
                             # Call-only and not retried (or retried again): an empty bubble is not actionable.
                             # Its own segment: the shown snapshot may still hold an unclosed call that would swallow it.
                             yield {"type": "status", "text": "", "new_pass": True}
