@@ -6522,6 +6522,12 @@ class DiffusionStatusResponse(BaseModel):
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
     )
+    replicas: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Native (sd.cpp) card replicas: one sd-server per card once a request waits, per card its role, "
+        "status (planned, spawning, ready, busy, dead, refused), --mmap, host RAM priced and requests dispatched, plus "
+        "waiting / in-flight counts; null when the load runs one sd-server.",
+    )
     graph_engagement: Optional[Dict[str, Any]] = Field(
         None,
         description = "Compile / CUDA-graph engagement counters: this load's graph captures, replays and ungraphed "

@@ -277,14 +277,25 @@ class _Lane:
     dispatched: int = 0
 
 
-def _server_level_failure(exc: BaseException) -> bool:
-    """A replica failure the primary may not share (died, OOM, timeout, job error): retried once elsewhere. A cancel,
-    a bad request or a replaced model fails the same on every server."""
+def _replica_failure(exc: BaseException, server: Any) -> bool:
+    """A failure of the replica itself (its process died or timed out, or its card ran out of memory, which the
+    primary recovers from by restarting): the replica is retired and the request retried once elsewhere. Anything
+    else (a cancel, a bad request, a replaced model, a job error on a healthy server) fails the same everywhere."""
+    from . import sd_cpp_args
     from .diffusion_families import DIFFUSION_CANCELLED_MSG, DiffusionModelReplacedError
 
     if not isinstance(exc, RuntimeError) or isinstance(exc, DiffusionModelReplacedError):
         return False
-    return DIFFUSION_CANCELLED_MSG not in str(exc)
+    text = str(exc)
+    if DIFFUSION_CANCELLED_MSG in text:
+        return False
+    if server is None or not server.is_alive():
+        return True
+    try:
+        from .sd_cpp_backend import output_shows_capacity_failure
+        return bool(sd_cpp_args.is_vram_refusal_text(text) or output_shows_capacity_failure(text))
+    except Exception:  # noqa: BLE001 -- unknown keeps the request's own error
+        return False
 
 
 class ReplicaPool:
@@ -304,6 +315,7 @@ class ReplicaPool:
         self._primary_busy = False
         self._primary_dispatched = 0
         self._failovers = 0
+        self._price_lock = threading.Lock()
         self.closed = False
         self.lanes = [_Lane(int(o)) for o in plan.cards]
 
@@ -325,10 +337,11 @@ class ReplicaPool:
                 finally:
                     self._release(PRIMARY)
             lane = target
+            server = lane.server
             try:
                 return lane.backend._generate_impl(**kwargs)
             except BaseException as exc:
-                if retried or self.closed or waiting.is_set() or not _server_level_failure(exc):
+                if retried or self.closed or waiting.is_set() or not _replica_failure(exc, server):
                     raise
                 self._retire(lane, f"failed a render: {str(exc)[:300]}")
                 with self._cond:
@@ -392,6 +405,11 @@ class ReplicaPool:
             server = lane.server
             if server is None or not server.is_alive():
                 self._mark_dead_locked(lane, "the server exited while idle")
+                if server is not None:
+                    # Already exited: only its client, scratch dir and atexit hook are left to release.
+                    threading.Thread(
+                        target = self._owner._stop_server, args = (server,), daemon = True
+                    ).start()
                 continue
             return lane
         return None
@@ -421,41 +439,48 @@ class ReplicaPool:
 
         try:
             diffusion, encoders, vae = model_sizes(self.state.files)
-            room = host_room_mib()
-            with self._cond:
-                # Replicas still loading have not charged the host yet.
-                pending = sum(
-                    other.host_mib
-                    for other in self.lanes
-                    if other is not lane and other.status == "spawning"
-                )
-            price = price_replica(
-                ordinal = lane.ordinal,
-                limit_mib = card_limit_mib(lane.ordinal),
-                diffusion_mib = diffusion,
-                text_encoder_mib = encoders,
-                vae_mib = vae,
-                host_room_mib = None if room is None else room - pending,
-            )
-            with self._cond:
-                if not price.fits:
-                    lane.status, lane.reason = "refused", price.reason
-                    logger.info(
-                        "sd_cpp.replicas: no server on cuda:%s (%s)", lane.ordinal, price.reason
+            # One replica priced at a time, its price reserved before the next reads the host: a replica still
+            # loading has not charged the host yet.
+            with self._price_lock:
+                room = host_room_mib()
+                with self._cond:
+                    pending = sum(
+                        other.host_mib
+                        for other in self.lanes
+                        if other is not lane and other.status == "spawning"
                     )
-                    return
-                lane.mmap, lane.host_mib, lane.reason = price.mmap, price.host_mib, price.reason
+                price = price_replica(
+                    ordinal = lane.ordinal,
+                    limit_mib = card_limit_mib(lane.ordinal),
+                    diffusion_mib = diffusion,
+                    text_encoder_mib = encoders,
+                    vae_mib = vae,
+                    host_room_mib = None if room is None else room - pending,
+                )
+                with self._cond:
+                    if not price.fits:
+                        lane.status, lane.reason = "refused", price.reason
+                        logger.info(
+                            "sd_cpp.replicas: no server on cuda:%s (%s)", lane.ordinal, price.reason
+                        )
+                        return
+                    lane.mmap, lane.host_mib, lane.reason = price.mmap, price.host_mib, price.reason
             backend = self._owner._start_replica(self, lane, price.mmap)
         except Exception as exc:  # noqa: BLE001 -- a replica that cannot start leaves the primary serving
+            server = lane.server
+            if server is not None:
+                # Reserved before it leaves the lane, so the tree never reads idle while it may still run.
+                self._owner._reserve_replica_stop()
             with self._cond:
-                server, lane.server = lane.server, None
+                if lane.server is server:
+                    lane.server = None
                 if lane.status == "spawning":
                     lane.status, lane.reason = "dead", f"failed to start: {str(exc)[:300]}"
                 self._cond.notify_all()
             if not self.closed:
                 logger.warning("sd_cpp.replicas: cuda:%s failed to start: %s", lane.ordinal, exc)
             if server is not None:
-                self._owner._stop_server(server)
+                self._owner._stop_reserved(server)
             return
         with self._cond:
             if self.closed or lane.status != "spawning":
@@ -488,12 +513,19 @@ class ReplicaPool:
         return server
 
     def _retire(self, lane: _Lane, reason: str) -> None:
+        server = lane.server
+        if server is not None:
+            # Reserved before it leaves the lane, and never under _cond: the owner's lock comes first.
+            self._owner._reserve_replica_stop()
         with self._cond:
-            server = self._mark_dead_locked(lane, reason)
+            if lane.server is server:
+                self._mark_dead_locked(lane, reason)
+            elif lane.status in ("ready", "spawning"):
+                lane.status, lane.reason = "dead", reason
             self._cond.notify_all()
         if server is not None:
             threading.Thread(
-                target = self._owner._stop_server,
+                target = self._owner._stop_reserved,
                 args = (server,),
                 name = f"sd-server-replica-stop-{lane.ordinal}",
                 daemon = True,
@@ -562,7 +594,8 @@ class ReplicaPool:
                 "active": ready > 1,
                 "servers": ready,
                 "waiting": len(self._line),
-                "in_flight": int(self._primary_busy) + sum(1 for lane in self.lanes if lane.busy),
+                "in_flight": int(self._primary_busy)
+                + sum(1 for lane in self.lanes if lane.busy and lane.status == "ready"),
                 "failovers": self._failovers,
                 "replaced_split": self.plan.drop_split,
                 "cards": cards,

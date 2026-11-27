@@ -5492,6 +5492,7 @@ class SdCppDiffusionBackend:
         lane_state = replace(
             state,
             server = server,
+            selected_card = selected_card_identity(lane.ordinal),
             physical_gpu_id = _split_physical_gpu_id(lane.ordinal),
             multi_gpu = None,
             split_physical_gpu_id = None,
@@ -5800,6 +5801,9 @@ class SdCppDiffusionBackend:
             published = self._state is not None and self._state.server is old_server
             if published:
                 self._state = state
+                # The primary restarted (another backend, a VRAM budget, a lost device): replicas started from the
+                # old placement would repeat its failure, so they go.
+                self._retire_replicas_locked()
             else:
                 self._reserve_stop()
         if not published:
@@ -6193,6 +6197,10 @@ class SdCppDiffusionBackend:
         servers = pool.close()
         self._reserve_stop(len(servers))
         return pool, servers
+
+    def _reserve_replica_stop(self) -> None:
+        with self._lock:
+            self._reserve_stop()
 
     def _retire_replicas_locked(self) -> None:
         """Under ``_lock``, when the primary died: its replicas go with the load, stopped off this thread."""

@@ -59,12 +59,14 @@ class _Rig:
         self.gate = threading.Semaphore(0)
         self.fail_on: dict = {}  # server index -> exception raised by its next render
         self.lock = threading.Lock()
+        self.start_delay = 0.0
 
     def factory(self, binary):
         rig = self
 
         class _Gated(_FakeServer):
             def start(self, files, **kwargs):
+                time.sleep(rig.start_delay)
                 self.env = kwargs.pop("env", None)
                 self.started = dict(files = files, **kwargs)
                 self.started["extra_args"] = list(kwargs.get("extra_args") or [])
@@ -120,21 +122,23 @@ def _auto_load(
     rig = rig or _Rig()
     cards = cards or {0: T4, 1: T4}
     monkeypatch.setattr(
-        bk, "_sd_cpp_probe_output", lambda *_a: "CUDA0\tTesla T4\nCUDA1\tTesla T4\nCPU\tXeon\n"
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "".join(f"CUDA{o}\tTesla T4\n" for o in sorted(cards)) + "CPU\tXeon\n",
     )
     monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
     monkeypatch.setattr(
         "core.inference.diffusion_device.smi_free_total_mib",
         lambda o: cards.get(int(o), (None, None)),
     )
-    monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: [0, 1])
+    monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: sorted(cards))
     monkeypatch.setattr("core.inference.diffusion_device.auto_cuda_ranking_possible", lambda: True)
     monkeypatch.setattr(
         "core.inference.diffusion_device.resolve_diffusion_device_target",
         lambda **kw: types.SimpleNamespace(device = "cuda"),
     )
     monkeypatch.setattr("torch.cuda.current_device", lambda: 0)
-    monkeypatch.setattr("torch.cuda.device_count", lambda: 2)
+    monkeypatch.setattr("torch.cuda.device_count", lambda: len(cards))
     monkeypatch.setattr("torch.cuda.get_device_capability", lambda *_a: (7, 5))
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -503,3 +507,113 @@ def test_stop_and_account_retire_reach_a_render_on_a_replica(monkeypatch, tmp_pa
     assert b.cancel_generate() is True
     first.join(5), third.join(5)
     assert all(isinstance(c.error, RuntimeError) for c in (first, third))
+
+
+def test_the_status_route_model_carries_the_replicas_block(monkeypatch, tmp_path):
+    from models.inference import DiffusionStatusResponse
+    b, _rig = _auto_load(monkeypatch, tmp_path)
+    assert DiffusionStatusResponse(**b.status()).replicas["cards"][1]["card"] == "cuda:1"
+
+
+def _two_renders(b, rig):
+    first = _start(b, "a")
+    rig.wait(lambda: len(rig.entered) == 1)
+    second = _start(b, "b")
+    rig.wait(lambda: len(rig.entered) == 2)
+    return first, second
+
+
+def test_a_job_error_on_a_healthy_replica_is_the_request_error(monkeypatch, tmp_path):
+    b, rig = _auto_load(monkeypatch, tmp_path)
+    err = RuntimeError("sd-server generation failed: bad_request: prompt too long")
+
+    def _fail_once(index, exc):
+        orig = rig.servers[index].img_gen
+
+        def img_gen(payload, **kw):
+            rig.entered.append((rig.servers[index], payload["prompt"]))
+            raise exc
+
+        rig.servers[index].img_gen = img_gen
+        return orig
+
+    # Spawn the replica with a first pair, then make its next render fail on a live server.
+    first, second = _two_renders(b, rig)
+    rig.gate.release(2)
+    first.join(5), second.join(5)
+    _fail_once(1, err)
+    third = _start(b, "c")
+    rig.wait(lambda: len(rig.entered) == 3)
+    fourth = _start(b, "d")
+    fourth.join(5)
+    assert fourth.error is err
+    assert b.status()["replicas"]["cards"][1]["status"] == "ready"
+    assert b.status()["replicas"]["failovers"] == 0
+    rig.gate.release(1)
+    third.join(5)
+
+
+def test_a_vram_refusal_on_a_live_replica_retires_it_and_the_primary_renders(monkeypatch, tmp_path):
+    b, rig = _auto_load(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        bk.sd_cpp_args_mod, "is_vram_refusal_text", lambda text: "VRAM" in str(text)
+    )
+    first, second = _two_renders(b, rig)
+    rig.gate.release(2)
+    first.join(5), second.join(5)
+    replica = rig.servers[1]
+
+    def img_gen(payload, **kw):
+        rig.entered.append((replica, payload["prompt"]))
+        raise RuntimeError("sd-server generation failed: not enough VRAM for this render")
+
+    replica.img_gen = img_gen
+    third = _start(b, "c")
+    rig.wait(lambda: len(rig.entered) == 3)
+    fourth = _start(b, "d")
+    rig.wait(lambda: b.status()["replicas"]["cards"][1]["status"] == "dead")
+    rig.gate.release(2)
+    third.join(5), fourth.join(5)
+    assert third.error is None and fourth.error is None
+    assert len(fourth.result["images"]) == 1
+    rig.wait(lambda: replica.stopped and b._stopping_servers == 0)
+
+
+def test_a_primary_restart_takes_the_replicas_down(monkeypatch, tmp_path):
+    b, rig = _auto_load(monkeypatch, tmp_path)
+    first, second = _two_renders(b, rig)
+    rig.gate.release(2)
+    first.join(5), second.join(5)
+    old = b._state.server
+    fresh = rig.factory("/x/sd-server")
+    import dataclasses
+
+    b._hand_over_replacement(dataclasses.replace(b._state, server = fresh), fresh, old)
+    assert b._replicas is None and "replicas" not in b.status()
+    rig.wait(lambda: rig.servers[1].stopped and b._stopping_servers == 0)
+
+
+def test_replicas_priced_together_never_share_one_reading_of_the_host(monkeypatch, tmp_path):
+    # Three cards, room for one more server process: the second replica is refused, not priced against the same RAM.
+    rig = _Rig()
+    # A replica charges the host once it has loaded; one still loading has not yet.
+    started = lambda: sum(1 for s in rig.servers[1:] if s.started is not None)  # noqa: E731
+    b, rig = _auto_load(
+        monkeypatch,
+        tmp_path,
+        host_room = lambda: 2_000 - 1_536 * started(),
+        cards = {0: T4, 1: T4, 2: T4},
+        rig = rig,
+    )
+    rig.start_delay = 0.3
+    assert [c["card"] for c in b.status()["replicas"]["cards"]] == ["cuda:0", "cuda:1", "cuda:2"]
+    first = _start(b, "a")
+    rig.wait(lambda: len(rig.entered) == 1)
+    second = _start(b, "b")
+    rig.wait(lambda: {c["status"] for c in b.status()["replicas"]["cards"][1:]} >= {"refused"})
+    rig.wait(lambda: len(rig.entered) == 2)
+    statuses = sorted(c["status"] for c in b.status()["replicas"]["cards"][1:])
+    assert statuses in (["busy", "refused"], ["ready", "refused"])
+    assert len(rig.servers) == 2
+    rig.gate.release(2)
+    first.join(5), second.join(5)
