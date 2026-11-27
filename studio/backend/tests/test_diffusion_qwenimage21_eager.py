@@ -49,7 +49,9 @@ def _armed(m):
 @pytest.mark.parametrize(
     "case", [{}, {"cond": (4, 4)}, {"batch": 2, "pad": 3}, {"batch": 2, "cond": (4, 8), "pad": 2}]
 )
-def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case):
+def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case, monkeypatch):
+    # Stock lays padded rows out from row 0; the kill switch keeps that layout for the stock comparison.
+    monkeypatch.setenv(q.ROW_LAYOUT_ENV, "0")
     m = _model()
     inp = _valid(_inputs(**case)) if not case.get("pad") else _inputs(**case)
     ref = _render(m, inp)
@@ -59,6 +61,18 @@ def test_broadcast_modulation_and_the_eager_qkv_are_bit_identical(case):
     for a, b in zip(ref, got):
         assert torch.equal(a, b)
     assert e.STATS["mod_broadcast"] > before["mod_broadcast"]
+
+
+@pytest.mark.parametrize("case", [{"batch": 2, "pad": 3}, {"batch": 2, "cond": (4, 8), "pad": 2}])
+def test_the_eager_qkv_takes_per_row_rope_bit_identically(case):
+    """Rows padded differently carry per-row RoPE tables, which the fused kernel leaves to the stock pair."""
+    m = _model()
+    assert q.install()
+    ref = _render(m, _inputs(**case))
+    assert e.install_for_pipe(types.SimpleNamespace(transformer = m))
+    got = _render(m, _inputs(**case))
+    for a, b in zip(ref, got):
+        assert torch.equal(a, b)
 
 
 def test_a_demoted_load_runs_stock_outside_a_pending_background_compile():

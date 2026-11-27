@@ -2,10 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Qwen-Image-2.1 denoiser forward with per-step token layout built once, bit-identical; kill switch
-UNSLOTH_DIFFUSION_Q21_FAST_STEP=0"""
+UNSLOTH_DIFFUSION_Q21_FAST_STEP=0. Rows of different prompt lengths in one batch get their own RoPE positions (each
+row's solo table; stock lays every row out from row 0), kill switch UNSLOTH_DIFFUSION_Q21_ROW_LAYOUT=0"""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import inspect
 import math
@@ -19,6 +22,12 @@ from .diffusion_autoopt.patches import source_digest
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 SHARED_PREFIX_KV_ENV = "UNSLOTH_DIFFUSION_Q21_SHARED_PREFIX_KV"
+ROW_LAYOUT_ENV = "UNSLOTH_DIFFUSION_Q21_ROW_LAYOUT"
+MIXED_BATCH_ENV = "UNSLOTH_DIFFUSION_Q21_MIXED_BATCH"
+# Batch sizes whose mixed-length signature (per-row RoPE + text key mask) the compiled blocks already hold.
+MIXED_WARM_ATTR = "_unsloth_q21_mixed_warm"
+# Set by an off-request warm (an idle worker / the batching race): mixed lengths may compile inside it.
+_MIXED_WARMING = contextvars.ContextVar("unsloth_q21_mixed_warming", default = False)
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
@@ -42,6 +51,10 @@ _INSTALLED: dict = {}
 
 def fast_step_disabled() -> bool:
     return (os.environ.get(FAST_STEP_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def row_layout_disabled() -> bool:
+    return (os.environ.get(ROW_LAYOUT_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
 # One fingerprint util for every patch module (diffusion_autoopt.patches); kept under this name for importers.
@@ -90,8 +103,17 @@ class _Layout:
         "_segments",
         "_vlm_text",
         "_tails",
+        "_rows",
+        "_rows_recent",
         "__weakref__",
     )
+
+
+class _Rows:
+    """Per-row RoPE of a batch whose rows pad their prompts differently: ``(batch, total, dim / 2)``, each row's
+    valid positions holding that row's solo table (padded positions keep the shared table; they are masked keys)."""
+
+    __slots__ = ("rotary_emb", "tails", "__weakref__")
 
 
 def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any) -> _Layout:
@@ -113,6 +135,8 @@ def _build_layout(model: Any, mod: Any, img_mask: Any, shapes: list, device: Any
     lay._segments = None
     lay._vlm_text = {}
     lay._tails = None
+    lay._rows = {}
+    lay._rows_recent = []
     return lay
 
 
@@ -128,26 +152,155 @@ def _prompt_tokens(pipe: Any, prompt: str) -> Optional[int]:
         return None
 
 
-def text_length_runs(pipe: Any, chunk: list) -> list:
-    """Split ``(prompt, seed)`` jobs into runs of equal prompt token length (RoPE layout comes from row 0)."""
-    if len(chunk) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
-        return [chunk]
-    if all(prompt == chunk[0][0] for prompt, _ in chunk):
-        return [chunk]
+def row_layout_supported(pipe_or_model: Any) -> bool:
+    """Whether one forward lays out rows of different prompt lengths each on its own: the fast step is installed
+    on the denoiser's class and the module's RoPE takes per-row tables. Stock diffusers lays every row out from
+    row 0, so without this rows of different lengths must render in separate calls."""
+    model = getattr(pipe_or_model, "transformer", pipe_or_model)
+    if type(model).__name__ != _CLASS or fast_step_disabled() or row_layout_disabled():
+        return False
+    if not getattr(vars(type(model)).get("forward"), "__unsloth_q21_fast_step__", False):
+        return False
+    from .diffusion_qwenimage21_rope import rows_ready
+
+    return rows_ready()
+
+
+def _blocks_compiled(model: Any) -> bool:
+    """Whether the denoiser runs compiled code: a regional compile sets ``_compiled_call_impl`` on the blocks, and
+    Studio's compile marks / a compiled forward below an offload hook cover the streamed loads that clear it."""
+    if model is None:
+        return False
+    blocks = getattr(model, "transformer_blocks", None) or ()
+    if any(getattr(block, "_compiled_call_impl", None) is not None for block in blocks):
+        return True
+    try:
+        from .diffusion_cfg_batch import compiled_denoiser
+        return compiled_denoiser(model) is not None
+    except Exception:  # noqa: BLE001 - unreadable: treat as compiled, so a mixed batch waits for a warm
+        return True
+
+
+def mixed_graph_warm(pipe_or_model: Any, rows: int) -> bool:
+    """Whether a mixed-length batch of ``rows`` rows runs on graphs the compiled blocks already hold (always True
+    for eager blocks): its first call on a user request then compiles nothing."""
+    model = getattr(pipe_or_model, "transformer", pipe_or_model)
+    if not _blocks_compiled(model):
+        return True
+    return int(rows) in model.__dict__.get(MIXED_WARM_ATTR, ())
+
+
+@contextlib.contextmanager
+def warming_mixed_lengths():
+    """Off a user request (an idle worker, the batching race): mixed-length batches run, and compile, inside this
+    scope, so later requests of that batch size reuse the graph (``mixed_graph_warm``)."""
+    token = _MIXED_WARMING.set(True)
+    try:
+        yield
+    finally:
+        _MIXED_WARMING.reset(token)
+
+
+def _note_mixed_forward(model: Any, rows: int) -> None:
+    import torch
+    if not torch.compiler.is_compiling() and _blocks_compiled(model):
+        model.__dict__.setdefault(MIXED_WARM_ATTR, set()).add(int(rows))
+
+
+def mixed_lengths_batch(pipe: Any, rows: Optional[int] = None) -> bool:
+    """Whether rows of different prompt lengths should share one call (they can when ``row_layout_supported``).
+    Padded rows need a key mask, which keeps attention off the int8 kernel: on an A100-80 at Auto (int8, 1024 px,
+    25 steps) a mixed batch of 4 took 0.75x the time of 4 solos resident but 2.12x when streamed. So by default
+    only a denoiser that streams any weights batches mixed lengths; UNSLOTH_DIFFUSION_Q21_MIXED_BATCH=1 / 0
+    forces it on / off. Compiled blocks batch mixed lengths only at a size an off-request warm
+    (``warming_mixed_lengths``) already ran, so no user request compiles the mixed signature."""
+    if not row_layout_supported(pipe):
+        return False
+    forced = (os.environ.get(MIXED_BATCH_ENV) or "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no"):
+        return False
+    try:
+        from .diffusion_memory import denoiser_residency
+        counts = denoiser_residency(pipe)
+    except Exception:  # noqa: BLE001 - unreadable placement: the measured-safe split
+        return False
+    if not (counts is not None and counts[1] > 0 and counts[0] < counts[1]):
+        return False
+    # A mixed batch is a new signature for compiled blocks (per-row RoPE, the text key mask): never compile it on a
+    # user request. Until an off-request warm ran it at this size, rows of different lengths render apart.
+    if _MIXED_WARMING.get() or not _blocks_compiled(getattr(pipe, "transformer", None)):
+        return True
+    return rows is not None and mixed_graph_warm(pipe, rows)
+
+
+def _layout_keys(pipe: Any, jobs: list) -> Optional[list]:
+    """One key per ``(prompt, seed)`` job, equal keys = one exact batched layout; None when every job may share
+    one call (not Qwen-Image-2.1, one prompt, or mixed lengths batch). A ``None`` key (unknown length) matches nothing."""
+    if len(jobs) < 2 or type(getattr(pipe, "transformer", None)).__name__ != _CLASS:
+        return None
+    if all(job[0] == jobs[0][0] for job in jobs) or mixed_lengths_batch(pipe, len(jobs)):
+        return None
     lengths: dict = {}
+    for job in jobs:
+        if job[0] not in lengths:
+            lengths[job[0]] = _prompt_tokens(pipe, job[0])
+    return [lengths[job[0]] for job in jobs]
+
+
+def layout_key(
+    pipe: Any,
+    prompt: str,
+    rows: Optional[int] = None,
+) -> Any:
+    """What two Qwen-Image-2.1 rows of one call must share beyond canvas, condition images, steps and guidance:
+    nothing (``()``) when mixed lengths batch (``mixed_lengths_batch`` for a call of ``rows`` rows; unknown rows on
+    compiled blocks counts as not warm), else the templated prompt token length (None: unknown, so it batches with
+    nothing). Either way a batch is exact per row (G2a)."""
+    if type(getattr(pipe, "transformer", None)).__name__ != _CLASS or mixed_lengths_batch(
+        pipe, rows
+    ):
+        return ()
+    length = _prompt_tokens(pipe, prompt)
+    return None if length is None else ("tokens", length)
+
+
+def layout_groups(pipe: Any, jobs: list) -> list:
+    """Indices of ``(prompt, seed)`` jobs grouped by equal layout over the WHOLE list (not only neighbours):
+    groups in order of first appearance, indices ascending inside a group, every index exactly once. Render
+    ``[jobs[i] for g in groups for i in g]`` and put output ``k`` back at position ``order[k]``."""
+    keys = _layout_keys(pipe, jobs)
+    if keys is None:
+        return [list(range(len(jobs)))] if jobs else []
+    groups: list = []
+    by_key: dict = {}
+    for index, key in enumerate(keys):
+        if key is None:
+            groups.append([index])
+            continue
+        if key not in by_key:
+            by_key[key] = len(groups)
+            groups.append([])
+        groups[by_key[key]].append(index)
+    return groups
+
+
+def text_length_runs(pipe: Any, chunk: list) -> list:
+    """Split ``(prompt, seed)`` jobs into runs of consecutive equal layout. When mixed lengths batch
+    (``mixed_lengths_batch``) every prompt length shares one run; otherwise each run has one prompt token length."""
+    keys = _layout_keys(pipe, chunk)
+    if keys is None:
+        return [chunk]
     runs: list = []
     previous = object()
-    for job in chunk:
-        prompt = job[0]
-        if prompt not in lengths:
-            lengths[prompt] = _prompt_tokens(pipe, prompt)
-        length = lengths[prompt]
+    for job, key in zip(chunk, keys):
         # An unknown length matches nothing, not even another unknown one.
-        if runs and length is not None and length == previous:
+        if runs and key is not None and key == previous:
             runs[-1].append(job)
         else:
             runs.append([job])
-        previous = length
+        previous = key
     return runs
 
 
@@ -209,6 +362,68 @@ def _layout_for(
     state["recent"].insert(0, (weakref.ref(img_mask), (shapes_key, device, version), lay))
     del state["recent"][_RECENT_PER_MODULE:]
     return lay
+
+
+def _row_table(model: Any, lay: _Layout, shapes: list, joint_valid: Any, device: Any) -> Any:
+    """Row RoPE: its solo table (``pos_embed`` over the layout minus its padded text) at its valid positions."""
+    table = lay.rotary_emb.clone()
+    table[joint_valid] = model.pos_embed(shapes, lay.image_pad_mask[joint_valid], device = device)
+    return table
+
+
+def _rows_for(
+    model: Any,
+    lay: _Layout,
+    img_mask: Any,
+    encoder_hidden_states_mask: Any,
+    shapes: list,
+    device: Any,
+    *,
+    reuse_identity: bool = False,
+) -> Optional[_Rows]:
+    """Per-row RoPE when the rows' text masks differ, else None (every row has row 0's layout). A cached step finds
+    the prefill's answer by mask identity (no host sync); others read the mask's content once."""
+    import torch
+
+    mask = encoder_hidden_states_mask
+    if mask is None or mask.shape[0] < 2 or row_layout_disabled():
+        return None
+    version = _mask_version(mask)
+    if reuse_identity:
+        for ref, key, rows in lay._rows_recent:
+            if ref() is mask and key == (version, device):
+                return rows
+    valid = mask.detach().bool().to("cpu")
+    content = (tuple(valid.shape), valid.numpy().tobytes(), str(device))
+    if content in lay._rows:
+        rows = lay._rows[content]
+    else:
+        rows = None
+        distinct = not bool((valid == valid[:1]).all())
+        from .diffusion_qwenimage21_rope import rows_ready
+
+        # Rows also differing in img_mask (condition images) have no shared layout to lay out per row.
+        if distinct and rows_ready() and bool((img_mask == img_mask[:1]).all()):
+            vlm_text = _vlm_text(lay, valid.shape[1])
+            tables: dict = {}
+            per_row = []
+            for row in range(valid.shape[0]):
+                pattern = valid[row].numpy().tobytes()
+                if pattern not in tables:
+                    joint_valid = torch.ones(lay.total, dtype = torch.bool, device = device)
+                    joint_valid[lay.text_positions] = mask[row].bool()[vlm_text]
+                    tables[pattern] = _row_table(model, lay, shapes, joint_valid, device)
+                per_row.append(tables[pattern])
+            rows = _Rows()
+            rows.rotary_emb = torch.stack(per_row)
+            _note_mixed_forward(model, valid.shape[0])
+            rows.tails = rows.rotary_emb[:, lay.prefix_len :]
+        lay._rows[content] = rows
+        while len(lay._rows) > _LAYOUTS_PER_MODULE:
+            lay._rows.pop(next(iter(lay._rows)))
+    lay._rows_recent.insert(0, (weakref.ref(mask), (version, device), rows))
+    del lay._rows_recent[_RECENT_PER_MODULE:]
+    return rows
 
 
 def _eager_fast(model: Any) -> bool:
@@ -290,8 +505,11 @@ def _cached_step(
     timestep: Any,
     encoder_hidden_states_mask: Any,
     kv_cache: Any,
+    rows: Optional[_Rows] = None,
 ) -> Any:
     rotary_emb, modulation_mask = _tails(lay)
+    if rows is not None:
+        rotary_emb = rows.tails
     broadcast = lay.tail_all_target and _eager_fast(model)
     if broadcast:
         from .diffusion_qwenimage21_eager import STATS
@@ -444,6 +662,18 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
     _, text_dtype = _text_dtype(module, encoder_hidden_states)
     if text_dtype is None or not lay.tail_is_image:
         return None
+    rotary_emb, modulation_mask = _tails(lay)
+    if mask is not None and mask.shape[0] > 1 and not row_layout_disabled():
+        # The prefill's per-row answer, found by mask identity (no sync); a mask it never saw runs eager.
+        known = [
+            rows
+            for ref, key, rows in lay._rows_recent
+            if ref() is mask and key == (_mask_version(mask), hidden_states.device)
+        ]
+        if not known:
+            return None
+        if known[0] is not None:
+            rotary_emb = known[0].tails
     kv = []
     kv_bytes = 0
     for index in range(len(module.transformer_blocks)):
@@ -457,7 +687,6 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
         kv.append((key, value))
     if kv_bytes > GRAPH_KV_MAX_BYTES:
         return None
-    rotary_emb, modulation_mask = _tails(lay)
     plan = {
         "hidden_states": hidden_states,
         "timestep": timestep,
@@ -551,6 +780,19 @@ def _make_forward(mod: Any, stock: Any) -> Any:
         lay = _layout_for(
             self, mod, img_mask, img_shapes, device, reuse_identity = kv_cache_mode == "cached"
         )
+        rows = (
+            None
+            if encoder_hidden_states_mask is None or batch_size < 2
+            else _rows_for(
+                self,
+                lay,
+                img_mask,
+                encoder_hidden_states_mask,
+                img_shapes[0],
+                device,
+                reuse_identity = kv_cache_mode == "cached",
+            )
+        )
         dtype_key, text_dtype = _text_dtype(self, encoder_hidden_states)
         if (
             kv_cache_mode == "cached"
@@ -559,7 +801,14 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             and self.config.causal_condition
         ):
             output = _cached_step(
-                self, lay, text_dtype, hidden_states, timestep, encoder_hidden_states_mask, kv_cache
+                self,
+                lay,
+                text_dtype,
+                hidden_states,
+                timestep,
+                encoder_hidden_states_mask,
+                kv_cache,
+                rows,
             )
             return (output,) if not return_dict else mod.Transformer2DModelOutput(sample = output)
 
@@ -582,7 +831,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
         )
         joint_hidden_states[:, lay.image_positions] = hidden_states
 
-        rotary_emb = lay.rotary_emb
+        rotary_emb = lay.rotary_emb if rows is None else rows.rotary_emb
         target_token_mask = lay.target_token_mask
 
         timestep = timestep.to(hidden_states.dtype)
@@ -603,7 +852,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
 
         if kv_cache_mode == "cached":
             joint_hidden_states = joint_hidden_states[:, prefix_len:]
-            rotary_emb = rotary_emb[prefix_len:]
+            rotary_emb = rotary_emb[prefix_len:] if rows is None else rows.tails
             modulation_mask = modulation_mask[prefix_len:]
             attention_mask = None if joint_key_valid is None else joint_key_valid[:, None, None, :]
             cache_write_slice = None
@@ -841,24 +1090,38 @@ def install(logger: Any = None) -> bool:
         return False
     with _LOCK:
         current = vars(cls).get("forward")
-        if getattr(current, "__unsloth_q21_fast_step__", False):
-            return True
-        why = why_unsupported(mod)
-        if why is not None:
-            if logger is not None:
-                logger.info("diffusion.qwenimage21: stock forward kept: %s", why)
-            return False
-        try:
-            fast = _make_forward(mod, current)
-        except Exception as exc:  # noqa: BLE001 - optimisation only
-            if logger is not None:
-                logger.warning("diffusion.qwenimage21: fast step unavailable: %s", exc)
-            return False
-        _INSTALLED[cls] = current
-        cls.forward = fast
-    if logger is not None:
+        installed = getattr(current, "__unsloth_q21_fast_step__", False)
+        if not installed:
+            why = why_unsupported(mod)
+            if why is not None:
+                if logger is not None:
+                    logger.info("diffusion.qwenimage21: stock forward kept: %s", why)
+                return False
+            try:
+                fast = _make_forward(mod, current)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                if logger is not None:
+                    logger.warning("diffusion.qwenimage21: fast step unavailable: %s", exc)
+                return False
+            _INSTALLED[cls] = current
+            cls.forward = fast
+    if logger is not None and not installed:
         logger.info("diffusion.qwenimage21: denoiser step layout built once per render")
+    _install_rows(logger)
     return True
+
+
+def _install_rows(logger: Any = None) -> bool:
+    """Per-row RoPE tables for mixed prompt lengths; on failure batches split by prompt length (row_layout_supported)."""
+    if row_layout_disabled():
+        return False
+    try:
+        from .diffusion_qwenimage21_rope import install_rows
+        return install_rows(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        if logger is not None:
+            logger.warning("diffusion.qwenimage21: per-row layout unavailable: %s", exc)
+        return False
 
 
 def install_for_pipe(pipe: Any, logger: Any = None) -> bool:
@@ -878,3 +1141,8 @@ def uninstall() -> None:
             if getattr(vars(cls).get("forward"), "__unsloth_q21_fast_step__", False):
                 cls.forward = stock
             _INSTALLED.pop(cls, None)
+    try:
+        from .diffusion_qwenimage21_rope import uninstall_rows
+        uninstall_rows()
+    except Exception:  # noqa: BLE001
+        pass
