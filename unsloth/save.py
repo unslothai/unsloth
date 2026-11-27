@@ -7433,7 +7433,7 @@ class _CastShardsOnWrite:
         for names in storages.values():
             if len(names) > 1 and any(planned[k] != state_dict[k].dtype for k in names):
                 for k in names[1:]:
-                    self.state_dict[k] = state_dict[k].to(device = "cpu", dtype = planned[k])
+                    self.state_dict[k] = self._cast_to_host(state_dict[k], planned[k])
         seen, ratio = set(), None
         for k, dtype in planned.items():
             v = self.state_dict[k]
@@ -7461,10 +7461,32 @@ class _CastShardsOnWrite:
             except Exception:
                 pass
 
+    @staticmethod
+    def _cast_to_host(v, dtype):
+        # A blocking device-to-host .to(device, dtype) copies the source dtype over the bus and casts on the host.
+        # Narrowing (an fp32 master saved as 16-bit) is cast on the device first: half the bytes cross the bus and
+        # the conversion runs there, for one narrowed tensor of device memory at a time. Widening stays on the host,
+        # as the float32 export wants. Only "cuda" devices (ROCm included); XPU / MPS keep the host cast.
+        if (
+            v.device.type == "cuda"
+            and torch.empty((), dtype = dtype).element_size() < v.element_size()
+        ):
+            # Device casts may write a different NaN payload than the host cast; keep those tensors on the host.
+            # A NaN anywhere makes the sum NaN (a scalar, unlike an isnan mask); a +inf / -inf pair just falls back.
+            try:
+                narrowed = v.to(dtype = dtype)
+                keep = not bool(torch.isnan(narrowed.sum()))
+            except torch.OutOfMemoryError:
+                narrowed, keep = None, False
+            if keep:
+                return narrowed.to(device = "cpu")
+            del narrowed
+        return v.to(device = "cpu", dtype = dtype)
+
     def _write_one(self, original, tensors, filename, *args, **kwargs):
         planned = _planned_save_dtypes(self.model, tensors, self.target_dtype)
         cast = {
-            k: v.to(device = "cpu", dtype = planned[k]) if k in planned and planned[k] != v.dtype else v
+            k: self._cast_to_host(v, planned[k]) if k in planned and planned[k] != v.dtype else v
             for k, v in tensors.items()
         }
         self.engaged += 1
