@@ -2669,8 +2669,15 @@ def fbgemm_block_fp8_available():
     # stdout with "Arch conditional MMA" before aborting.
     from unsloth.import_fixes import suppress_cuda_printf
 
-    with suppress_cuda_printf():
-        has_fbgemm = test_has_fbgemm()
+    device = _fbgemm_probe_device()
+    try:
+        # The guard covers suppress_cuda_printf's synchronize too, else it syncs (and opens) the current card.
+        with torch.cuda.device(device), suppress_cuda_printf():
+            has_fbgemm = test_has_fbgemm(device)
+    except torch.cuda.OutOfMemoryError:
+        has_fbgemm = None
+    except Exception:
+        has_fbgemm = False
     if has_fbgemm is None:
         return False  # out of memory: not known yet, so not latched
     _FBGEMM_BLOCK.append(has_fbgemm)

@@ -24,7 +24,7 @@ _CHILD = textwrap.dedent(
     sys.modules["fbgemm_gpu"] = fake
     import torch
 
-    touched = []  # CUDA devices the FBGEMM probe allocates its fp8 operand on (a context on that card)
+    touched = []  # CUDA devices the FBGEMM probe allocates on or synchronizes (each opens a context there)
     real_ones = torch.ones
 
     def ones(*args, device = None, **kwargs):
@@ -45,11 +45,22 @@ _CHILD = textwrap.dedent(
     out = {"import": list(touched)}
 
     # Two torchrun ranks on a 2-card host; neither has called set_device yet.
+    current = [0]
+
+    @contextlib.contextmanager
+    def device_guard(device):
+        current.append(torch.device(device).index)
+        try:
+            yield
+        finally:
+            current.pop()
+
     torch.cuda.is_available = lambda: True
     torch.cuda.device_count = lambda: 2
-    torch.cuda.current_device = lambda: 0
-    torch.cuda.device = lambda device: contextlib.nullcontext()
-    torch.cuda.empty_cache = lambda: None
+    torch.cuda.current_device = lambda: current[-1]
+    torch.cuda.device = device_guard
+    torch.cuda.empty_cache = lambda: touched.append(current[-1])
+    torch.cuda.synchronize = lambda device = None: touched.append(current[-1] if device is None else torch.device(device).index)
     for rank in ("0", "1"):
         del touched[:]
         os.environ["LOCAL_RANK"] = rank
@@ -101,9 +112,9 @@ def test_fbgemm_probe_is_lazy_and_runs_on_the_local_rank_card():
     out = _run()
     # Import opens nothing on any card.
     assert out["import"] == [], out
-    # Each rank probes once, on its own card: GPU 0 is touched by rank 0 only.
-    assert out["0"]["probe"] == [0], out
-    assert out["1"]["probe"] == [1], out
+    # Each rank probes on its own card (allocation, and the printf guard's synchronize): GPU 0 by rank 0 only.
+    assert out["0"]["probe"] and set(out["0"]["probe"]) == {0}, out
+    assert out["1"]["probe"] and set(out["1"]["probe"]) == {1}, out
     # The probe failed (no kernel image): the Triton / torch route, and the loader sees that.
     assert out["0"]["has_fbgemm"] == out["1"]["has_fbgemm"] == "0", out
     assert out["oom"] == {"latched": False, "bound": False}, out
