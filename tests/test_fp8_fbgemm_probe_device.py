@@ -11,6 +11,10 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("triton")  # unsloth.kernels needs it (absent on macOS / Windows runners)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 _CHILD = textwrap.dedent(
