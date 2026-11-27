@@ -44,8 +44,10 @@ _STATE: dict = {
     "forced_fallback": False,
     "triton_eager": frozenset(),
     "triton_compiled": frozenset(),
-    "triton_precise": frozenset(),
-    # Cards whose bf16 self-check / accumulator check hit an OOM: {"eager": set, "precise": set, "next": {card: t},
+    # (card, output dtype, fast accumulate) the traced path sends to the kernel, frozen at install (the compile tag
+    # names them).
+    "triton_kinds": frozenset(),
+    # Cards whose bf16 self-check / accuracy check hit an OOM: {"eager": set, "accuracy": set, "next": {card: t},
     # "resolved": bool}. Eager calls retry them; the next install rebuilds the dispatcher and compile tag.
     "triton_pending": None,
 }
@@ -356,21 +358,43 @@ def gemm_path(device_index: Optional[int] = None) -> dict:
                 else None
             ),
             "calls": dict(_COUNTS),
-            "triton_gemm": (
-                {
-                    "eager": index in _STATE["triton_eager"],
-                    "compiled": index in _STATE["triton_compiled"],
-                    "precise_accumulate": index in _STATE["triton_precise"],
-                }
-                if path == "unit_scale_fallback"
-                else None
-            ),
+            "triton_gemm": _triton_status(index) if path == "unit_scale_fallback" else None,
         }
     except Exception:  # noqa: BLE001 - status must never fail
         return {"path": None}
 
 
 _CACHE_TAG_PREFIX = "unsloth_fp8_unit_scale="
+
+
+def _triton_status(index: Any) -> dict:
+    """Eager: the card takes the kernel; fast / precise accumulate: bf16 requests of that mode pass its accuracy
+    check (eager, live); compiled_kinds: what a trace sends to it (frozen at install)."""
+    eager = index in _STATE["triton_eager"]
+    fast = precise = False
+    if eager:
+        from . import diffusion_fp8_triton_gemm as tg
+        import torch
+
+        fast = tg.accurate(index, torch.bfloat16, True)
+        precise = tg.accurate(index, torch.bfloat16, False)
+    return {
+        "eager": eager,
+        "compiled": index in _STATE["triton_compiled"],
+        "fast_accumulate": bool(fast),
+        "precise_accumulate": bool(precise),
+        "compiled_kinds": _kind_names(k for k in _STATE["triton_kinds"] if k[0] == index),
+    }
+
+
+def _kind_names(kinds: Any) -> list:
+    out = []
+    for index, dtype, fast in kinds:
+        short = {"bfloat16": "bf16", "float16": "fp16"}.get(
+            str(dtype).replace("torch.", ""), str(dtype)
+        )
+        out.append(f"{index}{short}{'f' if fast else 'p'}")
+    return sorted(out)
 
 
 def _set_compile_cache_tag(tag: Optional[str]) -> None:
@@ -408,10 +432,11 @@ def _triton_cards(
     caps: dict,
     logger: Any = None,
 ) -> tuple:
-    """(eager cards, compiled cards, precise cards, module) for the fused Triton GEMM: measured arches, CUDA only, kill
-    switch unset, bf16 self-check passed. Precise cards also passed the accumulator check, so precise-accumulate GEMMs
-    (Studio's hosted FP8 checkpoints are baked that way) take the kernel there too. Cards used later rejoin on the
-    next install."""
+    """(eager cards, compiled cards, compiled kinds, module) for the fused Triton GEMM: measured arches, CUDA only,
+    kill switch unset, bf16 self-check passed. A request kind (output dtype x fast / precise accumulate; Studio's
+    hosted FP8 checkpoints are baked precise) takes the kernel only where the accuracy check passed it. Compiled kinds
+    = (card, dtype, fast) a trace sends to it: self-checked dtypes only, since no check can run inside a trace. Cards
+    used later rejoin on the next install."""
     none = (frozenset(), frozenset(), frozenset(), None)
     if not in_use:
         return none
@@ -426,30 +451,45 @@ def _triton_cards(
         return none
     import torch
 
-    eager, compiled, precise = set(), set(), set()
+    eager, kinds = set(), set()
     for index in sorted(in_use):
         run_eager, run_compiled = tg.card_paths(caps.get(index, ()))
         if not run_eager or not tg.verify(index, torch.bfloat16):
             continue
         eager.add(index)
+        tg.verify_accuracy(index)
         if run_compiled and tg.traced_available():
-            compiled.add(index)
-        if tg.verify_precise(index):
-            precise.add(index)
+            for dtype in (torch.bfloat16, torch.float16):
+                for fast in (True, False):
+                    if tg.verified(index, dtype) and tg.accurate(index, dtype, fast):
+                        kinds.add((index, dtype, fast))
+    compiled = {k[0] for k in kinds}
     failed = tg.describe()["failed"]
     if logger is not None and (eager or failed):
         try:
             logger.info(
-                "fp8: fused Triton row-wise GEMM on cuda:%s (compiled: %s; precise accumulate: %s; %s=0 disables)%s",
+                "fp8: fused Triton row-wise GEMM on cuda:%s (compiled: %s; accuracy-checked kinds: %s; %s=0 "
+                "disables)%s",
                 ",".join(str(i) for i in sorted(eager)) or "-",
-                ",".join(str(i) for i in sorted(compiled)) or "-",
-                ",".join(str(i) for i in sorted(precise)) or "-",
+                ",".join(_kind_names(kinds)) or "-",
+                {i: _triton_status_kinds(tg, i) for i in sorted(eager)},
                 tg.ENV,
                 f"; kept the tensorwise fallback: {failed}" if failed else "",
             )
         except Exception:  # noqa: BLE001
             pass
-    return frozenset(eager), frozenset(compiled), frozenset(precise), tg
+    return frozenset(eager), frozenset(compiled), frozenset(kinds), tg
+
+
+def _triton_status_kinds(tg: Any, index: Any) -> str:
+    import torch
+    names = [
+        f"{short}:{'fast' if fast else 'precise'}"
+        for dtype, short in ((torch.bfloat16, "bf16"), (torch.float16, "fp16"))
+        for fast in (True, False)
+        if tg.accurate(index, dtype, fast)
+    ]
+    return "+".join(names) or "none"
 
 
 def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
@@ -462,7 +502,7 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
             if any(_has_context(i) for i in _STATE["acc_deferred"]):
                 uninstall()
             elif pending is not None and (
-                pending["eager"] or pending["precise"] or pending["resolved"]
+                pending["eager"] or pending["accuracy"] or pending["resolved"]
             ):
                 # A kernel self-check deferred by an OOM: check again, and give a card that passed since its compiled
                 # path and compile cache tag (graphs compiled before keep the tensorwise GEMM they traced).
@@ -519,19 +559,18 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     fp32_acc = frozenset(i for i in sorted(in_use) if _fp32_out_runs(i))
     acc_deferred = fallback - in_use
     try:
-        triton_eager, triton_compiled, triton_precise, tg = _triton_cards(in_use, caps, logger)
+        triton_eager, triton_compiled, triton_kinds, tg = _triton_cards(in_use, caps, logger)
     except Exception:  # noqa: BLE001 - the fused kernel is optional: the tensorwise route stays
-        triton_eager, triton_compiled, triton_precise, tg = (
+        triton_eager, triton_compiled, triton_kinds, tg = (
             frozenset(),
             frozenset(),
             frozenset(),
             None,
         )
-    # Live eager sets: an OOM-deferred self-check that passes later joins them from an eager call. Traced calls read
-    # only the frozen install-time sets (triton_compiled, compiled_precise), which the compile cache tag names.
-    live_eager, live_precise = set(triton_eager), set(triton_precise)
-    compiled_precise = triton_precise & triton_compiled
-    pending = {"eager": set(), "precise": set(), "next": {}, "resolved": False}
+    # Live eager set: an OOM-deferred self-check that passes later joins it from an eager call, and eager calls read
+    # the accuracy verdicts live. Traced calls read only the frozen install-time kinds, which the compile tag names.
+    live_eager = set(triton_eager)
+    pending = {"eager": set(), "accuracy": set(), "next": {}, "resolved": False}
     if tg is not None:
         try:
             for index in sorted(in_use):
@@ -540,11 +579,11 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
                         index, torch.bfloat16
                     ):
                         pending["eager"].add(index)
-                elif index not in triton_precise and tg.precise_pending(index):
-                    pending["precise"].add(index)
+                elif tg.accuracy_pending(index):
+                    pending["accuracy"].add(index)
         except Exception:  # noqa: BLE001 - nothing to retry then
             pending["eager"].clear()
-            pending["precise"].clear()
+            pending["accuracy"].clear()
 
     def retry_pending(index: Any, device: Any) -> None:
         # Eager only, never inside a CUDA graph capture (the checks sync the host), at most every _TRITON_RETRY_S.
@@ -558,27 +597,26 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
                     pending["eager"].discard(index)
                     live_eager.add(index)
                     pending["resolved"] = True
-                    if tg.precise_pending(index):
-                        pending["precise"].add(index)
+                    if tg.accuracy_pending(index):
+                        pending["accuracy"].add(index)
                 elif not tg.check_pending(index, torch.bfloat16):
                     pending["eager"].discard(index)
-            if index in pending["precise"]:
-                if tg.verify_precise(index):
-                    pending["precise"].discard(index)
-                    live_precise.add(index)
+            if index in pending["accuracy"]:
+                if tg.verify_accuracy(index):
+                    pending["accuracy"].discard(index)
                     pending["resolved"] = True
-                elif not tg.precise_pending(index):
-                    pending["precise"].discard(index)
+                elif not tg.accuracy_pending(index):
+                    pending["accuracy"].discard(index)
         except Exception:  # noqa: BLE001 - the retry is optional: the tensorwise route stays
             pending["eager"].discard(index)
-            pending["precise"].discard(index)
+            pending["accuracy"].discard(index)
         if logger is not None and pending["resolved"]:
             try:
                 logger.info(
-                    "fp8: deferred fused Triton GEMM self-check passed on cuda:%s (eager now; precise accumulate: "
+                    "fp8: deferred fused Triton GEMM check passed on cuda:%s (eager now; accuracy-checked kinds: "
                     "%s); compiled graphs take it from the next load",
                     index,
-                    index in live_precise,
+                    _triton_status_kinds(tg, index),
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -595,25 +633,24 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
     ) -> Any:
         # No row-wise kernel on this card: every row count and accumulate mode, as torchao would fail.
         missing = a_data.device.type == "cuda" and a_data.device.index in fallback
-        # Precise accumulate only where the card's accumulator check passed; else it keeps cuBLAS's.
+        # Each request kind (dtype x fast / precise accumulate) only where the accuracy check passed it.
         if missing and output_scale is None and tg is not None:
             index = a_data.device.index
             if _traced(a_data):
-                # Traced: the install-time sets only, and a dtype already self-checked here (no launch can run
-                # inside a trace).
+                # Traced: the install-time kinds only (no launch can run inside a trace). A launch failure since
+                # can only turn the kernel off, never on.
                 if (
-                    index in triton_compiled
-                    and (use_fast_accum or index in compiled_precise)
+                    (index, output_dtype, bool(use_fast_accum)) in triton_kinds
                     and tg.eligible(a_data, a_scale, b_data, b_scale, bias, output_dtype)
-                    and tg.verified(index, output_dtype)
+                    and not tg.card_failed(index)
                 ):
                     return tg.traced_gemm(a_data, a_scale, b_data, b_scale, bias, output_dtype)
             else:
-                if index in pending["eager"] or index in pending["precise"]:
+                if index in pending["eager"] or index in pending["accuracy"]:
                     retry_pending(index, a_data.device)
                 if (
                     index in live_eager
-                    and (use_fast_accum or index in live_precise)
+                    and tg.accurate(index, output_dtype, use_fast_accum)
                     and tg.eligible(a_data, a_scale, b_data, b_scale, bias, output_dtype)
                 ):
                     out = tg.eager_gemm(a_data, a_scale, b_data, b_scale, bias, output_dtype)
@@ -677,7 +714,7 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         forced_fallback = forced_fallback,
         triton_eager = live_eager,
         triton_compiled = triton_compiled,
-        triton_precise = live_precise,
+        triton_kinds = triton_kinds,
         triton_pending = pending,
     )
     # Only a fallback install changes the tag: an sm_89 / force install keys exactly as before.
@@ -693,10 +730,8 @@ def install(logger: Any = None, *, fast_accum: Optional[bool] = None) -> bool:
         missing_tag += (
             f":gemm=triton-{'+'.join(str(i) for i in sorted(triton_compiled))}-{tg.source_digest()}"
         )
-        # Precise-accumulate GEMMs trace to the kernel only on these cards: a deferred accumulator check must not
-        # share a cached graph with a passed one.
-        if compiled_precise:
-            missing_tag += f":precise={'+'.join(str(i) for i in sorted(compiled_precise))}"
+        # The request kinds traced to the kernel: graphs from installs with other verdicts must not share a cache entry.
+        missing_tag += f":kinds={'+'.join(_kind_names(triton_kinds))}"
     _set_compile_cache_tag(f"{min_rows}{':force' if force else ''}{missing_tag}")
     if logger is not None:
         try:
@@ -738,7 +773,7 @@ def uninstall() -> None:
             forced_fallback = False,
             triton_eager = frozenset(),
             triton_compiled = frozenset(),
-            triton_precise = frozenset(),
+            triton_kinds = frozenset(),
             triton_pending = None,
         )
         _set_compile_cache_tag(None)

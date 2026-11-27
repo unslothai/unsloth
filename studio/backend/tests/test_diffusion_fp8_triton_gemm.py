@@ -80,9 +80,12 @@ class _Kernel:
         verify = True,
         eager_result = "ref",
         traced = True,
+        fast = True,
         precise = False,
     ):
         self.eager, self.traced, self.verified = [], [], []
+        # Accuracy verdict per accumulate mode (fast, precise), any dtype.
+        self.kinds = {True: fast, False: precise}
         monkeypatch.setattr(tg, "available", lambda: True)
         monkeypatch.setattr(tg, "traced_available", lambda: traced)
         monkeypatch.setattr(tg, "eligible", lambda a, sa, b, sb, bias, dt: True)
@@ -107,7 +110,29 @@ class _Kernel:
         )
         monkeypatch.setattr(tg, "eager_gemm", fake_eager)
         monkeypatch.setattr(tg, "traced_gemm", fake_traced)
-        monkeypatch.setattr(tg, "verify_precise", lambda index: precise)
+        monkeypatch.setattr(tg, "verify_accuracy", lambda index: any(self.kinds.values()))
+        monkeypatch.setattr(tg, "accurate", lambda index, dt, f: self.kinds[bool(f)])
+        monkeypatch.setattr(tg, "accuracy_pending", lambda index: False)
+        monkeypatch.setattr(tg, "card_failed", lambda index: False)
+
+
+def _status(
+    eager,
+    compiled,
+    *,
+    fast = True,
+    precise = False,
+    kinds = None,
+):
+    if kinds is None:
+        kinds = ([f"0bf16{m}" for m, on in (("f", fast), ("p", precise)) if on]) if compiled else []
+    return {
+        "eager": eager,
+        "compiled": compiled,
+        "fast_accumulate": fast and eager,
+        "precise_accumulate": precise and eager,
+        "compiled_kinds": sorted(kinds),
+    }
 
 
 def _call(
@@ -137,11 +162,7 @@ def test_fallback_card_runs_the_fused_kernel_in_eager(monkeypatch, cap, bias):
     assert us.stats()["triton_gemm"] == 1 and us.stats()["unit_scale"] == 0
     status = us.gemm_path(0)
     assert status["path"] == "unit_scale_fallback"
-    assert status["triton_gemm"] == {
-        "eager": True,
-        "compiled": cap[0] == 12,
-        "precise_accumulate": False,
-    }
+    assert status["triton_gemm"] == _status(True, cap[0] == 12)
 
 
 @pytest.mark.parametrize("cap,compiled", [((12, 0), True), ((12, 1), True), ((8, 9), False)])
@@ -176,11 +197,7 @@ def test_kill_switch_keeps_the_tensorwise_route_and_its_tag(monkeypatch):
     calls.clear()
     _call()
     assert calls == ["tensorwise32"] and k.eager == []
-    assert us.gemm_path(0)["triton_gemm"] == {
-        "eager": False,
-        "compiled": False,
-        "precise_accumulate": False,
-    }
+    assert us.gemm_path(0)["triton_gemm"] == _status(False, False, fast = False)
 
 
 def test_compiled_kernel_keys_the_compile_cache_on_its_source(monkeypatch):
@@ -193,7 +210,7 @@ def test_compiled_kernel_keys_the_compile_cache_on_its_source(monkeypatch):
     digest = tg.source_digest()
     assert len(digest) == 12 and digest != "unknown"
     assert ccfg.cache_key_tag == (
-        f"unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0:gemm=triton-0-{digest}"
+        f"unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0:gemm=triton-0-{digest}:kinds=0bf16f"
     )
 
 
@@ -216,11 +233,7 @@ def test_no_triton_op_keeps_compiled_on_the_fallback(monkeypatch):
     k = _Kernel(monkeypatch, traced = False)
     tq._make_quant_config(tq.TQ_FP8)
     assert ccfg.cache_key_tag == "unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0"
-    assert us.gemm_path(0)["triton_gemm"] == {
-        "eager": True,
-        "compiled": False,
-        "precise_accumulate": False,
-    }
+    assert us.gemm_path(0)["triton_gemm"] == _status(True, False)
     _call()
     assert k.eager == [torch.bfloat16]
 
@@ -490,17 +503,26 @@ def test_triton_op_registers_and_traces_with_fake_tensors():
     assert "unsloth_studio.fp8_rowwise_gemm" in g.code
 
 
-def test_precise_accumulate_keeps_the_tensorwise_gemm_without_the_accumulator_check(monkeypatch):
-    # A card whose accumulator check failed (or did not run): precise-accumulate requests keep cuBLAS's own.
+@pytest.mark.parametrize("fast_ok,precise_ok", [(True, False), (False, True), (False, False)])
+def test_each_accumulate_mode_takes_the_kernel_on_its_own_accuracy_verdict(
+    monkeypatch, fast_ok, precise_ok
+):
+    # Fast and precise accumulate requests are gated separately, eager and traced: a mode whose accuracy check failed
+    # keeps the tensorwise cuBLAS GEMM, the other one still takes the kernel.
     calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
-    k = _Kernel(monkeypatch, precise = False)
+    k = _Kernel(monkeypatch, fast = fast_ok, precise = precise_ok)
     tq._make_quant_config(tq.TQ_FP8)
-    calls.clear()
-    _call(fast = False)
-    assert calls == ["tensorwise32"] and k.eager == []
-    _call(fast = True)
-    assert k.eager == [torch.bfloat16]
-    assert us.gemm_path(0)["triton_gemm"]["precise_accumulate"] is False
+    status = us.gemm_path(0)["triton_gemm"]
+    assert status == _status(True, fast_ok or precise_ok, fast = fast_ok, precise = precise_ok)
+    for traced in (False, True):
+        _traced_calls(monkeypatch, traced)
+        for fast, ok in ((True, fast_ok), (False, precise_ok)):
+            calls.clear()
+            k.eager.clear()
+            k.traced.clear()
+            _call(fast = fast)
+            took = k.traced if traced else k.eager
+            assert (took == [torch.bfloat16]) is ok and (calls == []) is ok, (traced, fast)
 
 
 @pytest.mark.parametrize("cap,compiled", [((12, 0), True), ((12, 1), True), ((8, 9), False)])
@@ -510,8 +532,8 @@ def test_prequant_checkpoint_load_routes_precise_gemms_to_the_kernel(
 ):
     # Studio's own FP8 load seeds the hosted pre-quantized denoiser (unsloth/FLUX.2-klein-4B-FP8): its Float8Tensors
     # are baked with Float8MMConfig(use_fast_accum=False), and the dispatcher is installed from the checkpoint, not
-    # from _make_quant_config. On a card whose accumulator check passed, those GEMMs must take the kernel, eager and
-    # (sm_12x) traced, exactly like the quantize_ route. The 5090 compiled render missed this (unit_scale only).
+    # from _make_quant_config. On a card whose accuracy check passed precise accumulate, those GEMMs must take the
+    # kernel, eager and (sm_12x) traced, exactly like the quantize_ route.
     from core.inference import diffusion_prequant as dp
 
     calls = rf._fake_card(monkeypatch, cap, rowwise_ok = False)
@@ -521,11 +543,7 @@ def test_prequant_checkpoint_load_routes_precise_gemms_to_the_kernel(
         meta["fast_accum"] = meta_fast
     dp._install_fp8_unit_scale_for({"metadata": meta, "state_dict": {}})
     assert us.stats()["installed"] is True and us.fallback_cards() == frozenset({0})
-    assert us.gemm_path(0)["triton_gemm"] == {
-        "eager": True,
-        "compiled": compiled,
-        "precise_accumulate": True,
-    }
+    assert us.gemm_path(0)["triton_gemm"] == _status(True, compiled, precise = True)
     calls.clear()
     _call(fast = False)
     assert k.eager == [torch.bfloat16] and calls == []
@@ -536,58 +554,6 @@ def test_prequant_checkpoint_load_routes_precise_gemms_to_the_kernel(
         assert k.traced == [torch.bfloat16] and calls == []
     else:
         assert k.traced == [] and calls == ["tensorwise32"]
-
-
-def test_accumulator_check_threshold_separates_fp32_from_a_14_bit_accumulator():
-    # The real check operands on CPU: an fp32 accumulator (blocked like a tensor-core k loop) leaves a residue far
-    # under the bound, a 14-bit one (Hopper-style fast accumulate, emulated) far over it.
-    a, b, partial = tg._precise_operands("cpu")
-    A, B = a.float(), b.float()
-
-    def run(bits):
-        acc = torch.zeros(A.shape[0], B.shape[1])
-        for k0 in range(0, A.shape[1], 32):
-            acc = acc + A[:, k0 : k0 + 32] @ B[k0 : k0 + 32]
-            if bits:
-                m, e = torch.frexp(acc)
-                acc = torch.ldexp(torch.round(m * 2**bits) / 2**bits, e)
-        return float(acc.abs().max()) / partial
-
-    assert run(0) * 2**5 < tg._PRECISE_RESIDUE
-    assert run(14) > tg._PRECISE_RESIDUE * 2**3
-
-
-@pytest.mark.parametrize("kernel_residue,ok", [(2.0**-22, True), (2.0**-11, False)])
-def test_verify_precise_compares_the_kernel_with_cublas_precise(monkeypatch, kernel_residue, ok):
-    if not tg.available():
-        pytest.skip("no triton")
-    import contextlib
-
-    a, b, partial = tg._precise_operands("cpu")
-    monkeypatch.setitem(tg._STATE, "precise", {})
-    monkeypatch.setattr(tg, "verified", lambda index, dt: True)
-    monkeypatch.setattr(tg, "_precise_operands", lambda device: (a, b, partial))
-    monkeypatch.setattr(torch.cuda, "device", lambda index: contextlib.nullcontext())
-    real_ones = torch.ones
-    monkeypatch.setattr(torch, "ones", lambda *s, device = None, **k: real_ones(*s, **k))
-    precise_flags = []
-
-    def scaled_mm(a, b, scale_a, scale_b, out_dtype, use_fast_accum):
-        precise_flags.append(use_fast_accum)
-        return torch.full((a.shape[0], b.shape[1]), 2.0**-22 * partial)
-
-    monkeypatch.setattr(torch, "_scaled_mm", scaled_mm)
-    monkeypatch.setattr(
-        tg,
-        "_launch",
-        lambda kern, a, sa, b, sb, bias, dt: torch.full(
-            (a.shape[0], b.shape[1]), kernel_residue * partial
-        ).to(dt),
-    )
-    assert tg.verify_precise(0) is ok
-    assert precise_flags == [False, True]
-    info = tg.describe()["precise"][0]
-    assert info["ok"] is ok and abs(info["cublas_precise"] - 2.0**-22) < 1e-9
 
 
 def test_traced_call_needs_a_self_checked_dtype(monkeypatch):
@@ -602,6 +568,43 @@ def test_traced_call_needs_a_self_checked_dtype(monkeypatch):
     assert k.traced == [] and calls == ["tensorwise32"]
     _call(out = torch.bfloat16)
     assert k.traced == [torch.bfloat16]
+
+
+def test_traced_kinds_are_frozen_at_install_and_named_in_the_tag(monkeypatch):
+    # An fp16 self-check that passes after install (from an eager fp16 call) must not change what a trace emits under
+    # the same compile cache tag: the next install picks it up and names it.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    k = _Kernel(monkeypatch)
+    tq._make_quant_config(tq.TQ_FP8)
+    tag = ccfg.cache_key_tag
+    assert tag.endswith(":kinds=0bf16f")
+    k.verified.append((0, torch.float16))  # the eager fp16 self-check passed since
+    _traced_calls(monkeypatch, True)
+    calls.clear()
+    _call(out = torch.float16)
+    assert k.traced == [] and calls == ["tensorwise32"] and ccfg.cache_key_tag == tag
+    _traced_calls(monkeypatch, False)
+    us.uninstall()
+    us.install()
+    assert ccfg.cache_key_tag.endswith(":kinds=0bf16f+0fp16f")
+    assert us.gemm_path(0)["triton_gemm"]["compiled_kinds"] == ["0bf16f", "0fp16f"]
+    _traced_calls(monkeypatch, True)
+    _call(out = torch.float16)
+    assert k.traced == [torch.float16]
+
+
+def test_traced_call_keeps_the_fallback_after_a_launch_failure(monkeypatch):
+    calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    k = _Kernel(monkeypatch)
+    tq._make_quant_config(tq.TQ_FP8)
+    monkeypatch.setattr(tg, "card_failed", lambda index: True)
+    _traced_calls(monkeypatch, True)
+    calls.clear()
+    _call()
+    assert k.traced == [] and calls == ["tensorwise32"]
 
 
 def test_install_survives_a_failing_kernel_setup(monkeypatch):
@@ -679,7 +682,7 @@ def test_eligible_bounds_strided_offsets():
 
 
 class _Deferred:
-    """A self-check (bf16 or accumulator) that hits an OOM until ``passes()``: no verdict meanwhile, then a pass."""
+    """A self-check (bf16 or accuracy) that hits an OOM until ``passes()``: no verdict meanwhile, then a pass."""
 
     def __init__(
         self,
@@ -698,19 +701,20 @@ class _Deferred:
             self.bf16_calls.append((index, dt))
             return self.bf16_ok
 
-        def verify_precise(index):
+        def verify_accuracy(index):
             self.precise_calls.append(index)
             if self.precise_ok:
                 self.precise_known.add(index)
             return self.precise_ok
 
         monkeypatch.setattr(tg, "verify", verify)
-        monkeypatch.setattr(tg, "verified", lambda index, dt: self.bf16_ok)
+        monkeypatch.setattr(tg, "verified", lambda index, dt: self.bf16_ok and dt == torch.bfloat16)
         monkeypatch.setattr(tg, "check_pending", lambda index, dt: not self.bf16_ok, raising = False)
-        monkeypatch.setattr(tg, "verify_precise", verify_precise)
+        monkeypatch.setattr(tg, "verify_accuracy", verify_accuracy)
+        monkeypatch.setattr(tg, "accurate", lambda index, dt, fast: index in self.precise_known)
         monkeypatch.setattr(
             tg,
-            "precise_pending",
+            "accuracy_pending",
             lambda index: self.bf16_ok and index not in self.precise_known,
             raising = False,
         )
@@ -744,11 +748,8 @@ def test_oom_deferred_self_check_retries_from_an_eager_call(monkeypatch):
     calls.clear()
     _call()
     assert k.eager == [torch.bfloat16] and calls == []
-    assert us.gemm_path(0)["triton_gemm"] == {
-        "eager": True,
-        "compiled": False,  # graphs traced from here on keep the fallback until the next install
-        "precise_accumulate": True,
-    }
+    # graphs traced from here on keep the fallback until the next install
+    assert us.gemm_path(0)["triton_gemm"] == _status(True, False, precise = True)
     assert ccfg.cache_key_tag == fallback_tag
     _traced_calls(monkeypatch, True)
     calls.clear()
@@ -757,12 +758,10 @@ def test_oom_deferred_self_check_retries_from_an_eager_call(monkeypatch):
     _traced_calls(monkeypatch, False)
     # The next install (the next load) rebuilds the dispatcher: compiled path and its cache tag.
     us.install()
-    assert us.gemm_path(0)["triton_gemm"] == {
-        "eager": True,
-        "compiled": True,
-        "precise_accumulate": True,
-    }
-    assert ccfg.cache_key_tag == f"{fallback_tag}:gemm=triton-0-{tg.source_digest()}:precise=0"
+    assert us.gemm_path(0)["triton_gemm"] == _status(True, True, precise = True)
+    assert ccfg.cache_key_tag == (
+        f"{fallback_tag}:gemm=triton-0-{tg.source_digest()}:kinds=0bf16f+0bf16p"
+    )
     _traced_calls(monkeypatch, True)
     _call()
     assert k.traced == [torch.bfloat16]
@@ -798,7 +797,9 @@ def test_deferred_self_check_backs_off_between_retries(monkeypatch):
     assert len(d.bf16_calls) == 2  # install + one eager retry, then the back-off holds
 
 
-def test_oom_deferred_accumulator_check_retries_from_an_eager_call(monkeypatch):
+def test_oom_deferred_accuracy_check_retries_from_an_eager_call(monkeypatch):
+    # The self-check passed but the accuracy check hit an OOM: no request kind has a verdict, so fast and precise
+    # requests alike keep the tensorwise GEMM (eager and traced) until a retry measures it.
     import torch.compiler.config as ccfg
 
     monkeypatch.setattr(ccfg, "cache_key_tag", "")
@@ -806,28 +807,29 @@ def test_oom_deferred_accumulator_check_retries_from_an_eager_call(monkeypatch):
     k = _Kernel(monkeypatch)
     d = _Deferred(monkeypatch, bf16_oom = False, precise_oom = True)
     tq._make_quant_config(tq.TQ_FP8)
-    tag = f"unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0:gemm=triton-0-{tg.source_digest()}"
+    tag = "unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0"
     assert ccfg.cache_key_tag == tag
-    assert us.gemm_path(0)["triton_gemm"]["precise_accumulate"] is False
-    calls.clear()
-    _call(fast = False)
-    assert calls == ["tensorwise32"] and k.eager == []
+    assert us.gemm_path(0)["triton_gemm"] == _status(True, False, fast = False)
+    for fast in (True, False):
+        calls.clear()
+        _call(fast = fast)
+        assert calls == ["tensorwise32"] and k.eager == []
     d.passes()
     calls.clear()
     _call(fast = False)
     assert k.eager == [torch.bfloat16] and calls == []
-    # A precise GEMM traced now keeps the fallback the cache tag names; the next install moves both.
+    # A GEMM traced now keeps the fallback the cache tag names; the next install moves both.
     _traced_calls(monkeypatch, True)
-    calls.clear()
-    _call(fast = False)
-    assert k.traced == [] and calls == ["tensorwise32"]
-    _call(fast = True)
-    assert k.traced == [torch.bfloat16]
+    for fast in (True, False):
+        calls.clear()
+        _call(fast = fast)
+        assert k.traced == [] and calls == ["tensorwise32"]
     _traced_calls(monkeypatch, False)
     us.install()
-    assert ccfg.cache_key_tag == f"{tag}:precise=0"
+    assert ccfg.cache_key_tag == f"{tag}:gemm=triton-0-{tg.source_digest()}:kinds=0bf16f+0bf16p"
     _traced_calls(monkeypatch, True)
     _call(fast = False)
+    _call(fast = True)
     assert k.traced == [torch.bfloat16, torch.bfloat16]
 
 
@@ -842,3 +844,331 @@ def test_a_real_self_check_failure_is_not_retried(monkeypatch):
     _call()
     _call()
     assert len(d.bf16_calls) == 2  # the one retry learned the verdict, then nothing more
+
+
+# ---------------------------------------------------------------- accuracy gate vs the tensorwise path (CPU)
+
+
+def _accuracy_env(
+    monkeypatch,
+    *,
+    shapes = ((48, 3072, 64), (48, 9216, 64)),
+    fp32_out = True,
+):
+    import contextlib
+
+    if not tg.available():
+        pytest.skip("no triton")
+    monkeypatch.setitem(tg._STATE, "accuracy", {})
+    monkeypatch.setattr(tg, "verified", lambda index, dt: True)
+    monkeypatch.setattr(tg, "_on_card", lambda index: contextlib.nullcontext())
+    monkeypatch.setattr(tg, "_device", lambda index: "cpu")
+    monkeypatch.setattr(tg, "_ACC_SHAPES", shapes)
+    us._FP32_OUT[0] = fp32_out
+    seen = []
+
+    def run(kernel, cublas):
+        """kernel(a, b) -> fp32 [M, N] unscaled accumulator; cublas(a, b, fast) likewise."""
+
+        def scaled_mm(a, b, scale_a, scale_b, out_dtype, use_fast_accum):
+            seen.append(use_fast_accum)
+            return cublas(a, b, use_fast_accum).to(out_dtype)
+
+        def launch(kern, a, sa, b, sb, bias, dt):
+            out = kernel(a, b) * sa * sb
+            if bias is not None:
+                out = out + bias.float()
+            return out.to(dt)
+
+        monkeypatch.setattr(torch, "_scaled_mm", scaled_mm)
+        monkeypatch.setattr(tg, "_launch", launch)
+        tg._STATE["accuracy"].clear()
+        tg.verify_accuracy(0)
+        return tg._STATE["accuracy"][0]
+
+    return run, seen
+
+
+def _exact(a, b):
+    return (a.double() @ b.double()).float()
+
+
+def _scaled(err):
+    return lambda a, b, *fast: (a.double() @ b.double() * (1 + err)).float()
+
+
+def test_accuracy_shapes_are_production_gemms():
+    assert {(m, k) for m, k, n in tg._ACC_SHAPES} == {
+        (512, 3072),
+        (512, 9216),
+        (4096, 3072),
+        (4096, 9216),
+    }
+    assert {n for _, _, n in tg._ACC_SHAPES} == {3072}
+
+
+@pytest.mark.parametrize(
+    "kernel_err,fast_err,precise_err,want",
+    [
+        # 2.9x cuBLAS precise (the Spark residue ratio) but far under every floor: all kinds pass.
+        (2.9e-7, 1e-7, 1e-7, dict(bf16f = True, bf16p = True, fp16f = True, fp16p = True)),
+        # Over the fp16 floor and 1.05x cuBLAS precise, under cuBLAS fast and the bf16 floor.
+        (2e-5, 1e-4, 1e-6, dict(bf16f = True, bf16p = True, fp16f = True, fp16p = False)),
+        # Above both floors: the 1.05x rule decides, per accumulate mode.
+        (1.04e-4, 1e-3, 1e-4, dict(bf16f = True, bf16p = True, fp16f = True, fp16p = True)),
+        (1.2e-4, 1e-3, 1e-4, dict(bf16f = True, bf16p = False, fp16f = True, fp16p = False)),
+        # A kernel off by a quarter of a bf16 ulp: nothing ships.
+        (1e-3, 1e-4, 1e-6, dict(bf16f = False, bf16p = False, fp16f = False, fp16p = False)),
+    ],
+)
+def test_accuracy_gate_compares_with_the_existing_path_per_kind(
+    monkeypatch, kernel_err, fast_err, precise_err, want
+):
+    run, seen = _accuracy_env(monkeypatch)
+    info = run(
+        _scaled(kernel_err),
+        lambda a, b, fast: _scaled(fast_err if fast else precise_err)(a, b),
+    )
+    got = {
+        f"{short}{'f' if fast else 'p'}": tg.accurate(0, dt, fast)
+        for dt, short in ((torch.bfloat16, "bf16"), (torch.float16, "fp16"))
+        for fast in (True, False)
+    }
+    assert got == want, info
+    assert seen == [True, False, True, False]  # both accumulate modes measured, per shape
+    row = info["shapes"][0]
+    # the metric reads the injected relative error (fp32 rounding adds ~1e-8)
+    assert (
+        abs(row["kernel_fp32"] / kernel_err - 1) < 0.3
+        and abs(row["precise_fp32"] / precise_err - 1) < 0.3
+    )
+    assert info["existing_acc"] == "float32" and "accuracy" in tg.describe()
+
+
+def test_accuracy_gate_passes_fp32_accumulation_and_fails_a_14_bit_accumulator(monkeypatch):
+    # Emulated on CPU at production K: a tensor-core style blocked fp32 accumulator passes every kind against cuBLAS
+    # fp32; a reduced-precision (14-bit, Hopper-style fast accumulate) accumulator fails every kind.
+    run, _ = _accuracy_env(monkeypatch)
+
+    def blocked(bits):
+        def kernel(a, b):
+            A, B = a.float(), b.float()
+            acc = torch.zeros(A.shape[0], B.shape[1])
+            for k0 in range(0, A.shape[1], 128):
+                acc = acc + A[:, k0 : k0 + 128] @ B[k0 : k0 + 128]
+                if bits:
+                    m, e = torch.frexp(acc)
+                    acc = torch.ldexp(torch.round(m * 2**bits) / 2**bits, e)
+            return acc
+
+        return kernel
+
+    cublas = lambda a, b, fast: a.float() @ b.float()  # noqa: E731
+    run(blocked(0), cublas)
+    assert all(tg._STATE["accuracy"][0]["ok"].values()), tg._STATE["accuracy"][0]
+    run(blocked(14), cublas)
+    assert not any(tg._STATE["accuracy"][0]["ok"].values()), tg._STATE["accuracy"][0]
+
+
+def test_accuracy_gate_compares_with_a_bf16_accumulator_where_fp32_out_is_missing(monkeypatch):
+    run, _ = _accuracy_env(monkeypatch, fp32_out = False)
+    info = run(_exact, lambda a, b, fast: _exact(a, b))
+    assert info["existing_acc"] == "bfloat16" and all(info["ok"].values())
+
+
+def test_accuracy_check_oom_is_no_verdict(monkeypatch):
+    run, _ = _accuracy_env(monkeypatch)
+
+    def oom(*a, **k):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(tg, "_accuracy_operands", oom)
+    assert tg.verify_accuracy(0) is False
+    assert 0 not in tg._STATE["accuracy"] and tg.accuracy_pending(0)
+    assert not tg.accurate(0, torch.bfloat16, True)
+
+
+def test_accuracy_check_error_fails_closed(monkeypatch):
+    run, _ = _accuracy_env(monkeypatch)
+    monkeypatch.setattr(tg, "_accuracy_operands", lambda *a: 1 / 0)
+    assert tg.verify_accuracy(0) is False
+    assert "ZeroDivisionError" in tg._STATE["accuracy"][0]["error"]
+    assert not tg.accuracy_pending(0)
+
+
+# ---------------------------------------------------------------- self-check depth, autotune key, retries, floor
+
+
+def test_self_check_runs_the_pipelined_k_loop_in_steady_state():
+    if not tg.available():
+        pytest.skip("no triton")
+    a, sa, b, sb, bias = tg._check_operands("cpu")
+    k = a.shape[1]
+    assert k == tg._CHECK_K and k % 16 == 0 and k % 64 != 0
+    assert 36 * k < 2**24  # |integer sum| stays exact in fp32
+    for cfg in tg._fp8_rowwise_gemm.configs:
+        iters = -(-k // cfg.kwargs["BLOCK_K"])
+        assert iters >= cfg.num_stages + 1, cfg
+
+
+def test_autotune_key_names_the_device_arch(monkeypatch):
+    if not tg.available():
+        pytest.skip("no triton")
+    assert "ARCH" in tg._fp8_rowwise_gemm.keys
+    assert "ARCH" in tg._fp8_rowwise_gemm_kernel.do_not_specialize or any(
+        getattr(p, "name", None) == "ARCH" and getattr(p, "do_not_specialize", False)
+        for p in getattr(tg._fp8_rowwise_gemm_kernel, "params", ())
+    )
+    monkeypatch.setattr(tg, "_arch", lambda device: 121)
+    seen = {}
+
+    class _Rec:
+        def __getitem__(self, grid):
+            def run(*args, **kwargs):
+                seen.update(zip(tg._fp8_rowwise_gemm_kernel.arg_names, args))
+
+            return run
+
+    a, sa, b, sb, _ = _meta_operands(512, 3072, 3072)
+    tg._launch(_Rec(), a, sa, b, sb, None, torch.bfloat16)
+    assert seen["ARCH"] == 121 and seen["M_BUCKET"] == 512
+
+
+def test_traced_symbolic_rows_get_one_fixed_bucket():
+    class _Sym:  # a SymInt stand-in: not an int
+        pass
+
+    assert tg._bucket(_Sym()) == tg._TRACED_BUCKET
+
+
+def test_eager_autotune_oom_retries_the_shape_with_backoff(monkeypatch):
+    if not tg.available():
+        pytest.skip("no triton")
+    now = [1000.0]
+    monkeypatch.setattr(tg.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(tg, "_capturing", lambda device: False)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setitem(tg._STATE, "failed", {})
+    monkeypatch.setitem(tg._STATE, "verified", {(0, torch.bfloat16): True})
+    monkeypatch.setitem(tg._STATE, "tuned", set())
+    monkeypatch.setitem(tg._STATE, "skip", {})
+    launches = []
+    oom = [True]
+
+    def launch(*a):
+        launches.append(1)
+        if oom[0]:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+        return "out"
+
+    monkeypatch.setattr(tg, "_launch", launch)
+    a, sa, b, sb, _ = _meta_operands(512, 3072, 3072)
+
+    class _A:
+        device = type("D", (), {"index": 0, "type": "cuda"})()
+        shape = a.shape
+        dtype = a.dtype
+
+        @staticmethod
+        def stride(i):
+            return a.stride(i)
+
+    call = lambda: tg.eager_gemm(_A(), sa, b, sb, None, torch.bfloat16)  # noqa: E731
+    assert call() is None and len(launches) == 1
+    assert call() is None and len(launches) == 1  # backing off
+    now[0] += tg._SKIP_RETRY_S + 1
+    assert call() is None and len(launches) == 2  # retried, OOM again: the wait doubles
+    now[0] += tg._SKIP_RETRY_S + 1
+    assert call() is None and len(launches) == 2
+    now[0] += tg._SKIP_RETRY_S
+    oom[0] = False
+    assert call() == "out" and len(launches) == 3
+    assert not tg._STATE["skip"] and not tg._STATE["failed"]
+
+
+def test_version_floor_parses_triton_versions():
+    v = tg._version_tuple
+    assert v("3.2.0") == (3, 2) and v("3.2.0.post12") == (3, 2) and v("3.10.1") == (3, 10)
+    assert v("3.1.0") < tg._MIN_TRITON <= v("3.2.0") and v("") == () and v("dev") == ()
+
+
+_OLD_TRITON = textwrap.dedent(
+    """
+    import sys, types
+    sys.path.insert(0, sys.argv[1])
+    triton = types.ModuleType("triton")
+    triton.__version__ = "3.1.0"
+    language = types.ModuleType("triton.language")
+    language.inline_asm_elementwise = object()
+    triton.language = language
+    sys.modules["triton"], sys.modules["triton.language"] = triton, language
+    from core.inference import diffusion_fp8_triton_gemm as tg
+    assert not tg.available(), tg.describe()
+    assert "3.1.0 < 3.2" in tg.describe()["error"], tg.describe()
+    print("OK")
+    """
+)
+
+
+def test_triton_below_the_floor_keeps_the_fallback(tmp_path):
+    script = tmp_path / "old_triton.py"
+    script.write_text(_OLD_TRITON)
+    p = subprocess.run(
+        [sys.executable, "-I", str(script), str(BACKEND)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert p.returncode == 0 and "OK" in p.stdout, (p.stdout + p.stderr)[-4000:]
+
+
+_PTX = textwrap.dedent(
+    """
+    import re, sys
+    sys.path.insert(0, sys.argv[1])
+    import triton
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+    from core.inference import diffusion_fp8_triton_gemm as tg
+    k = tg._fp8_rowwise_gemm_kernel
+    const = ("HAS_BIAS", "PIN_RN", "BLOCK_M", "BLOCK_N", "BLOCK_K", "GROUP_M")
+    ptrs = {"a_ptr": "*fp8e4nv", "b_ptr": "*fp8e4nv", "sa_ptr": "*fp32", "sb_ptr": "*fp32", "bias_ptr": "*bf16",
+            "c_ptr": "*bf16"}
+    cfg = tg._fp8_rowwise_gemm.configs[-1]
+    bad = []
+    for cap in (89, 120):
+        sig = {n: ptrs.get(n, "constexpr" if n in const else "i32") for n in k.arg_names}
+        consts = {"HAS_BIAS": True, "PIN_RN": True, **cfg.kwargs}
+        try:
+            src = ASTSource(fn=k, signature=sig, constexprs=consts)
+        except TypeError:
+            src = ASTSource(fn=k, signature=sig, constants=consts)
+        ptx = triton.compile(src, target=GPUTarget("cuda", cap, 32),
+                             options={"num_warps": cfg.num_warps, "num_stages": cfg.num_stages}).asm["ptx"]
+        ops = set(re.findall(r"\\b(?:mul|add|sub|fma)(?:\\.[a-z]+)*\\.f32\\b", ptx))
+        if ops != {"mul.rn.f32", "add.rn.f32"} or "mma.sync" not in ptx:
+            bad.append((cap, sorted(ops)))
+    print("BAD", bad)
+    sys.exit(1 if bad else 0)
+    """
+)
+
+
+def test_epilogue_ptx_rounds_to_nearest_without_ftz_or_fma(tmp_path):
+    # libdevice mul_rn / add_rn lowered to mul.rn.ftz.f32 / add.rn.ftz.f32 (denormals flushed). Offline compile, no GPU.
+    pytest.importorskip("triton")
+    pytest.importorskip("triton.backends.compiler")
+    if not tg.available():
+        pytest.skip("no triton")
+    script = tmp_path / "ptx.py"
+    script.write_text(_PTX)
+    env = {**os.environ, "TRITON_CACHE_DIR": str(tmp_path / "cache"), "CUDA_VISIBLE_DEVICES": ""}
+    env.pop("TRITON_INTERPRET", None)
+    p = subprocess.run(
+        [sys.executable, "-I", str(script), str(BACKEND)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 900,
+    )
+    assert p.returncode == 0, (p.stdout + p.stderr)[-4000:]

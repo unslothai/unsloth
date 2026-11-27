@@ -3,8 +3,11 @@
 
 """Fused Triton row-wise fp8 GEMM for cards whose torch build has no row-wise ``_scaled_mm`` (the Windows wheels).
 
-Epilogue = ``_scale_epilogue``'s fp32 ops in the same order, each round-to-nearest (no FMA contraction), rounded once
-to the output dtype. sm_89 is eager only (up to 1.24x slower than the compiled fallback). ``=0`` keeps the fallback."""
+Epilogue = ``_scale_epilogue``'s fp32 ops in the same order, each ``mul.rn.f32`` / ``add.rn.f32`` inline PTX (round to
+nearest, denormals kept, never contracted to an FMA), rounded once to the output dtype. The accumulator is not cuBLAS's:
+a request kind (output dtype x fast / precise accumulate) takes the kernel only where its error vs fp64 is within
+1.05x of the tensorwise path it replaces, or under a floor far below the output rounding (``verify_accuracy``).
+sm_89 is eager only (up to 1.24x slower than the compiled fallback). ``=0`` keeps the fallback. Triton >= 3.2."""
 
 from __future__ import annotations
 
@@ -12,6 +15,7 @@ import contextlib
 import hashlib
 import os
 import threading
+import time
 from typing import Any, Optional
 
 ENV = "UNSLOTH_DIFFUSION_FP8_TRITON_GEMM"
@@ -20,6 +24,13 @@ _OFF_WORDS = ("0", "off", "false", "no", "none")
 _MAX_ELEMS = (1 << 31) - 1
 # Autotune key: rows rounded up to a power of two (capped), so a new resolution reuses a tuned config.
 _MAX_BUCKET = 8192
+# Row bucket of a traced call whose row count is symbolic: one fixed key, no per-M tuning, no guard.
+_TRACED_BUCKET = 0
+# Older Triton: Triton 3.0 compile failures can kill the process; 3.2 is the oldest the kernel was built against.
+_MIN_TRITON = (3, 2)
+# An autotune that hit an OOM retries the shape after this many seconds, doubling up to the cap.
+_SKIP_RETRY_S = 30.0
+_SKIP_RETRY_MAX_S = 960.0
 
 _LOCK = threading.RLock()
 _STATE: dict = {
@@ -27,10 +38,10 @@ _STATE: dict = {
     "verified": {},
     "failed": {},
     "tuned": set(),
-    "skip": set(),
+    "skip": {},
     "unfit": {},
     "check": {},
-    "precise": {},
+    "accuracy": {},
     "op": None,
     "op_error": None,
 }
@@ -44,18 +55,24 @@ except Exception as _exc:  # noqa: BLE001 - no triton (or triton-windows): the t
     _STATE["error"] = f"{type(_exc).__name__}: {_exc}"
 
 _INTERPRET = os.environ.get("TRITON_INTERPRET", "") == "1"
-libdevice = None
+
+
+def _version_tuple(version: Any) -> tuple:
+    import re
+    found = re.match(r"(\d+)\.(\d+)", str(version))
+    return (int(found.group(1)), int(found.group(2))) if found else ()
+
+
 if triton is not None:
-    try:
-        from triton.language.extra import libdevice
-    except Exception:  # noqa: BLE001
-        try:
-            from triton.language.extra.cuda import libdevice
-        except Exception:  # noqa: BLE001
-            libdevice = None
-    if libdevice is None and not _INTERPRET:
-        # Without the round-to-nearest intrinsics the epilogue could contract to an FMA: keep the fallback.
-        _STATE["error"] = "triton has no libdevice"
+    _ver = _version_tuple(getattr(triton, "__version__", ""))
+    if not _ver or _ver < _MIN_TRITON:
+        _STATE["error"] = (
+            f"triton {getattr(triton, '__version__', '?')} < {'.'.join(map(str, _MIN_TRITON))}"
+        )
+        triton = None
+    elif not hasattr(tl, "inline_asm_elementwise"):
+        # Without inline PTX the epilogue would round with .ftz (libdevice) or contract to an FMA.
+        _STATE["error"] = "triton has no inline_asm_elementwise"
         triton = None
 
 if triton is not None:
@@ -86,7 +103,20 @@ if triton is not None:
             return {}
         return {"cache_results": True} if "cache_results" in params else {}
 
-    @triton.jit(do_not_specialize = ["M", "M_BUCKET"])
+    @triton.jit
+    def _mul_rn(x, y):
+        # libdevice mul_rn lowers to mul.rn.ftz.f32 (denormals flushed); plain * may contract into an FMA.
+        return tl.inline_asm_elementwise(
+            "mul.rn.f32 $0, $1, $2;", "=f,f,f", [x, y], dtype = tl.float32, is_pure = True, pack = 1
+        )
+
+    @triton.jit
+    def _add_rn(x, y):
+        return tl.inline_asm_elementwise(
+            "add.rn.f32 $0, $1, $2;", "=f,f,f", [x, y], dtype = tl.float32, is_pure = True, pack = 1
+        )
+
+    @triton.jit(do_not_specialize = ["M", "M_BUCKET", "ARCH"])
     def _fp8_rowwise_gemm_kernel(
         a_ptr,
         b_ptr,
@@ -98,6 +128,7 @@ if triton is not None:
         N,
         K,
         M_BUCKET,
+        ARCH,
         stride_am,
         stride_ak,
         stride_bk,
@@ -141,13 +172,13 @@ if triton is not None:
         sb = tl.load(sb_ptr + rn * stride_sb, mask = rn < N, other = 0.0).to(tl.float32)
         # _scale_epilogue's order: (acc * a_scale) * b_scale + bias, each rounded to nearest in fp32.
         if PIN_RN:
-            out = libdevice.mul_rn(libdevice.mul_rn(acc, sa[:, None]), sb[None, :])
+            out = _mul_rn(_mul_rn(acc, sa[:, None]), sb[None, :])
         else:
             out = acc * sa[:, None] * sb[None, :]
         if HAS_BIAS:
             bias = tl.load(bias_ptr + rn, mask = rn < N, other = 0.0).to(tl.float32)
             if PIN_RN:
-                out = libdevice.add_rn(out, bias[None, :])
+                out = _add_rn(out, bias[None, :])
             else:
                 out = out + bias[None, :]
         c_ptrs = c_ptr + rm[:, None] * stride_cm + rn[None, :] * stride_cn
@@ -166,8 +197,9 @@ if triton is not None:
         except Exception:  # noqa: BLE001
             pass
 
+    # ARCH (compute capability): Triton's in-memory tuning cache keys on the key args only, not on the device.
     _fp8_rowwise_gemm = triton.autotune(
-        configs = _configs(), key = ["M_BUCKET", "N", "K"], **_autotune_kwargs()
+        configs = _configs(), key = ["M_BUCKET", "N", "K", "ARCH"], **_autotune_kwargs()
     )(_fp8_rowwise_gemm_kernel)
 
 
@@ -201,14 +233,32 @@ def source_digest() -> str:
         return "unknown"
 
 
-def _bucket(m: Any) -> Any:
-    # Plain ints (eager) and SymInts (traced) alike: no math.log2, no comparisons that guard.
+def _bucket(m: Any) -> int:
+    # A symbolic row count (dynamic-shape trace) gets one fixed key: Inductor tunes a user kernel once per compiled
+    # graph anyway, and a SymInt key would re-tune per M wherever Triton's own autotuner runs it. No guard either way.
     if isinstance(m, int):
         b = 1
         while b < m and b < _MAX_BUCKET:
             b *= 2
         return b
-    return m
+    return _TRACED_BUCKET
+
+
+_ARCH: dict = {}
+
+
+def _arch(device: Any) -> int:
+    """Compute capability as ``major * 10 + minor`` (0 off CUDA), cached per card: primed by the eager self-check, so
+    a trace only reads it."""
+    if getattr(device, "type", None) != "cuda":
+        return 0
+    import torch
+
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    if index not in _ARCH:
+        major, minor = torch.cuda.get_device_capability(index)
+        _ARCH[index] = int(major) * 10 + int(minor)
+    return _ARCH[index]
 
 
 def eligible(
@@ -273,6 +323,7 @@ def _launch(
         n,
         k,
         _bucket(m),
+        _arch(a.device),
         a.stride(0),
         a.stride(1),
         b.stride(0),
@@ -341,7 +392,8 @@ def eager_gemm(
     if triton is None or _STATE["failed"].get(index):
         return None
     key = _key(a, a_scale, b, b_scale, bias, output_dtype)
-    if key in _STATE["skip"]:
+    skip = _STATE["skip"].get(key)
+    if skip is not None and time.monotonic() < skip[0]:
         return None
     # Autotuning and the self-check sync the host: never first inside a CUDA graph capture, nothing recorded.
     if not verified(index, output_dtype) and (
@@ -358,14 +410,17 @@ def eager_gemm(
                 out = _launch(_fp8_rowwise_gemm, a, a_scale, b, b_scale, bias, output_dtype)
     except Exception as exc:  # noqa: BLE001
         if key not in _STATE["tuned"] and _is_oom(exc):
-            # Autotuning's benchmark buffers did not fit: this shape keeps the fallback, nothing else changes.
-            _STATE["skip"].add(key)
+            # Autotuning's benchmark buffers did not fit: this shape keeps the fallback for a while, then tunes again
+            # (memory frees between renders), backing off 30 s, 60 s, ... up to 16 min.
+            delay = _SKIP_RETRY_S if skip is None else min(2 * skip[1], _SKIP_RETRY_MAX_S)
+            _STATE["skip"][key] = (time.monotonic() + delay, delay)
             return None
         if _is_fatal(exc):
             raise
         _STATE["failed"][index] = f"{type(exc).__name__}: {exc}"[:2000]
         return None
     _STATE["tuned"].add(key)
+    _STATE["skip"].pop(key, None)
     return out
 
 
@@ -407,17 +462,25 @@ def traced_available() -> bool:
 def traced_gemm(
     a: Any, a_scale: Any, b: Any, b_scale: Any, bias: Optional[Any], output_dtype: Any
 ) -> Any:
-    """The fused GEMM inside a Dynamo / AOTAutograd trace: a triton_op Inductor inlines (no graph break)."""
+    """The fused GEMM inside a Dynamo / AOTAutograd trace: a triton_op Inductor inlines (no graph break). Inductor
+    benchmarks the configs once, at the compiled graph's first launch, and keeps that config for every row count; an
+    OOM there raises out of the compiled graph like any other OOM in it (no fallback can run inside a graph)."""
     return _STATE["op"](a, a_scale, b, b_scale, bias, output_dtype)
 
 
+# Self-check K: 7 / 13 iterations of BLOCK_K 128 / 64, past every config's num_stages (3-4) prologue, so the
+# pipelined loop runs in steady state; not a multiple of 64 (a masked tail tile).
+_CHECK_K = 784
+
+
 def _check_operands(device: str) -> tuple:
-    """Integer fp8 operands, power-of-two scales: exact in fp32, so a correct kernel matches bit for bit. Odd M; K, N
-    multiples of 16 (the production specialization) but of no BLOCK_K / BLOCK_N."""
+    """Integer fp8 operands, power-of-two scales: integer sums (|sum| <= 36 * K < 2**24) are exact in fp32, so a
+    correct kernel matches bit for bit. Odd M; K, N multiples of 16 (the production specialization) but of no
+    BLOCK_K / BLOCK_N."""
     import torch
 
     g = torch.Generator(device = "cpu").manual_seed(0)
-    m, k, n = 77, 208, 144
+    m, k, n = 77, _CHECK_K, 144
     a = torch.randint(-6, 7, (m, k), generator = g).to(torch.float32)
     w = torch.randint(-6, 7, (n, k), generator = g).to(torch.float32)
     sa = 2.0 ** torch.randint(-4, 3, (m, 1), generator = g).to(torch.float32)
@@ -437,6 +500,10 @@ def verified(index: Any, output_dtype: Any) -> bool:
     return bool(_STATE["verified"].get((index, output_dtype))) and not _STATE["failed"].get(index)
 
 
+def card_failed(index: Any) -> bool:
+    return bool(_STATE["failed"].get(index))
+
+
 def check_pending(index: Any, output_dtype: Any) -> bool:
     """The self-check has no verdict for this card and dtype yet (it hit an OOM): a later call may still pass it."""
     return (
@@ -446,10 +513,21 @@ def check_pending(index: Any, output_dtype: Any) -> bool:
     )
 
 
-def precise_pending(index: Any) -> bool:
-    """The accumulator check has no verdict for this bf16-verified card yet (it hit an OOM)."""
+def accuracy_pending(index: Any) -> bool:
+    """The accuracy check has no verdict for this bf16-verified card yet (it hit an OOM)."""
     import torch
-    return triton is not None and index not in _STATE["precise"] and verified(index, torch.bfloat16)
+    return (
+        triton is not None and index not in _STATE["accuracy"] and verified(index, torch.bfloat16)
+    )
+
+
+def _on_card(index: int) -> Any:
+    import torch
+    return torch.cuda.device(index)
+
+
+def _device(index: int) -> str:
+    return f"cuda:{index}"
 
 
 def verify(index: int, output_dtype: Any) -> bool:
@@ -463,8 +541,9 @@ def verify(index: int, output_dtype: Any) -> bool:
     ok = False
     if triton is not None and not _STATE["failed"].get(index):
         try:
-            with _LOCK, torch.cuda.device(index):
-                a, sa, b, sb, bias = _check_operands(f"cuda:{index}")
+            with _LOCK, _on_card(index):
+                a, sa, b, sb, bias = _check_operands(_device(index))
+                _arch(a.device)  # primed here, so a trace only reads it
                 ref = (a.float() * sa) @ (b.float() * sb)
                 bias = bias.to(torch.bfloat16)
                 ok = True
@@ -501,65 +580,152 @@ def verify(index: int, output_dtype: Any) -> bool:
     return ok
 
 
-def _precise_operands(device: str) -> tuple:
-    """Rows whose exact product is 0: K/2 random e4m3 products, then the same products negated. What survives is the
-    accumulator's rounding residue: about 2**-22 of the largest partial sum for an fp32 accumulator, 2**-11 for a
-    14-bit one (Hopper-style fast accumulate), emulated on CPU."""
+# Accuracy check shapes (M, K, N): Flux-class token rows at 512^2 / 1024^2, attention / FF-out K.
+_ACC_SHAPES = ((512, 3072, 3072), (512, 9216, 3072), (4096, 3072, 3072), (4096, 9216, 3072))
+_ACC_RATIO = 1.05
+# Absolute floor on the mean relative error vs fp64: 1/64 of half an ulp of the output dtype (bf16 2**-8, fp16
+# 2**-11). An fp32-level difference that small changes about 1 in 64 output roundings or fewer, by one ulp; a reduced
+# precision (Hopper-style 14-bit) accumulator sits around 2**-12 and fails it.
+_ACC_FLOOR = {"bfloat16": 2.0**-14, "float16": 2.0**-17}
+_ACC_KINDS = tuple((dt, fast) for dt in ("bfloat16", "float16") for fast in (True, False))
+
+
+def _dtype_name(dtype: Any) -> str:
+    return str(dtype).replace("torch.", "")
+
+
+def _kind(dtype: Any, fast: Any) -> str:
+    return f"{_dtype_name(dtype)}:{'fast' if fast else 'precise'}"
+
+
+def _accuracy_operands(device: str, m: int, k: int, n: int, seed: int) -> tuple:
+    """Production-like operands: activation rows spread over ~e^+-2 in magnitude, small weights, each quantised to
+    e4m3 with its own amax / 448 scale (row-wise a [M, 1], column-wise b [1, N]), bf16 bias."""
     import torch
 
-    g = torch.Generator(device = "cpu").manual_seed(1)
-    m, half, n = 64, 2048, 128
-    x = (torch.randn(m, half, generator = g) * 64).to(torch.float8_e4m3fn)
-    w = (torch.randn(n, half, generator = g) * 64).to(torch.float8_e4m3fn)
-    a = torch.cat([x, x], 1)
-    wb = torch.cat([w, (-w.float()).to(torch.float8_e4m3fn)], 1)
-    partial = float((x.float() @ w.float().t()).abs().max())
-    return a.to(device), wb.to(device).t(), partial
+    g = torch.Generator(device = device).manual_seed(seed)
+    x = torch.randn(m, k, generator = g, device = device)
+    x.mul_(torch.exp(torch.randn(m, 1, generator = g, device = device)))
+    sa = x.abs().amax(1, keepdim = True).clamp_min(1e-12) / 448
+    a = (x / sa).to(torch.float8_e4m3fn)
+    del x
+    w = torch.randn(n, k, generator = g, device = device) * 0.02
+    sw = w.abs().amax(1, keepdim = True).clamp_min(1e-12) / 448
+    b = (w / sw).to(torch.float8_e4m3fn).t()
+    del w
+    bias = (torch.randn(n, generator = g, device = device) * 0.5).to(torch.bfloat16)
+    return a, sa, b, sw.t().contiguous(), bias
 
 
-# Residue bound at K = 4096: 2**6 above an fp32 accumulator's, 2**5 below a 14-bit one's.
-_PRECISE_RESIDUE = 2.0**-16
-
-
-def verify_precise(index: int) -> bool:
-    """Whether card ``index``'s fp8 tensor-core accumulation is as precise as cuBLAS's precise accumulate, so a
-    precise-accumulate GEMM may take the kernel: every shipped config, on cancelling rows, against the tensorwise
-    ``_scaled_mm`` at ``use_fast_accum=False``. Needs the bf16 self-check; cached per card; an OOM is no verdict."""
+def _fp64_reference(a: Any, sa: Any, b: Any, sb: Any, bias: Any) -> Any:
     import torch
 
-    if index in _STATE["precise"]:
-        return bool(_STATE["precise"][index].get("ok"))
+    k = a.shape[1]
+    ref = None
+    for k0 in range(0, k, 1024):
+        part = a[:, k0 : k0 + 1024].double() @ b[k0 : k0 + 1024].double()
+        ref = part if ref is None else ref.add_(part)
+        del part
+    ref.mul_(sa.double()).mul_(sb.double()).add_(bias.double())
+    return ref
+
+
+def _rel_error(out: Any, ref: Any, denom: float) -> float:
+    """sum |out - ref| / sum |ref|, in fp64, 512 rows at a time."""
+    total = 0.0
+    for r0 in range(0, ref.shape[0], 512):
+        total += float((out[r0 : r0 + 512].double() - ref[r0 : r0 + 512]).abs().sum())
+    return total / denom
+
+
+def verify_accuracy(index: int) -> bool:
+    """Per-op error of the kernel vs the tensorwise path it replaces (``_scaled_mm`` at unit scale, fp32 out where the
+    card has it, then ``_scale_epilogue``), both against fp64, on production-like operands at ``_ACC_SHAPES``; every
+    shipped config, the worst one counts. Verdict per request kind (output dtype x fast / precise accumulate), each
+    needing, at every shape:
+
+    * fp32 level (accumulator + epilogue, before the output rounding; the bit-exact self-check proves the rounding
+      itself): kernel <= max(1.05 x the existing path at that accumulate mode, ``_ACC_FLOOR[dtype]``);
+    * bf16 output (bf16 kinds): kernel <= 1.05 x the existing path's bf16 output.
+
+    Needs the bf16 self-check; cached per card; an OOM is no verdict (retried). True when any kind passed."""
+    import torch
+
+    if index in _STATE["accuracy"]:
+        return any(_STATE["accuracy"][index].get("ok", {}).values())
     if triton is None or not verified(index, torch.bfloat16):
         return False
-    info: dict = {"ok": False}
+    info: dict = {"ok": {k: False for k in (_kind(d, f) for d, f in _ACC_KINDS)}}
     try:
-        with _LOCK, torch.cuda.device(index):
-            dev = f"cuda:{index}"
-            a, b, partial = _precise_operands(dev)
-            sa = torch.ones((a.shape[0], 1), device = dev)
-            sb = torch.ones((1, b.shape[1]), device = dev)
-            one = torch.ones((), device = dev)
-            for fast in (False, True):
-                acc = torch._scaled_mm(
-                    a, b, scale_a = one, scale_b = one, out_dtype = torch.float32, use_fast_accum = fast
+        from .diffusion_fp8_unit_scale import _fp32_out_runs, _scale_epilogue
+        with _LOCK, _on_card(index):
+            dev = _device(index)
+            acc_dtype = torch.float32 if _fp32_out_runs(index) else torch.bfloat16
+            info["existing_acc"] = _dtype_name(acc_dtype)
+            one = torch.ones((), device = dev, dtype = torch.float32)
+            rows: list = []
+            for seed, (m, k, n) in enumerate(_ACC_SHAPES):
+                a, sa, b, sb, bias = _accuracy_operands(dev, m, k, n, seed)
+                ref = _fp64_reference(a, sa, b, sb, bias)
+                denom = float(ref.abs().sum()) or 1.0
+                row = {"shape": [m, k, n]}
+                for fast in (True, False):
+                    acc = torch._scaled_mm(
+                        a, b, scale_a = one, scale_b = one, out_dtype = acc_dtype, use_fast_accum = fast
+                    )
+                    acc = acc[0] if isinstance(acc, tuple) else acc
+                    name = "fast" if fast else "precise"
+                    row[f"{name}_fp32"] = _rel_error(
+                        _scale_epilogue(acc.clone(), sa, sb, bias, torch.float32), ref, denom
+                    )
+                    row[f"{name}_bf16"] = _rel_error(
+                        _scale_epilogue(acc, sa, sb, bias, torch.bfloat16), ref, denom
+                    )
+                    del acc
+                k32 = kbf = 0.0
+                for cfg in _fp8_rowwise_gemm.configs:
+                    try:
+                        got = _launch(_ConfigLaunch(cfg), a, sa, b, sb, bias, torch.float32)
+                    except _UNFIT:
+                        try:
+                            # The served (bf16) variant does not fit either: the autotuner never picks it.
+                            _launch(_ConfigLaunch(cfg), a, sa, b, sb, bias, torch.bfloat16)
+                        except _UNFIT:
+                            continue
+                        # Served but unmeasured: 100% error, no verdict can pass (finite, for JSON).
+                        k32 = kbf = 1.0
+                        row["unmeasured"] = str(cfg)
+                        continue
+                    k32 = max(k32, _rel_error(got, ref, denom))
+                    del got
+                    got = _launch(_ConfigLaunch(cfg), a, sa, b, sb, bias, torch.bfloat16)
+                    kbf = max(kbf, _rel_error(got, ref, denom))
+                    del got
+                row["kernel_fp32"], row["kernel_bf16"] = k32, kbf
+                rows.append(row)
+                del a, b, ref
+            info["shapes"] = rows
+            for dt, fast in _ACC_KINDS:
+                name = "fast" if fast else "precise"
+                ok = all(
+                    r["kernel_fp32"] <= max(_ACC_RATIO * r[f"{name}_fp32"], _ACC_FLOOR[dt])
+                    and (dt != "bfloat16" or r["kernel_bf16"] <= _ACC_RATIO * r[f"{name}_bf16"])
+                    for r in rows
                 )
-                acc = acc[0] if isinstance(acc, tuple) else acc
-                info["cublas_fast" if fast else "cublas_precise"] = float(acc.abs().max()) / partial
-            worst = 0.0
-            for cfg in _fp8_rowwise_gemm.configs:
-                try:
-                    got = _launch(_ConfigLaunch(cfg), a, sa, b, sb, None, torch.bfloat16)
-                except _UNFIT:
-                    continue
-                worst = max(worst, float(got.float().abs().max()) / partial)
-            info["kernel"] = worst
-            info["ok"] = worst <= max(4 * info["cublas_precise"], _PRECISE_RESIDUE)
-    except Exception as exc:  # noqa: BLE001 - unknown accumulator: precise requests keep cuBLAS
+                info["ok"][_kind(dt, fast)] = bool(rows) and ok
+    except Exception as exc:  # noqa: BLE001 - unknown accuracy: every request kind keeps the tensorwise path
         if _is_oom(exc):
             return False
+        info["ok"] = {k: False for k in info["ok"]}
         info["error"] = f"{type(exc).__name__}: {exc}"[:500]
-    _STATE["precise"][index] = info
-    return bool(info["ok"])
+    _STATE["accuracy"][index] = info
+    return any(info["ok"].values())
+
+
+def accurate(index: Any, output_dtype: Any, fast: Any) -> bool:
+    """The accuracy check passed for this card and request kind."""
+    info = _STATE["accuracy"].get(index)
+    return bool(info and info.get("ok", {}).get(_kind(output_dtype, bool(fast))))
 
 
 class _ConfigLaunch:
@@ -591,6 +757,7 @@ def describe() -> dict:
             f"{i}:{str(d).replace('torch.', '')}": v for (i, d), v in _STATE["check"].items()
         },
         "unfit": {i: list(v) for i, v in _STATE["unfit"].items()},
-        "precise": {i: dict(v) for i, v in _STATE["precise"].items()},
+        "accuracy": {i: dict(v) for i, v in _STATE["accuracy"].items()},
+        "skipped_shapes": len(_STATE["skip"]),
         "op_error": _STATE["op_error"],
     }
