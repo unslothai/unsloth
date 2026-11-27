@@ -2654,10 +2654,15 @@ def install_torchao_v1_int8_pin_ops() -> bool:
             return t.pin_memory()
 
         # v1 lacks tensor_data_names, so diffusers could not restore it; payload stayed on GPU after offload.
+        # diffusers after #15383 rebuilds wrappers through __tensor_flatten__ (nested v1 included): nothing to patch.
         from diffusers.hooks import group_offloading as go
 
-        restore = go._restore_torchao_tensor
-        if not getattr(restore, "_unsloth_v1_int8", False):
+        from . import diffusion_go_compat as go_compat
+
+        if not go_compat.is_legacy(go) and not go_compat.is_generic(go):
+            return False
+        restore = go._restore_torchao_tensor if go_compat.is_legacy(go) else None
+        if restore is not None and not getattr(restore, "_unsloth_v1_int8", False):
 
             def _restore_v1(param: Any, source: Any) -> None:
                 if isinstance(source, LAQT):
@@ -2670,8 +2675,8 @@ def install_torchao_v1_int8_pin_ops() -> bool:
             _restore_v1._unsloth_v1_int8 = True
             go._restore_torchao_tensor = _restore_v1
 
-        record = go._record_stream_torchao_tensor
-        if not getattr(record, "_unsloth_v1_int8", False):
+        record = go._record_stream_torchao_tensor if go_compat.is_legacy(go) else None
+        if record is not None and not getattr(record, "_unsloth_v1_int8", False):
 
             def _record_v1(param: Any, stream: Any) -> None:
                 if isinstance(param, (LAQT, AQT)):
@@ -5688,7 +5693,9 @@ def _keep_groups_resident(
         ordered = top + [g for g in groups if getattr(g, "offload_leader", None) is not module]
         if last is not None:
             ordered = [g for g in ordered if not last(g)] + [g for g in ordered if last(g)]
-        is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+        from . import diffusion_go_compat as go_compat
+
+        is_torchao = go_compat.is_wrapper_or_false(go)
         onload = torch.device(device)
         left = int(room_mib) * 1024 * 1024
         kept = 0
@@ -5771,7 +5778,7 @@ def _keep_groups_resident(
                             lambda t: not _placed_on(t, onload.type, is_torchao),
                             lambda t, cpu = cpu: cpu.get(t, t),
                             onload,
-                            go._swap_torchao_tensor,
+                            go_compat.swap_fn(go) or go._swap_torchao_tensor,
                         )
                     except Exception as exc:  # noqa: BLE001 - the stock move still places the group
                         placed = set()
@@ -5791,7 +5798,7 @@ def _keep_groups_resident(
                         continue
                     moved = cpu.get(t, t).to(onload)
                     if is_torchao(t):
-                        go._swap_torchao_tensor(t, moved)
+                        go_compat.swap(t, moved, go)
                     else:
                         t.data = moved
             for i, member in enumerate(closure):
@@ -6408,7 +6415,9 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
     import torch
     from diffusers.hooks import group_offloading as go
 
-    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    from . import diffusion_go_compat as go_compat
+
+    is_torchao = go_compat.is_wrapper_or_false(go)
     for t in [*module.parameters(), *module.buffers()]:
         if _placed_on(t, onload.type, is_torchao):
             continue
@@ -6417,7 +6426,7 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
             moved = type(t).__tensor_unflatten__(
                 {name: getattr(t, name).to(onload) for name in names}, ctx, t.size(), t.stride()
             )
-            go._swap_torchao_tensor(t, moved)
+            go_compat.swap(t, moved, go)
         else:
             t.data = t.data.to(onload)
     if onload.type == "cuda":
@@ -7974,7 +7983,11 @@ def install_group_offload_torchao_swap_retry() -> bool:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers
         return False
-    original = getattr(go, "_swap_torchao_tensor", None)
+    from . import diffusion_go_compat as go_compat
+
+    # the name diffusers' own onload / offload calls: _swap_torchao_tensor, or _swap_wrapper_tensor after #15383
+    name = go_compat.swap_name(go) or go_compat.LEGACY_SWAP
+    original = getattr(go, name, None)
     if original is None or getattr(original, "_unsloth_swap_retry", False):
         return False
 
@@ -7991,7 +8004,7 @@ def install_group_offload_torchao_swap_retry() -> bool:
             original(param, source)
 
     _swap_torchao_tensor._unsloth_swap_retry = True
-    go._swap_torchao_tensor = _swap_torchao_tensor
+    setattr(go, name, _swap_torchao_tensor)
     return True
 
 
@@ -9088,6 +9101,7 @@ def _install_group_offload_torchao_host_copy(go: Any) -> bool:
     """Give aliased torchao host copies a separate wrapper so ``swap_tensors`` cannot move them to CUDA."""
     group_cls = getattr(go, "ModuleGroup", None)
     original = getattr(group_cls, "_to_cpu", None)
+    # only the torchao-era _to_cpu can hand back the weight itself; after #15383 it always rebuilds the wrapper
     is_torchao = getattr(go, "_is_torchao_tensor", None)
     if (
         original is None
@@ -9116,6 +9130,8 @@ def install_group_offload_buffer_restore() -> bool:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers
         return False
+    from . import diffusion_go_compat as go_compat
+
     _install_group_offload_torchao_host_copy(go)
     group_cls = getattr(go, "ModuleGroup", None)
     original = getattr(group_cls, "_offload_to_memory", None)
@@ -9128,8 +9144,8 @@ def install_group_offload_buffer_restore() -> bool:
         cpu_copies = getattr(self, "cpu_param_dict", None)
         if getattr(self, "stream", None) is None or not cpu_copies:
             return out
-        restore_torchao = getattr(go, "_restore_torchao_tensor", None)
-        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        restore_torchao = go_compat.restore_fn(go)
+        is_torchao = go_compat.is_wrapper_fn(go)
         for group_module in getattr(self, "modules", None) or ():
             for buffer in group_module.buffers():
                 cpu = cpu_copies.get(buffer)
@@ -9208,7 +9224,9 @@ def _pin_top_level_group(
             if id(tensor) not in seen:
                 seen.add(id(tensor))
                 tensors.append(tensor)
-        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        from . import diffusion_go_compat as go_compat
+
+        is_torchao = go_compat.is_wrapper_fn(go)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
         if any(not _top_group_tensor_ok(t) for t in tensors):
@@ -9314,7 +9332,9 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
             if id(tensor) not in seen:
                 seen.add(id(tensor))
                 tensors.append(tensor)
-        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        from . import diffusion_go_compat as go_compat
+
+        is_torchao = go_compat.is_wrapper_fn(go)
         if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
             return False
         if any(not _top_group_tensor_ok(t) for t in tensors):

@@ -686,9 +686,11 @@ def test_torchao_int8_weights_stream_bit_identical(version):
             # torchao 0.17 int8 `to` drops non_blocking; offload must add no syncs
             assert syncs == ref_syncs
     assert pf.stats["prefetched"] > 0
-    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference import diffusion_go_compat as go_compat
+
     # the torchao wrapper reports its onload device, so check the inner tensors
-    assert dm._placed_on(net.proj_in.weight, "cpu", go._is_torchao_tensor)
+    assert dm._placed_on(net.proj_in.weight, "cpu", go_compat.is_wrapper_or_false())
 
 
 def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch):

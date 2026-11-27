@@ -3302,9 +3302,10 @@ def torchao_group_offload_supported() -> bool:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 -- no group offloading at all
         return False
-    return callable(getattr(go, "_is_torchao_tensor", None)) and callable(
-        getattr(go, "_swap_torchao_tensor", None)
-    )
+    from . import diffusion_go_compat as go_compat
+
+    # torchao helpers on diffusers 0.40-0.42; any traceable wrapper subclass after huggingface/diffusers#15383
+    return go_compat.wrapper_swap_supported(go)
 
 
 def _weights_pinnable(module: Any) -> bool:
