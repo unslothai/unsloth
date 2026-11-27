@@ -42,6 +42,7 @@ import {
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
 import { badgeRowsRef } from "../lib/badge-rows";
 
@@ -168,7 +169,7 @@ function ReadmeLink({
 }: ComponentProps<"a"> & { node?: unknown }) {
   void node;
   const online = useContext(ReadmeOnlineContext);
-  const rawHref = typeof href === "string" ? href.trim() : "";
+  const rawHref = useHubPageUrl(typeof href === "string" ? href.trim() : "");
   const disabledExternal =
     !online &&
     rawHref.length > 0 &&
@@ -188,7 +189,7 @@ function ReadmeLink({
   return (
     <a
       {...props}
-      href={href}
+      href={rawHref || href}
       rel={rel ?? "noreferrer noopener"}
       target={target ?? "_blank"}
       className={className}

@@ -5162,6 +5162,21 @@ def _get_fp8_mode_and_check_settings(
         )
     _allow_torchao_perblock_safetensors()
 
+    if fp8_mode == "row" and load_in_fp8 is True and DEVICE_TYPE_TORCH != "xpu":
+        # torchao's per-row GEMM is torch's row-wise _scaled_mm, which the Windows wheels do not ship; the
+        # per-block one is a Triton kernel and runs there.
+        from ..kernels.fp8_lora import rowwise_supported
+        try:
+            rowwise = rowwise_supported(torch.device("cuda", torch.cuda.current_device()))
+        except Exception:  # no verdict: keep per-row
+            rowwise = True
+        if not rowwise:
+            print(
+                "Unsloth: this torch build has no row-wise fp8 _scaled_mm, so `load_in_fp8 = True` "
+                "quantizes per block instead (as `load_in_fp8 = 'block'`)."
+            )
+            fp8_mode = "block"
+
     # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton kernels instead.
     if (
         importlib.util.find_spec("fbgemm_gpu") is not None

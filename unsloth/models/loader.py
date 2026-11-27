@@ -3084,6 +3084,7 @@ class FastModel(FastBaseModel):
                 register_custom_dtype(
                     "torch.float16;torch.bfloat16;torch.float16;"
                     "if ('down_projs' in name) and hasattr(module, 'weight') and "
+                    "not module.weight.is_meta and "  # another expert parallel rank's expert
                     "torch.amax(dequantize_module_weight(module)) >= 0:"
                     "module._pre_set_compute_dtype = torch.float32\n"
                     ""

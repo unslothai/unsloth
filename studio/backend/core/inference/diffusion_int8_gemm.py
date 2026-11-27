@@ -907,6 +907,10 @@ _RACE_SOURCES = {
         "time_sustained_us",
         "time_us",
         "race",
+        # sustained winners re-timed in pairs with today's path (the clock a denoise step shares)
+        "paired_enabled",
+        "paired_for",
+        "paired_cost_us",
         # how a race picks among its near-tied winners
         "_FILL_TIE",
         "last_tile_fill",
@@ -1035,6 +1039,8 @@ def _cut_cache_key(index: int) -> Optional[str]:
                 os.environ.get(INT8_GEMM_UNLISTED_ENV, ""),
                 # the timing mode decides the huge-race winners: a plan raced the other way is re-raced
                 f"sustained={cut.sustained_mode()}",
+                # paired timings veto sustained winners: a plan raced without them is re-raced
+                f"paired={cut.paired_enabled()}",
                 # force keeps the fastest tile even when it loses to today's path
                 f"cutlass={cut.mode()}",
                 # near-ties broken by the last row tile's fill (FILL_TIE_ENV=0: the fastest winner)
@@ -2366,6 +2372,64 @@ def _swapped_rec(module: Any) -> Optional[tuple]:
     return rec
 
 
+# PEFT's lora.Linear.forward, resolved eagerly (resolve_peft_forward): an import under the trace is a graph break
+_PEFT_FWD: list = [None, False]
+
+
+def resolve_peft_forward() -> Any:
+    if not _PEFT_FWD[1]:
+        try:
+            from peft.tuners.lora.layer import Linear
+            _PEFT_FWD[0] = Linear.forward
+        except Exception:  # noqa: BLE001
+            _PEFT_FWD[0] = None
+        _PEFT_FWD[1] = True
+    return _PEFT_FWD[0]
+
+
+def lora_split(module: Any) -> Optional[tuple]:
+    """``(base_layer, adapters)`` for a PEFT LoRA Linear on PEFT's own forward: ``adapters`` are the active ones whose
+    ``lora_B(lora_A(dropout(x))) * scaling`` it adds to ``base_layer(x)`` (empty while its adapters are off).
+    ``(module, ())`` for a layer that is not a LoRA wrapper; None for one this cannot reproduce op for op (merged, a
+    variant such as DoRA, a hook or an override on the wrapper)."""
+    import torch
+
+    d = module.__dict__
+    base = d.get("_modules", {}).get("base_layer")
+    if base is None or not isinstance(d.get("scaling"), dict):
+        return module, ()
+    fwd = _PEFT_FWD[0] if _PEFT_FWD[1] or torch.compiler.is_compiling() else resolve_peft_forward()
+    if fwd is None or type(module).forward is not fwd or _hooked(module):
+        return None
+    if d.get("merged_adapters"):
+        return None
+    if d.get("_disable_adapters", False):
+        return base, ()
+    names = tuple(a for a in module.active_adapters if a in module.lora_A)
+    variants = d.get("lora_variant") or {}
+    use_dora = d.get("use_dora") or {}
+    if any(a in variants or use_dora.get(a) for a in names):
+        return None
+    return base, names
+
+
+def lora_output(module: Any, adapters: tuple, x: Any, result: Any) -> Any:
+    """PEFT's ``lora.Linear.forward`` after its ``base_layer(x)`` call, op for op: the shared paths run the base GEMM
+    themselves and then add the adapters exactly as the wrapper would."""
+    if not adapters:
+        return result
+    torch_result_dtype = result.dtype
+    for name in adapters:
+        lora_A = module.lora_A[name]
+        lora_B = module.lora_B[name]
+        dropout = module.lora_dropout[name]
+        scaling = module.scaling[name]
+        cast = getattr(module, "_cast_input_dtype", None)
+        x = cast(x, lora_A.weight.dtype) if cast is not None else x.to(lora_A.weight.dtype)
+        result = result + lora_B(lora_A(dropout(x))) * scaling
+    return result.to(torch_result_dtype)
+
+
 def rdna_native_rotated(module: Any) -> bool:
     """Native int8 Linear on the RDNA W8A8 kernels with ConvRot group 256. Traced: plain attribute reads only."""
     return (
@@ -2507,9 +2571,20 @@ def shared_rotq_linears(
 ) -> Optional[list]:
     """``[m(x) for m in linears]`` with one shared rotation + act quant; None when any is not covered. ``merged``
     (``merge_payloads`` of the first ``merged[2]`` Linears): those run as one GEMM, their outputs column views of
-    it, bit for bit what their own GEMMs give (int32 accumulation, per-row x per-column dequant)."""
+    it, bit for bit what their own GEMMs give (int32 accumulation, per-row x per-column dequant). A PEFT LoRA layer
+    shares its base Linear's quant and adds its adapters after the GEMM, as its own forward does (``lora_split``)."""
     import torch
 
+    splits = [lora_split(m) for m in linears]
+    if any(sp is None for sp in splits):
+        return None
+    if any(sp[0] is not m for sp, m in zip(splits, linears)):
+        if merged is not None:
+            return None
+        outs = shared_rotq_linears(x, tuple(sp[0] for sp in splits))
+        if outs is None:
+            return None
+        return [lora_output(m, sp[1], x, y) for m, sp, y in zip(linears, splits, outs)]
     if linears and rdna_native_rotated(linears[0]):
         return _rdna_shared(x, linears)
     if x.dtype != torch.bfloat16 or not x.is_cuda or x.numel() < _MIN_ROWS * x.shape[-1]:
@@ -2573,9 +2648,14 @@ def _shared_gemms(
 
 
 def _swiglu_down(down: Any, gate: Any, value: Any) -> Optional[Any]:
-    """``down(silu(gate) * value)`` via the fused SwiGLU rotation + quant, else None."""
+    """``down(silu(gate) * value)`` via the fused SwiGLU rotation + quant, else None (also for a LoRA layer with an
+    adapter on: its input product is needed; one with its adapters off runs its base Linear)."""
     import torch
 
+    split = lora_split(down)
+    if split is None or split[1]:
+        return None
+    down = split[0]
     rec = _swapped_rec(down)
     if rec is None:
         return None
@@ -2757,13 +2837,21 @@ def _swiglu_ff_eligible(module: Any) -> bool:
     if type(module).__name__ not in _SWIGLU_FF_CLASSES or "forward" in module.__dict__:
         return False
     parts = [getattr(module, n, None) for n in ("gate_layer", "proj", "out")]
-    if any(p is None or _REC not in p.__dict__ for p in parts):
+    if any(p is None for p in parts):
+        return False
+    # a baked LoRA's PEFT layers by their swapped base Linears: the forward adds the adapters (shared_rotq_linears) and
+    # an active adapter on the down projection takes the wrapper (_swiglu_down declines it)
+    splits = [lora_split(p) for p in parts]
+    if any(sp is None for sp in splits):
+        return False
+    bases = [sp[0] for sp in splits]
+    if any(_REC not in b.__dict__ for b in bases):
         return False
     act = getattr(module, "activation_fn", None)
     if type(act) is not nn.SiLU or "forward" in act.__dict__:
         return False
     # only a rotated down projection on the fused rotation kernel gains (its input is the product)
-    return bool(parts[2].__dict__[_REC][2])
+    return bool(bases[2].__dict__[_REC][2])
 
 
 def _install_swiglu_ff(

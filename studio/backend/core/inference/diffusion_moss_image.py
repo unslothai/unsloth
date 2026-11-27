@@ -19,6 +19,9 @@ from torch.nn import functional as F
 
 from loggers import get_logger
 
+# MOSS feeds its Qwen3.5 encoder text only; re-exported for callers of this module.
+from .diffusion_te_vision import drop_vision_tower  # noqa: F401
+
 logger = get_logger(__name__)
 
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
@@ -1122,19 +1125,6 @@ def _tokenizer_class(repo_id: str, common: dict[str, Any]) -> Any:
         name = None
     cls = getattr(transformers, str(name), None) if name else None
     return cls if isinstance(cls, type) else transformers.AutoTokenizer
-
-
-def drop_vision_tower(text_encoder: Any) -> bool:
-    """Free Qwen3.5's vision tower (~0.4 B params): MOSS feeds the encoder text only, and the text forward never touches
-    it (images enter only through ``pixel_values``). True when it was dropped."""
-    visual = getattr(text_encoder, "visual", None)
-    if not isinstance(visual, nn.Module):
-        return False
-    try:
-        text_encoder.visual = None
-    except Exception:  # noqa: BLE001 - a frozen module keeps its tower
-        return False
-    return True
 
 
 def _conv_offload_hook(conv: Any) -> Any:

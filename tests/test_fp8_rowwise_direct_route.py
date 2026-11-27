@@ -92,10 +92,17 @@ _sm89 = torch.cuda.is_available() and torch.cuda.get_device_capability() >= (8, 
 
 
 @pytest.mark.skipif(not _sm89, reason = "rowwise FP8 GEMM parity needs an sm89+ GPU")
+@pytest.mark.parametrize("backend", ["scaled_mm", "tensorwise"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
-    if F8._fp8_rowwise_backend(torch.device("cuda", 0)) != "scaled_mm":
-        pytest.skip("this GPU does not use the scaled_mm rowwise backend")
+def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype, backend, monkeypatch):
+    probed = F8._fp8_rowwise_backend(torch.device("cuda", 0))
+    if probed not in ("scaled_mm", "tensorwise") or (
+        backend == "scaled_mm" and probed != "scaled_mm"
+    ):
+        pytest.skip(f"this GPU does not run the {backend} rowwise backend")
+    # Tensorwise runs wherever the row-wise kernel does; the size gate is lifted for the small test weights.
+    monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: backend)
+    monkeypatch.setattr(F8, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0)
     torch.manual_seed(0)
     with torch.no_grad():
         for N, K in ((256, 512), (768, 2048), (512, 5120), (208, 4112), (256, 16400)):
@@ -119,11 +126,14 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
                                 del w.input_scale_ub
                             route = F8._fp8_rowwise_direct_route(X, w, s)
                             assert route == (
-                                "scaled_mm"
+                                backend
                                 if 2 * rows > F8._fp8_dequant_max_rows(X.device, N * K)
                                 and N % 16 == 0
                                 and K % 16 == 0
-                                and not F8._scaled_mm_fp16_dequant_only(X.dtype)
+                                and (
+                                    backend == "tensorwise"
+                                    or not F8._scaled_mm_fp16_dequant_only(X.dtype)
+                                )
                                 else "dequant"
                             )
                             ref = F8._fbgemm_fp8_linear_compiled(X, w, s, b)
