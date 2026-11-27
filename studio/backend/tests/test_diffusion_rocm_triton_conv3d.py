@@ -329,6 +329,43 @@ def test_direct_kernels_keep_spatial_sizes_out_of_the_compile_key():
             assert params[name].is_constexpr, (kern.fn.__name__, name)
 
 
+@pytest.mark.parametrize(
+    "shape, getter, cache",
+    [
+        ((320, 320, 3, 1, 1), "get_or_make_weight_pack_3d", "_PACK_CACHE_3D_GENERAL"),
+        ((64, 64, 1, 1, 1), "get_or_make_weight_pack_3d", "_PACK_CACHE_3D_GENERAL"),
+        ((64, 64, 3, 3, 3), "get_or_make_weight_pack_3d", "_PACK_CACHE_3D_GENERAL"),
+        ((16, 3, 3, 1, 1), "get_or_make_weight_pack_3d", "_PACK_CACHE_3D_GENERAL"),
+        ((64, 1, 3, 3, 3), "get_or_make_weight_pack_3x3x3", "_PACK_CACHE_3D_3X3X3"),
+        ((64, 64, 3, 3, 3), "get_or_make_weight_pack_3x3x3", "_PACK_CACHE_3D_3X3X3"),
+        ((64, 64, 3, 3, 3), "get_or_make_winograd_hw_filter_f4x3", "_PACK_CACHE_3D_WINOGRAD_HW"),
+    ],
+)
+def test_pack_cache_never_pins_the_source_weight(shape, getter, cache):
+    # A pack that is a view of the weight (contiguous, reduction already a multiple of the block) keeps the weight
+    # alive through _base; caching it would stop the weakref finalizer from ever dropping the entry.
+    import gc
+    import weakref
+
+    from core.inference.rocm_triton_conv3d import _prepack as P
+
+    P.clear_conv3d_weight_pack_caches()
+    cache = getattr(P, cache)
+    conv = torch.nn.Conv3d(shape[1], shape[0], shape[2:], bias = False)
+    with torch.no_grad():
+        pack = getattr(P, getter)(conv.weight)[0]
+        again = getattr(P, getter)(conv.weight)[0]
+    torch.testing.assert_close(pack, again)
+    if pack.untyped_storage().data_ptr() != conv.weight.untyped_storage().data_ptr():
+        assert len(cache) == 1  # an independent pack is still cached
+    ref = weakref.ref(conv.weight)
+    del conv, pack, again
+    gc.collect()
+    assert ref() is None
+    assert len(cache) == 0
+    P.clear_conv3d_weight_pack_caches()
+
+
 def test_memory_estimate_counts_winograd_buffers(monkeypatch):
     pytest.importorskip("triton")
     from core.inference.rocm_triton_conv3d import conv3d as real

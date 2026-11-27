@@ -3,7 +3,8 @@
 #
 # Vendored from ROCm/aiter (https://github.com/ROCm/aiter), commit 9e5e03626fa119f2429fa1c1578d5a715a6c2401,
 # aiter/ops/triton/conv/_prepack.py; gfx1151 conv3d configs from ROCm/aiter PR #6973 (065f9f99c9d8a412bd63935c2a89b196d3f110d7).
-# Changes: Conv3D packs only; the pack cache holds a weak reference to the source weight.
+# Changes: Conv3D packs only; the pack cache holds a weak reference to the source weight and never stores a pack that
+# is a view of it.
 # The vendored portions remain under the MIT License below:
 #
 # SPDX-License-Identifier: MIT
@@ -225,7 +226,9 @@ def _get_or_make_pack(cache, weight: torch.Tensor, block: int, packer):
     if cached is not None:
         return cached[1]
     packed = packer(weight, block)
-    cache.put(key, weight, packed)
+    # A pack that is a view of the weight costs nothing to rebuild, and caching it would pin the weight via _base.
+    if packed[0].untyped_storage().data_ptr() != weight.untyped_storage().data_ptr():
+        cache.put(key, weight, packed)
     return packed
 
 
