@@ -167,6 +167,10 @@ def _backend(
     family = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
 ):
     monkeypatch.setenv(video_batch.ENV, "force")
+    from core.inference import diffusion_attention
+
+    # The real CPU SDPA probe answers are this test's own: a later fake-torch test would read them back.
+    monkeypatch.setattr(diffusion_attention, "_SDPA_PROBE_CACHE", {})
     # The tiny canvas is far below the trained sizes the shape check enforces.
     monkeypatch.setattr(video_module, "validate_video_request_shape", lambda *a, **k: None)
     backend = video_module.VideoBackend()
