@@ -18,7 +18,7 @@ type ModelScopePages = {
   base: string;
   /** Lowercased Hugging Face id -> ModelScope id; wins over `orgs`. */
   aliases: Record<RepoKind, Record<string, string>>;
-  /** Lowercased Hugging Face org -> the ModelScope org holding its models under the same names. */
+  /** Lowercased Hugging Face model org -> ModelScope org. */
   orgs: Record<string, string>;
 };
 

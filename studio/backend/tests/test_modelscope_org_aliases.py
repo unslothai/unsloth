@@ -17,8 +17,7 @@ import pytest
 from hub.modelscope import upstream
 
 HF = "https://huggingface.co"
-# File types Unsloth Studio loads: weights, configs, remote code and tokenizers. Anything else (model cards,
-# licences, logs, media) and hidden files may differ or be missing on ModelScope. ModelScope adds configuration.json.
+# Weights, configs, remote code and tokenizers; anything else may differ. ModelScope adds configuration.json.
 LOADED = re.compile(
     r"\.(safetensors|sft|bin|gguf|pt|pth|ckpt|onnx|nemo|msgpack|h5|json|ya?ml|py|model|tiktoken|jinja|vocab)$"
     r"|(^|/)(vocab|merges|tokenizer|spiece|sentencepiece)[^/]*\.txt$",
@@ -122,8 +121,7 @@ def _ms_files(http: httpx.Client, repo: str):
 
 
 def mismatch(hf: dict, ms: dict) -> list[str]:
-    """Loaded files missing or different on ModelScope, plus loadable files only ModelScope has.
-    Files outside LFS have no sha256 on Hugging Face, so they compare by size."""
+    """Loaded files missing, different (non-LFS by size) or extra on ModelScope."""
     bad = []
     for path, (size, sha) in hf.items():
         if not loaded(path):

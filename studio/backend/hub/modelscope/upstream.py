@@ -26,7 +26,6 @@ _TREE_PAGE = 500
 _TREE_MAX_PAGES = 200
 
 # HF ids ModelScope hosts under another org; only copies whose loaded files all match (LFS sha256, else size).
-# Files nothing loads may differ: READMEs, licences, repository bookkeeping, and in models docs and media.
 _ALIASES = {
     "model": {
         "unslothai/Qwen3-ASR-0.6B-GGUF": "ggml-org/Qwen3-ASR-0.6B-GGUF",
@@ -191,9 +190,7 @@ _ALIASES = {
         "truthfulqa/truthful_qa": "evalscope/truthful_qa",
     },
 }
-# HF orgs whose models ModelScope hosts under another org, with the same repo names. An _ALIASES entry wins;
-# _ORG_KEPT lists models that keep their own id: their copy there fails the file rule above, or ModelScope
-# hosts them under their own id. UNSLOTH_MODELSCOPE_ORG_ALIAS_NETWORK=1 tests/test_modelscope_org_aliases.py checks them.
+# Model orgs renamed on ModelScope; _ALIASES wins, _ORG_KEPT keep their id (UNSLOTH_MODELSCOPE_ORG_ALIAS_NETWORK=1 tests/test_modelscope_org_aliases.py).
 _ORG_ALIASES = {
     "MiniMaxAI": "MiniMax",
     "OpenMOSS-Team": "openmoss",

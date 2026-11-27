@@ -277,7 +277,6 @@ test("hub page links open ModelScope directly, aliased ids included", async () =
     hubWebUrl(`${adapter}/constructor/chinese-roberta-wwm-ext-large`),
     "https://www.modelscope.cn/models/constructor/chinese-roberta-wwm-ext-large",
   );
-  // Org rules are for models only.
   assert.equal(
     hubWebUrl(`${adapter}/datasets/zai-org/d`),
     "https://www.modelscope.cn/datasets/zai-org/d",
