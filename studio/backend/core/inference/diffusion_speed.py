@@ -606,6 +606,13 @@ def apply_speed_optims(
 
     if getattr(target, "backend", None) == "rocm":
         try:
+            from . import diffusion_rocm_triton_conv3d  # noqa: PLC0415 - ROCm gfx11 only
+            applied["rocm_triton_conv3d"] = diffusion_rocm_triton_conv3d.install(
+                getattr(pipe, "vae", None), logger
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only, MIOpen stays
+            _warn(logger, "rocm triton conv3d", exc)
+        try:
             from . import diffusion_rocm_weight_pitch as rocm_weight_pitch
             applied["rocm_weight_pitch"] = sum(
                 rocm_weight_pitch.install(
