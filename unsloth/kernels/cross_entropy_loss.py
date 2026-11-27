@@ -175,7 +175,6 @@ def _chunked_forward_config_at(device_type, index, vocab_size):
         config = _CHUNKED_FORWARD_CONFIGS.get(capability)
         if config is not None and (config[2] is None or vocab_size <= config[2]):
             return config[0], config[1]
-    # 16 on wave64 AMD (gfx906 / gfx908 / gfx90a too): 32 warps would be 2048 threads, past the 1024 limit.
     return MAX_FUSED_SIZE, max_num_warps()
 
 
