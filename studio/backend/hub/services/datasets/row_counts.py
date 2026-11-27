@@ -184,17 +184,32 @@ def _count_jsonl_lines(path: Path) -> Optional[int]:
     return rows
 
 
+# A JSON Lines row longer than this is not a cheap count; the first line is read at most this far.
+FIRST_LINE_MAX_BYTES = 1024 * 1024
+
+
 def _first_non_blank_line(path: Path) -> Optional[bytes]:
+    """The first non-blank line, read at most FIRST_LINE_MAX_BYTES at a time; None when longer
+    (a minified array or a huge row), so a big single-line file is never read whole."""
     with open(path, "rb") as handle:
-        for line in handle:
+        while True:
+            line = handle.readline(FIRST_LINE_MAX_BYTES + 1)
+            if not line:
+                return None
+            if len(line) > FIRST_LINE_MAX_BYTES and not line.endswith(b"\n"):
+                return line.lstrip()[:1] or None  # just enough to tell an array from a row
             if line.strip():
                 return line.strip()
-    return None
 
 
 def _count_json_rows(path: Path) -> Optional[int]:
     import json
 
+    size = path.stat().st_size
+    # Both readings are bounded: the array parse by JSON_ARRAY_MAX_BYTES, the line count by
+    # LINE_SCAN_MAX_BYTES. Reject anything past both before reading a byte.
+    if size > max(JSON_ARRAY_MAX_BYTES, LINE_SCAN_MAX_BYTES):
+        return None
     first = _first_non_blank_line(path)
     if first is None:
         return None

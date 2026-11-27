@@ -254,3 +254,52 @@ def test_local_dir_of_several_files_is_not_counted(tmp_path):
         _write(tmp_path / name, "\n".join(json.dumps({"text": str(i)}) for i in range(12)))
     _, total = _load_local_preview_slice(dataset_path = tmp_path, train_split = "train", preview_size = 5)
     assert total is None
+
+
+def test_local_json_over_the_cap_is_never_read_whole(tmp_path, monkeypatch):
+    # A minified single-line array past the array cap: classified from a bounded prefix, never parsed.
+    monkeypatch.setattr(row_counts, "JSON_ARRAY_MAX_BYTES", 1000)
+    monkeypatch.setattr(row_counts, "FIRST_LINE_MAX_BYTES", 64)
+    big = tmp_path / "big.json"
+    big.write_text(json.dumps([{"text": "x" * 50} for _ in range(50)]), encoding = "utf-8")
+    reads = []
+    real_open = open
+
+    def tracking_open(
+        path,
+        mode = "r",
+        *args,
+        **kwargs,
+    ):
+        handle = real_open(path, mode, *args, **kwargs)
+        real_readline = handle.readline
+
+        def readline(limit = -1):
+            reads.append(limit)
+            return real_readline(limit)
+
+        try:
+            handle.readline = readline
+        except AttributeError:
+            pass
+        return handle
+
+    monkeypatch.setattr("builtins.open", tracking_open)
+    monkeypatch.setattr(json, "load", lambda *a, **k: pytest.fail("parsed an over-cap array"))
+    assert row_counts.count_local_file_rows(big) is None
+    assert reads and all(0 < limit <= 65 for limit in reads)
+
+    # Past every cap: rejected from the size alone.
+    monkeypatch.setattr(row_counts, "LINE_SCAN_MAX_BYTES", 1000)
+    reads.clear()
+    assert row_counts.count_local_file_rows(big) is None
+    assert reads == []
+
+
+def test_local_json_lines_with_a_huge_first_row_give_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(row_counts, "FIRST_LINE_MAX_BYTES", 64)
+    path = tmp_path / "rows.json"
+    path.write_text(
+        json.dumps({"text": "y" * 200}) + "\n" + json.dumps({"text": "z"}) + "\n", encoding = "utf-8"
+    )
+    assert row_counts.count_local_file_rows(path) is None
