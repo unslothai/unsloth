@@ -823,6 +823,19 @@ export function ModelsPage() {
       ?.focus({ preventScroll: true });
   }, [tab]);
 
+  // Clearing the query can swap the NPU catalog out, remounting the compact toolbar's search field.
+  const focusSearchOnMount = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (focusSearchOnMount.current !== query) return;
+    focusSearchOnMount.current = null;
+    const input = catalogPaneRef.current?.querySelector<HTMLInputElement>(
+      'input[name="hub-search"]',
+    );
+    if (input && document.activeElement !== input) {
+      input.focus({ preventScroll: true });
+    }
+  }, [query]);
+
   const handleResourceTypeChange = useCallback(
     (next: ResourceTypeFilter) => {
       if (next === resourceType) return;
@@ -1600,6 +1613,11 @@ export function ModelsPage() {
   }, [navigate, allModelsView, isCompactViewport, runConfigOpenCoordinator]);
   const handleQueryChange = useCallback(
     (next: string) => {
+      focusSearchOnMount.current =
+        isCompactViewport &&
+        document.activeElement?.closest('[data-tour="hub-search"]')
+          ? next
+          : null;
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilters([]);
@@ -1633,7 +1651,7 @@ export function ModelsPage() {
       }
       setQuery(next);
     },
-    [query, urlSection, urlModel, urlNpu, navigate],
+    [isCompactViewport, query, urlSection, urlModel, urlNpu, navigate],
   );
 
   useEffect(() => {
