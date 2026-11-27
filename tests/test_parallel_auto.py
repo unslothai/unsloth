@@ -1035,7 +1035,16 @@ def test_fp8_and_int8_checkpoints_count_their_stored_bytes(clean):
     assert lora == 2 * 16 * (4096 + 4096)
     # bitsandbytes is off for an FP8 checkpoint: the BF16 linear is not quantized either.
     assert auto.checkpoint_estimate(fp8, load_in_4bit = True, skip_modules = [])[0] == w16
-    assert auto.checkpoint_estimate(fp8, dequantize_fp8 = True)[0] == 2 * n + 2 * 32 * 32 + 2 * n
+    assert auto.checkpoint_estimate(fp8, fp8 = "dequantized")[0] == 2 * n + 2 * 32 * 32 + 2 * n
+    # A dequantizing device keeps bitsandbytes off too: nothing is NF4.
+    assert (
+        auto.checkpoint_estimate(fp8, fp8 = "dequantized", load_in_4bit = True, skip_modules = [])[0]
+        == 2 * n + 2 * 32 * 32 + 2 * n
+    )
+    # fp8 -> NF4: the FP8 linear quantizes, the checkpoint's BF16 linear stays dense unless "nf4_all".
+    nf4 = dict(load_in_4bit = True, skip_modules = [])
+    assert auto.checkpoint_estimate(fp8, fp8 = "nf4", **nf4)[0] == int(n * 0.53) + 2 * 32 * 32 + 2 * n
+    assert auto.checkpoint_estimate(fp8, fp8 = "nf4_all", **nf4)[0] == 2 * int(n * 0.53) + 2 * 32 * 32
     # A 3-D FP8 expert stack: its block scales are float32 tensors, not linears with LoRA.
     stack = [
         ("model.layers.0.mlp.experts.down_proj", "F8_E4M3", (8, 256, 128)),
@@ -1094,8 +1103,25 @@ def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
         ({}, None, "fsdp2"),  # the default 4bit flag keeps the 32 MiB of FP8 weights
         ({}, "1", "ddp"),  # UNSLOTH_FP8_TO_NF4=1 arms it without an explicit flag
         ({"load_in_4bit": True}, "0", "fsdp2"),  # turned off: FP8 kept
+        (
+            {"load_in_4bit": True, "_quant": None},
+            None,
+            "fsdp2",
+        ),  # not block FP8: the loader keeps FP8
+        (
+            {"load_in_4bit": True, "_quant": {"expert_dtype": "mxfp4"}},
+            None,
+            "fsdp2",
+        ),  # packed experts
     ],
-    ids = ["explicit_4bit", "default_flag", "env_force", "env_off"],
+    ids = [
+        "explicit_4bit",
+        "default_flag",
+        "env_force",
+        "env_off",
+        "not_block_fp8",
+        "packed_experts",
+    ],
 )
 def test_fp8_to_nf4_load_is_sized_in_4bit(clean, kwargs, env, want):
     mp, _, auto = clean
@@ -1110,9 +1136,17 @@ def test_fp8_to_nf4_load_is_sized_in_4bit(clean, kwargs, env, want):
         lambda name, **kw: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 8192))],
     )
     mp.setattr(auto, "_fp8_kept_on_load", lambda: True, raising = False)
+    kwargs = dict(kwargs)
+    quant = kwargs.pop("_quant", {"quant_method": "fp8", "weight_block_size": [128, 128]})
     stub = types.ModuleType("unsloth.models.fp8_to_nf4")
     stub.fp8_to_nf4_unavailable_reason = lambda: None
+    stub.fp8_block_quantization_config = lambda config: quant
+    stub._PACKED_EXPERT_DTYPES = ("fp4", "mxfp4", "nvfp4", "int4")
     mp.setitem(sys.modules, "unsloth.models.fp8_to_nf4", stub)
+    mistral = types.ModuleType("unsloth.models.mistral_format")
+    mistral.mistral_format_conversions_active = lambda: False
+    mp.setitem(sys.modules, "unsloth.models.mistral_format", mistral)
+    mp.setattr(auto, "_config", lambda name, call, revision: object())
 
     def from_pretrained(
         model_name = "x",

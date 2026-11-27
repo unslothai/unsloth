@@ -155,19 +155,33 @@ def _fp8_kept_on_load():
     return False
 
 
-def _fp8_to_nf4_armed(explicit_4bit):
-    """Whether a 4bit load of a block-FP8 checkpoint quantizes it to NF4 (models/fp8_to_nf4.py: an explicit
-    load_in_4bit or UNSLOTH_FP8_TO_NF4=1, not turned off, and the transformers / bitsandbytes it needs)."""
+def _fp8_to_nf4_armed(explicit_4bit, config):
+    """Whether a 4bit load of this FP8 checkpoint quantizes it to NF4, by maybe_arm_fp8_to_nf4's checks: an
+    explicit load_in_4bit or UNSLOTH_FP8_TO_NF4=1 (not =0), a block-FP8 config whose experts are not already
+    packed, no Mistral-format view, and the transformers / bitsandbytes it needs. `config` is a thunk."""
     mode = os.environ.get("UNSLOTH_FP8_TO_NF4", "").strip().lower()
     if mode in ("0", "false", "off", "no") or not (
         explicit_4bit or mode in ("1", "true", "on", "yes", "force")
     ):
         return False
     try:
-        from .models.fp8_to_nf4 import fp8_to_nf4_unavailable_reason
+        from .models.fp8_to_nf4 import (
+            _PACKED_EXPERT_DTYPES,
+            fp8_block_quantization_config,
+            fp8_to_nf4_unavailable_reason,
+        )
+        from .models.mistral_format import mistral_format_conversions_active
+
+        quant = fp8_block_quantization_config(config())
+        if quant is None or mistral_format_conversions_active():
+            return False
+        if str(quant.get("expert_dtype") or "").lower() in _PACKED_EXPERT_DTYPES:
+            return False
+        return fp8_to_nf4_unavailable_reason() is None
     except Exception as exc:
-        raise ValueError(f"a 4bit load of an FP8 checkpoint is not sized ({exc})")
-    return fp8_to_nf4_unavailable_reason() is None
+        raise ValueError(
+            f"a 4bit load of an FP8 checkpoint is not sized ({type(exc).__name__}: {exc})"
+        )
 
 
 def _budget(held = 0, held_cuda = 0):
@@ -338,16 +352,22 @@ def _is_quantizable(key, shape):
 
 def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, full_finetuning = False,
                         dtype_bytes = 2, lora_rank = _LORA_RANK, skip_modules = None,
-                        hidden_size = None, dequantize_fp8 = False):  # fmt: skip
+                        hidden_size = None, fp8 = "kept"):  # fmt: skip
     """(weights bytes once loaded, trainable parameter count) for safetensors header entries. Quantizing on
     load needs `skip_modules`, the loader's llm_int8_skip_modules: a linear whose name contains one stays
-    dense (a substring match keeps at least what the loader keeps). FP8 weights stay 1 byte unless
-    `dequantize_fp8` (an explicit 16bit or full finetuning load dequantizes them to the model dtype)."""
+    dense (a substring match keeps at least what the loader keeps). `fp8`, how F8_* weights load: "kept"
+    (1 byte), "dequantized" (model dtype: a 16bit / full finetuning load, or a device without FP8 compute),
+    either way with bitsandbytes off; "nf4" (fp8 -> NF4 while loading, the other linears stay dense) or
+    "nf4_all" (UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT=1: those quantize too)."""
     packed = any(dt in _PACKED for _, dt, _ in tensors)
-    # An FP8 checkpoint keeps its own quantization: the loader turns bitsandbytes off for it.
-    fp8_checkpoint = not dequantize_fp8 and any(dt.startswith("F8") for _, dt, _ in tensors)
+    # An FP8 checkpoint keeps its own quantization unless armed for NF4: the loader turns bitsandbytes off.
+    fp8_checkpoint = any(dt.startswith("F8") for _, dt, _ in tensors)
+    fp8_nf4 = fp8_checkpoint and fp8 in ("nf4", "nf4_all")
     quantize = (
-        not packed and not fp8_checkpoint and not full_finetuning and (load_in_4bit or load_in_8bit)
+        not packed
+        and (fp8_nf4 or not fp8_checkpoint)
+        and not full_finetuning
+        and (load_in_4bit or load_in_8bit)
     )
     if quantize and skip_modules is None:
         raise ValueError("quantizing on load is not sized without the loader's skip modules")
@@ -375,11 +395,14 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
         quant_state = (
             packed
             and any(t in key for t in ("absmax", "quant_map", "quant_state", "nested_", ".SCB"))
-        ) or (fp8_checkpoint and "scale" in key.rsplit(".", 1)[-1].lower())
-        # FP8 weights stay FP8 on load (1 byte, never re-quantized), as the fsdp2 / pp load estimators count them.
-        fp8 = dt.startswith("F8") and not dequantize_fp8
+        ) or (fp8_checkpoint and fp8 == "kept" and "scale" in key.rsplit(".", 1)[-1].lower())
+        # Kept FP8 weights stay 1 byte (never re-quantized), as the fsdp2 / pp load estimators count them.
+        is_fp8 = dt.startswith("F8")
+        kept_fp8 = is_fp8 and fp8 == "kept"
         loaded = (
-            dtype_bytes if dt.startswith(("F", "BF")) and not quant_state and not fp8 else stored
+            dtype_bytes
+            if dt.startswith(("F", "BF")) and not quant_state and not kept_fp8
+            else stored
         )
         numel_total += numel
         # A 3-D expert stack [E, in, out] is one tensor: E linears that quantize on a 4-bit load (bnb 8-bit only
@@ -395,7 +418,12 @@ def checkpoint_estimate(tensors, load_in_4bit = False, load_in_8bit = False, ful
                 shape[0] * (shape[1] + shape[2]) if stacked else shape[0] + shape[1]
             )
             module = key[: -len(".weight")] if key.endswith(".weight") else key
-            dense = fp8 or (stacked and not load_in_4bit)
+            # fp8 -> NF4 keeps the checkpoint's 16-bit linears dense (fp8_to_nf4._high_precision_linears).
+            dense = (
+                kept_fp8
+                or (stacked and not load_in_4bit)
+                or (fp8_nf4 and fp8 == "nf4" and not is_fp8)
+            )
             if quantize and not dense and not any(m in module for m in skip_modules):
                 weights += int(numel * per_quant)
                 continue
@@ -584,12 +612,15 @@ def resolve_for_load(loader, args, kwargs):
         if full and any(dt in _PACKED for _, dt, _ in tensors):
             # _dequantize_bitsandbytes_for_full_finetuning turns packed weights dense before training.
             raise ValueError("full finetuning a pre-quantized checkpoint dequantizes it; not sized")
-        fp8_to_nf4 = (
-            any(dt.startswith("F8") for _, dt, _ in tensors)
-            and load_in_4bit
-            and not load_in_16bit
-            and _fp8_to_nf4_armed(explicit_4bit)
-        )
+        fp8 = "kept"
+        if any(dt.startswith("F8") for _, dt, _ in tensors):
+            if load_in_16bit or full or not _fp8_kept_on_load():
+                fp8 = "dequantized"
+            elif load_in_4bit and _fp8_to_nf4_armed(
+                explicit_4bit, lambda: _config(name, call, revision)
+            ):
+                quantize_all = os.environ.get("UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT", "")
+                fp8 = "nf4_all" if quantize_all.strip().lower() in _TRUTHY else "nf4"
         weights, trainable = checkpoint_estimate(
             tensors,
             load_in_4bit = load_in_4bit and not load_in_16bit,
@@ -598,7 +629,7 @@ def resolve_for_load(loader, args, kwargs):
             dtype_bytes = dtype_bytes,
             skip_modules = _quant_skip_modules(model_types) if quantize else None,
             hidden_size = _hidden_size(name, call, revision),
-            dequantize_fp8 = load_in_16bit or full or not _fp8_kept_on_load() or fp8_to_nf4,
+            fp8 = fp8,
         )
         if adapter:
             # The adapter's own weights (float32 trainable copies) replace the r = 16 guess.
