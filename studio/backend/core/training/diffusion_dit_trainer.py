@@ -1718,6 +1718,21 @@ _krea2_encode_latents = _qwen_encode_latents
 _krea2_encode_latent_stats = _qwen_encode_latent_stats
 
 
+def _compiled_text_pad_to(family, compiled, caption_embeds, batch_size):
+    """The text length a compiled Qwen-Image / Krea 2 run pads every step to, or None for the batch's own length.
+    Qwen-Image pins its longest prompt. Krea 2 pins its longest valid prompt only when a batch can mix lengths: at
+    batch size 1 the valid rows need no mask, so every step stays unmasked (one graph, flash-eligible) and the
+    dynamic=True compile takes the length change without a recompile, where the pin pads each step to the longest
+    caption and flips the mask between None and a tensor (one extra graph)."""
+    if not compiled or not caption_embeds:
+        return None
+    if family == "qwen-image":
+        return max(e[0].shape[1] for e in caption_embeds.values())
+    if family == "krea-2" and int(batch_size or 1) > 1:
+        return max(_krea2_text_rows(*e)[0].shape[1] for e in caption_embeds.values())
+    return None
+
+
 def _krea2_collate(
     entries,
     device,
@@ -4618,12 +4633,7 @@ def _train_dit(
             block_swap = swapping,
         )
     )
-    # Compiled Qwen / Krea 2 graphs need one fixed text length across steps (Krea 2: its longest valid prompt).
-    qwen_pad_to = None
-    if compiled and spec.family == "qwen-image":
-        qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
-    elif compiled and spec.family == "krea-2":
-        qwen_pad_to = max(_krea2_text_rows(*e)[0].shape[1] for e in caption_embeds.values())
+    qwen_pad_to = _compiled_text_pad_to(spec.family, compiled, caption_embeds, cfg.train_batch_size)
 
     optimizer = _make_optimizer(
         lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
