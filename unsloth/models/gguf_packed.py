@@ -1147,14 +1147,15 @@ def write_gguf_dense_base(
             torch.bfloat16,
         )
     tied = bool(getattr(base.config.get_text_config(), "tie_word_embeddings", False))
+    # Only the shard being filled is held in host memory; written shards are kept as file names.
     shards, shard, size, weight_map, total = [], {}, 0, {}, 0
 
     def flush():
         nonlocal shard, size
         if shard:
-            shards.append(shard)
-            file = f"model-{len(shards):05d}.safetensors"
+            file = f"model-{len(shards) + 1:05d}.safetensors"
             save_file(shard, os.path.join(directory, file), metadata = {"format": "pt"})
+            shards.append(file)
             for name in shard:
                 weight_map[name] = file
         shard, size = {}, 0

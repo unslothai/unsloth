@@ -143,12 +143,22 @@ def test_peft_unmerge_restores_the_packed_base():
     assert torch.allclose(tree(x), before, atol = 1e-5)
 
 
-def test_pissa_init_refused_on_packed_base():
+@pytest.mark.parametrize("fast", (False, True))
+def test_pissa_init_refused_on_packed_base(fast):
+    # fast: Unsloth's get_peft_model swaps in its own PiSSA init (lora_init.fast_lora_init), which must route a
+    # packed base to the guarded PEFT init instead of writing a residual into a weight that cannot hold it.
+    import contextlib
+
     peft = pytest.importorskip("peft")
     module, _ = _pair("Q8_0")
     tree = nn.Sequential()
     tree.add_module("proj", module)
-    with pytest.raises(NotImplementedError, match = "packed in its GGUF"):
+    if fast:
+        from unsloth.models.lora_init import fast_lora_init
+        scope = fast_lora_init(force = True)
+    else:
+        scope = contextlib.nullcontext()
+    with scope, pytest.raises(NotImplementedError, match = "packed in its GGUF"):
         peft.get_peft_model(
             tree, peft.LoraConfig(r = 4, target_modules = ["proj"], init_lora_weights = "pissa")
         )
@@ -361,6 +371,34 @@ def test_dense_base_for_merges_round_trips(tmp_path):
     assert not os.path.exists(base_dir)
     with gp.gguf_dense_base_for_merge(dense, tmp_path / "merged") as resolver:
         assert resolver is None
+    # Several shards: each is written and released before the next fills.
+    import gc
+    import weakref
+
+    import safetensors.torch as st
+
+    written, alive, saved_save_file = [], [], st.save_file
+
+    def recording_save_file(
+        tensors,
+        filename,
+        metadata = None,
+    ):
+        gc.collect()
+        alive.append(sum(ref() is not None for refs in written for ref in refs))
+        written.append([weakref.ref(t) for t in tensors.values()])
+        return saved_save_file(tensors, filename, metadata = metadata)
+
+    st.save_file = recording_save_file
+    try:
+        out = gp.write_gguf_dense_base(packed, tmp_path / "sharded", max_shard_bytes = 1 << 14)
+    finally:
+        st.save_file = saved_save_file
+    assert len(written) > 2
+    assert alive == [0] * len(written), alive
+    reloaded = AutoModelForCausalLM.from_pretrained(out, dtype = torch.float32)
+    for key, value in reloaded.state_dict().items():
+        assert torch.equal(value, reference[key]), key
 
 
 def test_bf16_packed_load_has_no_float32_advice(tmp_path):
