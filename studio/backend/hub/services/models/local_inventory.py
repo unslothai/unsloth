@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import json
 import os
 import re
 import stat
@@ -284,12 +285,45 @@ def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
             _payload_verdicts.move_to_end(key)
             return hit[1]
     complete = hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False)
+    if not complete:
+        complete = _mlx_has_complete_index_free_shards(scan_path)
     with _payload_verdicts_lock:
         _payload_verdicts[key] = (fingerprint, complete)
         _payload_verdicts.move_to_end(key)
         while len(_payload_verdicts) > _PAYLOAD_VERDICT_CACHE_MAX:
             _payload_verdicts.popitem(last = False)
     return complete
+
+
+def _mlx_has_complete_index_free_shards(path: Path) -> bool:
+    from utils.hardware import hardware
+
+    if hardware.DEVICE != hardware.DeviceType.MLX:
+        return False
+    from core.inference.mlx_memory import mlx_shard_files
+
+    try:
+        if (path / "model.safetensors.index.json").exists():
+            return False
+        with (path / "config.json").open(encoding = "utf-8") as handle:
+            config = json.load(handle)
+        if not isinstance(config, dict):
+            return False
+        families = {}
+        for name in mlx_shard_files(os.fspath(path), config):
+            shard = Path(name)
+            if not shard.is_file() or shard.stat().st_size <= 0:
+                return False
+            match = hf_cache_scan._WEIGHT_SHARD_RE.search(shard.name)
+            if match:
+                family = hf_cache_scan._weight_shard_family(path, shard, match)
+                families.setdefault(family, set()).add(int(match.group(1)))
+        return bool(families) and all(
+            hf_cache_scan._shard_family_is_whole(family, indices)
+            for family, indices in families.items()
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def _a_gguf_build_loads(folder: Path) -> bool:
@@ -534,7 +568,8 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
     if snapshot is None:
         return False
     walked = 0
-    pending = [snapshot]
+    snapshots = repo_dir / "snapshots"
+    pending = [snapshots, snapshot]
     while pending:
         try:
             entries = os.scandir(pending.pop())
@@ -554,9 +589,12 @@ def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
                     return False
                 try:
                     if entry.is_dir(follow_symlinks = False):
-                        pending.append(Path(entry.path))
+                        directory = Path(entry.path)
+                        if directory != snapshot:
+                            pending.append(directory)
                     elif (
-                        entry.is_file()
+                        Path(entry.path).parent != snapshots
+                        and entry.is_file()
                         and entry.name not in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE
                         and not is_appledouble_metadata(Path(entry.path))
                     ):

@@ -169,12 +169,12 @@ def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
     assert _discovered_ids(tmp_path) == [REPO]
 
 
-def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
+def test_empty_latest_snapshot_does_not_hide_retained_weights(tmp_path):
     repo = _copy_layout(tmp_path)
     newer = repo / "snapshots" / ("f" * 40)
     newer.mkdir()
     os.utime(repo / "snapshots" / REV, (1, 1))
-    assert _discovered_ids(tmp_path) == []
+    assert _discovered_ids(tmp_path) == [REPO]
 
 
 def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkeypatch):

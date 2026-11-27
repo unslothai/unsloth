@@ -2317,7 +2317,19 @@ def split_set_is_loadable(path: Path) -> bool:
             else:
                 split_count = read_gguf_split_count(str(target))
                 shards, complete = [target], split_count is not None and split_count <= 1
-        return complete and all(shard.stat().st_size > 0 for shard in shards)
+        if not complete or not shards:
+            return False
+        first = shards[0]
+        match = _GGUF_SPLIT_FILE_RE.match(first.name)
+        if match is not None and match.group("index") == "00001":
+            prefix, total = match.group("prefix", "total")
+            shards = [
+                first.with_name(
+                    f"{prefix}-{_GGUF_SPLIT_FILE_RE.match(shard.name).group('index')}-of-{total}.gguf"
+                )
+                for shard in shards
+            ]
+        return all(shard.is_file() and shard.stat().st_size > 0 for shard in shards)
     except OSError:
         return False
 

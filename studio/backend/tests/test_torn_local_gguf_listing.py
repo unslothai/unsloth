@@ -214,3 +214,37 @@ def test_a_shard_link_target_is_judged_by_its_split_metadata(sources, tmp_path):
     assert offered.get("blob") == ("Q6_K",) and "renamed" not in offered
     assert resolver.resolve_local_gguf("blob")[1] == "Q6_K"
     assert resolver.resolve_local_gguf("renamed") is None
+
+
+def test_split_shards_must_match_the_loader_filenames(tmp_path):
+    from utils.models.model_config import split_set_is_loadable
+
+    first = tmp_path / "Model-Q4_K_M-00001-of-00002.gguf"
+    second = tmp_path / "model-Q4_K_M-00002-of-00002.gguf"
+    _gguf(first)
+    _gguf(second)
+    expected = tmp_path / "Model-Q4_K_M-00002-of-00002.gguf"
+    if expected.is_file():
+        pytest.skip("filesystem resolves case variants")
+    assert not split_set_is_loadable(first)
+    second.rename(expected)
+    assert split_set_is_loadable(first)
+
+
+def test_mlx_index_free_shards_are_servable_only_when_whole(tmp_path, monkeypatch):
+    import numpy as np
+    from safetensors.numpy import save_file
+    from utils.hardware import hardware
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    for index in (1, 2):
+        save_file(
+            {f"tensor.{index}": np.array([index], dtype = np.float32)},
+            str(tmp_path / f"model-{index:05d}-of-00002.safetensors"),
+        )
+    monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.CUDA)
+    assert not local_inventory._mlx_has_complete_index_free_shards(tmp_path)
+    monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.MLX)
+    assert local_inventory._mlx_has_complete_index_free_shards(tmp_path)
+    (tmp_path / "model-00002-of-00002.safetensors").unlink()
+    assert not local_inventory._mlx_has_complete_index_free_shards(tmp_path)
