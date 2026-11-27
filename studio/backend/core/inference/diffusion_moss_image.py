@@ -464,7 +464,13 @@ def layer_major_refusal(transformer) -> Optional[str]:
 # Measured Auto verdicts for the layer-major batch: card name -> evidence, with ``serves`` True only when the paired
 # G2c bound (24 pairs, LPIPS upper <= +0.01), the row-0 gate and the speed gate (lower bound >= 1.05x serial, p95
 # <= +3%) all passed there. Any other card keeps rendering concurrent MOSS requests one at a time.
-MEASURED_BATCH_WINS: dict = {}
+MEASURED_BATCH_WINS: dict = {
+    # bf16 eager, diffusers block-level group offload (one block per group, streams), 1024 px, 10 steps, CFG 2.5,
+    # 3 ABBA repeats; torch 2.14.1, diffusers 0.42.1. Batched vs serial: N=2 1.98x (95% CI 1.98-1.99), N=4 2.42x
+    # (2.40-2.43), batched p95 0.41-0.50x of serial; 336 -> 84 block uploads per step at N=4. G2c n=24 upper bound
+    # 0.0 (all 24 batched latents equal their solo renders); row 0 equal to its solo render at N=2 and N=4.
+    "NVIDIA A100-SXM4-80GB": {"serves": True, "speed_lo": 1.98, "g2c_upper": 0.0, "g2c_n": 24},
+}
 
 
 def coalesce_key(pipe) -> Optional[tuple]:
