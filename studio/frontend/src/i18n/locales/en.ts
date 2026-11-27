@@ -5101,6 +5101,9 @@ export const en = {
       saveHistoryDescription: "Kept in this browser only.",
       showPrompt: "Show prompt",
       showPromptDescription: "See exact instructions sent to the model.",
+      keepNames: "Keep original names",
+      keepNamesDescription:
+        "Show each name's original spelling after it, like डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Not saved to History: the browser's storage is full.",

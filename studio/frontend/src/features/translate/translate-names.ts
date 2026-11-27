@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+export type NameSpelling = { source: string; target: string };
+
+// Each name costs one short model call before its passage.
+const MAX_NAMES_PER_PASSAGE = 12;
+
+// German and Luxembourgish capitalise every noun, so capitals do not mark names there.
+const CAPITALISES_NOUNS = new Set(["de", "lb"]);
+
+export function namesAreCapitalised(languageCode: string | null): boolean {
+  return languageCode === null || !CAPITALISES_NOUNS.has(languageCode);
+}
+
+// English capitalises these, but they are words to translate, not names to keep.
+const CALENDAR_WORDS = new Set(
+  "Monday Tuesday Wednesday Thursday Friday Saturday Sunday January February March April May June July August September October November December".split(
+    " ",
+  ),
+);
+
+const WORD = String.raw`\p{Lu}\p{Ll}[\p{Ll}\p{M}]*(?:[-'’]\p{Lu}?\p{Ll}[\p{Ll}\p{M}]*)*`;
+const NAME = new RegExp(
+  `(?<![\\p{L}\\p{M}\\p{N}])${WORD}(?: ${WORD})*(?![\\p{L}\\p{M}\\p{N}])`,
+  "gu",
+);
+const SENTENCE_START = /(?:^|[.!?…:;]["'”’)\]]*\s+|\n\s*|["“‘([]\s*)$/u;
+
+/** Runs of capitalised words; a lone capitalised word opening a sentence is ordinary text. */
+export function findNames(text: string): string[] {
+  const names: string[] = [];
+  for (const match of text.matchAll(NAME)) {
+    const name = match[0];
+    if (
+      !name.includes(" ") &&
+      (CALENDAR_WORDS.has(name) ||
+        SENTENCE_START.test(text.slice(0, match.index)))
+    )
+      continue;
+    if (!names.includes(name)) names.push(name);
+    if (names.length === MAX_NAMES_PER_PASSAGE) break;
+  }
+  return names;
+}
+
+/** The name as the model wrote it on its own; null when it kept the original or wrote more than a name. */
+export function nameSpelling(
+  source: string,
+  translated: string,
+): string | null {
+  const target = translated
+    .trim()
+    .replace(/^["'“”‘’«»「」]+|["'“”‘’«»「」.,;:!?。、，！？।॥۔]+$/gu, "")
+    .trim();
+  if (!target || target.includes("\n") || target.includes(source)) return null;
+  if (target.length > source.length * 4 + 8) return null;
+  return target;
+}
+
+/** Hy-MT3's model-card Terminology prompt, which a general chat model follows too. */
+export function referenceBlock(
+  names: readonly NameSpelling[] | undefined,
+): string {
+  if (!names || names.length === 0) return "";
+  const lines = names.map(
+    (name) => `${name.source} translates to ${name.target}`,
+  );
+  return `Reference the following translations:\n${lines.join("\n")}\n\n`;
+}
+
+/** For a general chat model, after its instruction: a block ahead of it can read as the text to translate. */
+export function nameGuide(names: readonly NameSpelling[] | undefined): string {
+  if (!names || names.length === 0) return "";
+  const pairs = names.map((name) => `${name.source} as ${name.target}`);
+  return ` Write these names exactly like this: ${pairs.join("; ")}.`;
+}
+
+const LETTER = /[\p{L}\p{M}\p{N}]/u;
+
+/** Adds "(original)" after the first mention of each name; a spelling the model did not use is left alone. */
+export function annotateNames(
+  text: string,
+  names: readonly NameSpelling[],
+  annotated: Set<string>,
+): string {
+  let out = text;
+  for (const { source, target } of names) {
+    if (annotated.has(source)) continue;
+    for (
+      let at = out.indexOf(target);
+      at >= 0;
+      at = out.indexOf(target, at + 1)
+    ) {
+      const end = at + target.length;
+      if (LETTER.test(out[end] ?? "")) continue;
+      annotated.add(source);
+      if (!out.slice(end).trimStart().startsWith(`(${source})`))
+        out = `${out.slice(0, end)} (${source})${out.slice(end)}`;
+      break;
+    }
+  }
+  return out;
+}
