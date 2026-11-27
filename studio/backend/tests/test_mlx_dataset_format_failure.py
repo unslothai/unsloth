@@ -60,6 +60,7 @@ def _run(
             "tokenizer": object(),
             "hf_dataset": "local",
             "custom_format_mapping": None,
+            "prefer_native_alpaca": False,
             "eval_enabled": True,
             "_fmt_progress": lambda **_kw: None,
             "_send": lambda kind, **kw: events.append((kind, kw)),

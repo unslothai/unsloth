@@ -3735,6 +3735,7 @@ def _run_mlx_training(
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    prefer_native_alpaca = config.get("prefer_native_alpaca", False)
     dataset_template = None
     dataset_final_format = ""
     eval_final_format = ""
@@ -3843,7 +3844,7 @@ def _run_mlx_training(
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
                 custom_format_mapping = custom_format_mapping,
-                prefer_native_alpaca = config.get("prefer_native_alpaca", False),
+                prefer_native_alpaca = prefer_native_alpaca,
                 progress_callback = _fmt_progress,
             )
             if info.get("success", True):
@@ -3869,7 +3870,7 @@ def _run_mlx_training(
                     custom_format_mapping = custom_format_mapping,
                     split_name = "eval",
                     raw_text_column = info.get("raw_text_column"),
-                    prefer_native_alpaca = config.get("prefer_native_alpaca", False),
+                    prefer_native_alpaca = prefer_native_alpaca,
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
