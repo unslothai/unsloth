@@ -42,7 +42,7 @@ def _line_of(source: str, needle: str) -> int:
 
 def _publication_block() -> str:
     """Sliced between two section markers, since a fixed character count breaks when a comment grows."""
-    start = _SETUP_SRC.index("# ── Publish the torch flavor this run settled on ──")
+    start = _SETUP_SRC.index("# -- Publish the torch flavor this run settled on --")
     end = _SETUP_SRC.index("# Ordered heavy dependency installation", start)
     return _SETUP_SRC[start:end]
 

@@ -451,7 +451,7 @@ def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
 
 def test_uv_cache_option_and_environment_parsers_cannot_drift():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    parse_start = source.index("# ── Parse flags ──")
+    parse_start = source.index("# -- Parse flags --")
     root = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"', parse_start)
     parser = source[parse_start:root]
 

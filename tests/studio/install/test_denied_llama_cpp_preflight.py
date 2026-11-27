@@ -17,8 +17,8 @@ ACL_PS1 = (ROOT / "tests" / "studio" / "test_path_probe_access_denied.ps1").read
     encoding = "utf-8"
 )
 
-SHARED_BEGIN = "# ── BEGIN SHARED WITH studio/setup.ps1 ──"
-SHARED_END = "# ── END SHARED WITH studio/setup.ps1 ──"
+SHARED_BEGIN = "# -- BEGIN SHARED WITH studio/setup.ps1 --"
+SHARED_END = "# -- END SHARED WITH studio/setup.ps1 --"
 
 # Helpers copied byte-for-byte into install.ps1.
 SHARED_FUNCTIONS = (
@@ -141,7 +141,7 @@ def test_the_preflight_runs_before_anything_expensive() -> None:
         'Write-TauriLog "STEP" "Running studio setup"',
     ):
         assert position < INSTALL_PS1.index(later), later
-    relocation = "# ── Leave Windows system directories before installing ──"
+    relocation = "# -- Leave Windows system directories before installing --"
     assert INSTALL_PS1.index(relocation) < position
 
 
@@ -201,7 +201,7 @@ def test_the_preflight_fails_the_install_with_the_shared_reason() -> None:
     assert 'Write-PathAccessDenied -Path $dir -Label "llama.cpp install"' in body
     assert "Nothing was installed." in body
     call = INSTALL_PS1.split("$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight", 1)[1]
-    call = call.split("# ── Check winget ──", 1)[0]
+    call = call.split("# -- Check winget --", 1)[0]
     assert "Exit-InstallFailure $llamaPreflightFailure" in call
 
 
