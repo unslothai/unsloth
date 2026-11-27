@@ -8005,6 +8005,21 @@ function Test-UnparseableManagedTorchCache {
     return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
 }
 
+# The USER value reaches every later process on the account, the default install's launches too,
+# so a custom-home run (a test install, a second copy) must not repoint it at its own tree.
+function Test-TorchCacheMayPersist {
+    param([string]$Value, [string]$Persisted, [string]$StudioRoot, [bool]$HomeIsCustom)
+    if (-not $HomeIsCustom) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Persisted)) { return $true }
+    $norm = { param($p) [Environment]::ExpandEnvironmentVariables($p).Trim().Replace('/', '\').TrimEnd('\') }
+    $p = & $norm $Persisted
+    if ($p -ieq (& $norm $Value)) { return $true }
+    # A value inside this home was written by this install, so it is ours to replace.
+    $h = & $norm $StudioRoot
+    # StartsWith, not -like: a home holding [ or ] would read as a wildcard pattern.
+    return ([bool]$h -and ($p -ieq $h -or $p.StartsWith("$h\", [StringComparison]::OrdinalIgnoreCase)))
+}
+
 function Clear-UnparseableTorchCacheEnv {
     $managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
     if (-not $StageRoot) {
@@ -8083,7 +8098,8 @@ if ($script:UnslothVerbose) {
 }
 
 # Triton/inductor paths can exceed MAX_PATH (260): use the Unsloth home with long paths on,
-# else a short drive-root dir. Persisted to USER env, so it must match the resolver's choice.
+# else a short drive-root dir. Persisted to USER env (custom homes only when no other install owns it),
+# so it must match the resolver's choice.
 # Whitespace or an apostrophe is refused as storage_roots.toolchain_path_unparseable does.
 $TorchCacheDir = $null
 $TorchCacheUnparseable = $false
@@ -8109,7 +8125,13 @@ if ($TorchCacheDir) {
     if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
     $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
     if (-not $StageRoot) {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        $_persistedTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (Test-TorchCacheMayPersist $TorchCacheDir $_persistedTorchCache $StudioHome $StudioHomeIsCustom) {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        } else {
+            # Its launches inherit the other install's value, which was itself chosen to avoid MAX_PATH.
+            substep "kept the account's TORCHINDUCTOR_CACHE_DIR ($_persistedTorchCache): it belongs to another install, so $TorchCacheDir is used for this run only"
+        }
     }
     substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 }

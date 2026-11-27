@@ -1317,3 +1317,78 @@ def test_the_windows_note_writer_rewrites_only_when_the_value_changed(tmp_path):
     run_pwsh(argv, capture_output = True, text = True, check = True)
     assert note.read_text(encoding = "utf-8").strip() == str(tmp_path / "moved")
     assert int(note.stat().st_mtime) != old_stamp
+
+
+def _torch_cache_may_persist(tmp_path: Path, cases: list[tuple[str, str, str, bool]]) -> list[str]:
+    """Runs the shipped Test-TorchCacheMayPersist so a rewrite that keeps only the words fails."""
+    calls = "\n".join(
+        f"Write-Output (Test-TorchCacheMayPersist {_ps_quote(v)} {_ps_quote(p)} "
+        f"{_ps_quote(h)} ${'true' if custom else 'false'})"
+        for v, p, h, custom in cases
+    )
+    script = tmp_path / "persist_probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{SETUP_PS1}"
+$m = [regex]::Match($txt, "(?ms)^function Test-TorchCacheMayPersist \\{{.*?^\\}}")
+if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED"; exit 1 }}
+Invoke-Expression $m.Value
+{calls}
+""",
+        encoding = "utf-8",
+    )
+    out = run_pwsh(
+        [PWSH, "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = False,
+    ).stdout.split()
+    assert "EXTRACT-FAILED" not in out, out
+    return out
+
+
+@pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
+def test_a_custom_home_never_repoints_another_installs_inductor_cache(tmp_path):
+    """A scratch UNSLOTH_STUDIO_HOME setup run used to overwrite the real install's USER value."""
+    scratch = r"C:\work\0023\studio_home_emul"
+    ours = scratch + r"\cache\torchinductor"
+    cases = [
+        # The device report: the real install had persisted C:\tc.
+        (ours, r"C:\tc", scratch, True),
+        # Another install's own home tree, and a user's own directory, are left alone.
+        (ours, r"C:\Users\u\.unsloth\studio\cache\torchinductor", scratch, True),
+        (ours, r"D:\my inductor", scratch, True),
+        # A sibling whose name only starts with this home is not inside it.
+        (ours, r"C:\work\0023\studio_home_emul2\cache\torchinductor", scratch, True),
+        # Nothing persisted yet, the same value, or a value inside this home: safe to write.
+        (ours, "", scratch, True),
+        (ours, ours.lower() + "\\", scratch, True),
+        (ours, scratch + r"\cache\old", scratch, True),
+        # The default home stays the owner of the USER value, so it also heals a hijacked one.
+        (
+            r"C:\Users\u\.unsloth\studio\cache\torchinductor",
+            ours,
+            r"C:\Users\u\.unsloth\studio",
+            False,
+        ),
+        (r"C:\tc", ours, r"C:\Users\u\.unsloth\studio", False),
+    ]
+    expected = ["False"] * 4 + ["True"] * 5
+    assert _torch_cache_may_persist(tmp_path, cases) == expected
+
+
+def test_the_user_inductor_cache_write_is_gated_on_ownership():
+    """Every USER write of TORCHINDUCTOR_CACHE_DIR must pass the ownership check first."""
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+    writes = [
+        m.start()
+        for m in re.finditer(
+            r"SetEnvironmentVariable\('TORCHINDUCTOR_CACHE_DIR', \$TorchCacheDir, 'User'\)", code
+        )
+    ]
+    assert len(writes) == 1, writes
+    guard = code.rfind("Test-TorchCacheMayPersist", 0, writes[0])
+    assert guard != -1 and "\n}" not in code[guard : writes[0]], "the USER write lost its guard"
+    gate_line = code[code.rfind("\n", 0, guard) : code.find("\n", guard)]
+    assert "$StudioHomeIsCustom" in gate_line, gate_line
+    assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code[guard - 400 : guard]
