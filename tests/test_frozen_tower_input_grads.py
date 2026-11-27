@@ -168,15 +168,22 @@ def test_text_embedding_hook_is_unchanged():
     )
 
 
-def test_compiled_hook_keeps_the_flag_for_a_tower_unfrozen_later():
+def test_compiled_hook_skips_a_frozen_tower_and_retraces_on_unfreeze():
+    # Unsloth compiles some towers (Gemma 3's SigLIP), so the hook is traced: a frozen tower must still skip.
+    torch._dynamo.reset()
     model, trainable = _model()
     _, _, state = _step(model, trainable)
     assert state["backward"] == 0
     compiled = torch.compile(model.model.visual.patch_embed, backend = "eager", fullgraph = True)
     x = _inputs()["pixel_values"]
-    assert compiled(x).requires_grad  # traced while frozen: kept, so a later unfreeze still trains
-    model.model.visual.blocks[0].mlp.up_proj.weight.requires_grad_(True)
-    assert compiled(x).requires_grad
+    with torch.enable_grad():
+        assert not compiled(x).requires_grad  # traced while frozen: no tower backward
+        tower_weight = model.model.visual.blocks[0].mlp.up_proj.weight
+        tower_weight.requires_grad_(True)
+        assert compiled(x).requires_grad  # the requires_grad guard retraces with the flag set
+        tower_weight.requires_grad_(False)
+        assert not compiled(x).requires_grad
+    torch._dynamo.reset()
 
 
 def test_keep_frozen_towers_env_is_read_per_call(monkeypatch):
