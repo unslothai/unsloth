@@ -149,3 +149,35 @@ def test_recalled_history_uses_only_room_left_after_the_live_result(
     assert stages.count("execute") == batch_size
     assert "recall" in stages
     assert budgets and (budgets[0] > 0) is (result_size == 40)
+
+
+def test_completed_siblings_stay_compactable_for_the_result_budget_rescue(monkeypatch):
+    backend, _, payloads = make_batch(monkeypatch, 2)
+    backend._effective_context_length = 4608
+    budgets = []
+
+    def execute(
+        name,
+        arguments,
+        result_budget_tokens = None,
+        **kwargs,
+    ):
+        budgets.append(result_budget_tokens)
+        return "Records."
+
+    monkeypatch.setattr(tools, "execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Extract all exceptions."}],
+            tools = [tools.PYTHON_TOOL],
+            max_tokens = None,
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+    assert len(budgets) == 2
+    assert budgets[1] >= llama_cpp._MIN_USEFUL_RESULT_TOKENS, budgets
+    prompt = payloads[-1]["messages"]
+    assistant = next(m for m in prompt if m.get("tool_calls"))
+    assert [c["id"] for c in assistant["tool_calls"]] == ["new-0", "new-1"]
+    assert [m["tool_call_id"] for m in prompt if m["role"] == "tool"] == ["new-0", "new-1"]

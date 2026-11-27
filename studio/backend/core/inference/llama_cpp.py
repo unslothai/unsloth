@@ -44396,9 +44396,7 @@ class LlamaCppBackend:
                                 if _attempt == 0:
                                     # Compact history first, then re-price against the real tokenizer instead of trusting the saving.
                                     _compacted, _n = compact_completed_tool_arguments(
-                                        conversation,
-                                        protect_last = 1,
-                                        protected_message_ids = {id(assistant_msg)},
+                                        conversation, protect_last = 1
                                     )
                                     if _n:
                                         conversation[:] = _compacted
@@ -44722,9 +44720,7 @@ class LlamaCppBackend:
                                         and self._effective_context_length
                                     ):
                                         _roomier, _n_roomier = compact_completed_tool_arguments(
-                                            conversation,
-                                            protect_last = 1,
-                                            protected_message_ids = {id(assistant_msg)},
+                                            conversation, protect_last = 1
                                         )
                                         if _n_roomier:
                                             conversation[:] = _roomier
