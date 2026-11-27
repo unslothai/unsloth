@@ -3737,6 +3737,8 @@ def _run_mlx_training(
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    prefer_native_alpaca = config.get("prefer_native_alpaca", False)
+    dataset_template = None
     dataset_final_format = ""
     eval_final_format = ""
     try:
@@ -3844,6 +3846,7 @@ def _run_mlx_training(
                 format_type = format_type,
                 dataset_name = hf_dataset or "local",
                 custom_format_mapping = custom_format_mapping,
+                prefer_native_alpaca = prefer_native_alpaca,
                 progress_callback = _fmt_progress,
             )
             if info.get("success", True):
@@ -3856,6 +3859,7 @@ def _run_mlx_training(
             for message in info.get("run_warnings", []):
                 _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
+            dataset_template = info.get("dataset_template")
             eval_final_format = dataset_final_format
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -3868,6 +3872,7 @@ def _run_mlx_training(
                     custom_format_mapping = custom_format_mapping,
                     split_name = "eval",
                     raw_text_column = info.get("raw_text_column"),
+                    prefer_native_alpaca = prefer_native_alpaca,
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
@@ -4138,7 +4143,7 @@ def _run_mlx_training(
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
-            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
+            dataset_template = dataset_template,
         )
         if not masking_applied:
             # Masking miss changes the run's objective, so warn in the sticky warning list, not a status line.
@@ -5284,6 +5289,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
                 format_type = config.get("format_type", ""),
+                prefer_native_alpaca = config.get("prefer_native_alpaca", False),
                 local_datasets = config.get("local_datasets") or None,
                 local_eval_datasets = config.get("local_eval_datasets") or None,
                 custom_format_mapping = config.get("custom_format_mapping"),
