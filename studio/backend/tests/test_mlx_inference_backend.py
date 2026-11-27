@@ -136,6 +136,10 @@ PLAIN_HELPERS = {
     "_SparseDrafter": type(
         "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
     ),
+    # unsloth_zoo #2910: speculative.py checks isinstance(drafter._draft, _MarkovTreeDrafter).
+    "_MarkovTreeDrafter": type(
+        "_MarkovTreeDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
+    ),
     "_VERIFY_GDN_MAX_ROWS": 16,
     "_FIRST_USE_WORK": [0],
     # Read by zoo's speculative.py head replay (unsloth_zoo #2474); the stub holds no QSA cache trims.
