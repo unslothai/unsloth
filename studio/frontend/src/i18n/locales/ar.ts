@@ -4452,6 +4452,7 @@ export const ar = {
       unsupportedFileType: "نوع ملف غير مدعوم",
       uploadOneFileType: "ارفع ملفًا واحدًا من نوع {types}.",
       datasetUploaded: "تم رفع مجموعة البيانات",
+      importPandasJson: "استيراد ملف .json كأعمدة pandas",
       evalDatasetUploaded: "تم رفع مجموعة بيانات التقييم",
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:

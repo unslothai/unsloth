@@ -4504,6 +4504,7 @@ export const es = {
       unsupportedFileType: "Tipo de archivo no admitido",
       uploadOneFileType: "Sube un archivo {types}.",
       datasetUploaded: "Conjunto de datos subido",
+      importPandasJson: "Importar .json como columnas de pandas",
       evalDatasetUploaded: "Conjunto de datos de evaluación subido",
       uploadOneFileAtATime: "Sube un archivo a la vez",
       uploadSingleFileDescription:

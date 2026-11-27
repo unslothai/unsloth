@@ -52,7 +52,7 @@ function PandasJsonOption({
         disabled={disabled}
         onCheckedChange={(value) => onChange(value === true)}
       />
-      {t("datasetImport.pandasJson")}
+      {t("studio.dataset.importPandasJson")}
     </label>
   );
 }

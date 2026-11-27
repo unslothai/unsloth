@@ -4484,6 +4484,7 @@ export const it = {
       unsupportedFileType: "Tipo di file non supportato",
       uploadOneFileType: "Carica un file {types}.",
       datasetUploaded: "Dataset caricato",
+      importPandasJson: "Importa .json come colonne pandas",
       evalDatasetUploaded: "Dataset di valutazione caricato",
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:

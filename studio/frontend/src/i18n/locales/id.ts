@@ -4759,6 +4759,7 @@ export const id = {
       unsupportedFileType: "Jenis file tidak didukung",
       uploadOneFileType: "Unggah satu file {types}.",
       datasetUploaded: "Dataset diunggah",
+      importPandasJson: "Impor .json sebagai kolom pandas",
       evalDatasetUploaded: "Dataset evaluasi diunggah",
       uploadOneFileAtATime: "Unggah satu file sekaligus",
       uploadSingleFileDescription:

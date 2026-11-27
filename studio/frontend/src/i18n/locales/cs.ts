@@ -4780,6 +4780,7 @@ export const cs = {
       unsupportedFileType: "Nepodporovaný typ souboru",
       uploadOneFileType: "Nahrajte jeden soubor typu {types}.",
       datasetUploaded: "Datová sada byla nahrána",
+      importPandasJson: "Importovat .json jako sloupce pandas",
       evalDatasetUploaded: "Vyhodnocovací datová sada byla nahrána",
       uploadOneFileAtATime: "Nahrávejte vždy jen jeden soubor",
       uploadSingleFileDescription:
