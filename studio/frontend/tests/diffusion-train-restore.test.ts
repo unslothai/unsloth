@@ -121,3 +121,15 @@ test("a finished run waits for the stored preset before seeding the form", () =>
   assert.match(src, /if \(presets\.presetsReady\) onReady\(\)/);
   assert.match(src, /onReady=\{markPresetsSettled\}/);
 });
+
+test("opening a run from history points an untouched form at it, never over a user's pick", () => {
+  const src = readFileSync(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const open = src.slice(src.indexOf("const openPrevRun = useCallback("), src.indexOf("const viewLossHistory"));
+  assert.match(
+    open,
+    /if \(!modelPickedByUser\.current\) \{\s*const opened = trainingRunSelection\(detail, families\);\s*if \(opened\) applyRunSelection\(opened\);/,
+  );
+});

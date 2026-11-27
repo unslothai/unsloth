@@ -20,6 +20,7 @@ import { useTrainingConfigStore } from "@/features/training";
 import { useParallelPlan } from "@/features/training/hooks/use-parallel-plan";
 import {
   PARALLEL_MODE_LABEL_KEYS,
+  layoutExample,
   modeAvailability,
   overrideIssue,
   planSummary,
@@ -188,6 +189,14 @@ function PlanLine({ hasModel }: { hasModel: boolean }): ReactElement | null {
           )}
         </p>
       )}
+      {plan.notes.map((note) => (
+        <p
+          key={note}
+          className="text-ui-11 leading-relaxed text-muted-foreground/80"
+        >
+          {note}
+        </p>
+      ))}
       {plan.warnings.map((warning) => (
         <p
           key={warning}
@@ -235,6 +244,7 @@ function ModeSelect({
     );
   const issue = overrideIssue(override, allGpuIds);
   const modeLabel = t(PARALLEL_MODE_LABEL_KEYS[override.mode]);
+  const example = layoutExample((override.gpuIds ?? allGpuIds).length);
   return (
     <div className="flex flex-col gap-2">
       <div className="flex min-h-9 items-center justify-between gap-3">
@@ -292,7 +302,7 @@ function ModeSelect({
           <Input
             value={override.spec}
             onChange={(e) => setOverrideSpec(e.target.value)}
-            placeholder="dp=2,tp=2"
+            placeholder={example}
             aria-label={t("studio.gpus.specLabel")}
             spellCheck={false}
             className="w-[calc(240px*var(--ui-space-scale,1))] font-mono"
@@ -304,7 +314,7 @@ function ModeSelect({
           className="text-ui-11p5 leading-relaxed text-destructive"
           role="alert"
         >
-          {t(issue)}
+          {t(issue, { example })}
         </p>
       )}
     </div>

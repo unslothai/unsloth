@@ -116,3 +116,24 @@ def test_options_skip_cutlass_build_knobs():
     # CUTLASS build flags only; deprecated cuda.* aliases on torch 2.16.
     out = _emit(True)
     assert "cuda.compile_opt_level" not in out and "cuda.enable_cuda_lto" not in out
+
+
+def test_grpo_options_keep_cudagraphs_off_like_the_template():
+    # The GRPO patch replaces the trainer's torch_compile_options; it must keep the template's cudagraphs key.
+    start = SOURCE.index('        base_options = """torch_compile_options = {')
+    end = SOURCE.index('        if DEVICE_TYPE == "cuda":', start)
+    ns = {}
+    exec("if True:\n" + SOURCE[start:end], ns)
+    emitted = {}
+    exec(ns["base_options"] + "\n}", {}, emitted)
+    template = {}
+    tree = ast.parse(SOURCE)
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and getattr(node.targets[0], "id", None) == "torch_compile_options"
+        ):
+            template = ast.literal_eval(node.value)
+            break
+    assert template.get("triton.cudagraphs") is False
+    assert emitted["torch_compile_options"]["triton.cudagraphs"] is False

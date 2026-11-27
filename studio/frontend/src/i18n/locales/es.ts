@@ -2438,6 +2438,10 @@ export const es = {
         confirmDescriptionChatOnly:
           "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan las conversaciones y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
+        recommendedTorch:
+          "Se recomienda reparar: esta instalación tiene PyTorch {torch}, anterior al {managedTorch} gestionado con el que se admiten las GPU de la serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} es anterior al {managedTorch} gestionado con el que se admiten las GPU de la serie RTX 50, pero este controlador de GPU no admite CUDA 13. Actualiza primero el controlador de GPU y después repara la instalación.",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
@@ -4172,8 +4176,8 @@ export const es = {
       summary: {
         single: "Entrenando en una GPU",
         layerSplit: "El modelo se divide capa por capa entre {count} GPU",
-        ddp: "El modelo cabe en una GPU: paralelismo de datos en {count} GPU",
-        fsdp2: "El modelo no cabe en una GPU: fragmentado entre {count} GPU",
+        ddp: "Cada GPU entrena una copia completa: paralelismo de datos en {count} GPU",
+        fsdp2: "Pesos y estado del optimizador fragmentados entre {count} GPU",
         tp: "Cada capa se divide entre {count} GPU",
         pp: "Las capas se ejecutan como {count} etapas de pipeline, una por GPU",
         cp: "Cada secuencia se divide entre {count} GPU",
@@ -4184,7 +4188,7 @@ export const es = {
         noGpu: "Selecciona al menos una GPU.",
         singleNeedsOne: "Una sola GPU usa exactamente una GPU. Desmarca las demás.",
         needsTwo: "Este modo necesita al menos dos GPU.",
-        customSpec: "Escribe una distribución, por ejemplo dp=2,tp=2.",
+        customSpec: "Escribe una distribución, por ejemplo {example}.",
       },
     },
     preview: {
@@ -5141,6 +5145,7 @@ export const es = {
       showPromptDescription: "Ver las instrucciones exactas enviadas al modelo.",
     },
     history: {
+      notSaved: "No se ha guardado en el historial: el almacenamiento del navegador está lleno.",
       title: "Historial",
       search: "Buscar en el historial",
       empty: "Tus traducciones aparecen aquí.",

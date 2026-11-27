@@ -2624,6 +2624,10 @@ export const id = {
         confirmDescriptionChatOnly:
           "Menghentikan server dan menjalankan ulang penginstal. Ini adalah instalasi Hanya chat, jadi penginstal juga meningkatkannya ke instalasi lengkap dengan PyTorch, total beberapa gigabyte. Chat dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Perbaiki sekarang",
+        recommendedTorch:
+          "Perbaikan disarankan: instalasi ini memakai PyTorch {torch}, lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} lebih lama dari {managedTorch} terkelola yang mendukung GPU seri RTX 50, tetapi driver GPU ini tidak mendukung CUDA 13. Perbarui driver GPU terlebih dahulu, lalu perbaiki instalasi.",
       },
       resetPreferences: {
         sectionTitle: "Zona berbahaya",
@@ -4424,8 +4428,8 @@ export const id = {
       summary: {
         single: "Melatih di satu GPU",
         layerSplit: "Model dibagi per lapisan ke {count} GPU",
-        ddp: "Model muat di satu GPU: paralel data di {count} GPU",
-        fsdp2: "Model terlalu besar untuk satu GPU: di-shard ke {count} GPU",
+        ddp: "Setiap GPU melatih salinan penuh: paralel data di {count} GPU",
+        fsdp2: "Bobot dan status optimizer di-shard ke {count} GPU",
         tp: "Setiap lapisan dibagi ke {count} GPU",
         pp: "Lapisan berjalan sebagai {count} tahap pipeline, satu per GPU",
         cp: "Setiap urutan dibagi ke {count} GPU",
@@ -4436,7 +4440,7 @@ export const id = {
         noGpu: "Pilih setidaknya satu GPU.",
         singleNeedsOne: "Satu GPU memakai tepat satu GPU. Hapus centang yang lain.",
         needsTwo: "Mode ini memerlukan setidaknya dua GPU.",
-        customSpec: "Masukkan tata letak, misalnya dp=2,tp=2.",
+        customSpec: "Masukkan tata letak, misalnya {example}.",
       },
     },
     preview: {
@@ -5411,6 +5415,7 @@ export const id = {
       showPromptDescription: "Lihat instruksi persis yang dikirim ke model.",
     },
     history: {
+      notSaved: "Tidak disimpan ke Riwayat: penyimpanan browser penuh.",
       title: "Riwayat",
       search: "Cari riwayat",
       empty: "Terjemahan Anda muncul di sini.",

@@ -30,6 +30,7 @@ from ._utils import __version__, importlib_version
 from ._utils import move_to_device
 from ._utils import per_layer_device, refresh_moved_layer_devices
 from ._utils import embedding_applies_scale
+from ._lora_scale_warning import warn_low_rank_lora_alpha
 from ._utils import (
     _get_inference_mode_context_manager,
     _offload_embedding_for_room,
@@ -675,9 +676,10 @@ GROUPED_DECODE_CALLS = [0]
 # end (HF generate, LoRA attached, CUDA-graph decode) on Qwen3-0.6B / Qwen3-4B / Llama-3.2-1B, batch
 # 2-16, prompts 128-2048: below these some model ran slower. Other cards keep SDPA. Unmasked SDPA GQA
 # (equal-length rows, e.g. one GRPO prompt per batch) is faster than the grouped route on L4 / A100;
-# on an A100 short caches lose too (the grouped route's extra launches are not hidden).
+# on an A100 short caches lose too (the grouped route's extra launches are not hidden). On a T4 grouped
+# won every cell measured (unmasked by 1.1x - 4x), so it starts at the smallest cache measured.
 _GROUPED_DECODE_MIN_TOKENS = {
-    "T4": (8192, 1024, 256),
+    "T4": (256, 256, 256),
     "L4": (None, 2048, 1024),
     "A100": (None, 16384, 8192),
 }
@@ -2798,7 +2800,7 @@ class _PerDeviceRopeCache:
         with self._rope_build_mode():
             self._set_cos_sin_cache(
                 seq_len = self._rope_cache_rows(),
-                device = torch.device(device_index),
+                device = torch.device(DEVICE_TYPE_TORCH, device_index),
                 dtype = self._rope_cache_dtype,
             )
         self.current_rope_size = current_rope_size
@@ -3245,7 +3247,7 @@ class LongRopeRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
             self._short_rope_rebuild_for_grad[device_index] and torch.is_grad_enabled()
         )
         if self.multi_gpu_short_cos_cached[device_index] is None or short_rebuild_for_grad:
-            device = torch.device(device_index)
+            device = torch.device(DEVICE_TYPE_TORCH, device_index)
             with self._rope_build_mode():
                 self.multi_gpu_short_cos_cached[device_index] = self._unsloth_short_cos_cpu.to(
                     device = device, non_blocking = True
@@ -3337,6 +3339,23 @@ def _generation_input_ids(args, kwargs):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
+    # accelerate FSDP2: gather every unit for the call (the fast decode reads weights directly) and
+    # decode eagerly, since a captured graph would replay storage the reshard after it frees.
+    _fsdp2 = sys.modules.get(__package__ + ".fsdp2")
+    if (
+        _fsdp2 is not None
+        and torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and not self.__dict__.get("_unsloth_fsdp2_generate", False)
+    ):
+        with _fsdp2.fsdp2_full_params_for_generate(self) as gathered:
+            if gathered:
+                self.__dict__["_unsloth_fsdp2_generate"] = True
+                try:
+                    with _decode_graphs.eager_scope():
+                        return unsloth_fast_generate(self, *args, **kwargs)
+                finally:
+                    self.__dict__.pop("_unsloth_fsdp2_generate", None)
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
     use_gradient_checkpointing = next(
@@ -4576,6 +4595,7 @@ class FastLlamaModel:
             kwargs["quantization_config"] = bnb_config
 
         kwargs = add_dtype_kwargs(dtype, kwargs)
+        kwargs = gguf_dequantize_kwargs(kwargs)
 
         if offload_layers:
             import copy as _copy
@@ -4840,6 +4860,9 @@ class FastLlamaModel:
                 model = convert_vllm_to_huggingface(
                     quant_state_dict, model_config, dtype, bnb_config
                 )
+                if getattr(model, "_unsloth_vllm_nvfp4_layers", 0):
+                    # NVFP4 layers hold vLLM's kept compressed-tensors tensors: run them W4A16 like a plain load.
+                    _prepare_compressed_tensors_model(model)
                 # The rebuilt model takes the checkpoint's config, so put the caller's RoPE back for saving.
                 if rope_scaling is not None:
                     assign_rope_scaling(model.config, rope_scaling)
@@ -4880,6 +4903,9 @@ class FastLlamaModel:
             fix_tokenizer = fix_tokenizer,
             revision = tokenizer_revision,
             config = getattr(model, "config", None),
+            # Only for the GGUF's own repo: a separate tokenizer_name has no GGUF to read.
+            gguf_file = kwargs.get("gguf_file") if tokenizer_name == model_name else None,
+            local_files_only = kwargs.get("local_files_only", False),
             **_tokenizer_cache_kwargs,
         )
 
@@ -5243,6 +5269,7 @@ class FastLlamaModel:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
+        warn_low_rank_lora_alpha(r, lora_alpha, use_rslora)
 
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification

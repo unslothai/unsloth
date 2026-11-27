@@ -2441,6 +2441,10 @@ export const fr = {
         confirmDescriptionChatOnly:
           "Arrête le serveur et relance le programme d'installation. Cette installation est en mode Chat uniquement, donc le programme d'installation la fait aussi passer à l'installation complète avec PyTorch, plusieurs gigaoctets au total. Les discussions et les paramètres sont conservés. Cela peut prendre plusieurs minutes.",
         confirmAction: "Réparer maintenant",
+        recommendedTorch:
+          "Réparation recommandée : cette installation a PyTorch {torch}, plus ancien que la version gérée {managedTorch} sur laquelle les GPU RTX série 50 sont pris en charge.",
+        recommendedDriver:
+          "PyTorch {torch} est plus ancien que la version gérée {managedTorch} sur laquelle les GPU RTX série 50 sont pris en charge, mais ce pilote GPU ne prend pas en charge CUDA 13. Mettez d'abord à jour le pilote GPU, puis réparez l'installation.",
       },
       resetPreferences: {
         sectionTitle: "Zone de danger",
@@ -4180,8 +4184,8 @@ export const fr = {
       summary: {
         single: "Entraînement sur un seul GPU",
         layerSplit: "Le modèle est réparti couche par couche sur {count} GPU",
-        ddp: "Le modèle tient sur un GPU : parallélisme de données sur {count} GPU",
-        fsdp2: "Le modèle est trop grand pour un GPU : partitionné sur {count} GPU",
+        ddp: "Chaque GPU entraîne une copie complète : parallélisme de données sur {count} GPU",
+        fsdp2: "Poids et état de l'optimiseur partitionnés sur {count} GPU",
         tp: "Chaque couche est répartie sur {count} GPU",
         pp: "Les couches forment {count} étages de pipeline, un par GPU",
         cp: "Chaque séquence est répartie sur {count} GPU",
@@ -4192,7 +4196,7 @@ export const fr = {
         noGpu: "Sélectionnez au moins un GPU.",
         singleNeedsOne: "Un seul GPU utilise exactement un GPU. Décochez les autres.",
         needsTwo: "Ce mode nécessite au moins deux GPU.",
-        customSpec: "Saisissez une disposition, par exemple dp=2,tp=2.",
+        customSpec: "Saisissez une disposition, par exemple {example}.",
       },
     },
     preview: {
@@ -5152,6 +5156,7 @@ export const fr = {
       showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
     },
     history: {
+      notSaved: "Non enregistrée dans l'historique : le stockage du navigateur est plein.",
       title: "Historique",
       search: "Rechercher dans l'historique",
       empty: "Vos traductions s'affichent ici.",

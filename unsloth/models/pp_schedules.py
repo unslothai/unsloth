@@ -14,6 +14,7 @@ offload slots must then be leased per checkpoint, unsloth-zoo PR #2071) and whet
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 from typing import Optional
@@ -209,16 +210,39 @@ def non_reentrant_checkpointing_only(model) -> Optional[bool]:
 
 
 def allow_split_backward():
-    """Disable AOTAutograd donated buffers: zero bubble backward's retain_graph is refused with them
-    on. True if changed; call before the first forward (compiled blocks keep theirs)."""
+    """True if AOTAutograd donated buffers are on, so a zero bubble step must turn them off
+    (split_backward_scope). Reads the config only: nothing is written."""
     try:
         import torch._functorch.config as functorch_config
     except ImportError:
         return False
-    if getattr(functorch_config, "donated_buffer", False):
-        functorch_config.donated_buffer = False
-        return True
-    return False
+    return bool(getattr(functorch_config, "donated_buffer", False))
+
+
+@contextlib.contextmanager
+def split_backward_scope(enabled = True):
+    """AOTAutograd donated buffers off while one zero bubble step runs: its backward calls autograd.grad
+    with retain_graph, which a donated buffer refuses. The previous value comes back on exit, so every
+    other compiled graph in the process keeps torch's default. A plain write, not config.patch: on
+    torch >= 2.12 patch() is thread local, and the backward can run on an autograd device thread
+    (import_fixes mirrors plain functorch writes to every thread). Blocks compiled inside the scope
+    keep no donated buffers, also when they run later outside it."""
+    try:
+        import torch._functorch.config as functorch_config
+    except ImportError:
+        functorch_config = None
+    if (
+        not enabled
+        or functorch_config is None
+        or not getattr(functorch_config, "donated_buffer", False)
+    ):
+        yield
+        return
+    functorch_config.donated_buffer = False
+    try:
+        yield
+    finally:
+        functorch_config.donated_buffer = True
 
 
 @functools.lru_cache(maxsize = None)

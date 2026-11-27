@@ -168,6 +168,9 @@ def test_core_update_freezes_only_torch_past_the_released_ceiling(
     monkeypatch, tmp_path, mod, platform, resident, pinned
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
+    # x64 hosts: the darwin row is Intel macOS. Apple Silicon keeps its torch at any release
+    # (test_macos_core_update_torch_freeze.py), so the real machine must not leak in from an arm64 runner.
+    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
     monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
     monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
