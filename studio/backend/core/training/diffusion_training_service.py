@@ -20,6 +20,7 @@ from core.training.account_jobs import (
 from utils.account_context import account_thread
 from utils.keep_awake import keeps_system_awake
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
+from utils.process_memory_peaks import MEMORY_PEAK_FIELDS, merge_memory_peaks
 import contextlib
 import json
 import math
@@ -378,6 +379,8 @@ def _idle_state() -> dict[str, Any]:
         "instance_prompt": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # The trainer process's own peaks (utils.process_memory_peaks, bytes), as on the LLM status; None until reported.
+        "memory_peaks": None,
         # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
         "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
@@ -1091,6 +1094,8 @@ class DiffusionTrainingService:
                 "audio_loss": s.get("audio_loss"),
                 "samples_per_second": s.get("samples_per_second"),
                 "peak_memory_gb": s.get("peak_memory_gb"),
+                # Flat, like the LLM run record's columns; None when never reported or unmeasurable here.
+                **{k: (s.get("memory_peaks") or {}).get(k) for k in MEMORY_PEAK_FIELDS},
                 "num_images": s.get("num_images"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("updated_at"),
@@ -1150,6 +1155,8 @@ class DiffusionTrainingService:
                 return
             s = self._state
             s["updated_at"] = time.time()
+            if ev.get("memory_peaks") and etype in ("progress", "complete", "error"):
+                s["memory_peaks"] = merge_memory_peaks(s.get("memory_peaks"), ev["memory_peaks"])
             if etype == "model_load_started":
                 s.update(
                     in_model_load = True,

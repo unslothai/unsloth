@@ -953,6 +953,10 @@ def reset_training_peak_memory(device: str) -> None:
     module = _accelerator_memory_module(device)
     if module is not None:
         try:
+            if device == "cuda":
+                # The run record's process peak covers load and previews, so keep it across the reset.
+                from utils.process_memory_peaks import bank_gpu_peaks
+                bank_gpu_peaks()
             module.reset_peak_memory_stats()
         except Exception:  # noqa: BLE001 -- reporting only
             pass
