@@ -56085,6 +56085,21 @@ async def openai_image_generations(
                 "Streaming image generation is not supported.", status = 400, param = "stream"
             ),
         )
+    if body.output_format != "png":
+        # data[].url serves the gallery PNG, so a jpeg/webp answer has to be inline: an explicit
+        # url is refused, an omitted response_format becomes b64_json (as gpt-image models answer).
+        if "response_format" not in body.model_fields_set or body.response_format is None:
+            body.response_format = "b64_json"
+        elif body.response_format != "b64_json":
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "output_format 'jpeg' and 'webp' are returned as b64_json; "
+                    "response_format 'url' always links the gallery PNG.",
+                    status = 400,
+                    param = "output_format",
+                ),
+            )
     if body.response_format != "b64_json":
         from auth.authentication import request_admitted_without_credential
         if request_admitted_without_credential(request):
@@ -56651,8 +56666,7 @@ async def _generate_openai_images(
     }
     per_image_seeds = result.get("seeds")
 
-    def _persist() -> list[ImageGenerationData]:
-        items: list[ImageGenerationData] = []
+    def _gallery_saves() -> list:
         saves = []
         for index, image in enumerate(result["images"]):
             seed = (
@@ -56673,15 +56687,66 @@ async def _generate_openai_images(
                     },
                 )
             )
-        for record in image_gallery.save_many(saves):
-            if want_b64:
-                encoded = image_gallery.image_b64(record["id"])
-                if encoded is None:  # vanished between write and read — fail the call
-                    raise RuntimeError("generated image could not be read back for encoding")
-                items.append(ImageGenerationData(b64_json = encoded))
-            else:
-                items.append(ImageGenerationData(url = _absolute_image_url(request, record["id"])))
+        return saves
+
+    def _persist() -> list[ImageGenerationData]:
+        items: list[ImageGenerationData] = []
+        # The response is the gallery file itself: base64 the bytes just written, not a re-read.
+        with image_gallery.keep_written_bytes() as written:
+            for record in image_gallery.save_many(_gallery_saves()):
+                if want_b64:
+                    png = written.pop(record["id"], None)
+                    encoded = (
+                        base64.b64encode(png).decode("ascii")
+                        if png is not None
+                        else image_gallery.image_b64(record["id"])
+                    )
+                    if encoded is None:  # vanished between write and read — fail the call
+                        raise RuntimeError("generated image could not be read back for encoding")
+                    items.append(ImageGenerationData(b64_json = encoded))
+                else:
+                    items.append(
+                        ImageGenerationData(url = _absolute_image_url(request, record["id"]))
+                    )
         return items
+
+    async def _write_gallery_after_response() -> None:
+        # jpeg/webp: the response did not need the PNG, so the lossless gallery copy is written here,
+        # after it. Holds the marker until the records exist, as the inline persist does.
+        global _diffusion_persist_active
+        _diffusion_persist_active += 1
+        try:
+            with account_access.media_generation("diffusion"):
+                await asyncio.to_thread(lambda: list(image_gallery.save_many(_gallery_saves())))
+        except Exception as exc:  # noqa: BLE001 (the client already has its image)
+            logger.error("openai_images.persist_failed: %s", exc)
+        finally:
+            _diffusion_persist_active -= 1
+
+    echo = {"output_format": body.output_format} if "output_format" in body.model_fields_set else {}
+    if body.output_format != "png":
+        quality = 100 if body.output_compression is None else body.output_compression
+        try:
+            data = await asyncio.to_thread(
+                lambda: [
+                    ImageGenerationData(
+                        b64_json = base64.b64encode(
+                            image_gallery.encode_lossy(image, body.output_format, quality)
+                        ).decode("ascii")
+                    )
+                    for image in result["images"]
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("openai_images.encode_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Failed to encode the generated image.")
+        task = asyncio.get_running_loop().create_task(_write_gallery_after_response())
+        _background_gallery_persists.add(task)
+        task.add_done_callback(_background_gallery_persists.discard)
+        # One yield lets the task take its hold before this returns, so liveness never reads 0 between
+        # the response and the gallery write (the loop runs ready callbacks in FIFO order).
+        await asyncio.sleep(0)
+        return ImageGenerationResponse(created = created, data = data, **echo)
 
     # Same counter as /images/generate: liveness reads it until these records exist.
     global _diffusion_persist_active
@@ -56695,4 +56760,9 @@ async def _generate_openai_images(
     finally:
         _diffusion_persist_active -= 1
 
-    return ImageGenerationResponse(created = created, data = data)
+    return ImageGenerationResponse(created = created, data = data, **echo)
+
+
+# Gallery PNG writes for jpeg/webp responses, still running after their response was sent. Held
+# here so the loop keeps a strong reference until each finishes.
+_background_gallery_persists: set[asyncio.Task] = set()
