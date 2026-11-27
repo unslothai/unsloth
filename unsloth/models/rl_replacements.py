@@ -4862,6 +4862,16 @@ def online_dpo_trainer__generate_vllm_colocate(function_name, function):
     if "self.llm.sleep(" not in function:
         # TRL < 0.29 OnlineDPO never sleeps the engine: a standby engine would keep ~90% of VRAM during training.
         return _unsloth_wrap_vllm_generate_with_sleep(function)
+    # Unsloth's allocator never sleeps the shared weights, so a tagged wake_up(tags=["weights"]) maps nothing and
+    # leaves vLLM's executor asleep; the generate wrapper's own wake_up then maps the KV cache a second time
+    # (cumem "invalid argument"). Wake the shared engine untagged, as the GRPO / RLOO sync_weights patch does.
+    function = re.sub(
+        r"^([ \t]+)self\.llm\.wake_up\(tags=(\[[^\]\n]*\])\)\n",
+        r"\1if getattr(self.llm, 'shared_weights', False): self.llm.wake_up()\n"
+        r"\1else: self.llm.wake_up(tags=\2)\n",
+        function,
+        flags = re.MULTILINE,
+    )
     return re.sub(
         r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
         r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",

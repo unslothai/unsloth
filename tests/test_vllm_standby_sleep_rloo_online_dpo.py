@@ -135,20 +135,53 @@ def test_legacy_online_dpo_generate_wakes_and_sleeps(monkeypatch, sleep_mode, ex
     assert engine.calls == expected
 
 
-def test_online_dpo_generate_with_its_own_sleep_is_not_wrapped_again():
+# trl >= 0.29 experimental OnlineDPOTrainer._generate_vllm_colocate: sleeps / wakes by tag itself.
+_TAGGED_COLOCATE = textwrap.dedent(
+    """
+    def _generate_vllm_colocate(self, prompts, images = None):
+        if self.args.vllm_enable_sleep_mode:
+            self.llm.wake_up(tags=["weights"])
+        if self.args.vllm_enable_sleep_mode:
+            self.llm.wake_up(tags=["kv_cache"])
+        outputs = self.llm.generate(prompts, self.generation_config, use_tqdm=False)
+        if self.args.vllm_enable_sleep_mode:
+            self.llm.sleep(level=2)
+        return outputs
+    """
+)
+
+
+@pytest.mark.parametrize(
+    "shared, expected",
+    [
+        # Unsloth's allocator keeps the shared weights, so a weights-only wake leaves vLLM's runtime / cudagraph pools
+        # unmapped (vLLM >= 0.34): wake everything.
+        (True, ["wake_up", "wake_up", "generate", ("sleep", 2)]),
+        (False, [("wake_up", ["weights"]), ("wake_up", ["kv_cache"]), "generate", ("sleep", 2)]),
+    ],
+    ids = ["shared_engine", "trl_engine"],
+)
+def test_tagged_online_dpo_generate_wakes_shared_engine_untagged(shared, expected):
     from unsloth.models.rl_replacements import online_dpo_trainer__generate_vllm_colocate
 
-    source = textwrap.dedent(
-        """
-        def _generate_vllm_colocate(self, prompts, images = None):
-            if self.args.vllm_enable_sleep_mode:
-                self.llm.wake_up(tags=["kv_cache"])
-            outputs = self.llm.generate(prompts, self.generation_config, use_tqdm=False)
-            if self.args.vllm_enable_sleep_mode:
-                self.llm.sleep(level=2)
-            return outputs
-        """
+    patched = online_dpo_trainer__generate_vllm_colocate(
+        "_generate_vllm_colocate", _TAGGED_COLOCATE
     )
-    patched = online_dpo_trainer__generate_vllm_colocate("_generate_vllm_colocate", source)
     assert "_unsloth_sleep_level" not in patched
     assert "self._last_loaded_step = -1" in patched
+    scope = {}
+    exec(patched, scope)
+
+    class Engine(_Engine):
+        shared_weights = shared
+
+        def wake_up(self, tags = None):
+            self.calls.append("wake_up" if tags is None else ("wake_up", tags))
+
+    engine = Engine(True)
+    trainer = types.SimpleNamespace(
+        llm = engine, generation_config = None, args = types.SimpleNamespace(vllm_enable_sleep_mode = True)
+    )
+    assert scope["_generate_vllm_colocate"](trainer, ["p"]) == ["out"]
+    assert engine.calls == expected
+    assert trainer._last_loaded_step == -1
