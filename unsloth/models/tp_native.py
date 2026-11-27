@@ -5323,14 +5323,36 @@ def _tp_load_quantizing(original, cls, name, args, kwargs, mesh, state):
     loading.set_param_for_module = set_and_shard
     state["active"] = True
     token = _TP_QUANTIZE_OWNER.set(owner)
+    # Expert parallel: a loader that reads packed expert stacks itself (Inkling 2's released experts) reads only
+    # this rank's experts (ep_packed_load_cut).
+    packed = (
+        {
+            "owner": owner,
+            "cls": cls,
+            "tp": tp,
+            "rank": rank,
+            "ranks": tuple(ranks),
+            "sharded_expert_stacks": 0,
+            "loaded_bytes": 0,
+            "kept_bytes": 0,
+        }
+        if experts_only
+        else None
+    )
+    packed_token = _EP_PACKED_LOAD.set(packed) if packed is not None else None
     try:
         with sharded_load_memory(tp):
             loaded = original(cls, name, *args, **kwargs)
     finally:
+        if packed_token is not None:
+            _EP_PACKED_LOAD.reset(packed_token)
         loading.set_param_for_module = set_param
         _TP_QUANTIZE_OWNER.reset(token)
         state["active"] = False
     model = loaded[0] if isinstance(loaded, tuple) else loaded
+    if packed is not None and packed.get("model") is model:
+        for key in ("sharded_expert_stacks", "loaded_bytes", "kept_bytes"):
+            counts[key] += packed[key]
     if plan.get("model") is model and plan["remote"]:
         counts["remote_expert_tensors"] += _ep_finish_remote(model, tp, rank, tuple(ranks))
     _guard_preloaded_modules(model)

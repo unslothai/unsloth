@@ -765,6 +765,13 @@ def drop_inkling2_quantization_config(
             except Exception:
                 pass
     if verbose:
+        from .inkling2_packed import INKLING2_PACKED_EXPERTS_ENV, inkling2_packed_experts_enabled
+        if inkling2_packed_experts_enabled():
+            print(
+                f"Unsloth: Inkling 2 stores its MoE experts in NVFP4 / MXFP8; {INKLING2_PACKED_EXPERTS_ENV}=1 keeps "
+                "them packed as released."
+            )
+            return
         print(
             "Unsloth: Inkling 2 stores its MoE experts in NVFP4 / MXFP8; transformers dequantizes them while "
             "loading" + (", then bitsandbytes quantizes them to 4bit." if load_in_4bit else ".")
