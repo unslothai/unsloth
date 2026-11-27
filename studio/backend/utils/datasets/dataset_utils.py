@@ -25,6 +25,7 @@ from .format_conversion import (
     convert_sharegpt_with_images_to_vlm_format,
     convert_video_to_vlm_format,
     own_message_videos,
+    require_own_message_images,
     normalize_chatml_roles,
 )
 from .chat_templates import (
@@ -988,6 +989,11 @@ def format_and_template_dataset(
     if is_vlm:
         warnings = []
         errors = []
+        if dataset_revision is None:
+            from hub.utils.dataset_cache import processed_dataset_commit
+
+            # A processed-cache run has no revision pin; its rows' build dir names their commit.
+            dataset_revision = processed_dataset_commit(dataset, dataset_name)
 
         multimodal_info = detect_multimodal_dataset(dataset)
 
@@ -1088,6 +1094,7 @@ def format_and_template_dataset(
                         image_column = user_vlm_image_column,
                         dataset_name = dataset_name,
                         progress_callback = progress_callback,
+                        dataset_revision = dataset_revision,
                     )
                     warnings.append(
                         f"Applied user VLM mapping: image='{user_vlm_image_column}', text='{user_vlm_text_column}'"
@@ -1165,6 +1172,7 @@ def format_and_template_dataset(
                     messages_column = vlm_structure["messages_column"],
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
                 warnings.append("Converted from ShareGPT+image format to standard VLM format")
             except Exception as e:
@@ -1296,6 +1304,7 @@ def format_and_template_dataset(
                     image_column = vlm_image_column,
                     dataset_name = dataset_name,
                     progress_callback = progress_callback,
+                    dataset_revision = dataset_revision,
                 )
 
                 if vlm_instruction:
@@ -1338,6 +1347,21 @@ def format_and_template_dataset(
                     "errors": errors,
                 }
             warnings.append("Dataset already in standard VLM messages format")
+
+        try:
+            require_own_message_images(dataset)
+        except Exception as e:
+            errors.append(f"Failed to read the images of VLM messages rows: {e}")
+            return {
+                "dataset": dataset,
+                "detected_format": vlm_structure["format"],
+                "final_format": "vlm_conversion_failed",
+                "is_vlm": True,
+                "success": False,
+                "requires_manual_mapping": True,
+                "warnings": warnings,
+                "errors": errors,
+            }
 
         return {
             "dataset": dataset,

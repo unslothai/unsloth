@@ -370,6 +370,7 @@ def test_sandbox_listing_route_exists():
     sandbox_routes = sorted(r.path for r in router.routes if "sandbox" in r.path)
     print(f"\nsandbox routes = {sandbox_routes}")
     assert sandbox_routes == [
+        "/sandbox-download-link",
         "/sandbox/{session_id}",
         "/sandbox/{session_id}/open",
         "/sandbox/{session_id}/reveal",
@@ -2914,17 +2915,31 @@ def test_deleting_a_chat_stops_a_generation_that_would_recreate_it(monkeypatch):
         assert source.index("_cancel_active_generations") < source.index("_remove_sandboxes")
 
 
+def _sandbox_file_save_sources() -> tuple[str, str]:
+    """The Files view, and the body of the saveSandboxFile it delegates its Save button to.
+
+    The view and the chat Files menu share one save path in sandbox-download.ts, so the
+    download contract is read there, and the view is held to calling it.
+    """
+    ui = Path(__file__).resolve().parents[2] / "frontend/src/components/assistant-ui"
+    view = (ui / "sandbox-files-view.tsx").read_text(encoding = "utf-8")
+    module = (ui / "sandbox-download.ts").read_text(encoding = "utf-8")
+    assert 'import { saveSandboxFile } from "./sandbox-download";' in view
+    save = view[view.index("const save = useCallback") :]
+    save = save[: save.index("}, [")]
+    assert "saveSandboxFile(sessionId, file.name" in save
+    start = module.index("export async function saveSandboxFile(")
+    end = module.find("\nexport ", start + 1)
+    return view, module[start : end if end != -1 else len(module)]
+
+
 def test_a_large_file_is_streamed_rather_than_buffered():
     """Streaming avoids a Blob and an IPC copy of a multi-gigabyte artifact in the renderer."""
-    view = (
-        Path(__file__).resolve().parents[2]
-        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
-    ).read_text(encoding = "utf-8")
+    view, save = _sandbox_file_save_sources()
 
-    assert "downloadUrlStreaming" in view
+    assert "downloadShortLivedUrl(saveAs," in save
+    assert "response.blob()" not in save
     assert "response.blob()" not in view
-    # The streaming path sends no headers, so the bearer travels as a query parameter.
-    assert "token=" in view
 
 
 def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
@@ -3346,14 +3361,11 @@ def test_deleting_a_project_takes_its_chats_sandboxes(tmp_path, monkeypatch):
 
 def test_a_native_download_gets_an_absolute_url():
     """Native download rejects relative URLs, so a bare /api path failed before the request."""
-    view = (
-        Path(__file__).resolve().parents[2]
-        / "frontend/src/components/assistant-ui/sandbox-files-view.tsx"
-    ).read_text(encoding = "utf-8")
+    _, save = _sandbox_file_save_sources()
 
-    assert "apiUrl(" in view
-    body = view[view.index("const save = useCallback") :]
-    assert body.index("apiUrl(") < body.index("downloadUrlStreaming(")
+    assert (
+        "return apiUrl(`${path}${separator}download_token=${encodeURIComponent(token)}`);" in save
+    )
 
 
 def _forget_sandbox_state(tools):
@@ -5645,15 +5657,17 @@ def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, mon
     assert "z-report.csv" not in sentinels, sentinels
 
 
-def test_the_file_download_button_refreshes_the_session_first():
-    """The URL carries the bearer, so an expired token would save a 401 body as the file."""
-    src = Path(__file__).resolve().parents[2] / "frontend/src"
-    view = (src / "components/assistant-ui/sandbox-files-view.tsx").read_text(encoding = "utf-8")
-    assert 'authFetch(apiUrl(path), { method: "HEAD" })' in view
-    assert view.index("authFetch(apiUrl(path)") < view.index("const token = getAuthToken()")
+def test_the_file_download_button_requests_an_authenticated_scoped_link():
+    _, save = _sandbox_file_save_sources()
+    assert "new URLSearchParams({ session_id: sessionId, filename: name })" in save
+    request = "authFetch(apiUrl(`/api/inference/sandbox-download-link?${query}`),"
+    assert save.index("downloadShortLivedUrl(saveAs,") < save.index(request)
+    assert 'method: "POST"' in save
+    assert save.index("if (!response.ok) throw") < save.index("await response.json()")
+    assert "getAuthToken()" not in save
 
 
-def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeypatch):
+def test_the_download_route_still_answers_legacy_head_requests(tmp_path, monkeypatch):
     """The download route must answer HEAD: FastAPI does not add it to a GET route."""
     asyncio, inference = _shared_setup_15(monkeypatch, tmp_path)
 

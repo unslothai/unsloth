@@ -126,14 +126,24 @@ def standardize_chat_format(
         content_key = "content"
     elif len(uniques.keys()) == 2:
         keys = list(uniques.keys())
-        length_first = len(set(uniques[keys[0]]))
-        length_second = len(set(uniques[keys[1]]))
-        if length_first < length_second:
-            role_key = keys[0]
-            content_key = keys[1]
-        else:
-            role_key = keys[1]
-            content_key = keys[0]
+        distinct = [set(uniques[key]) for key in keys]
+        known_roles = {
+            _normalize_role_alias(alias)
+            for aliases in (aliases_for_system, aliases_for_user, aliases_for_assistant)
+            for alias in aliases
+        }
+        hits = [sum(_normalize_role_alias(v) in known_roles for v in values) for values in distinct]
+        role_index = 0 if len(distinct[0]) < len(distinct[1]) else 1
+        other = 1 - role_index
+        if len(distinct[0]) == len(distinct[1]):
+            role_like = [2 * hits[i] >= len(distinct[i]) for i in (0, 1)]
+            if role_like[0] != role_like[1]:
+                role_index = 0 if role_like[0] else 1
+        elif hits[other] == len(distinct[other]) and hits[role_index] == 0:
+            # Canned replies (identical text) only; a few "Human" lines in text must not overrule cardinality.
+            role_index = other
+        role_key = keys[role_index]
+        content_key = keys[1 - role_index]
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
@@ -537,6 +547,7 @@ def convert_to_vlm_format(
     image_column = "image",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
@@ -580,6 +591,7 @@ def convert_to_vlm_format(
             dataset_name,
             _image_lookup[name],
             repo_type = "dataset",
+            revision = dataset_revision,
             cache_dir = active_hf_hub_cache(),
         )
         return Image.open(local_path).convert("RGB")
@@ -660,7 +672,9 @@ def convert_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -1082,6 +1096,51 @@ def own_message_videos(
     return rows
 
 
+def _message_image_path(value):
+    """The local file a messages-row image value names, else None (decoded images, bytes, URLs)."""
+    if isinstance(value, dict):
+        if value.get("bytes"):
+            return None
+        value = value.get("url") or value.get("path")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    lowered = text.lower()
+    if lowered.startswith(("http://", "https://", "data:")):
+        return None
+    if lowered.startswith("file://"):
+        from urllib.parse import unquote, urlparse
+        return unquote(urlparse(text).path)
+    return text
+
+
+def require_own_message_images(rows) -> None:
+    """Managed accounts: every local image a messages row names must be one the account may read.
+    The vision collator opens these strings itself, outside the typed media and flat-column checks."""
+    from utils.account_context import current_account
+
+    account = current_account()
+    if account.is_owner or is_streaming_dataset(rows):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        values = []
+        for key in ("images", "image"):
+            cell = row.get(key)
+            values.extend(cell if isinstance(cell, list) else [cell])
+        messages = row.get("messages")
+        for message in messages if isinstance(messages, list) else []:
+            content = message.get("content") if isinstance(message, dict) else None
+            for part in content if isinstance(content, list) else []:
+                if isinstance(part, dict):
+                    values.extend(part.get(key) for key in ("image", "image_url"))
+        for value in values:
+            path = _message_image_path(value)
+            if path is not None:
+                _own_image_path(path, account)
+
+
 def convert_video_to_vlm_format(
     dataset,
     video_column,
@@ -1161,6 +1220,7 @@ def convert_sharegpt_with_images_to_vlm_format(
     messages_column = "conversations",
     dataset_name = None,
     progress_callback = None,
+    dataset_revision = None,
 ):
     """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Image lists match placeholders in conversation order. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
@@ -1207,7 +1267,9 @@ def convert_sharegpt_with_images_to_vlm_format(
             logger.info(
                 f"🔍 Image column contains bare filenames (e.g. '{first_image}') — building repo lookup..."
             )
-            repo_files = HfApi().list_repo_files(dataset_name, repo_type = "dataset")
+            repo_files = HfApi().list_repo_files(
+                dataset_name, repo_type = "dataset", revision = dataset_revision
+            )
             _image_lookup = {
                 os.path.basename(f): f
                 for f in repo_files
@@ -1244,6 +1306,7 @@ def convert_sharegpt_with_images_to_vlm_format(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    revision = dataset_revision,
                     cache_dir = active_hf_hub_cache(),
                 )
                 return Image.open(local_path).convert("RGB")

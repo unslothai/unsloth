@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from ..npu_runtime_config import custom_runtime_configured
+
 _AMD_VENDOR = "1022"
 _XDNA2_DEVICE = "17f0"
 _XDNA1_DEVICE = "1502"
@@ -130,7 +132,10 @@ def detect_amd_npu() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- detection must never break startup or /status
         info = {"present": False, "error": str(exc)}
     info["enabled"] = npu_enabled()
-    info["supported"] = (
-        info["enabled"] and bool(info.get("present")) and info.get("family") == "XDNA2"
+    known_npu = bool(info.get("present")) and info.get("family") == "XDNA2"
+    runtime_probe = (sys.platform.startswith("linux") or sys.platform == "win32") and (
+        custom_runtime_configured()
     )
+    # An explicitly configured runtime gets to probe the device when the user enables it.
+    info["supported"] = info["enabled"] and (known_npu or runtime_probe)
     return info

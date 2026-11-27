@@ -16,6 +16,7 @@ import {
   type TranslateModelId,
   type TranslatePromptKind,
   isTranslateModelId,
+  migrateTranslateModelId,
   parseCustomTranslateModel,
   translateModelKey,
   translatePromptKind,
@@ -86,6 +87,8 @@ type TranslateState = {
   error: TranslateError | null;
   result: Result | null;
   attempt: Result | null;
+  /** The browser's storage had no room for the shown translation's history entry. */
+  historyUnsaved: boolean;
   /** Models that served a translation this session: translating as you type never starts a download. */
   readyModels: string[];
   setSource: (source: string) => void;
@@ -152,7 +155,7 @@ const suggestedTarget = () =>
     ? DEFAULT_TARGET_LANGUAGE
     : suggestedTargetLanguage(navigator.languages ?? []);
 
-/** Switching to Hy-MT2 drops a chat-only pick; the recent tabs keep it for the next chat model. */
+/** Switching to Hy-MT drops a chat-only pick; the recent tabs keep it for the next chat model. */
 function fitLanguages(prefs: TranslatePrefs): TranslatePrefs {
   if (!translatesWithDedicated(prefs)) return prefs;
   const fits = (code: string) => translatesLanguage(code, true);
@@ -171,6 +174,7 @@ function loadPrefs(): TranslatePrefs {
   const known = (code: unknown): code is string =>
     typeof code === "string" && findTranslateLanguage(code) !== undefined;
   const customModel = parseCustomTranslateModel(saved.customModel);
+  const savedModel = migrateTranslateModelId(saved.modelId);
   return fitLanguages({
     from: known(saved.from) ? saved.from : AUTO_SOURCE,
     target: known(saved.target) ? saved.target : suggestedTarget(),
@@ -181,11 +185,11 @@ function loadPrefs(): TranslatePrefs {
       ? saved.recentTargets.filter(known).slice(0, RECENT_LANGUAGES)
       : [],
     modelId:
-      isTranslateModelId(saved.modelId) &&
+      isTranslateModelId(savedModel) &&
       // The menu no longer offers "the model picked in Chat".
-      saved.modelId !== CHAT_TRANSLATE_MODEL &&
-      (saved.modelId !== CUSTOM_TRANSLATE_MODEL || customModel)
-        ? saved.modelId
+      savedModel !== CHAT_TRANSLATE_MODEL &&
+      (savedModel !== CUSTOM_TRANSLATE_MODEL || customModel)
+        ? savedModel
         : DEFAULT_TRANSLATE_MODEL,
     customModel,
     mode: TRANSLATE_MODES.includes(saved.mode as TranslateMode)
@@ -208,16 +212,16 @@ function loadPrefs(): TranslatePrefs {
   });
 }
 
+/** Drops the oldest entries until the rest fits; null when not even the newest fits, leaving storage as it was. */
 function saveHistory(
   history: TranslateHistoryEntry[],
-): TranslateHistoryEntry[] {
-  let kept = history;
-  // A full storage drops the oldest half until the rest fits, but never writes over it with nothing.
-  while (!writeJson(HISTORY_KEY, kept)) {
-    if (kept.length <= 1) return history;
-    kept = kept.slice(0, Math.floor(kept.length / 2));
+): TranslateHistoryEntry[] | null {
+  const least = Math.min(1, history.length);
+  for (let keep = history.length; keep >= least; keep -= 1) {
+    const kept = history.slice(0, keep);
+    if (writeJson(HISTORY_KEY, kept)) return kept;
   }
-  return kept;
+  return null;
 }
 
 const storedHistory = () => parseHistory(readJson(HISTORY_KEY));
@@ -298,6 +302,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
   error: null,
   result: null,
   attempt: null,
+  historyUnsaved: false,
   readyModels: [],
 
   setSource: (source) => {
@@ -445,6 +450,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       const state = get();
       // Onto the stored list, not this window's: another window may have added entries since.
       let history = state.history;
+      let historyUnsaved = false;
       if (state.prefs.saveHistory) {
         const stored = storedHistory();
         const previous = stored[0];
@@ -463,8 +469,10 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
           model,
         });
         if (added[0] !== rest[0]) {
-          autoEntryId = auto ? added[0].id : null;
-          history = saveHistory(added);
+          const saved = saveHistory(added);
+          if (saved) autoEntryId = auto ? added[0].id : null;
+          history = saved ?? stored;
+          historyUnsaved = saved === null;
         } else {
           history = stored;
         }
@@ -474,6 +482,7 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
         output,
         result: request,
         history,
+        historyUnsaved,
         readyModels: state.readyModels.includes(request.modelKey)
           ? state.readyModels
           : [...state.readyModels, request.modelKey],
@@ -535,12 +544,15 @@ export const useTranslateStore = create<TranslateState>((set, get) => ({
       error: null,
       result: { ...attempt, from, ...(target ? { target } : {}) },
       attempt,
+      historyUnsaved: false,
     });
   },
 
   removeHistory: (id) => {
     set({
-      history: saveHistory(storedHistory().filter((entry) => entry.id !== id)),
+      history:
+        saveHistory(storedHistory().filter((entry) => entry.id !== id)) ??
+        storedHistory(),
     });
   },
 

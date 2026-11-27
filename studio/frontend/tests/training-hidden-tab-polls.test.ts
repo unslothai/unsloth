@@ -91,6 +91,9 @@ test("training metrics skip hidden ticks, refetch on return, status keeps pollin
         isTrainingStatusRequestCurrent: () => true,
         trainingStatusRequestKey: () => "key",
       },
+      "../lib/training-status-poll-owner": {
+        registerTrainingStatusPoller: () => () => {},
+      },
       "../lib/training-stream-scope": {
         createTrainingStreamScope: () => ({ jobId: "job-1" }),
         isTrainingProgressForScope: () => true,

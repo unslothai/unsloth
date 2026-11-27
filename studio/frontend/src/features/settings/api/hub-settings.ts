@@ -14,6 +14,10 @@ export type HubSettings = {
   datasetsServerFollowsEndpoint: boolean;
   source: HubSource;
   activeSource: HubSource;
+  /** From a load only: the Hub web origin this browser may open directly, else null. */
+  pageBase: string | null;
+  /** The relay path `pageBase` belongs to, as `/api/health` reports it in `hub_proxy`. */
+  pageBaseRelay: string | null;
 };
 
 type ApiHubSettings = {
@@ -24,6 +28,10 @@ type ApiHubSettings = {
   source: HubSource;
   // biome-ignore lint/style/useNamingConvention: API schema
   active_source: HubSource;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  page_base?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  page_base_relay?: string | null;
 };
 
 function fromApi(settings: ApiHubSettings): HubSettings {
@@ -32,6 +40,8 @@ function fromApi(settings: ApiHubSettings): HubSettings {
     datasetsServerFollowsEndpoint: settings.datasets_server_follows_endpoint,
     source: settings.source,
     activeSource: settings.active_source,
+    pageBase: settings.page_base ?? null,
+    pageBaseRelay: settings.page_base_relay ?? null,
   };
 }
 

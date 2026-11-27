@@ -1250,18 +1250,35 @@ def load_correct_tokenizer(
     fix_tokenizer = True,
     revision = None,
     config = None,
+    gguf_file = None,
+    local_files_only = False,
 ):
-    tokenizer = _load_correct_tokenizer(
-        tokenizer_name = tokenizer_name,
+    # A GGUF repo with no tokenizer files: the tokenizer lives in the GGUF's metadata.
+    from ._gguf_load import load_gguf_tokenizer_if_missing
+
+    tokenizer = load_gguf_tokenizer_if_missing(
+        tokenizer_name,
+        gguf_file,
+        revision = revision,
+        token = token,
+        cache_dir = None if cache_dir == "huggingface_tokenizers_cache" else cache_dir,
+        local_files_only = local_files_only,
         model_max_length = model_max_length,
         padding_side = padding_side,
-        token = token,
         trust_remote_code = trust_remote_code,
-        cache_dir = cache_dir,
-        fix_tokenizer = fix_tokenizer,
-        revision = revision,
-        config = config,
     )
+    if tokenizer is None:
+        tokenizer = _load_correct_tokenizer(
+            tokenizer_name = tokenizer_name,
+            model_max_length = model_max_length,
+            padding_side = padding_side,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            cache_dir = cache_dir,
+            fix_tokenizer = fix_tokenizer,
+            revision = revision,
+            config = config,
+        )
 
     if fix_tokenizer:
         _fix_pad_token(tokenizer)
@@ -1659,6 +1676,31 @@ def _repair_string_template(tokenizer, chat_template, is_sharegpt):
     return None
 
 
+# Chat templates that render nothing for add_generation_prompt ON PURPOSE, keyed on their own
+# marker tokens (all must be present) so a genuinely broken template still gets the warning.
+# Inkling 2 (inkling2 / inkling2_loop): transformers' own examples call
+# apply_chat_template(add_generation_prompt = True) and the model emits `<|message_model|>`
+# itself; appending that marker would make it start a second turn header.
+_TEMPLATES_WITHOUT_GENERATION_PROMPT = {
+    "Inkling 2": (
+        "<|message_user|>",
+        "<|message_model|>",
+        "<|end_message|>",
+        "<|content_text|>",
+    ),
+}
+
+
+def _template_without_generation_prompt_by_design(chat_template):
+    """Family name when `chat_template` is a known template with no generation prompt by design, else None."""
+    if not isinstance(chat_template, str) or "add_generation_prompt" in chat_template:
+        return None
+    for family, markers in _TEMPLATES_WITHOUT_GENERATION_PROMPT.items():
+        if all(marker in chat_template for marker in markers):
+            return family
+    return None
+
+
 def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
     """Entry point for a string chat_template. Runs the no==yes diagnostic, attempts repair if needed, and returns the (possibly patched) template. On repair failure the behavior is controlled by UNSLOTH_STRICT_CHAT_TEMPLATE: warn + return original (default) or raise RuntimeError (strict)."""
     name = getattr(tokenizer, "name_or_path", "unknown")
@@ -1706,6 +1748,15 @@ def _fix_chat_template_for_tokenizer(tokenizer, chat_template):
         return chat_template
 
     if no != yes:
+        return chat_template
+
+    family = _template_without_generation_prompt_by_design(chat_template)
+    if family is not None:
+        # Not broken: the model writes its own turn marker, so neither repair nor warn.
+        logger.info(
+            f"Unsloth: `{name}` uses the {family} chat template, which has no "
+            "add_generation_prompt block by design; the model emits its own turn marker."
+        )
         return chat_template
 
     # no == yes: the template ignores add_generation_prompt, so try to repair. It may have the block while the output does not change, the "wasn't provided correctly" case.

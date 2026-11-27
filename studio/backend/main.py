@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -303,6 +312,11 @@ from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
 activate_happy_eyeballs()
+
+# accelerate's meta init patches torch process-wide; Studio builds skeletons from several threads at once.
+from utils.meta_init import install_on_import as _install_thread_safe_meta_init
+
+_install_thread_safe_meta_init()
 
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
@@ -1394,6 +1408,16 @@ def _reportable_hf_endpoints(request) -> dict:
         else:
             reported[key] = _HF_ENDPOINT_DEFAULTS[key]
     return reported
+
+
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
 
 
 _CSP_CACHE: dict = {}
@@ -2557,6 +2581,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),
@@ -3116,6 +3141,24 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats in ``formats`` that load but run dequantized here. Torch-free."""
+    try:
+        from utils.hardware.nvidia import get_checkpoint_quant_dequant_only
+        return get_checkpoint_quant_dequant_only(formats)
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3280,7 +3323,11 @@ def get_system_info(
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
-        "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
+        "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 
@@ -3847,8 +3894,17 @@ def setup_frontend(
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
+        # No asset is this long, and resolving a deep path costs the square of its parts on the event loop.
+        if len(full_path) > 1024:
+            return Response(status_code = 404)
 
-        file_path = (build_path / full_path).resolve()
+        from utils.datasets.remote_images import is_network_share
+
+        joined = build_path / full_path
+        # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+        if is_network_share(full_path) or is_network_share(str(joined)):
+            return Response(status_code = 404)
+        file_path = joined.resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)

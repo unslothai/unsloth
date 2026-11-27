@@ -344,14 +344,18 @@ test("compare lists its threads once before it waits on any run", () => {
       /const anyRunning = useChatRuntimeStore\(\s*\(s\) => Object\.keys\(s\.localRunByThreadId\)\.length > 0,\s*\);/g,
     ) ?? [];
   assert.equal(localWaits.length, 1, "LoRA Compare waits only on local runs");
-  const gates =
-    page.match(
-      /if \(\(?anyRunning(?: \|\| comparing\))? && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/g,
-    ) ?? [];
-  assert.equal(gates.length, 2, "both variants must exempt their first list");
-  assert.equal(
-    (page.match(/\}, \[pairId, anyRunning(?:, comparing)?\]\);/g) ?? []).length,
-    2,
+  assert.match(
+    page,
+    /if \(anyRunning && listedPairRef\.current === pairId\) return;\s*listedPairRef\.current = pairId;/,
+    "LoRA Compare must exempt its first list",
+  );
+  assert.match(page, /\}, \[pairId, anyRunning\]\);/);
+  // General Compare starts from the pair read, which never waits on a run.
+  assert.match(page, /initialThreads=\{compareRead\.threads\}/);
+  assert.match(page, /const busy = anyRunning \|\| comparing;/);
+  assert.match(
+    page,
+    /const wasBusy = wasBusyRef\.current;\s*wasBusyRef\.current = busy;\s*if \(busy \|\| !wasBusy\) return;[\s\S]*?\}, \[pairId, busy\]\);/,
     "the settle edge is what re-lists; without it a fresh pair never learns its ids",
   );
 });

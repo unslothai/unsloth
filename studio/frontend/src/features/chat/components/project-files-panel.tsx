@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
+import { formatBytes } from "@/features/hub";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -42,7 +43,6 @@ import {
   closeSubtree,
   dirStateAt,
   flattenFileTree,
-  formatFileSize,
   pathsToLoad,
   splitProjectPath,
   toggleOpenPath,
@@ -524,7 +524,7 @@ export function ProjectFilesPanel({
               {entry.name}
             </span>
             <span className="shrink-0 text-ui-11 text-muted-foreground">
-              {formatFileSize(entry.size)}
+              {entry.size == null ? "" : formatBytes(entry.size)}
             </span>
           </div>
           <RowActions

@@ -396,37 +396,100 @@ def _doc_column(key: str) -> str:
     return key
 
 
+def _gold_options(value, top = True):
+    # None alternates drop, an option-less list matches its literal text; rstrip: responses are stripped
+    if isinstance(value, list):
+        options = [o for item in value if item is not None for o in _gold_options(item, False)]
+        return options or ([str(value)] if top else [])
+    return [str(value).rstrip()]
+
+
+# the task's scorer; doc_to_target is a callable because lm-eval parses bracketed template results as lists
+_TASK_MODULE = """
+GOLD_OPTIONS
+
+def doc_to_target(row):
+    value = row[TARGET_KEY]
+    return value if isinstance(value, list) else str(value)
+
+
+def process_results(doc, results):
+    # few-shot examples still show gold as written
+    golds = _gold_options(doc_to_target(doc))
+    response = results[0]
+    # a single-line option ends at the first newline, where a single-line dataset's stop ends it
+    first_line = response.split("\\n")[0]
+    for gold in golds:
+        candidate = (response if "\\n" in gold else first_line).rstrip()
+        if candidate == gold or candidate.lstrip() == gold:
+            return {"exact_match": 1.0}
+    return {"exact_match": 0.0}
+"""
+
+
+def _csv_text(value):
+    import pyarrow as pa
+
+    # a typed scalar survives pandas' NA pass ("NA" stays text) and keeps all-empty columns string
+    return pa.scalar(value or None, type = pa.string())
+
+
+def _stop_sequence(data_file: Path, target_key: str) -> str:
+    # a newline run longer than any answer holds, so multi-line answers are generated whole
+    text = data_file.read_text(encoding = "utf-8-sig")
+    if data_file.suffix.lower() == ".csv":
+        import csv
+        import io
+
+        limit = csv.field_size_limit(2**31 - 1)
+        try:
+            rows = list(csv.DictReader(io.StringIO(text)))
+        finally:
+            csv.field_size_limit(limit)
+    else:
+        try:
+            rows = json.loads(text)
+        except json.JSONDecodeError:
+            rows = []
+            for number, line in enumerate(text.split("\n"), 1):
+                try:
+                    rows += [json.loads(line)] if line.strip() else []
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Dataset file '{data_file}' line {number} is not valid JSON: {e.msg}"
+                    ) from None
+    rows = rows if isinstance(rows, list) else [rows]
+    values = [row.get(target_key) for row in rows if isinstance(row, dict)]
+    targets = [option for value in values for option in _gold_options(value)]
+    longest = max((len(run) for t in targets for run in re.findall(r"\n+", t)), default = 0)
+    return "\n" * (longest + 1)
+
+
 def make_dataset_task(
     data_file: Path, input_key: str, target_key: str, out_dir: Path, name: str
 ) -> None:
     """Write an exact-match generate_until task over a .jsonl/.json/.csv file."""
+    import inspect
+
     builder = "json" if data_file.suffix.lower() in {".json", ".jsonl"} else "csv"
+    stop = _stop_sequence(data_file, target_key)
     spec = {
         "task": name,
         "dataset_path": builder,
         "dataset_kwargs": {"data_files": str(data_file.resolve())},
         "test_split": "train",
         "fewshot_split": "train",
+        "fewshot_delimiter": max(stop, "\n\n", key = len),
         "output_type": "generate_until",
         "doc_to_text": _doc_column(input_key),
-        "generation_kwargs": {"until": ["\n"]},
-        # strip so " 2" matches gold "2"; with one capture group re.findall yields the group text
-        "filter_list": [
-            {
-                "name": "strip",
-                "filter": [
-                    {"function": "regex", "regex_pattern": r"^\s*(.*?)\s*$", "group_select": 0},
-                    {"function": "take_first"},
-                ],
-            },
-        ],
+        "generation_kwargs": {"until": [stop]},
+        # process_results strips and compares; the filter keeps its name for the exact_match,strip key
+        "filter_list": [{"name": "strip", "filter": [{"function": "take_first"}]}],
         "metric_list": [{"metric": "exact_match", "aggregation": "mean", "higher_is_better": True}],
     }
     import yaml
 
     out_dir.mkdir(parents = True, exist_ok = True)
-    # lm-eval parses bracketed template results as lists. Use a callable to keep
-    # literal strings, preserve list-valued references and stringify scalars for few-shot prompts.
     with tempfile.NamedTemporaryFile(
         mode = "w",
         prefix = "_target_",
@@ -436,13 +499,31 @@ def make_dataset_task(
         delete = False,
     ) as target:
         target.write(
-            "def doc_to_target(row):\n"
-            f"    value = row[{target_key!r}]\n"
-            "    return value if isinstance(value, list) else str(value)\n"
+            _TASK_MODULE.replace("GOLD_OPTIONS", inspect.getsource(_gold_options)).replace(
+                "TARGET_KEY", repr(target_key)
+            )
         )
+        if builder == "csv":
+            # Datasets fingerprints the converter; a stable import lets repeated runs reuse the cache.
+            target.write("\nfrom unsloth_cli.commands.eval import _csv_text\n")
+    module = Path(target.name).stem
+    dumper = yaml.SafeDumper
+    if builder == "csv":
+        spec["dataset_kwargs"]["converters"] = dict.fromkeys((input_key, target_key), _csv_text)
+
+        class CsvTaskDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                return True
+
+        CsvTaskDumper.add_representer(
+            type(_csv_text),
+            lambda dumper, fn: dumper.represent_scalar("!function", f"{module}.{fn.__name__}"),
+        )
+        dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
-        yaml.safe_dump(spec, sort_keys = False)
-        + f"doc_to_target: !function {Path(target.name).stem}.doc_to_target\n",
+        yaml.dump(spec, Dumper = dumper, sort_keys = False)
+        + f"doc_to_target: !function {module}.doc_to_target\n"
+        + f"process_results: !function {module}.process_results\n",
         encoding = "utf-8",
     )
 
@@ -608,6 +689,31 @@ def _run_dir_name(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-") or "model"
 
 
+def _backend_tokenizer(eval_kwargs: dict):
+    model = eval_kwargs["model"]
+    if not isinstance(model, str):
+        return getattr(model, "tokenizer", None)
+    if model == "vllm":
+        # vLLM may pick Mistral's own tokenizer, which cannot re-encode a rendered template's control tokens
+        from lm_eval.models.vllm_causallms import get_tokenizer as load
+    else:
+        from transformers import AutoTokenizer
+        load = functools.partial(AutoTokenizer.from_pretrained, trust_remote_code = False)
+    args = eval_kwargs["model_args"]
+    with _silence():
+        return load(args.get("tokenizer") or args["pretrained"])
+
+
+def _thinking_off(model_cls) -> dict:
+    # Qwen3-style templates otherwise open a <think> block, which the dataset task's newline stop cuts mid-thought
+    import inspect
+    return (
+        {"enable_thinking": False}
+        if "enable_thinking" in inspect.signature(model_cls).parameters
+        else {}
+    )
+
+
 def _fail(message: str, code: int = 2):
     typer.echo(f"Error: {message}", err = True)
     raise typer.Exit(code = code)
@@ -685,6 +791,12 @@ def evaluate(
         help = "Allow tasks that lm-eval marks unsafe (e.g. humaneval): they execute "
         "model-generated code on this machine. Off by default.",
     ),
+    chat_template: Optional[bool] = typer.Option(
+        None,
+        "--chat-template/--no-chat-template",
+        help = "Prompt through the model's chat template. Default: on when every task is a "
+        ".jsonl/.json/.csv dataset, the tokenizer has a chat template and lm-eval is 0.4.10+.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token if needed."
     ),
@@ -740,6 +852,12 @@ def evaluate(
     import lm_eval
     from lm_eval.models.huggingface import HFLM
     from lm_eval.tasks import TaskManager
+
+    is_dataset = [
+        Path(e.strip()).suffix.lower() in _DATASET_SUFFIXES for e in tasks.split(",") if e.strip()
+    ]
+    # only the dataset task's "\n" stop needs it; built-in reasoning tasks keep lm-eval's default
+    thinking_off = _thinking_off(HFLM) if all(is_dataset) else {}
 
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -809,6 +927,7 @@ def evaluate(
                     model_args["tokenizer"] = model
                 typer.echo(f"Evaluating adapter '{model}' on base '{effective_base}'.")
             model_args["max_length"] = max_seq_length
+            model_args.update(thinking_off)
             if load_in_4bit and device.startswith("cuda"):
                 if find_spec("bitsandbytes") is not None:
                     model_args["load_in_4bit"] = True
@@ -854,6 +973,10 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(model)
             if gpu_memory_utilization is not None:
                 model_args["gpu_memory_utilization"] = gpu_memory_utilization
+            with _silence():
+                from lm_eval.models.vllm_causallms import VLLM
+            thinking_off = _thinking_off(VLLM) if all(is_dataset) else {}
+            model_args.update(thinking_off)
             eval_kwargs.update(model = "vllm", model_args = model_args, batch_size = bs)
         else:
             from unsloth import FastLanguageModel
@@ -897,8 +1020,46 @@ def evaluate(
                     lmodel = PeftModel.from_pretrained(lmodel, model)
                 FastLanguageModel.for_inference(lmodel)
                 eval_kwargs["model"] = HFLM(
-                    pretrained = lmodel, tokenizer = tokenizer, batch_size = bs, max_length = max_seq_length
+                    pretrained = lmodel,
+                    tokenizer = tokenizer,
+                    batch_size = bs,
+                    max_length = max_seq_length,
+                    **thinking_off,
                 )
+
+        if chat_template is None:
+            # lm-eval < 0.4.10 has no enable_thinking and doubles the BOS of templates that render one
+            chat_template = (
+                all(is_dataset)
+                and bool(thinking_off)
+                and bool(getattr(_backend_tokenizer(eval_kwargs), "chat_template", None))
+            )
+            if all(is_dataset) and not thinking_off:
+                typer.echo(
+                    "Note: dataset tasks run without the chat template on this lm-eval. "
+                    "Upgrade to lm-eval 0.4.10 or newer (`pip install -U lm-eval`) to use it."
+                )
+            elif chat_template:
+                typer.echo(
+                    "Note: prompting with the model's chat template (pass --no-chat-template to turn off)."
+                )
+            elif any(is_dataset) and not all(is_dataset):
+                typer.echo(
+                    "Note: dataset tasks run without the chat template alongside other tasks. "
+                    "Run them on their own to use the model's chat template, if it has one."
+                )
+        elif chat_template:
+            tokenizer = _backend_tokenizer(eval_kwargs)
+            # vLLM renders any HF tokenizer through its own fallback templates; its Mistral tokenizer has none
+            if backend == "vllm":
+                usable = hasattr(tokenizer, "chat_template")
+            else:
+                usable = bool(getattr(tokenizer, "chat_template", None))
+            if not usable:
+                _fail(
+                    f"--chat-template: the tokenizer --backend {backend} loads has no chat template."
+                )
+        eval_kwargs["apply_chat_template"] = chat_template
 
         engine_log = tmp_dir / "vllm.log" if backend == "vllm" else None
         try:
@@ -922,6 +1083,8 @@ def evaluate(
         _fail("evaluation returned no results.", code = 1)
 
     _render_results(results)
+    # lm-eval does not record it, and scores differ with and without the template
+    results.setdefault("config", {})["apply_chat_template"] = bool(chat_template)
     if output_dir is None:
         # Parent first: on Windows a leaf mkdir under a stray eval_results file raises FileExistsError too.
         Path("eval_results").mkdir(exist_ok = True)

@@ -1682,12 +1682,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
     import re
 
     out: list[Path] = []
-    home_str = (
-        os.environ.get("UNSLOTH_STUDIO_HOME")
-        or os.environ.get("STUDIO_HOME")
-        or str(Path.home() / ".unsloth" / "studio")
-    )
-    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
+    venv_dir = _studio_root() / "unsloth_studio"
     # Installer venv site-packages.
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
@@ -1918,16 +1913,7 @@ def _setup_server_disk_logging():
     if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
         return None
     try:
-        from utils.paths import studio_root
-        log_dir = Path(studio_root()) / "logs" / "server"
-    except Exception:
-        home = (
-            os.environ.get("UNSLOTH_STUDIO_HOME")
-            or os.environ.get("STUDIO_HOME")
-            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
-        )
-        log_dir = Path(home) / "logs" / "server"
-    try:
+        log_dir = _studio_root() / "logs" / "server"
         log_dir.mkdir(parents = True, exist_ok = True, mode = 0o700)
         _restrict_server_log_perms(log_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1981,6 +1967,24 @@ def _cloudflare_tunnel_should_start(
     if secure:
         return True
     return is_wildcard_host(host) and not api_only
+
+
+async def _hold_ipv6_loopback(protocol_factory, server, host: str, backlog: int):
+    """Also listen on [::1] when serving plain HTTP on 127.0.0.1. Browsers may send http://localhost to ::1
+    first, so whoever else listens there (another OS user, a sandboxed tool sharing the host network) would
+    get the page's requests and session token. Best effort: no IPv6 or a taken ::1 leaves 127.0.0.1 alone."""
+    import asyncio
+
+    if host != "127.0.0.1":
+        return None
+    try:
+        port = _final_bound_port(server, 0)
+        return await asyncio.get_running_loop().create_server(
+            protocol_factory, host = "::1", port = port, backlog = backlog
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.debug("Not listening on [::1]: %s", exc)
+        return None
 
 
 def _final_bound_port(server, requested_port: int) -> int:
@@ -2578,13 +2582,8 @@ def run_server(
                 ", ".join(str(p) for p in attempted) or "(none)",
             )
         else:
-            home_str = (
-                os.environ.get("UNSLOTH_STUDIO_HOME")
-                or os.environ.get("STUDIO_HOME")
-                or str(Path.home() / ".unsloth" / "studio")
-            )
             # Windows $STUDIO_HOME/bin/unsloth.exe; Linux/macOS $STUDIO_HOME/unsloth_studio/bin/unsloth.
-            home = Path(home_str).expanduser()
+            home = _studio_root()
             if sys.platform == "win32":
                 installer_bin = home / "bin" / "unsloth.exe"
             else:
@@ -2627,11 +2626,16 @@ def run_server(
 
     class _ReadyServer(uvicorn.Server):
         loopback_http = None
+        loopback_v6 = None
 
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if tls is not None and getattr(self, "started", False) and not self.should_exit:
                 await self._start_loopback_http()
+            if tls is None and getattr(self, "started", False) and not self.should_exit:
+                self.loopback_v6 = await _hold_ipv6_loopback(
+                    self._protocol_factory(), self, self.config.host, self.config.backlog
+                )
             if getattr(self, "started", False) and not self.should_exit:
                 logger.info(
                     "Uvicorn startup hook completed in %.1fms",
@@ -2639,9 +2643,7 @@ def run_server(
                 )
                 ready_event.set()
 
-        async def _start_loopback_http(self):
-            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
-            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
+        def _protocol_factory(self):
             config = self.config
 
             def _protocol(_loop = None):
@@ -2652,14 +2654,21 @@ def run_server(
                     _loop = _loop,
                 )
 
+            return _protocol
+
+        async def _start_loopback_http(self):
+            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
+            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
             self.loopback_http = await asyncio.get_running_loop().create_server(
-                _protocol, host = "127.0.0.1", port = 0, backlog = config.backlog
+                self._protocol_factory(), host = "127.0.0.1", port = 0, backlog = self.config.backlog
             )
             app.state.loopback_http_port = self.loopback_http.sockets[0].getsockname()[1]
 
         async def shutdown(self, *args, **kwargs):
             if self.loopback_http is not None:
                 self.loopback_http.close()
+            if self.loopback_v6 is not None:
+                self.loopback_v6.close()
             await super().shutdown(*args, **kwargs)
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.

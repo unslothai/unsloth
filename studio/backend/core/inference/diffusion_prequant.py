@@ -1764,6 +1764,10 @@ def _verify_packed_fingerprint(
         else:
             actual = packed_weight_fingerprint(state_dict, select = select).get("modules") or {}
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        # Out of memory is not an uncomputable fingerprint: the load cannot proceed either.
+        raise_if_allocation_failure(exc)
         _warn(logger, "fingerprint", exc)
         return True
     if not actual:
@@ -2294,9 +2298,13 @@ def _engage_nvfp4_backend(
     logger: Any = None,
 ) -> int:
     """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
-    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_linear import _baked_activation_scales, convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
+    if _baked_activation_scales(metadata) is None:
+        # Nothing to move: only baked activation scales run on flashinfer (a runtime build, as the local prequant cache
+        # holds it, has none), so skip the backend preflight the fresh build never runs.
+        return 0
     converted = convert_nvfp4_backend(
         transformer, metadata, select_nvfp4_backend(device), logger = logger
     )

@@ -33,6 +33,12 @@ from .import_fixes import fix_transformers_quantizer_unquantized_converters
 fix_transformers_quantizer_unquantized_converters()
 del fix_transformers_quantizer_unquantized_converters
 
+# Tokenizer files naming host paths (vocab_file, vocab, merges, ...); the GPU route installs it in _gpu_init.
+from .import_fixes import fix_transformers_tokenizer_config_vocab_file_override
+
+fix_transformers_tokenizer_config_vocab_file_override()
+del fix_transformers_tokenizer_config_vocab_file_override
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
@@ -80,6 +86,9 @@ class FastLanguageModel(FastCPUModel):
         from .tiling import check_tiling_available, loader_tile_mlp
 
         check_tiling_available(unsloth_tiled_mlp)
+        from ._gguf_load import require_gguf_package
+
+        require_gguf_package(kwargs.get("gguf_file"))
         model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
         loader_tile_mlp(model, unsloth_tiled_mlp)
         _report_cpu_memory("load", model)

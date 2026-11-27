@@ -341,6 +341,125 @@ def test_import_route_creates_and_dedups(tmp_path, monkeypatch):
     assert set(res2.skipped) == {"fs", "remote", "oauth", "disabled"}
 
 
+def _import(config, no_credential = False):
+    import asyncio
+
+    from models.mcp_servers import McpServerImportRequest
+    import routes.mcp_servers as routes_mcp
+
+    return asyncio.run(
+        routes_mcp.import_mcp_servers(
+            McpServerImportRequest(config = config),
+            current_subject = "u",
+            no_credential = no_credential,
+        )
+    )
+
+
+def _names(servers):
+    return sorted(s.display_name for s in servers)
+
+
+GITHUB_URL = "https://api.githubcopilot.com/mcp/"
+
+
+def _bearer(token):
+    return {"url": GITHUB_URL, "headers": {"Authorization": f"Bearer {token}"}}
+
+
+def test_import_keeps_named_connections_sharing_a_url(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    _enable(monkeypatch)
+    cfg = {
+        "mcpServers": {
+            "github-work": _bearer("WORK"),
+            "github-personal": _bearer("PERSONAL"),
+            "github-copy": _bearer("WORK"),
+            "fs-a": {"command": "npx", "args": ["server"], "env": {"ROOT": "/a"}},
+            "fs-b": {"command": "npx", "args": ["server"], "env": {"ROOT": "/b"}},
+        }
+    }
+    res = _import(cfg)
+    assert _names(res.created) == ["fs-a", "fs-b", "github-personal", "github-work"]
+    assert res.skipped == ["github-copy"]
+    work = next(c for c in res.created if c.display_name == "github-work")
+    assert work.headers == {"Authorization": "Bearer WORK"}
+
+    assert _import({"mcpServers": {"github-work": _bearer("NEW")}}).skipped == ["github-work"]
+    assert set(_import(cfg).skipped) == set(cfg["mcpServers"])
+    assert len(mcp_servers_db.list_servers()) == 4
+
+    respelled = {
+        "mcpServers": {
+            "gh-a": {"url": GITHUB_URL, "headers": {"authorization": "Bearer PERSONAL"}},
+            "gh-b": {"url": GITHUB_URL, "headers": {"AUTHORIZATION": "Bearer WORK"}},
+            "gh-c": _bearer("WORK "),
+            "fs-c": {"command": "npx", "args": ["server"], "env": {"root": "/a"}},
+        }
+    }
+    res = _import(respelled)
+    assert _names(res.created) == ["fs-c", "gh-c"]
+    assert sorted(res.skipped) == ["gh-a", "gh-b"]
+
+    rotated_pair = {"mcpServers": {"github-work": _bearer("NEXT"), "github-next": _bearer("NEXT")}}
+    assert _names(_import(rotated_pair).created) == ["github-next"]
+
+    oauth_url = "https://mcp.example.com/mcp"
+    oauth = {
+        "mcpServers": {
+            "oauth-a": {"url": oauth_url, "oauth": {}, "headers": {"X-Org": "a"}},
+            "oauth-b": {"url": oauth_url, "oauth": {}, "headers": {"X-Org": "b"}},
+            "token-c": {"url": oauth_url, "headers": {"Authorization": "Bearer C"}},
+            "plain-d": {"url": oauth_url, "headers": {"X-Org": "a"}},
+            "plain-e": {"url": oauth_url},
+        }
+    }
+    res = _import(oauth)
+    assert _names(res.created) == ["oauth-a", "plain-d", "plain-e", "token-c"]
+    assert res.skipped == ["oauth-b"]
+    later = {"mcpServers": {"oauth-d": {"url": oauth_url, "oauth": {}, "headers": {"X-Org": "d"}}}}
+    assert _import(later).skipped == ["oauth-d"]
+
+    fs_a = next(r for r in mcp_servers_db.list_servers() if r["display_name"] == "fs-a")
+    mcp_servers_db.update_server(fs_a["id"], {"use_oauth": 1})
+    fs_copy = {"command": "npx", "args": ["server"], "env": {"ROOT": "/a"}}
+    assert _import({"mcpServers": {"fs-copy": fs_copy}}).skipped == ["fs-copy"]
+
+
+def test_import_matches_hidden_headers_on_url_alone(tmp_path, monkeypatch):
+    import json
+
+    from integrations import editors
+
+    _reset_db(tmp_path, monkeypatch)
+    _import({"mcpServers": {"github-work": _bearer("WORK")}})
+    guesses = {"mcpServers": {"right": _bearer("WORK"), "wrong": _bearer("NOPE")}}
+    assert sorted(_import(guesses, no_credential = True).skipped) == ["right", "wrong"]
+
+    fresh = {
+        "mcpServers": {
+            "a": {"url": "https://fresh.example/mcp", "headers": {"Authorization": "Bearer A"}},
+            "b": {"url": "https://fresh.example/mcp", "headers": {"Authorization": "Bearer B"}},
+        }
+    }
+    res = _import(fresh, no_credential = True)
+    assert _names(res.created) == ["a"] and res.skipped == ["b"]
+
+    monkeypatch.setattr(editors, "_unreal_token", lambda _path: "EDITOR")
+    config = json.dumps({"port": 8000, "project_path": str(tmp_path / "Demo.uproject")})
+    mcp_servers_db.create_server(
+        "u" * 16, "Unreal Engine", "", builtin_id = "unreal", builtin_config_json = config
+    )
+    editor_url = next(row["url"] for row in mcp_servers_db.list_servers() if row.get("builtin_id"))
+    editor_guesses = {
+        "mcpServers": {
+            "ue-right": {"url": editor_url, "headers": {"X-MCP-Capability-Token": "EDITOR"}},
+            "ue-wrong": {"url": editor_url, "headers": {"X-MCP-Capability-Token": "NOPE"}},
+        }
+    }
+    assert sorted(_import(editor_guesses).skipped) == ["ue-right", "ue-wrong"]
+
+
 def test_import_route_gates_stdio_when_disabled(tmp_path, monkeypatch):
     import asyncio
 

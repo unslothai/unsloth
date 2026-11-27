@@ -1639,7 +1639,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
           </>
         }
       />
-      <div className="flex shrink-0 items-center gap-0.5">
+      <div className="browser-web-toolbar-trailing flex shrink-0 items-center gap-0.5">
         <WebActions tab={tab} visible={visible} />
         <FloatButton />
         <PanelMenu tab={tab} />

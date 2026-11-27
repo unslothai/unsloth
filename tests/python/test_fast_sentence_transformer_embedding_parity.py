@@ -11,8 +11,7 @@ import pytest
 
 
 def test_transformer_load_signature_supports_unsloth_kwargs():
-    """Tripwire: a Hub-capable Transformer.load must accept the kwargs the issue 6881 fix passes;
-    legacy ST 3.x/4.x load(input_path) falls back to Transformer(...), so the test skips there."""
+    """Hub-capable Transformer.load must accept the issue 6881 kwargs; legacy ST 3.x/4.x skips."""
     models = pytest.importorskip("sentence_transformers.models")
     load = getattr(models.Transformer, "load", None)
     assert callable(load), (
@@ -49,9 +48,7 @@ def _probe_texts():
 
 
 def test_fast_sentence_transformer_matches_stock_st():
-    """End-to-end: FastSentenceTransformer embeddings and tokenization must match a
-    stock SentenceTransformer load of the same checkpoint. Opt-in (needs a model) and
-    GPU-only (FastSentenceTransformer requires CUDA), so it skips on CPU-only runners."""
+    """Embeddings and tokens match stock SentenceTransformer; opt-in, GPU-only, skips on CPU."""
     model_id = os.environ.get("UNSLOTH_EMBEDDING_PARITY_MODEL")
     if not model_id:
         pytest.skip(

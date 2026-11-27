@@ -10,10 +10,13 @@ the PrefixGrouper FlexAttention mask, and hidden states are gathered back to ``[
 Everything after the backbone is unchanged.
 
 Env ``UNSLOTH_DPO_PREFIX_SHARE``: ``auto`` (default: on for CUDA sm80+ when the forward applies
-``prefix_seg_info``), ``1`` (also below sm80), ``0`` (off). A batch is shared only when it saves at
-least ``_MIN_SAVED`` (default 2048) prompt tokens and ``unshared / shared`` tokens is at least ``_TOKR``
-(default 1.3). ``_VERIFY`` (default 1) compares the first shared forward of each backbone with the
-unshared one and turns the feature off for that backbone if they disagree.
+``prefix_seg_info``), ``1`` (also below sm80), ``0`` (off). A batch is shared only when
+``unshared / shared`` tokens is at least ``_TOKR`` (default 1.3) and it saves at least ``_MIN_SAVED``
+prompt tokens: when unset, the larger of 2048 and the cost gate (the saved GEMM time per decoder layer
+reaches ``_LAYER_US``, default 500 us, on this model and GPU; 0 turns the cost gate off); when set, exactly
+that many. ``_VERIFY`` (default 1) compares the first shared forward of each backbone with the unshared
+one and turns the feature off for that backbone if they disagree. ``ENGAGED_COUNT`` counts shared
+forwards, ``COST_DECLINED_COUNT`` the ones the cost gate alone kept unshared.
 
 Active dropout (p > 0) or NEFTune keeps a training forward unshared: one shared prompt dropout mask
 for both rows changes the expected DPO gradient, and NEFTune noise scales with sequence length.
@@ -24,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import math
 import os
 from dataclasses import dataclass
 from typing import List, Optional
@@ -40,7 +44,10 @@ __all__ = [
 
 ENGAGED_COUNT = 0
 DECLINED_COUNT = 0
+COST_DECLINED_COUNT = 0
 LAST_VERIFY = None
+# (saved tokens, tok_r) of the last batch build_pair_layout sized, accepted or not.
+_LAST_SIZED = None
 
 _STATE = "_unsloth_dpo_prefix_share_state"
 _UNSAFE = "_unsloth_dpo_prefix_share_unsafe"
@@ -79,6 +86,89 @@ def _tokr_threshold() -> float:
 
 def _min_saved() -> int:
     return _env_number("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED", "2048", int)
+
+
+# A shared forward pays a roughly fixed host cost per layer (flex attention, and the layer runs outside
+# the compiled block), so it wins only once the GEMM time it saves per layer is larger. Qwen3-0.6B LoRA
+# C = 256, 2160 tokens saved: A100 +21% step time (+18% with UNSLOTH_BLOCK_COMPILE=0), L4 -25%.
+# _LAYER_US is that break-even: saved tokens x 2 x layer params / measured matmul FLOP/s.
+def _layer_us_threshold() -> float:
+    return _env_number("UNSLOTH_DPO_PREFIX_SHARE_LAYER_US", "500")
+
+
+_MATMUL_FLOPS = {}
+
+
+def _matmul_flops(device) -> Optional[float]:
+    """Dense 16-bit GEMM FLOP/s of ``device``, measured once per device; None when it cannot be read."""
+    key = str(device)
+    if key in _MATMUL_FLOPS:
+        return _MATMUL_FLOPS[key]
+    flops = None
+    try:
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        n = 4096
+        with torch.no_grad(), torch.cuda.device(device):
+            # Constant operands: drawing them would advance the training RNG (dropout, sampling).
+            a = torch.full((n, n), 0.5, device = device, dtype = dtype)
+            b = torch.full((n, n), 0.5, device = device, dtype = dtype)
+            for _ in range(2):
+                a @ b
+            start = torch.cuda.Event(enable_timing = True)
+            end = torch.cuda.Event(enable_timing = True)
+            start.record()
+            for _ in range(5):
+                a @ b
+            end.record()
+            end.synchronize()
+            seconds = start.elapsed_time(end) / 1e3
+            del a, b
+        if seconds > 0:
+            flops = 5 * 2 * n**3 / seconds
+    except Exception as exc:
+        _log(f"matmul throughput probe failed ({exc!r})")
+    _MATMUL_FLOPS[key] = flops
+    return flops
+
+
+def _layer_params(causal_lm) -> Optional[int]:
+    """Weights one decoder layer multiplies each token by (attention + gated MLP), from the config."""
+    config = getattr(causal_lm, "config", None)
+    try:
+        hidden = int(config.hidden_size)
+        heads = int(config.num_attention_heads)
+        kv_heads = int(getattr(config, "num_key_value_heads", None) or heads)
+        head_dim = int(getattr(config, "head_dim", None) or hidden // heads)
+        inter = int(config.intermediate_size)
+    except Exception:
+        return None
+    return 2 * hidden * heads * head_dim + 2 * hidden * kv_heads * head_dim + 3 * hidden * inter
+
+
+def _cost_min_saved(causal_lm, device) -> int:
+    """Fewest saved prompt tokens that win on this model and GPU (``_LAYER_US`` of GEMM time per layer);
+    0 when the model or GPU cannot be sized, leaving only the token gates. Cached per model."""
+    threshold_us = _layer_us_threshold()
+    cache = getattr(causal_lm, "_unsloth_dpo_prefix_share_cost_min", None)
+    if cache is not None and cache[:2] == (str(device), threshold_us):
+        return cache[2]
+    params = _layer_params(causal_lm)
+    flops = _matmul_flops(device) if threshold_us > 0 and params else None
+    tokens = math.ceil(threshold_us * 1e-6 * flops / (2 * params)) if flops else 0
+    _log(f"cost gate: {tokens} saved tokens (layer {params} params, {flops} FLOP/s)")
+    try:
+        causal_lm._unsloth_dpo_prefix_share_cost_min = (str(device), threshold_us, tokens)
+    except Exception:
+        pass
+    return tokens
+
+
+def _effective_min_saved(causal_lm, device) -> int:
+    """UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED when set (0 shares every eligible batch), else the larger of
+    its default and the cost gate."""
+    if os.environ.get("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED") is not None:
+        return _min_saved()
+    return max(_min_saved(), _cost_min_saved(causal_lm, device))
 
 
 def _verify_on() -> bool:
@@ -161,6 +251,8 @@ def build_pair_layout(
     unshared = sum(n_list)
     flat_len = unshared - sum(shared)
     tok_r = unshared / flat_len
+    global _LAST_SIZED
+    _LAST_SIZED = (sum(shared), tok_r)
     if min_tok_r is None:
         min_tok_r = _tokr_threshold()
     if min_saved is None:
@@ -306,6 +398,8 @@ def _model_eligible(causal_lm, device):
             pass
     if not cached:
         return False
+    if _forwards_are_collective(causal_lm):
+        return False
     from ..utils.prefix_grouper_kernel import compile_check_failed
 
     if compile_check_failed() is not None:
@@ -334,6 +428,25 @@ def _distributed_world():
     except Exception:
         pass
     return 1
+
+
+def _forwards_are_collective(causal_lm):
+    """ZeRO-3 / FSDP2: every forward all-gathers. A rank whose flex compile check fails reruns its
+    forward unshared, so its collectives no longer line up with the other ranks' (hang or wrong
+    gathers). Read live: the DeepSpeed config can go live after the first call."""
+    if _distributed_world() <= 1:
+        return False
+    try:
+        from unsloth_zoo.rl_replacements import grpo_forwards_are_collective
+    except Exception:
+        grpo_forwards_are_collective = None
+    try:
+        if grpo_forwards_are_collective is not None:
+            return bool(grpo_forwards_are_collective(causal_lm))
+        from unsloth_zoo.temporary_patches.utils import zero3_partitioned_training
+        return bool(zero3_partitioned_training())
+    except Exception:
+        return False
 
 
 def _cp_active():
@@ -417,7 +530,7 @@ def _dropout_active(causal_lm):
 
 
 def _pre_hook(module, args, kwargs):
-    global DECLINED_COUNT
+    global DECLINED_COUNT, COST_DECLINED_COUNT, _LAST_SIZED
     state = getattr(module, _STATE, None)
     if state is None or args or getattr(module, _UNSAFE, False):
         return None
@@ -438,15 +551,29 @@ def _pre_hook(module, args, kwargs):
     attention_mask = kwargs.get("attention_mask")
     if attention_mask is None or not isinstance(input_ids, torch.Tensor):
         return None
+    _LAST_SIZED = None
+    min_saved = None
     try:
+        min_saved = _effective_min_saved(state.causal_lm, input_ids.device)
         layout = build_pair_layout(
-            input_ids, attention_mask, max_segment_cap = _segment_cap(state.causal_lm)
+            input_ids,
+            attention_mask,
+            min_saved = min_saved,
+            max_segment_cap = _segment_cap(state.causal_lm),
         )
     except Exception as exc:
         _log(f"layout failed ({exc!r}); unshared forward")
         layout = None
     if layout is None:
         DECLINED_COUNT += 1
+        sized = _LAST_SIZED
+        if (
+            sized is not None
+            and min_saved is not None
+            and sized[1] >= _tokr_threshold()
+            and _min_saved() <= sized[0] < min_saved
+        ):
+            COST_DECLINED_COUNT += 1
         return None
     new_kwargs = dict(kwargs)
     new_kwargs["input_ids"] = layout.flat_ids

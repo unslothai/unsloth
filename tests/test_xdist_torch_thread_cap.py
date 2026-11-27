@@ -54,8 +54,7 @@ def test_serial_runs_are_left_alone():
 
 @pytest.mark.parametrize("var", share_mod.THREAD_VARS)
 def test_one_explicit_thread_setting_keeps_all_of_them_unset(var):
-    # MKL_NUM_THREADS outranks OMP_NUM_THREADS in torch, so filling the others in beside an
-    # explicit one would silently override it.
+    # MKL_NUM_THREADS outranks OMP_NUM_THREADS, so filling the rest overrides an explicit one.
     env = {"PYTEST_XDIST_WORKER_COUNT": "4", var: "3"}
     assert share_mod.apply(env, cpus = 16) == "explicit"
     assert env[var] == "3"

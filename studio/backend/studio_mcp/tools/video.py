@@ -95,9 +95,9 @@ async def generate_video(
     seed: Annotated[
         Optional[int],
         Field(
-            ge = 0,
+            ge = -1,
             le = 2**53 - 1,
-            description = "Reuse a take's seed to repeat it; left out, Unsloth Studio picks one and returns it.",
+            description = "Reuse a take's seed to repeat it; left out or -1, Unsloth Studio picks one and returns it.",
         ),
     ] = None,
     steps: Annotated[

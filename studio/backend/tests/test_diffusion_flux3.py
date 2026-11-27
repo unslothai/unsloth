@@ -159,10 +159,10 @@ def test_official_repos_are_trusted():
 
 
 def test_generation_defaults():
-    # ComfyUI's templates and the BFL reference: distilled 16 steps CFG 1, base 50 at 3.5.
+    # The BFL reference (62e90b9278): distilled 16 steps CFG 1, base 50 at 4.0.
     assert default_generation_params(DISTILLED) == (16, 1.0)
-    assert default_generation_params(BASE) == (50, 3.5)
-    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (50, 3.5)
+    assert default_generation_params(BASE) == (50, 4.0)
+    assert default_generation_params("flux3_klein_base_bf16.safetensors") == (50, 4.0)
     assert default_generation_params("black-forest-labs/FLUX.2-klein-4B") == (4, 1.0)
 
 
@@ -335,7 +335,12 @@ class _Face(_Flux3KleinPipelineMixin):
     def modular_pipeline(self):
         return self.mp
 
-    def _set_guidance(self, mp, guidance_scale):
+    def _set_guidance(
+        self,
+        mp,
+        guidance_scale,
+        guidance_stop = None,
+    ):
         self.guidance.append(guidance_scale)
 
     def progress_bar(self, total = None):
@@ -1162,11 +1167,11 @@ def test_canonical_family_names_get_the_flux3_recipe():
     from core.inference.diffusion import _generation_defaults_for
 
     assert default_generation_params("flux.3-klein") == (16, 1.0)
-    assert default_generation_params("flux.3-klein-base") == (50, 3.5)
+    assert default_generation_params("flux.3-klein-base") == (50, 4.0)
     # An opaque local pipeline names no variant; the resident recipe falls back to the family.
     for name, want in (
         (FLUX3_KLEIN_FAMILY_NAME, (16, 1.0)),
-        (FLUX3_KLEIN_BASE_FAMILY_NAME, (50, 3.5)),
+        (FLUX3_KLEIN_BASE_FAMILY_NAME, (50, 4.0)),
     ):
         got = _generation_defaults_for(
             "/models/my-model", None, "/models/my-model", family = _family(name)
@@ -1871,11 +1876,11 @@ def test_flux3_family_decides_generation_defaults_over_file_names():
         f = f"diffusion_models/flux3_image_klein_{name}.safetensors"
         assert _generation_defaults_for(comfy, f, BASE, None, base) == {
             "steps": 50,
-            "guidance": 3.5,
+            "guidance": 4.0,
         }
         assert _generation_defaults_for("/local/dir", f, DISTILLED, None, base) == {
             "steps": 50,
-            "guidance": 3.5,
+            "guidance": 4.0,
         }
     sd = "diffusion_models/flux3_image_klein_sd_bf16.safetensors"
     assert _generation_defaults_for(comfy, sd, DISTILLED, None, dist) == {
@@ -2225,3 +2230,55 @@ def test_the_pipeline_estimate_probes_the_flux3_index_for_a_cached_upstream(monk
     )
     assert probes[0] == (FLUX3_INDEX,)
     assert fetch_repos[upstream] == upstream
+
+
+def test_inference_scheduler_samples_at_the_bfl_reference_shift():
+    # Must match BFL's timesteps(steps, 16) as the block graph sets it.
+    import numpy as np
+
+    diffusers = pytest.importorskip("diffusers")
+    if not hasattr(diffusers, "Flux3DistilledAutoBlocks"):
+        pytest.skip("diffusers without FLUX.3 modular blocks")
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from core.inference.diffusion_flux3 import (
+        FLUX3_BASE_BLOCKS,
+        FLUX3_REFERENCE_SHIFT,
+        flux3_blocks,
+        flux3_reference_scheduler,
+    )
+
+    assert FLUX3_REFERENCE_SHIFT == 16.0
+    for blocks in (FLUX3_DISTILLED_BLOCKS, FLUX3_BASE_BLOCKS):
+        shipped = flux3_blocks(blocks).init_pipeline().scheduler
+        sched = flux3_reference_scheduler(shipped)
+        assert sched is not shipped and type(sched) is type(shipped)
+        assert sched.config.shift == FLUX3_REFERENCE_SHIFT and not sched.config.use_dynamic_shifting
+        assert {k: v for k, v in sched.config.items() if k != "shift"} == {
+            k: v for k, v in shipped.config.items() if k != "shift"
+        }
+        for steps in (16, 50):
+            sched.set_timesteps(sigmas = np.linspace(1.0, 1.0 / steps, steps).tolist())
+            u = np.linspace(1.0, 0.0, steps + 1)
+            assert np.allclose(sched.sigmas.numpy(), 16.0 * u / (1.0 + 15.0 * u), atol = 1e-6)
+        assert flux3_reference_scheduler(sched) is sched
+    dynamic = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting = True)
+    assert flux3_reference_scheduler(dynamic) is dynamic
+    other = SimpleNamespace(config = {"beta_start": 0.1})
+    assert flux3_reference_scheduler(other) is other
+
+
+def test_the_load_builds_its_scheduler_at_the_reference_shift():
+    import ast
+    import inspect
+
+    from core.inference import diffusion_flux3 as f3
+
+    tree = ast.parse(inspect.getsource(f3.load_flux3_pipeline))
+    assigned = [
+        ast.unparse(n.value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "scheduler" for t in n.targets)
+    ]
+    assert assigned == ["flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)"]

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -254,6 +255,86 @@ def test_text_only_datasets_stay_text(row):
 
     assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is False
     assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is False
+
+
+@pytest.mark.parametrize("column", ["filename", "file_name"])
+def test_filename_column_only_counts_as_image_when_it_names_an_image(column):
+    text_row = {"instruction": "Add 2 and 3.", "output": "5", column: "arithmetic.jsonl"}
+    image_row = {"caption": "A red square.", column: "red.png"}
+
+    text_dataset = Dataset.from_list([text_row])
+    assert dataset_format.check_dataset_format(text_dataset, is_vlm = False)["is_image"] is False
+    assert format_detection.detect_multimodal_dataset(text_dataset)["is_image"] is False
+    image_info = format_detection.detect_multimodal_dataset(Dataset.from_list([image_row]))
+    assert image_info["is_image"] is True
+    assert image_info["multimodal_columns"] == [column]
+
+
+@pytest.mark.parametrize("header, image", [(b"\x89PNG\r\n\x1a\n", True), (b"# Read me\n", False)])
+def test_extensionless_file_name_counts_as_image_only_when_the_file_is_one(tmp_path, header, image):
+    referenced = tmp_path / "README"
+    referenced.write_bytes(header)
+    dataset = Dataset.from_list(
+        [{"instruction": "Summarise", "output": "A readme", "file_name": str(referenced)}]
+    )
+
+    assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is image
+    assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is image
+
+
+def _file_name_is_image(
+    path,
+    account = None,
+    seconds = 60,
+):
+    # In a thread so a blocking probe fails with every stack instead of hanging the job.
+    import faulthandler
+    import threading
+
+    from utils.account_context import bind_account, reset_account
+
+    dataset = Dataset.from_list(
+        [{"instruction": "Summarise", "output": "A file", "file_name": str(path)}]
+    )
+    outcome = {}
+
+    def detect():
+        token = bind_account(account) if account else None
+        try:
+            outcome["is_image"] = format_detection.detect_multimodal_dataset(dataset)["is_image"]
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test thread
+            outcome["error"] = exc
+        finally:
+            if token is not None:
+                reset_account(token)
+
+    worker = threading.Thread(target = detect, daemon = True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        faulthandler.dump_traceback(all_threads = True)
+        pytest.fail(f"detection on {path} still running after {seconds}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["is_image"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "FIFOs are POSIX only")
+def test_file_name_pointing_at_a_fifo_does_not_block(tmp_path):
+    fifo = tmp_path / "source.jsonl"
+    os.mkfifo(fifo)
+
+    assert _file_name_is_image(fifo) is False
+
+
+def test_managed_account_cannot_probe_a_file_it_may_not_read(tmp_path):
+    from utils.account_context import AccountContext
+
+    png = tmp_path / "owner_photo"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    assert _file_name_is_image(png, AccountContext("a1b2c3d4e5f6a7b8", "alice", "user")) is False
+    assert _file_name_is_image(png) is True
 
 
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])

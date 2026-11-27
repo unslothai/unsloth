@@ -13,7 +13,11 @@ import torch
 
 import unsloth.models._decode_graphs as G
 
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+
+def cuda(test):
+    return pytest.mark.gpu(
+        pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")(test)
+    )
 
 
 def _load():
@@ -26,7 +30,12 @@ def _load():
     return model, tok
 
 
-def _generate_then_check_rng(model, tok, monkeypatch):
+def _generate_then_check_rng(
+    model,
+    tok,
+    monkeypatch,
+    expect_failure = True,
+):
     monkeypatch.setattr(G, "ENABLED", True)
     enc = tok(["Once upon a time there was"], return_tensors = "pt").to("cuda")
     out = model.generate(
@@ -36,7 +45,8 @@ def _generate_then_check_rng(model, tok, monkeypatch):
     assert out.shape[1] == enc["input_ids"].shape[1] + 40
     causal = getattr(getattr(model, "base_model", model), "model", model)
     disabled = G.stats(causal).get("disabled") or G.stats(model).get("disabled")
-    assert disabled and disabled.startswith("capture failed"), disabled
+    if expect_failure:
+        assert disabled and disabled.startswith("capture failed"), disabled
 
     torch.rand(4, device = "cuda")
     torch.cuda.manual_seed(0)
@@ -64,8 +74,11 @@ def test_rng_usable_after_inference_mode_rng_state(monkeypatch):
         keep.capture_end()
     torch.cuda.current_stream().wait_stream(stream)
     try:
-        disabled = _generate_then_check_rng(model, tok, monkeypatch)
-        assert "inference tensor" in disabled, disabled
+        # Only some torch releases fail this capture (2.11+ makes the RNG's graph state outside
+        # inference mode, 2.12+ keeps it per capture); either way the RNG must stay usable.
+        disabled = _generate_then_check_rng(model, tok, monkeypatch, expect_failure = False)
+        if disabled is not None:
+            assert "inference tensor" in disabled, disabled
     finally:
         del keep
 
@@ -77,8 +90,7 @@ def test_rng_usable_after_failed_decode_capture(monkeypatch):
     real_run_step = G._run_step
 
     def run_step(*args, **kwargs):
-        # A host sync is illegal while capturing: it invalidates the capture, so capture_end raises
-        # too, which is how a real capture failure ends.
+        # A host sync while capturing invalidates the capture, so capture_end raises as well.
         if torch.cuda.is_current_stream_capturing():
             torch.cuda.synchronize()
         return real_run_step(*args, **kwargs)

@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from utils.paths import recipe_datasets_root
 
+from .huggingface import processor_folder_name_error
 from .jsonable import _is_pandas_missing, to_jsonable
 from .local_callable_validators import (
     register_oxc_local_callable_validators,
@@ -810,6 +811,13 @@ def validate_recipe_names(recipe: dict[str, Any]) -> None:
             raise ValueError(
                 f"Processor names can't contain '/' or '\\', start with a drive letter, or be '.' / '..': {name!r}"
             )
+    name_error = processor_folder_name_error(
+        item["name"]
+        for item in (processors if isinstance(processors, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+    if name_error:
+        raise ValueError(name_error)
 
 
 def _safe_module_name(record_id: Any, column_name: str) -> str:
@@ -899,7 +907,10 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_seed_uri_quote_patch()
     _apply_data_designer_sql_inline_config_patch()
     _apply_data_designer_python_validator_path_patch()
-    from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
+    from data_designer.interface.data_designer import (  # pyright: ignore[reportMissingImports]
+        DEFAULT_SEED_READERS,
+        DataDesigner,
+    )
 
     if artifact_path is None:
         # Packaged Unsloth can run with cwd=/, so pin the artifact root.
@@ -925,6 +936,9 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
         artifact_path = artifact_path,
         model_providers = model_providers,
         mcp_providers = build_mcp_providers(recipe),
+        # The defaults are shared module-level instances and attach() stores the source on them:
+        # concurrent in-process validations would read each other's (other accounts') seeds.
+        seed_readers = [type(reader)() for reader in DEFAULT_SEED_READERS],
     )
 
 

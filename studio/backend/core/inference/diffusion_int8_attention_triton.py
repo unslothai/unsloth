@@ -57,6 +57,22 @@ def _rocm_build() -> bool:
         return False
 
 
+def triton_version() -> Optional[tuple]:
+    """(major, minor) of the imported Triton, or None (no Triton, or a version string that does not parse)."""
+    try:
+        return tuple(int(x) for x in triton.__version__.split(".")[:2])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def join_free_rotation() -> bool:
+    """True where the rotation is built without ``tl.join``: NVIDIA Triton 3.3, whose layout-conversion pass gives
+    the join a result layout its own type inference rejects ("'tt.join' op failed to infer returned types"). The
+    rotation's bits are the join's; the int8 Q codes can differ by one at a rounding tie (21 of 16.8M at Qwen-Image
+    1024 px on Triton 3.7.1, same accuracy). Every other Triton (and ROCm 3.3, which compiles the join) keeps it."""
+    return triton is not None and triton_version() == (3, 3) and not _rocm_build()
+
+
 # Sequence lengths stay out of the attention kernel's compile key except on ROCm, where the % 16 facts are worth 3%
 # at 75k tokens on gfx1151 and a run keeps one resolution.
 _ATTN_NO_SPECIALIZE = (
@@ -70,16 +86,37 @@ if triton is not None:
         # round half to even in fp32 for |x| < 2**22: adding then removing 1.5 * 2**23 drops the fraction
         return (x + 12582912.0) - 12582912.0
 
-    @triton.jit
-    def _rotate(x, R: tl.constexpr, D: tl.constexpr):
-        cols = tl.arange(0, D)
-        flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
-        x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
-        for _ in tl.static_range(4):
-            a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
-            z = tl.reshape(tl.join(a + b, a - b), (R, D // 16, 8, 2))
-            x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
-        return x
+    if not join_free_rotation():
+
+        @triton.jit
+        def _rotate(x, R: tl.constexpr, D: tl.constexpr):
+            cols = tl.arange(0, D)
+            flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
+            x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
+            for _ in tl.static_range(4):
+                a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
+                z = tl.reshape(tl.join(a + b, a - b), (R, D // 16, 8, 2))
+                x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
+            return x
+
+    else:
+        # Chosen in Python, not by a constexpr global: Triton 3.2 / 3.3 leave a global's value out of the cache key, so
+        # both bodies behind one ``if`` would share compiled kernels. Its own source keeps this one apart.
+        @triton.jit
+        def _rotate(x, R: tl.constexpr, D: tl.constexpr):
+            cols = tl.arange(0, D)
+            flip = (((cols * 7919 + 13) * (cols + 3)) >> 7) & 1
+            x = x * (1.0 - 2.0 * flip.to(tl.float32))[None, :]
+            pair = tl.arange(0, 2)[None, None, :]
+            for _ in tl.static_range(4):
+                a, b = tl.split(tl.reshape(x, (R, D // 2, 2)))
+                # (a + b, a - b) interleaved by a select on a size-2 axis: the join's values without tt.join
+                z = tl.reshape(
+                    tl.where(pair == 0, (a + b)[:, :, None], (a - b)[:, :, None]),
+                    (R, D // 16, 8, 2),
+                )
+                x = tl.reshape(tl.permute(z, (0, 1, 3, 2)), (R, D))
+            return x
 
     @triton.jit
     def _stats(
@@ -243,9 +280,12 @@ if triton is not None:
         T: tl.constexpr,
         D: tl.constexpr,
         TO_F16: tl.constexpr,
+        VB: tl.constexpr = 0,
     ):
         # one tile of T keys of one (batch, head) -> channel-major [BH, D, n_pad], padded keys zero; in V's dtype,
-        # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert)
+        # or (TO_F16) fp16 saturated at +-65504 so P.V can run on fp16 operands (RDNA3 has no bf16 convert).
+        # VB > 0: block-contiguous [BH, n_pad / VB, D, VB] instead, so one attention key tile of VB keys is one
+        # contiguous D * VB run (comfy-kitchen #368)
         b = (bh // n_heads).to(tl.int64)
         h = (bh % n_heads).to(tl.int64)
         rows = blk * T + tl.arange(0, T)
@@ -262,7 +302,13 @@ if triton is not None:
         if TO_F16:
             x = tl.minimum(tl.maximum(x.to(tl.float32), -65504.0), 65504.0).to(tl.float16)
         base = bh.to(tl.int64) * n_pad * D
-        tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
+        if VB:
+            blk_off = ((rows // VB)[:, None] * D + cols[None, :]).to(tl.int64) * VB + (rows % VB)[
+                :, None
+            ]
+            tl.store(o_ptr + base + blk_off, x)
+        else:
+            tl.store(o_ptr + base + cols[None, :].to(tl.int64) * n_pad + rows[:, None], x)
 
     # One launch per quantiser: kept for tests and tools.
 
@@ -384,6 +430,7 @@ if triton is not None:
         T: tl.constexpr,
         D: tl.constexpr,
         TO_F16: tl.constexpr,
+        VB: tl.constexpr = 0,
     ):
         _transpose_v(
             x_ptr,
@@ -399,6 +446,7 @@ if triton is not None:
             T,
             D,
             TO_F16,
+            VB,
         )
 
     # Token, block and head counts stay out of the compile key (Triton would otherwise specialise them on
@@ -436,6 +484,7 @@ if triton is not None:
         D: tl.constexpr,
         V_STATS: tl.constexpr,
         V_T: tl.constexpr,
+        VB: tl.constexpr = 0,
     ):
         # Input-only work per (batch, head): block 0 K mean, block 1 V range, then Q tiles, then the channel-major V
         # copy. Statistics blocks go first (longest); each block is its standalone kernel's code, so bits match.
@@ -483,6 +532,7 @@ if triton is not None:
                     R,
                     D,
                     V_T == 2,
+                    VB,
                 )
 
     @triton.jit(do_not_specialize = ["sk", "n_heads", "n_kblk"])
@@ -593,6 +643,7 @@ if triton is not None:
         PV_MODE: tl.constexpr,
         ACC_IN_DOT: tl.constexpr,
         MASK: tl.constexpr,
+        V_BLK: tl.constexpr = 0,
     ):
         keys = t * BN + offs_n
         if QK_INT8:
@@ -633,7 +684,18 @@ if triton is not None:
             if PV_MODE == 1:
                 v = tl.load(v_ptr + (kbase + keys[:, None]) * D + cols[None, :])
             elif PV_MODE == 3:
-                v = tl.load(v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None])
+                if V_BLK:
+                    # block-contiguous V^T: key tile t is the D * BN run at t * D * BN
+                    v = tl.load(
+                        v_ptr
+                        + kbase * D
+                        + (t * D + cols[None, :]).to(tl.int64) * BN
+                        + offs_n[:, None]
+                    )
+                else:
+                    v = tl.load(
+                        v_ptr + kbase * D + cols[None, :].to(tl.int64) * n_kpad + keys[:, None]
+                    )
             else:
                 v_ptrs = (
                     v_ptr + b * v_sb + h * v_sh + keys[:, None].to(tl.int64) * v_ss + cols[None, :]
@@ -689,6 +751,7 @@ if triton is not None:
         EVEN_K: tl.constexpr,
         ACC_IN_DOT: tl.constexpr,
         PREFETCH_FIX: tl.constexpr,  # cache key only: compiled with the sm_8x 8-bit prefetch fix
+        V_BLK: tl.constexpr = 0,
     ):
         # PV_MODE 0: 16-bit P.V, V read from the strided input; 1: 16-bit P.V, V from a heads-major padded copy;
         # 2: INT8 P.V, P as 0..127 relative to each (row, key tile) maximum, V centred / gained, one scale per tile;
@@ -754,6 +817,7 @@ if triton is not None:
                 PV_MODE,
                 ACC_IN_DOT,
                 False,
+                V_BLK,
             )
         if not EVEN_K:
             acc, l_i, m_i = _attn_tile(
@@ -791,6 +855,7 @@ if triton is not None:
                 PV_MODE,
                 ACC_IN_DOT,
                 True,
+                V_BLK,
             )
         out = acc / l_i[:, None]
         if PV_MODE == 2 or PV_MODE == 4:
@@ -889,6 +954,8 @@ def _make_plan(
     mode = PV_MODES[pv]
     int8_v = pv in ("int8", "int8_t")
     v_t = 2 if pv == "f16_t" else 1 if pv == "half_t" else 0
+    # block-contiguous V^T (one key tile = one contiguous run); only the 16-bit transposed P.V modes store V^T
+    v_blk = bool(config.get("vblk")) and v_t != 0
     n_qblk = n_qpad // QUANT_ROWS
     rk = bn if k_tile else QUANT_ROWS
     n_kblk = n_kpad // rk
@@ -923,6 +990,7 @@ def _make_plan(
             "D": D,
             "V_STATS": int(int8_v),
             "V_T": v_t,
+            "VB": bn if v_blk else 0,
         },
         "kv_grid": (BH, kv_blocks),
         "kv_args": (Sk, n_kpad, H, *sk_, *sv_, 1.0, n_kblk),
@@ -945,6 +1013,7 @@ def _make_plan(
             "EVEN_K": Sk % bn == 0,
             "ACC_IN_DOT": bool(config.get("acc_in_dot", False)),
             "PREFETCH_FIX": prefetch_fix(),
+            "V_BLK": int(v_blk),
             **_launch_options(config),
         },
         "config": config,
@@ -1088,7 +1157,16 @@ def _quantise_unfused(kk: Any, plan: dict, q: Any, k: Any, v: Any, out: dict, kc
         )
     elif plan["v_t"]:
         kk.transpose_v[(BH, n_kpad // QUANT_ROWS)](
-            v, out["vh"], Sk, n_kpad, H, *sv_, T = QUANT_ROWS, D = D, TO_F16 = plan["v_t"] == 2
+            v,
+            out["vh"],
+            Sk,
+            n_kpad,
+            H,
+            *sv_,
+            T = QUANT_ROWS,
+            D = D,
+            TO_F16 = plan["v_t"] == 2,
+            VB = plan["prep_meta"]["VB"],
         )
 
 

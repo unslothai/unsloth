@@ -1254,7 +1254,13 @@ class VLMPromptCacheSession:
             self._forward.__exit__(*exc)
         return False
 
-    def find_prefix_length(self, token_ids):
+    def find_prefix_length(
+        self,
+        token_ids,
+        *,
+        video_timing = (),
+    ):
+        # mlx-vlm 0.8.1 passes video_timing; always empty here, as video requests get no session.
         token_ids = list(token_ids)
         self._token_ids = token_ids
         rows = len(token_ids) + self._max_new_tokens
@@ -1370,7 +1376,13 @@ class VLMPromptCacheSession:
         except Exception as exc:
             logger.info("MLX VLM prompt cache: served snapshot not kept (%s)", exc)
 
-    def update(self, _token_ids, _cache):
+    def update(
+        self,
+        _token_ids,
+        _cache,
+        *,
+        video_timing = (),
+    ):
         """mlx-vlm's after-generation hook; ``finish`` stores, as it also runs on a consumer that
         stops reading early."""
 
@@ -6848,9 +6860,6 @@ class MLXInferenceBackend:
             getattr(config, "base_model", None) if is_lora else model_name
         )
         zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
-        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
-            route_config, hf_token
-        )
         # Vision off reads no images. An adapter or audio input keeps the processor it was built for.
         vision_off = bool(
             disable_vision
@@ -6860,6 +6869,9 @@ class MLXInferenceBackend:
         )
         if vision_off and _text_load_drops_the_tower(route_config, hf_token):
             is_vision = zoo_multimodal = False
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
+        )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -7088,6 +7100,11 @@ class MLXInferenceBackend:
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
+
+        # Zoo can build a text-only checkpoint with mlx-vlm and return just its tokenizer.
+        if not use_vlm and getattr(model, "_is_vlm_model", None) is True:
+            use_vlm = True
+            tokenizer_or_processor = getattr(model, "_processor", tokenizer_or_processor)
 
         zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
         if zoo_loaded_multimodal:
@@ -8277,6 +8294,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8554,6 +8572,7 @@ class MLXInferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(
                     prompt, reasoning_channel_markers, _resumed_partial
                 ),
+                continued = _resumed_partial,
             )
             if preserve_native_channels
             else None
@@ -8685,6 +8704,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
+                image_marker = _image_placeholder(self._tokenizer, self._processor),
             )
         except Exception as exc:
             if images is None or has_tool_history:
@@ -8907,14 +8927,12 @@ class MLXInferenceBackend:
                     self._tokenizer,
                     preserved_tokens = reasoning_control_tokens(markers),
                 )
+        _continued = bool(continue_final_message and trailing_assistant_text(messages))
         normalizer = (
             make_reasoning_normalizer(
                 markers,
-                in_reasoning = prompt_opens_reasoning_channel(
-                    prompt,
-                    markers,
-                    bool(continue_final_message and trailing_assistant_text(messages)),
-                ),
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, _continued),
+                continued = _continued,
             )
             # The normalizer would rewrite marker text inside the document.
             if markers is not None and (constraint is None or constraint.allows_reasoning)

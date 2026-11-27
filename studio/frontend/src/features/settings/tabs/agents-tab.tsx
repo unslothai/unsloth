@@ -37,6 +37,7 @@ import {
 import {
   EMBEDDING_TAGS,
   type HfModelResult,
+  formatBytes,
   ggufVariantDisplayLabel,
   hfApiToken,
   useHfTokenStore,
@@ -192,19 +193,6 @@ function isEmbeddingHubModel(
   return [model.pipelineTag, ...(model.tags ?? [])].some(
     (tag) => tag != null && EMBEDDING_TAGS.has(tag.toLowerCase()),
   );
-}
-
-function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const unitIndex = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1,
-  );
-  const value = bytes / 1024 ** unitIndex;
-  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 function discoverGgufModels(
@@ -1384,9 +1372,8 @@ export function AgentsTab() {
                 </SelectTrigger>
                 <SelectContent align="start" className="min-w-[min(calc(16rem*var(--ui-space-scale,1)),calc(100vw-32px))]">
                   {variants.map((variant) => {
-                    const size = formatBytes(
-                      variant.download_size_bytes ?? variant.size_bytes,
-                    );
+                    const bytes = variant.download_size_bytes ?? variant.size_bytes;
+                    const size = bytes > 0 ? formatBytes(bytes) : "";
                     return (
                       <SelectItem
                         key={variant.quant}

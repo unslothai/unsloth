@@ -989,11 +989,18 @@ export const nl = {
   chatMenu: {
     more: "Chatopties",
     copy: "Kopiëren",
-    addScheduledTask: "Geplande taak toevoegen…",
+    addScheduledTask: "Geplande taak toevoegen",
     compact: "Gesprek comprimeren",
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
+  },
+  chatFiles: {
+    title: "Bestanden in deze chat",
+    code: "Codefragmenten",
+    showInChat: "Tonen in chat",
+    download: "{name} downloaden",
+    saveFailed: "Kan {name} niet opslaan.",
   },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
@@ -1047,6 +1054,9 @@ export const nl = {
       "Zoek en download in plaats daarvan via ModelScope. Je kunt terugschakelen in Instellingen.",
     useModelScopeFailed: "Kan niet overschakelen naar ModelScope.",
     updateToken: "Token bijwerken",
+    linkedModelTitle: "{model} laden?",
+    linkedModelBody: "Een link heeft deze pagina geopend en vraagt dit model te downloaden en te laden.",
+    linkedModelLoad: "Laden",
     hfToken: {
       label: "HF-token",
       saved: "Opgeslagen",
@@ -1077,6 +1087,7 @@ export const nl = {
     saving: "Opslaan...",
     search: "Zoeken",
     shutdown: "Afsluiten",
+    technicalDetails: "Technische details",
   },
   shell: {
     helpMenu: {
@@ -2652,6 +2663,10 @@ export const nl = {
         confirmDescriptionChatOnly:
           "Stopt de server en voert het installatieprogramma opnieuw uit. Dit is een installatie voor Alleen chat, dus het installatieprogramma upgradet deze ook naar de volledige installatie met PyTorch, in totaal enkele gigabytes. Chats en instellingen blijven behouden. Dit kan enkele minuten duren.",
         confirmAction: "Nu herstellen",
+        recommendedTorch:
+          "Reparatie aanbevolen: deze installatie heeft PyTorch {torch}, ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund.",
+        recommendedDriver:
+          "PyTorch {torch} is ouder dan de beheerde {managedTorch} waarop GPU's uit de RTX 50-serie worden ondersteund, maar dit GPU-stuurprogramma ondersteunt CUDA 13 niet. Werk eerst het GPU-stuurprogramma bij en repareer daarna de installatie.",
       },
       resetPreferences: {
         sectionTitle: "Gevarenzone",
@@ -2832,7 +2847,7 @@ export const nl = {
         oldWebkitWarning:
           "WebKitGTK {version} op Wayland: GPU-rendering kan bij het starten crashen op NVIDIA met fractionele schaling (WebKit-bug 280210). Als dat gebeurt, schakelt Unsloth vanzelf terug naar CPU-rendering. Op WebKitGTK 2.50.4 leverde het geen meetbare versnelling op (in beide gevallen 8 fps), dus Aan wordt hier niet aanbevolen.",
         oldDriverWarning:
-          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 610 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
+          "NVIDIA-stuurprogramma {version} op X11: Unsloth houdt GPU-rendering uit tot het stuurprogramma versie 590 of nieuwer is. Oudere stuurprogramma's lekken per frame een bestandsdescriptor, en het venster stopt binnen enkele minuten met tekenen.",
         fallbackNote:
           "GPU-rendering is bij het starten gecrasht op dit systeem, dus Unsloth gebruikt CPU-rendering.",
         tryAgain: "GPU opnieuw proberen",
@@ -3110,6 +3125,15 @@ export const nl = {
         runningOn: "llama.cpp draait momenteel op {backend}.",
         hint: "Installeert de llama.cpp-build voor deze backend en behoudt die bij updates. Handig als de automatische keuze crasht of je GPU-stuurprogramma die niet ondersteunt. Alleen backends met een build voor deze machine worden getoond; training wordt niet beïnvloed.",
         autoWith: "Automatisch ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm niet geïnstalleerd",
+          rocmNoAccess: "geen toegang tot de GPU",
+          otherRelease: "vereist een llama.cpp-update",
+          checkFailed: "kon niet worden gecontroleerd",
+          noBuild: "geen build voor deze computer",
+        },
         apply: "Toepassen",
         applying: "Installeren...",
         applyHint:
@@ -4420,6 +4444,54 @@ export const nl = {
       cachedDatasetGoneDescription:
         "De datasetbestanden staan niet meer op dit apparaat, dus de training downloadt ze opnieuw.",
     },
+    gpus: {
+      title: "GPU's",
+      description: "De GPU's van deze computer en hoe training ze gebruikt",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB vrij",
+      pickModel: "Kies een model om te zien hoe training deze GPU's gebruikt.",
+      planning: "Controleren hoe dit model past...",
+      planFailed: "Kan het GPU-plan niet controleren: {message}",
+      perGpu: "(~{gb} GB per GPU)",
+      alternative: "Probeer in plaats daarvan: {alternative}",
+      override: "Modus en GPU's kiezen",
+      overrideHint: "Automatisch kiest de snelste modus die past. Vink een GPU uit om hem vrij te houden voor chat of een andere run.",
+      modeLabel: "Modus",
+      specLabel: "Indeling",
+      unavailable: "Hier niet beschikbaar",
+      runChip: "{mode} · {count} GPU's",
+      rankGpu: "Rank {rank} · GPU {index}",
+      mode: {
+        auto: "Automatisch",
+        single: "Eén GPU",
+        layerSplit: "Verdeling per laag",
+        ddp: "Dataparallel (DDP)",
+        fsdp2: "Gesharde dataparallel (FSDP2)",
+        tp: "Tensorparallel",
+        pp: "Pijplijnparallel",
+        cp: "Contextparallel",
+        ep: "Expertparallel",
+        custom: "Eigen indeling",
+      },
+      summary: {
+        single: "Training op één GPU",
+        layerSplit: "Model wordt laag voor laag over {count} GPU's verdeeld",
+        ddp: "Elke GPU traint een volledige kopie: dataparallel op {count} GPU's",
+        fsdp2: "Gewichten en optimizerstatus geshard over {count} GPU's",
+        tp: "Elke laag wordt over {count} GPU's verdeeld",
+        pp: "Lagen draaien als {count} pijplijnfasen, één per GPU",
+        cp: "Elke reeks wordt over {count} GPU's verdeeld",
+        ep: "MoE-experts worden over {count} GPU's verspreid",
+        custom: "Eigen indeling {spec} op {count} GPU's",
+      },
+      error: {
+        noGpu: "Selecteer minstens één GPU.",
+        singleNeedsOne: "Eén GPU gebruikt precies één GPU. Vink de andere uit.",
+        needsTwo: "Deze modus heeft minstens twee GPU's nodig.",
+        customSpec: "Voer een indeling in, bijvoorbeeld {example}.",
+      },
+    },
     preview: {
       title: "Voorbeeld van run",
       ready: "Gereed",
@@ -4445,8 +4517,10 @@ export const nl = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} totaal",
       noGpu: "Geen GPU gedetecteerd",
       hfToken: "HF-token",
+      gpus: "GPU's",
       saved: "Opgeslagen",
       notSet: "Niet ingesteld",
       files: "Bestanden",
@@ -4816,6 +4890,12 @@ export const nl = {
       epochs: "Epochs",
       useMaxSteps: "Max. stappen gebruiken",
       useEpochs: "Epochs gebruiken",
+      stepGuidancePass: "Ongeveer {steps} stappen is één doorgang over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidanceFloor: "Eén doorgang over je {rows} rijen is maar {passSteps} stappen bij een effectieve batch van {batch}, dus ongeveer {steps} stappen (een paar doorgangen) is een redelijk minimum.",
+      stepGuidanceCap: "Eén doorgang over je {rows} rijen is {passSteps} stappen bij een effectieve batch van {batch}; {steps} stappen trainen op een deel ervan, wat vaak genoeg is voor een eerste run.",
+      stepGuidanceEpoch: "Eén epoch is ongeveer {passSteps} stappen over je {rows} rijen bij een effectieve batch van {batch}.",
+      stepGuidancePacking: "Packing voegt korte rijen samen, dus een doorgang kan minder stappen kosten.",
+      useSuggestedSteps: "{steps} gebruiken",
       maxStepsTooltip: "Het totale aantal optimizerstappen overschrijven.",
       epochsTooltip: "Aantal volledige doorlopen van de dataset.",
       contextLength: "Context",
@@ -5359,6 +5439,7 @@ export const nl = {
     model: {
       label: "Vertaalmodel",
       fast: "Snel",
+      balanced: "Gebalanceerd",
       quality: "Beste kwaliteit",
       chat: "Chatmodel",
       recommended: "Aanbevolen",
@@ -5380,13 +5461,14 @@ export const nl = {
       toneFormal: "Formeel",
       toneCasual: "Informeel",
       auto: "Vertalen tijdens het typen",
-      autoDescription: "Begint zodra het model is geladen. Typen start nooit een download.",
+      autoDescription: "Start automatisch zodra het model is geladen.",
       saveHistory: "Geschiedenis opslaan",
       saveHistoryDescription: "Wordt alleen in deze browser bewaard.",
       showPrompt: "Prompt tonen",
-      showPromptDescription: "Bekijk de exacte instructies die naar het model worden gestuurd.",
+      showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
     },
     history: {
+      notSaved: "Niet opgeslagen in de geschiedenis: de opslag van de browser is vol.",
       title: "Geschiedenis",
       search: "Geschiedenis doorzoeken",
       empty: "Je vertalingen verschijnen hier.",
@@ -5488,6 +5570,11 @@ export const nl = {
       notifyNone: "Uit",
       archiveSuccessful: "Geslaagde uitvoeringen archiveren",
       webSearch: "Zoeken op het web",
+      mcpServers: "MCP-tools toestaan voor deze taak",
+      mcpServersHint: "Elke uitvoering kan tools van aangevinkte servers gebruiken zonder goedkeuring.",
+      mcpServersEmpty: "Er zijn geen servers ingeschakeld. Schakel een MCP-server in de chat in om die hier te gebruiken.",
+      mcpServersLoadError: "Kan MCP-servers niet laden.",
+      mcpServerUnavailable: "{name} (niet beschikbaar)",
       project: "Project",
       projectNone: "Geen",
       model: "Model",
@@ -6421,6 +6508,12 @@ export const nl = {
     maximize: "Venster maximaliseren",
     restore: "Venster herstellen",
     close: "Venster sluiten",
+    mediaCodecs: {
+      title: "Gegenereerde video's worden mogelijk niet afgespeeld",
+      // {command}: an apt command line, never translated.
+      description: "Op dit systeem ontbreken de GStreamer-videodecoders. Installeer ze met: {command}",
+      copy: "Opdracht kopiëren",
+    },
   },
   runtimeUpdate: {
     installAudio: "De audioruntime installeren",

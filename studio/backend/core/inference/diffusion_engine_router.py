@@ -14,6 +14,7 @@ import re
 import platform
 import sys
 import threading
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -685,7 +686,14 @@ def cancel_generation_for_account(account_id: str) -> bool:
     for module_name, attribute in _ENGINE_SINGLETONS:
         module = sys.modules.get(module_name)
         engine = getattr(module, attribute, None) if module is not None else None
-        if engine is None or engine._active_generate_account != account_id:
+        if engine is None:
+            continue
+        # The native engine's card replicas render beside its primary.
+        lanes = getattr(engine, "_replica_backends", None)
+        if engine._active_generate_account != account_id and not any(
+            getattr(lane, "_active_generate_account", None) == account_id
+            for lane in (lanes() if callable(lanes) else ())
+        ):
             continue
         # cancel_generate rechecks the owner under its lock.
         if engine.cancel_generate(expected_account = account_id):
@@ -798,7 +806,10 @@ def _settle_engine_pick_locked() -> None:
     if _pending_engine_pick is None:
         return
     pick, engine, before = _pending_engine_pick
-    current = loaded_state_of(engine)
+    current = getattr(engine, "_state", None)
+    # A dead snapshot means the old state was torn down: any published state is the new load's.
+    if isinstance(before, weakref.ReferenceType):
+        before = before()
     if current is not None and current is not before:
         _engine_pick = pick
         _pending_engine_pick = None
@@ -808,8 +819,17 @@ _NO_SNAPSHOT = object()
 
 
 def loaded_state_of(engine: Any) -> Any:
-    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot."""
-    return getattr(engine, "_state", None)
+    """The engine's published load state (identity only), for ``note_engine_pick``'s before-load snapshot.
+
+    Held weakly: the snapshot spans the next load, and a strong one pinned the old pipeline's VRAM past
+    ``_unload_locked``. A state that takes no weakref (test doubles) is kept as is."""
+    state = getattr(engine, "_state", None)
+    if state is None:
+        return None
+    try:
+        return weakref.ref(state)
+    except TypeError:
+        return state
 
 
 def note_engine_pick(
@@ -1069,6 +1089,9 @@ _CPU_GGUF_DIFFUSERS_PICKED = "diffusers picked"
 _CPU_GGUF_DIFFUSERS_PINNED = "diffusers pinned"
 _CPU_GGUF_NATIVE_DISABLED = "native disabled"
 
+# Native-GGUF image families with no GGUF row in model-catalog.ts: CPU refusal must not point at unlisted GGUFs.
+CPU_NO_CURATED_GGUF_IMAGE_FAMILIES = frozenset({"krea-2"})
+
 _VC_REDIST_URL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
 
@@ -1109,10 +1132,15 @@ def refuse_cpu_dense_image_pick(fam: Optional[DiffusionFamily], model_kind: Opti
         return
     if resolve_diffusion_device_target().backend != "cpu":
         return
+    label = getattr(fam, "label", None) or fam.name
+    head = f"This device has no GPU PyTorch can use, so {label} runs only as a GGUF on the native engine (sd.cpp)."
+    if fam.name in CPU_NO_CURATED_GGUF_IMAGE_FAMILIES:
+        raise ValueError(
+            f"{head} Studio's model list has no {label} GGUF yet, so the picker offers nothing for it here: load a "
+            f"{label} GGUF from the Hub by its repo id, or use a machine with a supported GPU."
+        )
     raise ValueError(
-        "This device has no GPU PyTorch can use, so "
-        f"{getattr(fam, 'label', None) or fam.name} runs only as a GGUF on the native engine (sd.cpp). "
-        "Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
+        f"{head} Pick one of its GGUF files instead of the full-precision or FP8 / INT8 checkpoint."
     )
 
 

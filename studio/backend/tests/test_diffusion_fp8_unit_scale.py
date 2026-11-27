@@ -14,6 +14,8 @@ from torchao.quantization.quantize_.workflows.float8 import float8_tensor as f8t
 from core.inference import diffusion_compile_config as compile_config  # noqa: E402
 from core.inference import diffusion_fp8_unit_scale as us  # noqa: E402
 
+_REAL_PROBE_ROWWISE = us._probe_rowwise
+
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
@@ -23,8 +25,15 @@ def _clean(monkeypatch):
     monkeypatch.delenv(us.MIN_ROWS_ENV, raising = False)
     for k in us._COUNTS:
         us._COUNTS[k] = 0
+    us._ROWWISE.clear()
+    monkeypatch.setattr(us, "_persisted_rowwise", lambda index: None)
+    monkeypatch.setattr(us, "_persist_rowwise", lambda index, verdict: None)
+    # The mocked capability is the whole card: a real GPU without the row-wise kernel (Windows wheels) would otherwise
+    # turn every install into a fallback one. The missing-kernel path has its own tests (test_diffusion_fp8_rowwise_fallback.py).
+    monkeypatch.setattr(us, "_probe_rowwise", lambda index: True)
     original = f8t.addmm_float8_unwrapped_inference
     yield
+    us._ROWWISE.clear()
     us.uninstall()
     compile_config._reset_for_tests()
     f8t.addmm_float8_unwrapped_inference = original
@@ -339,10 +348,15 @@ def test_compiled_graph_after_a_cached_rowwise_one_uses_the_dispatcher(tmp_path)
     import sys
     from pathlib import Path
 
+    if _REAL_PROBE_ROWWISE(torch.cuda.current_device()) is not True:
+        pytest.skip(
+            "the base arm compiles torchao's row-wise fp8 GEMM, which this torch build lacks on this card"
+        )
     backend = Path(__file__).resolve().parents[1]
     env = {
         **os.environ,
         "TORCHINDUCTOR_CACHE_DIR": str(tmp_path / "inductor"),
+        "UNSLOTH_DIFFUSION_PROBE_CACHE": "0",  # no persisted row-wise verdict from this host's earlier runs
         us.UNIT_SCALE_ENV: "1",
         us.MIN_ROWS_ENV: "1",
         "PYTHONPATH": os.pathsep.join(filter(None, [str(backend), os.environ.get("PYTHONPATH")])),
@@ -474,3 +488,19 @@ def test_eager_epilogue_writes_into_the_accumulator_bitwise_as_before(monkeypatc
     if bv is not None:
         want.add_(bv.float())
     assert torch.equal(got, want.to(torch.bfloat16))
+
+
+def test_the_cache_tag_survives_a_failing_compile_config(monkeypatch):
+    # A Windows torch 2.10 wheel lost the tag: an earlier step in the fingerprint raised and the tag read was skipped.
+    import torch.compiler.config as ccfg
+
+    from core.inference import diffusion_compile_cache as cc
+    from core.inference import diffusion_compile_config as dcc
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "unsloth_fp8_unit_scale=256")
+
+    def boom():
+        raise RuntimeError("compile config unavailable on this build")
+
+    monkeypatch.setattr(dcc, "apply", boom)
+    assert cc.environment_fingerprint()["torch_cache_key_tag"] == "unsloth_fp8_unit_scale=256"

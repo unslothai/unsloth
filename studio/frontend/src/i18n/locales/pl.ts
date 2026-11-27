@@ -986,11 +986,18 @@ export const pl = {
   chatMenu: {
     more: "Opcje czatu",
     copy: "Kopiuj",
-    addScheduledTask: "Dodaj zaplanowane zadanie…",
+    addScheduledTask: "Dodaj zaplanowane zadanie",
     compact: "Kompaktuj rozmowę",
     compactEmpty: "Nie ma jeszcze czego kompaktować",
     compactUnsupported:
       "Kompaktowanie wymaga modelu GGUF lub MLX z obsługą narzędzi",
+  },
+  chatFiles: {
+    title: "Pliki w tym czacie",
+    code: "Fragmenty kodu",
+    showInChat: "Pokaż w czacie",
+    download: "Pobierz {name}",
+    saveFailed: "Nie udało się zapisać {name}.",
   },
   welcome: {
     goodToSeeYou: "Miło Cię widzieć",
@@ -1043,6 +1050,9 @@ export const pl = {
       "Wyszukuj i pobieraj z ModelScope. Możesz wrócić w Ustawieniach.",
     useModelScopeFailed: "Nie udało się przełączyć na ModelScope.",
     updateToken: "Zaktualizuj token",
+    linkedModelTitle: "Wczytać {model}?",
+    linkedModelBody: "Link otworzył tę stronę i prosi o pobranie i wczytanie tego modelu.",
+    linkedModelLoad: "Wczytaj",
     hfToken: {
       label: "Token HF",
       saved: "Zapisano",
@@ -1072,6 +1082,7 @@ export const pl = {
     saving: "Zapisywanie...",
     search: "Szukaj",
     shutdown: "Zamknij",
+    technicalDetails: "Szczegóły techniczne",
   },
   shell: {
     helpMenu: {
@@ -2646,6 +2657,10 @@ export const pl = {
         confirmDescriptionChatOnly:
           "Zatrzymuje serwer i ponownie uruchamia instalator. To instalacja Tylko czat, więc instalator uaktualni ją również do pełnej instalacji z PyTorch, łącznie kilka gigabajtów. Czaty i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Napraw teraz",
+        recommendedTorch:
+          "Zalecana naprawa: ta instalacja ma PyTorch {torch}, starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} jest starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50, ale ten sterownik GPU nie obsługuje CUDA 13. Najpierw zaktualizuj sterownik GPU, a potem napraw instalację.",
       },
       resetPreferences: {
         sectionTitle: "Strefa zagrożenia",
@@ -2827,7 +2842,7 @@ export const pl = {
         oldWebkitWarning:
           "WebKitGTK {version} w Wayland: renderowanie na GPU może powodować awarię przy uruchamianiu na kartach NVIDIA ze skalowaniem ułamkowym (błąd WebKit 280210). W takim przypadku Unsloth samoczynnie wróci do renderowania na CPU. Na WebKitGTK 2.50.4 nie dało zmierzalnego przyspieszenia (8 fps w obu przypadkach), więc opcja Włączone nie jest tu zalecana.",
         oldDriverWarning:
-          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 610 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
+          "Sterownik NVIDIA {version} w X11: Unsloth utrzymuje renderowanie na GPU wyłączone, dopóki sterownik nie będzie w wersji 590 lub nowszej. Starsze sterowniki tracą deskryptor pliku na każdą klatkę, a okno przestaje się rysować w ciągu kilku minut.",
         fallbackNote:
           "Renderowanie na GPU spowodowało awarię przy uruchamianiu w tym systemie, więc Unsloth używa renderowania na CPU.",
         tryAgain: "Spróbuj ponownie z GPU",
@@ -3105,6 +3120,15 @@ export const pl = {
         runningOn: "llama.cpp działa obecnie na: {backend}.",
         hint: "Instaluje kompilację llama.cpp dla tego backendu i zachowuje ją przy aktualizacjach. Przydatne, gdy automatyczny wybór powoduje awarie lub sterownik GPU go nie obsługuje. Wyświetlane są tylko backendy z kompilacją dla tego komputera; nie wpływa to na trenowanie.",
         autoWith: "Automatycznie ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm nie jest zainstalowany",
+          rocmNoAccess: "brak dostępu do GPU",
+          otherRelease: "wymaga aktualizacji llama.cpp",
+          checkFailed: "nie udało się sprawdzić",
+          noBuild: "brak kompilacji dla tego komputera",
+        },
         apply: "Zastosuj",
         applying: "Instalowanie...",
         applyHint:
@@ -4421,6 +4445,54 @@ export const pl = {
       cachedDatasetGoneDescription:
         "Pliki zbioru danych zniknęły z tego urządzenia, więc trenowanie pobierze je ponownie.",
     },
+    gpus: {
+      title: "Karty GPU",
+      description: "Karty GPU w tym komputerze i sposób ich użycia w trenowaniu",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB wolne",
+      pickModel: "Wybierz model, aby zobaczyć, jak trenowanie wykorzysta te karty GPU.",
+      planning: "Sprawdzanie, jak mieści się ten model...",
+      planFailed: "Nie udało się sprawdzić planu GPU: {message}",
+      perGpu: "(~{gb} GB na GPU)",
+      alternative: "Spróbuj zamiast tego: {alternative}",
+      override: "Wybierz tryb i karty GPU",
+      overrideHint: "Automatyczny wybiera najszybszy tryb, który się mieści. Odznacz kartę GPU, aby zostawić ją wolną dla czatu lub innego przebiegu.",
+      modeLabel: "Tryb",
+      specLabel: "Układ",
+      unavailable: "Niedostępne tutaj",
+      runChip: "{mode} · GPU: {count}",
+      rankGpu: "Ranga {rank} · GPU {index}",
+      mode: {
+        auto: "Automatyczny",
+        single: "Jedna karta GPU",
+        layerSplit: "Podział warstwami",
+        ddp: "Równoległość danych (DDP)",
+        fsdp2: "Shardowana równoległość danych (FSDP2)",
+        tp: "Równoległość tensorowa",
+        pp: "Równoległość potokowa",
+        cp: "Równoległość kontekstu",
+        ep: "Równoległość ekspertów",
+        custom: "Własny układ",
+      },
+      summary: {
+        single: "Trenowanie na jednej karcie GPU",
+        layerSplit: "Model jest dzielony warstwa po warstwie na karty GPU: {count}",
+        ddp: "Każda karta GPU trenuje pełną kopię: równoległość danych na kartach GPU: {count}",
+        fsdp2: "Wagi i stan optymalizatora shardowane na karty GPU: {count}",
+        tp: "Każda warstwa jest dzielona na karty GPU: {count}",
+        pp: "Warstwy działają jako etapy potoku ({count}), po jednym na kartę GPU",
+        cp: "Każda sekwencja jest dzielona na karty GPU: {count}",
+        ep: "Eksperci MoE są rozłożeni na karty GPU: {count}",
+        custom: "Własny układ {spec} na kartach GPU: {count}",
+      },
+      error: {
+        noGpu: "Wybierz co najmniej jedną kartę GPU.",
+        singleNeedsOne: "Jedna karta GPU używa dokładnie jednej karty. Odznacz pozostałe.",
+        needsTwo: "Ten tryb wymaga co najmniej dwóch kart GPU.",
+        customSpec: "Wpisz układ, na przykład {example}.",
+      },
+    },
     preview: {
       title: "Podgląd przebiegu",
       ready: "Gotowe",
@@ -4446,8 +4518,10 @@ export const pl = {
       lr: "LR",
       hardware: "Sprzęt",
       vram: "VRAM",
+      vramTotal: "Łącznie {size}",
       noGpu: "Nie wykryto GPU",
       hfToken: "Token HF",
+      gpus: "Karty GPU",
       saved: "Zapisano",
       notSet: "Nie ustawiono",
       files: "Pliki",
@@ -4816,6 +4890,12 @@ export const pl = {
       epochs: "Epoki",
       useMaxSteps: "Użyj maks. liczby kroków",
       useEpochs: "Użyj epok",
+      stepGuidancePass: "Około {steps} kroków to jedno przejście przez Twoje {rows} wierszy przy efektywnym batchu {batch}.",
+      stepGuidanceFloor: "Jedno przejście przez Twoje {rows} wierszy to tylko {passSteps} kroków przy efektywnym batchu {batch}, więc około {steps} kroków (kilka przejść) to rozsądne minimum.",
+      stepGuidanceCap: "Jedno przejście przez Twoje {rows} wierszy to {passSteps} kroków przy efektywnym batchu {batch}; {steps} kroków trenuje na części danych, co często wystarcza na pierwszy przebieg.",
+      stepGuidanceEpoch: "Jedna epoka to około {passSteps} kroków przez Twoje {rows} wierszy przy efektywnym batchu {batch}.",
+      stepGuidancePacking: "Packing łączy krótkie wiersze, więc przejście może wymagać mniej kroków.",
+      useSuggestedSteps: "Użyj {steps}",
       maxStepsTooltip: "Zastąp łączną liczbę kroków optymalizatora.",
       epochsTooltip: "Liczba pełnych przejść przez zbiór danych.",
       contextLength: "Kontekst",
@@ -5360,6 +5440,7 @@ export const pl = {
     model: {
       label: "Model tłumaczenia",
       fast: "Szybki",
+      balanced: "Zrównoważony",
       quality: "Najlepsza jakość",
       chat: "Model czatu",
       recommended: "Polecane",
@@ -5381,13 +5462,14 @@ export const pl = {
       toneFormal: "Formalny",
       toneCasual: "Swobodny",
       auto: "Tłumacz podczas pisania",
-      autoDescription: "Zaczyna działać po wczytaniu modelu. Pisanie nigdy nie rozpoczyna pobierania.",
+      autoDescription: "Uruchamia się automatycznie po załadowaniu modelu.",
       saveHistory: "Zapisuj historię",
       saveHistoryDescription: "Przechowywana tylko w tej przeglądarce.",
       showPrompt: "Pokaż prompt",
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
     },
     history: {
+      notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",
       title: "Historia",
       search: "Szukaj w historii",
       empty: "Tutaj pojawią się Twoje tłumaczenia.",
@@ -5488,6 +5570,11 @@ export const pl = {
       notifyNone: "Wyłączone",
       archiveSuccessful: "Archiwizuj udane uruchomienia",
       webSearch: "Wyszukiwanie w sieci",
+      mcpServers: "Zezwól na narzędzia MCP w tym zadaniu",
+      mcpServersHint: "Każde uruchomienie może bez zatwierdzania używać narzędzi z zaznaczonych serwerów.",
+      mcpServersEmpty: "Brak włączonych serwerów. Włącz serwer MCP na czacie, aby użyć go tutaj.",
+      mcpServersLoadError: "Nie udało się wczytać serwerów MCP.",
+      mcpServerUnavailable: "{name} (niedostępny)",
       project: "Projekt",
       projectNone: "Brak",
       model: "Model",
@@ -6416,6 +6503,12 @@ export const pl = {
     maximize: "Maksymalizuj okno",
     restore: "Przywróć okno",
     close: "Zamknij okno",
+    mediaCodecs: {
+      title: "Wygenerowane filmy mogą się nie odtwarzać",
+      // {command}: an apt command line, never translated.
+      description: "W tym systemie brakuje dekoderów wideo GStreamer. Zainstaluj je poleceniem: {command}",
+      copy: "Kopiuj polecenie",
+    },
   },
   runtimeUpdate: {
     installAudio: "Zainstaluj środowisko uruchomieniowe audio",

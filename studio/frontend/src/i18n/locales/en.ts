@@ -686,7 +686,8 @@ export const en = {
   },
   managedEngines: {
     gpu: "GPUs",
-    gpuHelp: "Choose which GPUs to use.",
+    gpuHelp:
+      "Choose which GPUs in this machine to use. Serving one model across machines (for example two DGX Sparks) is not part of this release.",
     parallelism: "Multi-GPU mode",
     tensor: "Tensor parallel",
     pipeline: "Pipeline parallel",
@@ -886,10 +887,17 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
-    addScheduledTask: "Add scheduled task…",
+    addScheduledTask: "Add scheduled task",
     compact: "Compact conversation",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
+  },
+  chatFiles: {
+    title: "Files in this chat",
+    code: "Code snippets",
+    showInChat: "Show in chat",
+    download: "Download {name}",
+    saveFailed: "Could not save {name}.",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
@@ -939,6 +947,9 @@ export const en = {
     useModelScopeHint: "Search and download from ModelScope instead. You can switch back in Settings.",
     useModelScopeFailed: "Couldn't switch to ModelScope.",
     updateToken: "Update token",
+    linkedModelTitle: "Load {model}?",
+    linkedModelBody: "A link opened this page and asked to download and load this model.",
+    linkedModelLoad: "Load",
     hfToken: {
       label: "HF token",
       saved: "Saved",
@@ -967,6 +978,7 @@ export const en = {
     saving: "Saving...",
     search: "Search",
     shutdown: "Shutdown",
+    technicalDetails: "Technical details",
   },
   shell: {
     helpMenu: {
@@ -2442,6 +2454,10 @@ export const en = {
         confirmDescriptionChatOnly:
           "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
+        recommendedTorch:
+          "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch} that RTX 50-series GPUs are supported on.",
+        recommendedDriver:
+          "PyTorch {torch} is older than the managed {managedTorch} that RTX 50-series GPUs are supported on, but this GPU driver does not support CUDA 13. Update the GPU driver first, then repair the installation.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -2620,7 +2636,7 @@ export const en = {
         off: "Off",
         oldWebkitWarning: "WebKitGTK {version} on Wayland: GPU rendering can crash at launch on NVIDIA with fractional scaling (WebKit bug 280210). If it does, Unsloth switches back to CPU rendering on its own. On WebKitGTK 2.50.4 it gave no measured speedup (8 fps either way), so On is not recommended here.",
         oldDriverWarning:
-          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 610 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
+          "NVIDIA driver {version} on X11: Unsloth keeps GPU rendering off until the driver is 590 or newer. Older drivers leak a file descriptor per frame, and the window stops drawing within minutes.",
         fallbackNote: "GPU rendering crashed at launch on this system, so Unsloth is using CPU rendering.",
         tryAgain: "Try GPU again",
         envOverride: "Set by the {name} environment variable. This setting has no effect until it is removed.",
@@ -2886,8 +2902,17 @@ export const en = {
         label: "Compute backend",
         description: "The backend llama.cpp uses to run GGUF models.",
         runningOn: "llama.cpp currently runs on {backend}.",
-        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Backends your GPUs could use but that cannot install yet are greyed out with the reason; training is unaffected.",
         autoWith: "Automatic ({backend})",
+        unavailableOption: "{backend} ({reason})",
+        unavailableHint: "{backend}: {hint}",
+        unavailable: {
+          rocmNotInstalled: "ROCm not installed",
+          rocmNoAccess: "no access to the GPU",
+          otherRelease: "needs a llama.cpp update",
+          checkFailed: "could not check",
+          noBuild: "no build for this machine",
+        },
         apply: "Apply",
         applying: "Installing...",
         applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
@@ -4092,6 +4117,55 @@ export const en = {
       cachedDatasetGoneDescription:
         "The dataset files left this device, so training will download them again.",
     },
+    gpus: {
+      title: "GPUs",
+      description: "The GPUs on this machine and how training uses them",
+      gpuIndex: "GPU {index}",
+      vram: "{gb} GiB",
+      free: "{gb} GiB free",
+      pickModel: "Pick a model to see how training will use these GPUs.",
+      planning: "Checking how this model fits...",
+      planFailed: "Could not check the GPU plan: {message}",
+      perGpu: "(~{gb} GB per GPU)",
+      alternative: "Try instead: {alternative}",
+      override: "Choose mode and GPUs",
+      overrideHint:
+        "Automatic picks the fastest mode that fits. Untick a GPU to leave it free for chat or another run. Training uses the GPUs in this machine only: multi-node training (for example two DGX Sparks) is not part of this release.",
+      modeLabel: "Mode",
+      specLabel: "Layout",
+      unavailable: "Not available here",
+      runChip: "{mode} · {count} GPUs",
+      rankGpu: "Rank {rank} · GPU {index}",
+      mode: {
+        auto: "Automatic",
+        single: "Single GPU",
+        layerSplit: "Layer split",
+        ddp: "Data parallel (DDP)",
+        fsdp2: "Sharded data parallel (FSDP2)",
+        tp: "Tensor parallel",
+        pp: "Pipeline parallel",
+        cp: "Context parallel",
+        ep: "Expert parallel",
+        custom: "Custom layout",
+      },
+      summary: {
+        single: "Training on one GPU",
+        layerSplit: "Model is split layer by layer across {count} GPUs",
+        ddp: "Each GPU trains a full copy: data parallel on {count} GPUs",
+        fsdp2: "Weights and optimizer state sharded across {count} GPUs",
+        tp: "Each layer is split across {count} GPUs",
+        pp: "Layers run as {count} pipeline stages, one per GPU",
+        cp: "Each sequence is split across {count} GPUs",
+        ep: "MoE experts are spread across {count} GPUs",
+        custom: "Custom layout {spec} on {count} GPUs",
+      },
+      error: {
+        noGpu: "Select at least one GPU.",
+        singleNeedsOne: "Single GPU uses exactly one GPU. Untick the others.",
+        needsTwo: "This mode needs at least two GPUs.",
+        customSpec: "Enter a layout, for example {example}.",
+      },
+    },
     preview: {
       title: "Run preview",
       ready: "Ready",
@@ -4117,8 +4191,10 @@ export const en = {
       lr: "LR",
       hardware: "Hardware",
       vram: "VRAM",
+      vramTotal: "{size} total",
       noGpu: "No GPU detected",
       hfToken: "HF token",
+      gpus: "GPUs",
       saved: "Saved",
       notSet: "Not set",
       files: "Files",
@@ -4161,7 +4237,7 @@ export const en = {
       noDatasetsFound: "No datasets found.",
       tokenRejectedTitle: "Hugging Face token rejected",
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseDataset: "Can't use dataset",
       reasonInvalidHubId:
         "Enter a valid Hugging Face dataset ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
@@ -4188,7 +4264,7 @@ export const en = {
       tokenRejectedBody: "Update your token in Settings → General, then retry.",
       tokenRejectedAnonymousBody:
         "Public models are shown without it. Update your token in Settings → General to reach private and gated models.",
-      hubUnreachable: "Couldn't reach Hugging Face",
+      hubUnreachable: "Can't reach Hugging Face",
       cantUseModel: "Can't use model for training",
       reasonTypeMismatch:
         "This model doesn't match the training type selected in the previous step.",
@@ -4468,6 +4544,12 @@ export const en = {
       epochs: "Epochs",
       useMaxSteps: "Use Max Steps",
       useEpochs: "Use Epochs",
+      stepGuidancePass: "About {steps} steps is one pass over your {rows} rows at an effective batch of {batch}.",
+      stepGuidanceFloor: "One pass over your {rows} rows is only {passSteps} steps at an effective batch of {batch}, so about {steps} steps (a few passes) is a sensible minimum.",
+      stepGuidanceCap: "One pass over your {rows} rows is {passSteps} steps at an effective batch of {batch}; {steps} steps trains on part of it, which is often enough for a first run.",
+      stepGuidanceEpoch: "One epoch is about {passSteps} steps over your {rows} rows at an effective batch of {batch}.",
+      stepGuidancePacking: "Packing joins short rows, so a pass can take fewer steps.",
+      useSuggestedSteps: "Use {steps}",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
       contextLength: "Context",
@@ -4991,6 +5073,7 @@ export const en = {
     model: {
       label: "Translation model",
       fast: "Fast",
+      balanced: "Balanced",
       quality: "Best quality",
       chat: "Chat model",
       recommended: "Recommended",
@@ -5013,13 +5096,14 @@ export const en = {
       toneFormal: "Formal",
       toneCasual: "Casual",
       auto: "Translate as you type",
-      autoDescription: "Starts once the model is loaded. Typing never starts a download.",
+      autoDescription: "Starts automatically when model is loaded.",
       saveHistory: "Save history",
       saveHistoryDescription: "Kept in this browser only.",
       showPrompt: "Show prompt",
-      showPromptDescription: "See the exact instructions sent to the model.",
+      showPromptDescription: "See exact instructions sent to the model.",
     },
     history: {
+      notSaved: "Not saved to History: the browser's storage is full.",
       title: "History",
       search: "Search history",
       empty: "Your translations appear here.",
@@ -5129,6 +5213,11 @@ export const en = {
       notifyNone: "Off",
       archiveSuccessful: "Archive successful runs",
       webSearch: "Web search",
+      mcpServers: "Allow MCP tools for this task",
+      mcpServersHint: "Every run can use tools from checked servers without approval.",
+      mcpServersEmpty: "No servers are enabled. Enable an MCP server in chat to use it here.",
+      mcpServersLoadError: "Could not load MCP servers.",
+      mcpServerUnavailable: "{name} (unavailable)",
       project: "Project",
       projectNone: "None",
       model: "Model",
@@ -6084,6 +6173,12 @@ export const en = {
     maximize: "Maximize window",
     restore: "Restore window",
     close: "Close window",
+    mediaCodecs: {
+      title: "Generated videos may not play",
+      // {command}: an apt command line, never translated.
+      description: "This system is missing the GStreamer video decoders. Install them with: {command}",
+      copy: "Copy command",
+    },
   },
   runtimeUpdate: {
     // {component}: llama.cpp, whisper.cpp or audio.cpp; {components}: a list of them.

@@ -108,7 +108,9 @@ class _Registered:
 
                 # A prefetch still in flight reads the registered range.
                 self.stream.synchronize()
-                torch.cuda.cudart().cudaHostUnregister(self.ptr)
+                if int(torch.cuda.cudart().cudaHostUnregister(self.ptr)) != 0:
+                    from core.inference.host_pinning import consume_cuda_error
+                    consume_cuda_error()
             except Exception:  # noqa: BLE001
                 pass
             self.ptr = None

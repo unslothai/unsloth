@@ -8,6 +8,7 @@ import contextlib
 import functools
 import inspect
 import os
+import re
 import sys
 import time
 import types
@@ -43,6 +44,204 @@ def _cudagraph_mode():
     if value == "1":
         return "on"
     return "auto" if value in ("", "auto") else "off"
+
+
+# Inductor's C++ wrapper launches a compiled block's kernels from C++ instead of a Python wrapper:
+# packed / padding-free LoRA rows are launch-bound (Colab L4, Qwen3-4B QLoRA 1.44 -> 1.29 s/step,
+# Llama-3.2-3B LoRA 0.93 -> 0.80), at a one-time C++ build of the block graphs (about a minute on a
+# cold cache, nothing on a warm one), so it starts once a run is long (_CPP_WRAPPER_AFTER).
+# UNSLOTH_BLOCK_CPP_WRAPPER: "1" on at once wherever Inductor allows it, "0" off, unset / "auto" for
+# NVIDIA CUDA on Linux from torch 2.14 with a C++ compiler. A failed C++ build keeps the Python wrapper.
+# torch 2.10 and 2.12 fail the switch-time trial below (a C++ backward asserts "CudaKernelParamCache
+# not populated"), so auto mode starts at 2.14, the oldest build where it passed.
+_CPP_WRAPPER_MIN_TORCH = "2.14.0"
+
+
+_CPP_WRAPPER_AUTO_GPU = re.compile(r"\bL4\b")  # NVIDIA L4, not L40 / L40S
+
+
+def _cpp_wrapper_reason():
+    """Why blocks keep Inductor's Python wrapper (None: they use the C++ one)."""
+    value = os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "auto").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return "UNSLOTH_BLOCK_CPP_WRAPPER=0"
+    try:
+        import torch._inductor.config as inductor_config
+        if not hasattr(inductor_config, "cpp_wrapper"):
+            return "this torch has no Inductor C++ wrapper"
+    except Exception:
+        return "Inductor unavailable"
+    if value == "1":
+        return None
+    if getattr(torch.version, "hip", None) or getattr(torch.version, "cuda", None) is None:
+        return "not an NVIDIA CUDA build"
+    if sys.platform != "linux":
+        return "not Linux"
+    from packaging.version import Version
+
+    if Version(torch.__version__.split("+")[0]) < Version(_CPP_WRAPPER_MIN_TORCH):
+        return f"torch < {_CPP_WRAPPER_MIN_TORCH}"
+    try:
+        if not torch.cuda.is_available():
+            return "no CUDA device"
+    except Exception:
+        return "no CUDA device"
+    # Inductor builds with $CXX, else g++ on Linux; asking Inductor itself may try to install one.
+    import shutil
+
+    if shutil.which(os.environ.get("CXX") or "g++") is None:
+        return "no C++ compiler"
+    # Auto mode only where it was measured to beat A/A + 5% s/step: Colab L4 -11.6% (Qwen3-4B QLoRA),
+    # -14.3% (Llama-3.2-3B LoRA). G4 (RTX PRO 6000) gave -4.3% / -6.3%, a tie, so other GPUs keep the
+    # Python wrapper unless UNSLOTH_BLOCK_CPP_WRAPPER=1.
+    try:
+        name = torch.cuda.get_device_name()
+    except Exception:
+        name = ""
+    if not _CPP_WRAPPER_AUTO_GPU.search(name or ""):
+        return (
+            f"auto mode is only on for GPUs measured to gain (NVIDIA L4), not {name or 'this GPU'}"
+        )
+    return None
+
+
+_CPP_WRAPPER_REASON = _cpp_wrapper_reason()
+# Calls per layer of a block class (about two per micro-batch under gradient checkpointing) before its
+# C++ region is built; UNSLOTH_BLOCK_CPP_WRAPPER=1 builds it at once.
+try:
+    _CPP_WRAPPER_AFTER = max(0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_AFTER", "2000")))
+except ValueError:
+    _CPP_WRAPPER_AFTER = 2000
+if os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER", "").strip() == "1":
+    _CPP_WRAPPER_AFTER = 0
+# Auto mode builds the C++ region only if the run has enough optimizer steps left to win its cold build
+# back: L4 measured +55-70 s once (Qwen3-4B; +12 s Llama-3.2-3B) against 0.135-0.17 s saved per step,
+# so 70 s / 0.10 s = 700 steps is the conservative bar. A run whose steps left are unknown (no
+# Trainer.train in progress) keeps the Python wrapper.
+try:
+    _CPP_WRAPPER_MIN_REMAINING = max(
+        0, int(os.environ.get("UNSLOTH_BLOCK_CPP_WRAPPER_MIN_REMAINING", "700"))
+    )
+except ValueError:
+    _CPP_WRAPPER_MIN_REMAINING = 700
+
+
+def _cpp_wrapper_steps_left():
+    """Optimizer steps left in the Trainer.train in progress, else None."""
+    try:
+        from ._gc_train_scope import active_trainer_state
+        state = active_trainer_state()
+    except Exception:
+        return None
+    max_steps = getattr(state, "max_steps", 0) or 0
+    if max_steps <= 0:
+        return None
+    return max(0, max_steps - (getattr(state, "global_step", 0) or 0))
+
+
+# regions: block classes given a C++ wrapper region; fallbacks: classes whose C++ build failed.
+CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
+# Non-empty once the C++ wrapper probe failed: no block of the process uses the C++ wrapper after that.
+_CPP_WRAPPER_BROKEN = []
+_CPP_WRAPPER_PROBED = {}
+
+
+def _install_cpp_wrapper_param_fix():
+    """Inductor's lazy C++ wrapper launch (torch >= 2.14) runs each kernel once and then reads its cubin
+    and launch params from CudaKernelParamCache, keyed by kernel name only. Names repeat across graphs
+    (triton_poi_fused_..._0), and a kernel object that already ran (shared through Inductor's in-memory
+    kernel source cache) takes run()'s cached-launcher fast path and saves nothing, so the lookup could
+    return another graph's same-named kernel: wrong kernel, "CUDA driver error: invalid argument", a
+    segfault or NaN losses (packed rows, then padded rows, in one process). Each lookup now follows a
+    save by that kernel object. True once installed; False when this torch has no lazy launch."""
+    try:
+        from torch._inductor.runtime import triton_lazy_compile as lazy
+        from torch._inductor.codecache import CudaKernelParamCache
+    except Exception:
+        return False
+    original = getattr(lazy, "run_triton_kernel_with_autotune", None)
+    cache = getattr(CudaKernelParamCache, "cache", None)
+    if original is None or not isinstance(cache, dict):
+        return False
+    if getattr(original, "_unsloth_saves_params", False):
+        return True
+
+    def run_triton_kernel_with_autotune(pending_kernels, kernel_name, stream, args):
+        kernel = pending_kernels.get(kernel_name) if isinstance(pending_kernels, dict) else None
+        if (
+            kernel is not None
+            and not hasattr(kernel, "launchers")
+            and callable(getattr(kernel, "result", None))
+        ):
+            kernel = kernel.result()
+        launchers = getattr(kernel, "launchers", None)
+        # Only when run() will save (every launcher stores its cubin), else the lookup would find nothing.
+        if launchers is not None and all(getattr(l, "store_cubin", False) for l in launchers):
+            if hasattr(kernel, "_cached_launcher"):
+                kernel._cached_launcher = (
+                    None  # run() takes the path that saves this kernel's params
+                )
+            cache.pop(kernel_name, None)
+        return original(pending_kernels, kernel_name, stream, args)
+
+    run_triton_kernel_with_autotune._unsloth_saves_params = True
+    lazy.run_triton_kernel_with_autotune = run_triton_kernel_with_autotune
+    return True
+
+
+def _cpp_wrapper_probe_fn(x, w):
+    return (torch.nn.functional.silu(x @ w) * x).float().square().sum()
+
+
+def _cpp_wrapper_probe(device):
+    """None if Inductor's C++ wrapper builds and runs a small forward and its backward on `device`
+    (two sizes, the second through the dynamic graph), else why not. Once per device per process:
+    AOTAutograd builds a block's backward lazily, at loss.backward(), where a missing or broken
+    toolchain could not fall back any more. Local tensors only (no RNG, no model state), its own
+    saved-tensor hooks so an outer checkpoint's pack hooks do not apply."""
+    key = (device.type, device.index)
+    if _CPP_WRAPPER_BROKEN:
+        return _CPP_WRAPPER_BROKEN[0]
+    if key not in _CPP_WRAPPER_PROBED:
+        why = None
+        if not _install_cpp_wrapper_param_fix():
+            why = "this torch has no lazy C++ wrapper kernel launch"
+            _CPP_WRAPPER_PROBED[key] = why
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+            return why
+        try:
+            fn = torch.compile(
+                _cpp_wrapper_probe_fn, fullgraph = True, dynamic = True, options = {"cpp_wrapper": True}
+            )
+            with (
+                torch.inference_mode(False),
+                torch.enable_grad(),
+                torch.autograd.graph.saved_tensors_hooks(lambda t: t, lambda t: t),
+            ):
+                for rows in (16, 24):
+                    base = torch.arange(rows * 32, device = device, dtype = torch.float32)
+                    x = (base.view(rows, 32).sin() * 0.1).requires_grad_()
+                    w = (
+                        torch.arange(32 * 32, device = device, dtype = torch.float32).view(32, 32).cos()
+                        * 0.1
+                    )
+                    w.requires_grad_()
+                    gx, gw = torch.autograd.grad(fn(x, w), (x, w))
+                    if not (torch.isfinite(gx).all() and torch.isfinite(gw).all()):
+                        why = "non-finite probe gradients"
+                        break
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as e:
+            if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
+                return "out of memory while building"  # not a broken toolchain: not cached
+            why = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
+        _CPP_WRAPPER_PROBED[key] = why
+        if why is not None:
+            _CPP_WRAPPER_BROKEN.append(why)
+            CPP_WRAPPER_STATS["fallbacks"] += 1
+    return _CPP_WRAPPER_PROBED[key]
 
 
 # Per-block CUDA graphs only pay off for static shapes on a launch-bound step.
@@ -570,14 +769,36 @@ def _flex_block_mask_call(
     return False
 
 
-# Auto: graphs start when launch time exceeds GPU time by _AUTO_RATIO and all calls had one shape.
+# Auto: graphs start when launch time is at least the ratio threshold x GPU time and all calls had one shape.
+# The ratio is measured on forward block calls only; the checkpoint recompute and backward launch more
+# per GPU millisecond, so on Ampere and newer a forward ratio near 1 already gains a lot: A100 Qwen3-4B
+# QLoRA 2x1024 measured 1.14-1.51 across fresh processes and ran 310 ms/step with graphs vs 390 ms
+# without, so a 1.2 threshold split one run setup into two speeds by host jitter. A100 ratios 0.55-0.92
+# gained nothing (-1.2% to +1.0%). On T4 (sm75) graphs were 4-7% slower at ratios 0.66-1.11 (Qwen3-0.6B
+# LoRA 2x1024), so below sm80 the threshold stays 1.2.
 _AUTO_WARMUP_PASSES = 2
 _AUTO_MEASURE_CALLS = 4
 _AUTO_SLEEP_CYCLES = 20_000_000  # ~10-15 ms: the block's launches queue behind it
+_AUTO_RATIO_SM80 = 1.0
+_AUTO_RATIO_OLDER = 1.2
+# UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO overrides the per-device default on every device.
 try:
-    _AUTO_RATIO = float(os.environ.get("UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO", "1.2"))
-except ValueError:
-    _AUTO_RATIO = 1.2
+    _AUTO_RATIO = float(os.environ["UNSLOTH_BLOCK_CUDAGRAPHS_AUTO_RATIO"])
+except (KeyError, ValueError):
+    _AUTO_RATIO = None
+
+
+def _auto_ratio(device):
+    """The launch / GPU ratio at or above which auto mode turns graphs on for blocks on `device`."""
+    if _AUTO_RATIO is not None:
+        return _AUTO_RATIO
+    try:
+        major = torch.cuda.get_device_capability(device)[0]
+    except Exception:
+        return _AUTO_RATIO_OLDER
+    return _AUTO_RATIO_SM80 if major >= 8 else _AUTO_RATIO_OLDER
+
+
 # 2.13+: the graphed region gets its own recompile bucket (isolate_recompiles) instead of sharing
 # the stock region's cache limit. Before 2.11 FastLanguageModel LoRA blocks are not compiled at all.
 _AUTO_MIN_TORCH = "2.13"
@@ -1147,7 +1368,7 @@ def _auto_decide(auto, device):
     ratio = host / max(gpu, 1e-9)
     detail = f"block launch {host * 1e3 / len(auto['host']):.2f} ms vs GPU {gpu * 1e3 / len(auto['gpu']):.2f} ms"
     auto["ratio"] = ratio
-    if ratio < _AUTO_RATIO:
+    if ratio < _auto_ratio(device):
         _auto_off(auto, f"GPU-bound: {detail}")
         return
     try:
@@ -1708,11 +1929,69 @@ def _route_sm_count(modules = None):
         module.get_multiprocessor_count = get_multiprocessor_count
 
 
+def _gdn_setup_pending(layer):
+    """The process-wide self-check has not run yet, or this GatedDeltaNet instance is not routed."""
+    gdn = getattr(layer, "linear_attn", None)
+    if gdn is None:
+        return False
+    return _GDN_OP[0] is None or (
+        bool(_GDN_OP[0]) and not gdn.__dict__.get("_unsloth_gdn_routed", False)
+    )
+
+
+def _route_gdn_instance(gdn):
+    """Route one GatedDeltaNet instance like the first one: transformers < 5.23 copies the chunk and
+    conv kernels into the instance at __init__, so a model built before the first routing keeps the
+    raw conv and one built after keeps the raw chunk kernel; each load then trains a different graph."""
+    from ._gdn_op import _causal_depthwise_conv
+
+    def _raw_fla(fn):
+        return (
+            callable(fn)
+            and not getattr(fn, "_unsloth_block_adapter", False)
+            and str(getattr(fn, "__module__", "")).endswith("fla.ops.gated_delta_rule.chunk")
+        )
+
+    scan = gdn.__dict__.get("chunk_gated_delta_rule")
+    if callable(scan) and not getattr(scan, "_unsloth_block_adapter", False):
+        _route_fla_kernel()
+        scan = gdn.__dict__.get("chunk_gated_delta_rule")
+        # Packing's scan wrapper (@wraps copies fla's __module__) injects cu_seqlens, so it stays
+        # outermost; the kernel it holds as its `_orig` default is routed under it instead.
+        packed = (
+            gdn.__dict__.get("_unsloth_varlen_wrapped", False)
+            and "_unsloth_varlen_orig_scan" in gdn.__dict__
+            and scan is not gdn.__dict__["_unsloth_varlen_orig_scan"]
+        )
+        if packed:
+            defaults = getattr(scan, "__kwdefaults__", None)
+            if isinstance(defaults, dict) and _raw_fla(defaults.get("_orig")):
+                defaults["_orig"] = _gdn_chunk_adapter(defaults["_orig"])
+        # The walk finds callers of the kernel fla's module holds now; an earlier walk replaced it there.
+        elif _raw_fla(scan):
+            gdn.__dict__["chunk_gated_delta_rule"] = _gdn_chunk_adapter(scan)
+    _route_causal_conv(gdn)
+    conv = gdn.__dict__.get("causal_conv1d_fn")
+    # Packing's per-instance varlen wrapper must stay outermost: it injects seq_idx the adapter reads.
+    if (
+        callable(conv)
+        and not getattr(conv, "_unsloth_block_adapter", False)
+        and not gdn.__dict__.get("_unsloth_varlen_wrapped", False)
+    ):
+        gdn.__dict__["causal_conv1d_fn"] = _causal_conv1d_adapter(conv, _causal_depthwise_conv)
+    gdn.__dict__["_unsloth_gdn_routed"] = True
+
+
 def _prepare_gdn(layer, hidden_states):
     """Self-check fla's opaque op on this layer's shapes, then point the GatedDeltaNet forward's
-    chunk kernel at the adapter. Runs eagerly, before the first trace."""
+    chunk kernel at the adapter. Runs eagerly, before the first trace; later instances (a second
+    load in the same process) are routed the same way."""
     gdn = getattr(layer, "linear_attn", None)
-    if gdn is None or _GDN_OP[0] is not None:
+    if gdn is None:
+        return
+    if _GDN_OP[0] is not None:
+        if _GDN_OP[0] and not gdn.__dict__.get("_unsloth_gdn_routed", False):
+            _route_gdn_instance(gdn)
         return
     _GDN_OP[0] = False
     try:
@@ -1747,7 +2026,10 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_VARLEN[0] = varlen_ok()
         _GDN_OP[0] = _route_fla_kernel() > 0
         if _GDN_OP[0]:
-            _route_causal_conv(gdn)
+            _route_gdn_instance(gdn)
+    except torch.OutOfMemoryError:
+        _GDN_OP[0] = None
+        raise
     except Exception:
         _GDN_OP[0] = False
 
@@ -1949,6 +2231,8 @@ def _band_kernel_ready(layer, hidden_states):
     if cached is not None and cached[0] == key:
         return cached[1]
     ready = _band_kernel_check(layer, hidden_states.device)
+    if ready is None:
+        return False  # transient (an OOM): not served this call, checked again on the next one
     layer.__dict__["_unsloth_band_kernel_ready"] = (key, ready)
     return ready
 
@@ -1967,7 +2251,15 @@ def _band_kernel_check(layer, device):
         if not lh._enabled() or not lh._measured_faster_on(device):
             return False
         dtypes = [torch.float16] + ([torch.bfloat16] if torch.cuda.is_bf16_supported() else [])
-        return any([bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes])
+        verdicts = [bool(lh._self_check(device, dtype, head_dim)) for dtype in dtypes]
+        # The self check returns False without caching a verdict after an OOM: no verdict for the layer either.
+        if not any(verdicts) and any(
+            (str(device), dtype, head_dim) not in lh._SELF_CHECK for dtype in dtypes
+        ):
+            return None
+        return any(verdicts)
+    except torch.OutOfMemoryError:
+        return None
     except Exception:
         return False
 
@@ -2095,17 +2387,19 @@ def _materialise_mask(layout, causal, batch, seq_len, device):
             return mask
     full = (batch, seq_len) if dim == 2 else (batch, heads, seq_len, seq_len)
     stored = tuple(1 if i in broadcast else size for i, size in enumerate(full))
-    if dim == 4 and causal:
+    if dim == 4 and causal and (2 in broadcast or 3 in broadcast):
         # A causal mask needs both token dims stored; a broadcast one (padding-only layout) keeps None.
-        if 2 in broadcast or 3 in broadcast:
-            return None
-        # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
-        mask = torch.empty(stored, dtype = torch.bool, device = device)
-        mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
-    else:
-        mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
-    if view:
-        mask = mask.expand(full)
+        return None
+    # Not an inference tensor: training reuses the cache and autograd may save it (hybrid padding multiply).
+    with torch.inference_mode(False), torch.no_grad():
+        if dim == 4 and causal:
+            # A fresh tensor in the stored shape (contiguous() keeps a (1, 1, L, L) expand as a view of the 2D base).
+            mask = torch.empty(stored, dtype = torch.bool, device = device)
+            mask.copy_(torch.ones((seq_len, seq_len), dtype = torch.bool, device = device).tril_())
+        else:
+            mask = torch.ones(stored, dtype = dtype if dim == 2 else torch.bool, device = device)
+        if view:
+            mask = mask.expand(full)
     setattr(mask, _MATERIALISED_ATTR, True)
     keep = mask.untyped_storage().nbytes() <= _MATERIALISED_KEEP_BYTES
     _MATERIALISED[0] = (key, mask if keep else weakref.ref(mask), keep)
@@ -2537,6 +2831,96 @@ def _wrap(
     else:
         plain = compiled
     graphed_box = [compiled if graphs else None]
+    # The C++ wrapper copy of the graphs-off region, used once auto mode has stopped timing launches
+    # (its launch / GPU ratio thresholds were measured on the Python wrapper) and never for CUDA graphs.
+    # Built once this class's layers average _CPP_WRAPPER_AFTER calls each: its C++ build costs about a
+    # minute once, which a short run would not win back.
+    cpp = {
+        "on": _CPP_WRAPPER_REASON is None and not graphs,
+        "region": None,
+        "layers": set(),
+        "calls": 0,
+    }
+
+    def cpp_wanted(kwargs):
+        # Packed rows never take CUDA graphs, so they need not wait for auto mode's verdict. Never inside
+        # a non-reentrant checkpoint: a switch between its forward and recompute would change what the
+        # two save.
+        return (
+            cpp["on"]
+            and not _CPP_WRAPPER_BROKEN
+            and not _in_nonreentrant_checkpoint()
+            and (not auto or _CUDAGRAPH_STATE["auto"]["phase"] == "off" or _packed_kwargs(kwargs))
+        )
+
+    def cpp_in_use(self, hidden_states, args, kwargs, mode):
+        """Counts this class's calls per layer and builds the C++ region once past the threshold."""
+        if not cpp_wanted(kwargs):
+            return False
+        if cpp["region"] is None:
+            # Per layer seen, so a second model of the same class (or a deleted first one) still counts.
+            cpp["layers"].add(id(self))
+            cpp["calls"] += 1
+            if cpp["calls"] <= _CPP_WRAPPER_AFTER * len(cpp["layers"]):
+                return False
+            if _CPP_WRAPPER_AFTER > 0:  # auto: only a run that wins the cold build back
+                left = _cpp_wrapper_steps_left()
+                if left is None or left < _CPP_WRAPPER_MIN_REMAINING:
+                    # Not latched: a later, longer Trainer.train in this process can still switch.
+                    _rank0_note(
+                        "cpp_wrapper_short_run",
+                        "Unsloth: keeping Inductor's Python wrapper for the decoder blocks "
+                        f"({'steps left unknown' if left is None else f'{left} steps left'}; the C++ "
+                        f"wrapper's one-time build pays off from about {_CPP_WRAPPER_MIN_REMAINING}).",
+                    )
+                    return False
+            why = _cpp_wrapper_probe(hidden_states.device)
+            if why is not None:
+                cpp["on"] = False
+                _rank0_note(
+                    "cpp_wrapper_probe",
+                    f"Unsloth: Inductor's C++ wrapper failed a forward + backward probe ({why}); "
+                    "every block keeps the Python wrapper.",
+                )
+                return False
+            CPP_WRAPPER_STATS["regions"] += 1
+            if _CPP_WRAPPER_AFTER > 0:
+                _rank0_note(
+                    "cpp_wrapper",
+                    "Unsloth: compiling the decoder blocks with Inductor's C++ wrapper (once, about a "
+                    "minute) for faster steps. UNSLOTH_BLOCK_CPP_WRAPPER=0 keeps the Python wrapper.",
+                )
+            cpp["region"] = torch.compile(
+                original,
+                fullgraph = False,
+                dynamic = None,
+                options = {**compile_options, "cpp_wrapper": True},
+                **isolate,
+            )
+        return True
+
+    def fast(kwargs):
+        return cpp["region"] if cpp["region"] is not None and cpp_wanted(kwargs) else compiled
+
+    def python_wrapper_fallback(e):
+        """A failed C++ build (compiler, headers, an op it cannot wrap): this class's blocks go back to
+        the Python wrapper region. False when the C++ wrapper was not in use."""
+        if (
+            cpp["region"] is None
+            or not cpp["on"]
+            or not _backend_compile_failed(e)
+            # An OOM wrapped by the compiler is not a failed C++ build.
+            or isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError)
+        ):
+            return False
+        cpp["on"] = False
+        CPP_WRAPPER_STATS["fallbacks"] += 1
+        first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
+        print(
+            f"Unsloth: {cls.__name__} block compile with Inductor's C++ wrapper failed ({first}); "
+            "compiling it with the Python wrapper."
+        )
+        return True
 
     def graphed():
         if graphed_box[0] is None:
@@ -2630,7 +3014,8 @@ def _wrap(
                 ):
                     if _CUDAGRAPH_STATE["off"] is not None and _CUDAGRAPH_STATE["release"] is None:
                         _release_graph_pool()
-                    return plain(self, hidden_states, *args, **kwargs)
+                    region = fast(kwargs) if plain is compiled else plain
+                    return region(self, hidden_states, *args, **kwargs)
                 if (
                     ddp_run
                     and _CUDAGRAPH_STATE["off"] is not None
@@ -2658,7 +3043,7 @@ def _wrap(
                             "Unsloth: block CUDA graph compile failed; blocks run without CUDA graphs.",
                         )
                         return plain(self, hidden_states, *args, **kwargs)
-                return compiled(self, hidden_states, *args, **kwargs)
+                return fast(kwargs)(self, hidden_states, *args, **kwargs)
         finally:
             inline_flag[0] = previous
             _IN_BLOCK[0] = _OFF
@@ -2756,7 +3141,7 @@ def _wrap(
             return _inline(self, hidden_states, args, kwargs, mode)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
             _experts_outside(self)
-        if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
+        if _gdn_setup_pending(self):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             kwargs = _normalise_mask(self, hidden_states, kwargs)
@@ -2814,24 +3199,37 @@ def _wrap(
                 return original(self, hidden_states, *args, **kwargs)
             checked = self.__dict__.get("_unsloth_block_checked", 0)
         skip_down = bit == 4
-        if checked & bit:
+        # The C++ wrapper region is built after the first calls (auto mode times launches first):
+        # its first call per grad mode also runs with errors raised, so a failed build falls back.
+        cpp_bit = bit if cpp_in_use(self, hidden_states, args, kwargs, mode) else 0
+        cpp_checked = self.__dict__.get("_unsloth_block_cpp_checked", 0)
+        if checked & bit and cpp_checked & cpp_bit == cpp_bit:
             return run(self, hidden_states, args, kwargs, mode, skip_down, trial)
         while True:
             try:
                 with _strict_dynamo():
                     out = run(self, hidden_states, args, kwargs, mode, skip_down, trial)
                 self.__dict__["_unsloth_block_checked"] = checked | bit
+                self.__dict__["_unsloth_block_cpp_checked"] = cpp_checked | cpp_bit
                 return out
             except torch.OutOfMemoryError:
                 raise
             except Exception as e:
                 # Non-reentrant checkpoint ends a recompute by raising through the forward: control
                 # flow, not a compile failure (demoting on it left the stock forward in every block).
-                if type(e).__name__ == "_StopRecomputationError":
+                # CheckpointError (forward / recompute mismatch) too: demoting would hide it.
+                if type(e).__name__ in ("_StopRecomputationError", "CheckpointError"):
+                    raise
+                # An OOM while Inductor compiles or autotunes is transient, not a compile failure.
+                if _backend_compile_failed(e) and isinstance(
+                    getattr(e, "inner_exception", None), torch.OutOfMemoryError
+                ):
                     raise
                 if os.environ.get("UNSLOTH_BLOCK_COMPILE_DEBUG") == "1":
                     import traceback
                     traceback.print_exc()
+                if python_wrapper_fallback(e):
+                    continue
                 mode = _SPLIT if mode == _FULL else _OFF
                 self.__dict__["_unsloth_block_mode"] = mode
                 kind = _layer_kind(self)
@@ -3043,7 +3441,7 @@ def _eager_setup_pending(layer):
     return (
         not layer.__dict__.get("_unsloth_block_moe_done", False)
         and layer.__dict__.get("_unsloth_block_moe_may_move", False)
-    ) or (_GDN_OP[0] is None and hasattr(layer, "linear_attn"))
+    ) or _gdn_setup_pending(layer)
 
 
 @torch.compiler.disable
@@ -3051,7 +3449,7 @@ def _eager_setup(layer, hidden_states):
     """Eager first-call setup under an enclosing compile (expert move, GDN self-check): one break, once."""
     if not layer.__dict__.get("_unsloth_block_moe_done", False):
         _experts_outside(layer)
-    if _GDN_OP[0] is None and hasattr(layer, "linear_attn"):
+    if _gdn_setup_pending(layer):
         _prepare_gdn(layer, hidden_states)
 
 

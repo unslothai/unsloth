@@ -73,7 +73,6 @@ def test_reused_buffer_does_not_leak_an_earlier_generation(dtype, bsz, bad):
     v[:, :, 4, :] = bad
     G.alloc_decode_buffers(attn, k, v, *args)
     first = attn.paged_attention.data_ptr()
-    # A new, short and finite generation reuses the same buffer.
     G.alloc_decode_buffers(attn, k[:, :, :2].nan_to_num(0.0), v[:, :, :2], *args)
     assert attn.paged_attention.data_ptr() == first
 

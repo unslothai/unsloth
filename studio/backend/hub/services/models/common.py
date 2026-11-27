@@ -384,6 +384,11 @@ def _base_transformers_can_chat(
     adapter_path: Optional[Path] = None,
 ) -> Optional[bool]:
     """Classify an exact local or cached base without a network lookup."""
+    from utils.datasets.remote_images import is_network_share
+
+    # A cached adapter's publisher picked this base; probing a share signs Windows in to its host (NTLM).
+    if is_network_share(base_model):
+        return None
     try:
         local_path = Path(base_model).expanduser()
         if local_path.is_dir():
@@ -795,8 +800,13 @@ def _base_model_looks_local(value: str) -> bool:
 def _base_model_source(value: Optional[str], adapter_dir: Path) -> Optional[str]:
     if not value:
         return None
+    from utils.datasets.remote_images import is_network_share
+
     candidates = [value, value.replace("\\", "/")]
     for candidate in candidates:
+        # The adapter's publisher picked this value; probing a share signs Windows in to its host (NTLM).
+        if is_network_share(candidate):
+            continue
         try:
             expanded = Path(os.path.expanduser(candidate))
             if expanded.exists() or (adapter_dir / candidate).exists():

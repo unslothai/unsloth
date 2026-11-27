@@ -7652,18 +7652,24 @@ def _mcp_match_exchange(names = ()):
 
 
 @pytest.mark.parametrize(
-    "tool_choice, injected",
+    "tool_choice, injected, docs",
     [
-        (None, True),
-        ("none", False),
-        ({"type": "function", "function": {"name": "render_html"}}, False),
+        (None, True, False),
+        (None, True, True),
+        ("none", False, False),
+        ({"type": "function", "function": {"name": "render_html"}}, False, False),
     ],
 )
-def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected):
+def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choice, injected, docs):
+    from core.inference import tools
+
     stream = [_sse({"content": "done"}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [stream])
     exchange = _mcp_match_exchange()
     user = {"role": "user", "content": "move it"}
+    # Docs on with no attachment: the card waits for a fit that never compacts.
+    monkeypatch.setattr(tools, "build_rag_autoinject", lambda *_a, **_kw: None)
+    backend._effective_context_length = 100_000
 
     events = _run_tool_loop(
         backend,
@@ -7671,6 +7677,8 @@ def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choi
         _render_html_tools(),
         mcp_match_exchange = exchange,
         tool_choice = tool_choice,
+        context_overflow = "truncate_oldest",
+        rag_scope = {"thread_id": "t1", "context_length": 100_000} if docs else None,
     )
 
     sent = payloads[0]["messages"]
@@ -7685,3 +7693,274 @@ def test_mcp_matches_arrive_as_a_search_after_the_message(monkeypatch, tool_choi
     else:
         assert sent[-1]["role"] == "user"
         assert not any(e.get("type") == "tool_end" for e in events)
+
+
+def test_a_python_call_runs_with_the_analysis_its_classification_made(monkeypatch):
+    """Auto mode screens the code once: the run gets the handoff the approval check filled."""
+    from core.inference import tools as tools_mod
+
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_py")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    seen: list = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **kwargs: seen.append(kwargs.get("python_analyses")) or "OK",
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "auto",
+    )
+
+    assert len(seen) == 1
+    assert isinstance(seen[0], tools_mod.PythonCallAnalyses)
+    assert list(seen[0]._by_source) == ["print(1)"]
+
+
+@pytest.mark.parametrize(
+    "policy, tool_choice, whole_doc, sticky, reserve, audio, manual, complete, expected_passage",
+    [
+        ("checkpoint", None, True, 0, 0, False, False, "Complete document", "Complete document"),
+        (
+            "checkpoint",
+            "required",
+            True,
+            0,
+            0,
+            False,
+            False,
+            "Complete document",
+            "Complete document",
+        ),
+        (
+            "checkpoint",
+            {"type": "function", "function": {"name": "search_knowledge_base"}},
+            True,
+            0,
+            0,
+            False,
+            False,
+            "Complete document",
+            "Complete document",
+        ),
+        ("rolling", None, True, 0, 0, False, False, "Complete document", "Complete document"),
+        ("rolling", None, True, 0, 0, False, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 2, 0, False, False, "Complete document", "Complete document"),
+        ("checkpoint", None, True, 2, 0, False, False, "Medium document " * 45, "Partial passage"),
+        ("rolling", None, True, 2, 0, False, False, "Medium document " * 45, "Partial passage"),
+        (
+            "rolling",
+            None,
+            True,
+            2,
+            0,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        ("rolling", None, True, 2, 300, False, False, "Medium document " * 25, "Partial passage"),
+        (
+            "rolling",
+            None,
+            True,
+            2,
+            100,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        (
+            "checkpoint",
+            None,
+            True,
+            0,
+            300,
+            False,
+            False,
+            "Medium document " * 25,
+            "Medium document " * 25,
+        ),
+        ("checkpoint", None, True, 0, 0, False, False, "Large document " * 50, "Partial passage"),
+        ("checkpoint", None, True, 0, 0, True, False, "Complete document", "Partial passage"),
+        ("checkpoint", None, True, 2, 0, False, True, "Medium document " * 25, "Partial passage"),
+        (
+            "checkpoint",
+            None,
+            True,
+            2,
+            0,
+            False,
+            True,
+            "Small whole document",
+            "Small whole document",
+        ),
+        (
+            "checkpoint",
+            None,
+            True,
+            2,
+            0,
+            False,
+            True,
+            "Small whole document " * 2,
+            "Partial passage",
+        ),
+        ("checkpoint", None, False, 0, 0, False, False, "", None),
+    ],
+)
+def test_first_context_fit_retries_whole_document_in_prompt_order(
+    monkeypatch,
+    policy,
+    tool_choice,
+    whole_doc,
+    sticky,
+    reserve,
+    audio,
+    manual,
+    complete,
+    expected_passage,
+):
+    from core.inference import tools
+
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
+    backend._effective_context_length = 1000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_kw: sum(len(str(m.get("content", ""))) for m in messages),
+    )
+    monkeypatch.setattr(llama_cpp, "_can_reset_epoch", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        llama_cpp, "_keeps_compaction_boundary", lambda thread_id: thread_id == "t1"
+    )
+    recall_budgets = []
+    from core.inference import compaction_transcript
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(compaction_transcript, "path_for", lambda _thread_id: "/chat/transcript.md")
+    link = " Transcript at /chat/transcript.md."
+
+    def link_in_block(messages, _path):
+        system = messages[0]
+        if system["role"] != "system" or system["content"].endswith(link):
+            return messages
+        return [{**system, "content": system["content"] + link}, *messages[1:]]
+
+    monkeypatch.setattr(compaction_transcript, "link_in_block", link_in_block)
+
+    def archive_and_recall(conversation, *_a, recall_budget_tokens, **_kw):
+        recall_budgets.append(recall_budget_tokens)
+        if _kw["thread_id"]:
+            conversation = compaction_transcript.link_in_block(conversation, "/chat/transcript.md")
+        return dict(conversation = conversation, counts = {}, recalled = False)
+
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", archive_and_recall)
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(
+        llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (sticky, True, manual)
+    )
+    monkeypatch.setattr(llama_cpp, "_conversation_recall_reserve", lambda _thread_id: reserve)
+    if manual:
+        from core.inference import checkpoint
+
+        # No carried-forward block, so the replay leaves the prompt smaller than it was.
+        monkeypatch.setattr(checkpoint, "MAX_TOKENS", 0)
+
+    def exchange(name, prefix, text):
+        return tools.build_synthetic_search_exchange(
+            tool_name = name,
+            call_prefix = prefix,
+            status_label = name,
+            query = "Summarize the document",
+            text = text,
+            sources = None,
+        )
+
+    def inject(
+        messages,
+        scope,
+        *,
+        whole_document_only = False,
+    ):
+        if not scope["whole_doc"]:
+            return None
+        if whole_document_only:
+            assert not any(
+                "ancient" in str(message.get("content"))
+                for message in messages
+                if message["role"] != "system"
+            )
+            assert not any(message.get("content") == "Partial passage" for message in messages)
+            text = complete
+        elif tool_choice is not None:
+            return None
+        else:
+            text = "Partial passage"
+        return {
+            **exchange("search_knowledge_base", "rag_auto_", text),
+            "whole_document": whole_document_only,
+        }
+
+    monkeypatch.setattr(tools, "build_rag_autoinject", inject)
+    audio_part = [{"type": "input_audio", "input_audio": {"data": "", "format": "wav"}}] * audio
+    mcp = exchange(tools.MCP_TOOL_SEARCH_NAME, "mcp_auto_", "Matching MCP tools")
+    catalog = [
+        {"type": "function", "function": {"name": name}}
+        for name in ["search_knowledge_base", tools.MCP_TOOL_SEARCH_NAME]
+    ]
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "system", "content": "Be brief."},
+                {"role": "user", "content": "ancient " * (5 if manual else 250)},
+                {"role": "assistant", "content": "Prior answer"},
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Summarize the document"}, *audio_part],
+                },
+            ],
+            tools = catalog,
+            mcp_match_exchange = {**mcp, "names": []},
+            context_overflow = "truncate_oldest",
+            context_policy = policy,
+            compaction_headroom_ratio = 0.25,
+            thread_id = "t1" if policy == "rolling" else "t2",
+            max_tokens = 80,
+            max_tool_iterations = 2,
+            tool_choice = tool_choice,
+            rag_scope = {"thread_id": "t1", "context_length": 1000, "whole_doc": whole_doc},
+        )
+    )
+
+    sent = [m.get("content") for m in payloads[0]["messages"] if m["role"] == "tool"]
+    expected = [expected_passage] if expected_passage else []
+    if not isinstance(tool_choice, dict):
+        expected.append("Matching MCP tools")
+    assert sent == expected
+    assert payloads[0]["tool_choice"] == ("required" if isinstance(tool_choice, dict) else "auto")
+    assert [e["result"] for e in events if e["type"] == "tool_end"] == sent
+    truncation = next(e for e in events if e["type"] == "context_truncated")
+    assert truncation["fits"] and truncation["dropped_messages"] == 2
+    sent_size = sum(len(str(m.get("content", ""))) for m in payloads[0]["messages"])
+    if not audio:
+        # The fit's count leaves the transcript link out, as before.
+        assert truncation["prompt_tokens_after"] == sent_size - len(link)
+    from core.inference.context_window import prompt_budget, retrieval_budget
+
+    prompt = truncation["prompt_tokens_after"]
+    recall = retrieval_budget(1000, 80, prompt, reply_returns = True)
+    if expected_passage == complete:
+        target = prompt_budget(1000, 80)
+        ceiling = min(target - int(target * 0.25), truncation["prompt_tokens_before"])
+        recall = min(recall, ceiling - sent_size)
+    assert recall_budgets[0] == recall
+    if isinstance(tool_choice, dict):
+        assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]
+    assert bool(truncation.get("checkpoint_started")) is (policy == "checkpoint" and not sticky)

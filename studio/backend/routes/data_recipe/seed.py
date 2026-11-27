@@ -1417,6 +1417,9 @@ async def upload_unstructured_file(
             _BLOCK_UPLOAD_LOCKS.pop(block_id, None)
     ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
+    # On disk already: extraction reads raw_path, and an upload waiting for an extraction slot
+    # must not keep the whole document in memory meanwhile.
+    del content
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
@@ -1631,6 +1634,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             )
 
     file_bytes = _decode_base64_payload(payload.content_base64)
+    if ext in (".csv", ".json", ".jsonl"):
+        # Notepad / PowerShell BOM: pandas rejects it in JSON, DuckDB reads a .json array as one "json" column.
+        file_bytes = file_bytes.removeprefix(b"\xef\xbb\xbf")
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
     if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:

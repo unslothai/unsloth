@@ -1913,6 +1913,13 @@ def _native_sdpa_fused_serves(
         return False
 
 
+def block_activation_bytes(hidden: int, inner: int, width: int, elem: int) -> tuple[int, int]:
+    """(per-query, per-key) token bytes of a DiT block's widest activations, fused SDPA; ``width`` = key hidden size."""
+    per_query = (11 * int(hidden) + 3 * int(inner)) * int(elem) + 2 * int(inner) * 4
+    per_key = (int(width) + 2 * int(inner)) * int(elem)
+    return per_query, per_key
+
+
 def _rocm_flash_probe_bytes(
     geometry: tuple,
     tokens: int,
@@ -1931,8 +1938,7 @@ def _rocm_flash_probe_bytes(
     inner = heads * head_dim
     elem = getattr(dtype, "itemsize", 2) or 2
     weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
-    per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
-    per_key = (width + 2 * inner) * elem
+    per_query, per_key = block_activation_bytes(hidden, inner, width, elem)
     fused = _native_sdpa_fused_serves(device, dtype, heads, head_dim, tokens, kv_tokens, batch)
     scores = 0 if fused else 2 * batch * heads * tokens * kv_tokens * 4
     return weights + batch * (tokens * per_query + kv_tokens * per_key) + scores
@@ -4338,6 +4344,20 @@ def _apply_attention_backend_impl(
         if _target_device(target).split(":")[0] == "mps":
             from core._mps_sdpa_guard import install_mps_large_attention_guard
             install_mps_large_attention_guard(logger)
+    from .diffusion_tp2 import is_installed as _tp_installed
+
+    tp = [t for t in _attention_dits(pipe) if _tp_installed(t)]
+    if tp:
+        # diffusers' setter walks modules(), which cannot reach the TP shards' processors: the shards keep the
+        # backend they were built with, and that is what is reported (no silent mismatch)
+        kept = getattr(tp[0], ATTENTION_BACKEND_ATTR, None)
+        if logger is not None:
+            logger.info(
+                "diffusion.attention: tensor-parallel denoiser keeps backend=%s (request %s not applied)",
+                kept or "native",
+                backend,
+            )
+        return kept
     setters = [
         s
         for s in (getattr(t, "set_attention_backend", None) for t in _attention_dits(pipe))
@@ -4353,6 +4373,7 @@ def _apply_attention_backend_impl(
             setattr(dit, ROCM_FLASH_GATE_ATTR, None)
         except Exception:  # noqa: BLE001
             pass
+    auto_pick = False
     if backend == ROCM_FLASH_CANDIDATE:
         backend = "flash" if _rocm_flash_block_admitted(pipe, target, logger) else None
     if backend is not None:
@@ -4442,6 +4463,7 @@ def _apply_attention_backend_impl(
                     NATIVE_FLASH_ATTN_ENV,
                 )
             backend = None
+        auto_pick = isinstance(backend, _AutoCudnn)
         if backend is not None:
             backend = str(backend)
         if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
@@ -4479,7 +4501,7 @@ def _apply_attention_backend_impl(
                     _warn(logger, ATTN_NATIVE, exc)
             engaged = False
         if engaged:
-            _tag_dits(pipe, backend)
+            _tag_dits(pipe, backend, auto_pick = auto_pick)
             if backend == "_native_cudnn" and target is not None and _is_cuda_nvidia(target):
                 from .diffusion_flux3_attn import install as install_flux3_strided
                 from .diffusion_qwenimage21_attn import install as install_q21_strided
@@ -4509,12 +4531,19 @@ def _apply_attention_backend_impl(
 
 # Read by graph_eligible: Sage under a replayed graph renders noise.
 ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
+# auto's cuDNN pick, not explicit: diffusion_krea2_prefix_kv may swap it for flash on mask-free calls
+ATTENTION_AUTO_PICK_ATTR = "_unsloth_attention_auto_pick"
 
 
-def _tag_dits(pipe: Any, backend: Optional[str]) -> None:
+def _tag_dits(
+    pipe: Any,
+    backend: Optional[str],
+    auto_pick: bool = False,
+) -> None:
     for dit in _attention_dits(pipe):
         try:
             setattr(dit, ATTENTION_BACKEND_ATTR, backend)
+            setattr(dit, ATTENTION_AUTO_PICK_ATTR, bool(auto_pick and backend is not None))
         except Exception:  # noqa: BLE001
             pass
 

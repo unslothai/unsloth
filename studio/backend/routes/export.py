@@ -119,6 +119,8 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     for name in dict.fromkeys([base, *bases]):
         if name:
             account_access.require_model_access(name)
+            account_access.require_adapter_chain_access(name)
+    account_access.require_listed_adapters_access(checkpoint_path)
     return base or None
 
 
@@ -148,6 +150,8 @@ async def load_checkpoint(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             base_model = base_model,
+            # Checked with no adapter config: one written later must not pick a base unchecked.
+            adapter_free = base_model is None and account_access.managed_account(),
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
@@ -265,6 +269,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             is_export_active = bool(backend.is_export_active()),
             active_op_kind = backend.get_active_op_kind(),
             last_op_seq = int(last_op["seq"]) if last_op else 0,
+            last_op_id = last_op.get("id") if last_op else None,
             last_op_kind = last_op.get("kind") if last_op else None,
             last_op_status = last_op.get("status") if last_op else None,
             last_op_output_path = last_op_output_path,

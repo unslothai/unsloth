@@ -137,6 +137,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     from itertools import islice
 
     from datasets import Audio, Image
+    from utils.datasets.remote_images import is_network_share
     from utils.datasets.format_detection import (
         _AUDIO_EXTENSIONS,
         _has_image_header,
@@ -187,7 +188,8 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
                     return sniff(response.read(12), kind)
             except Exception:  # noqa: BLE001
                 return False
-        if not os.path.isfile(path):
+        # A dataset row picked this path; probing a share signs Windows in to its host (NTLM).
+        if is_network_share(path) or not os.path.isfile(path):
             return False
         with open(path, "rb") as file:
             return sniff(file.read(12), kind)
@@ -405,6 +407,14 @@ def train(
         raise typer.Exit(code = 1)
 
     is_vision = trainer.is_vlm
+    ignored = cfg.ignored_target_modules(use_lora, is_vision)
+    if ignored:
+        typer.echo(
+            f"Warning: vision_all_linear is on, so target_modules "
+            f"({', '.join(ignored)}) is ignored; set vision_all_linear: false or pass "
+            f"--no-vision-all-linear to train only those modules.",
+            err = True,
+        )
 
     if not trainer.prepare_model_for_training(**cfg.model_kwargs(use_lora, is_vision)):
         typer.echo("Model preparation failed", err = True)

@@ -545,7 +545,7 @@ async function listForNewModels(
     baseUrl: provider.baseUrl || null,
     extraHeaders: provider.extraHeaders,
   });
-  learnCatalogModelCapabilities(provider.providerType, listed);
+  learnCatalogModelCapabilities(provider.providerType, listed, provider.baseUrl);
   learnModelDisplayNames(provider.providerType, listed);
   const listedIds = pruneProviderModelIds(provider.providerType, [
     ...new Set(listed.map((model) => model.id.trim()).filter((id) => id.length > 0)),

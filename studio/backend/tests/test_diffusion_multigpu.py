@@ -2340,18 +2340,20 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
     )
     pipe = Pipe()
     mg._PLACEMENTS[pipe] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
+    other = None
     try:
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
             reason = mg.install_cfg_parallel(pipe, offload_policy = "none")
         assert reason is not None and "holds the split's components" in reason
+        # a card holding only this load's text encoders takes the replica beside them (they run before the steps)
         te_only = Pipe()
         mg._PLACEMENTS[te_only] = {
             "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
         }
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
-            assert "holds the split's components" in mg.install_cfg_parallel(
-                te_only, offload_policy = "none"
-            )
+            assert mg.install_cfg_parallel(te_only, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[te_only].secondary) == "cuda:1"
+        mg.uninstall_cfg_parallel(te_only)
         other = Pipe()
         mg._PLACEMENTS[other] = {"placement": {"transformer": "cuda:0", "vae": "cuda:1"}}
         with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
@@ -2359,7 +2361,8 @@ def test_cfg_replica_avoids_the_card_a_split_decodes_on(monkeypatch):
         assert str(mg._CFG_ROUTERS[other].secondary) == "cuda:2"
     finally:
         mg.uninstall_cfg_parallel(pipe)
-        mg.uninstall_cfg_parallel(other)
+        if other is not None:
+            mg.uninstall_cfg_parallel(other)
 
 
 def test_background_compile_declines_cfg_parallel(monkeypatch):
@@ -3005,3 +3008,42 @@ def test_automatic_partner_skips_a_card_holding_the_splits_components(monkeypatc
     finally:
         mg.uninstall_cfg_parallel(pipe)
         mg._PLACEMENTS.pop(pipe, None)
+
+
+def _interval_cfg_loop(
+    dit,
+    latents,
+    steps,
+    stop,
+    scale = 4.0,
+):
+    """Fast CFG: both branches for the first ``stop`` fraction of the steps, the conditional one alone after."""
+    cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+    uncond = torch.randn(3, 4, generator = torch.Generator().manual_seed(2))
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps)
+        c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
+        if i < int(stop * steps):
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond)[0]
+            pred = u + scale * (c - u)
+        else:
+            pred = c
+        latents = latents - 0.1 * pred
+    return latents
+
+
+def test_a_fast_cfg_tail_stays_exact_across_renders():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(1, 4)
+    fast = _interval_cfg_loop(dit, latents.clone(), steps = 10, stop = 0.8)
+    full = _cfg_loop(dit, latents.clone(), steps = 10)
+    router, replicas = _router(dit)
+    for _ in range(2):
+        assert torch.equal(_interval_cfg_loop(dit, latents.clone(), steps = 10, stop = 0.8), fast)
+        router.end_render()
+    assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 10), full)
+    assert router.describe()["disabled_reason"] is None
+    assert len(replicas) == 1
+    assert router.stats["steps_parallel"] > 0
+    router.drop_replica()

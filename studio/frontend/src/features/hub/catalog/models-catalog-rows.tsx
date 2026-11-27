@@ -30,7 +30,7 @@ import {
 } from "@/features/hub";
 import {
   ModelRowMenu,
-  pinKey,
+  pinCoversId,
   usePinnedModelsStore,
 } from "@/features/model-picker";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -765,10 +765,10 @@ export const InventoryRow = memo(function InventoryRow({
   );
 
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
-  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const toggleRepoPinned = usePinnedModelsStore((s) => s.toggleRepoPinned);
   const rowPinned =
     cacheDeletableRepoId != null &&
-    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
+    pinCoversId(pinnedKeys, cacheDeletableRepoId);
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const deleteAction =
     deletableRepoId ? (
@@ -782,7 +782,7 @@ export const InventoryRow = memo(function InventoryRow({
                 pinned: rowPinned,
                 pinLabel: "Pin",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(deletableRepoId),
+                onToggle: () => toggleRepoPinned(deletableRepoId),
               }
         }
         cachePath={

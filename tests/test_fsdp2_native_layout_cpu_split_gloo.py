@@ -75,10 +75,8 @@ def _case_cpu_mesh(native):
     from torch.distributed.device_mesh import init_device_mesh
 
     model = _lora(1)
-    # Built before CUDA is faked below: on a CPU-only torch build a faked CUDA makes new_group ask
-    # for NCCL. shard_model's own default mesh is the same CPU mesh (device = "cpu").
+    # Mesh built before CUDA is faked: new_group would ask for NCCL on a CPU-only torch.
     mesh = init_device_mesh("cpu", (2,))
-    # A CUDA host whose GPU would fit the model, but the Trainer runs on the CPU.
     torch.cuda.is_available = lambda: True
     torch.cuda.current_device = lambda: 0
     torch.cuda.get_device_properties = lambda device = None: types.SimpleNamespace(
@@ -94,7 +92,7 @@ def _case_cpu_mesh(native):
     native._agree_over_ranks = record
     cfg = native.FSDP2Config(param_dtype = torch.float32, device = "cpu", mesh = mesh)
     model = native.shard_model(model, cfg)
-    fits, replicate_frozen, root_only, prefetch = agreed["flags"]
+    fits, replicate_frozen, root_only, prefetch = agreed["flags"][:4]
     return {
         "fits": fits,
         "replicate_frozen": replicate_frozen,

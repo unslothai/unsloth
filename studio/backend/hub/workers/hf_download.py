@@ -665,7 +665,7 @@ def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     )
 
 
-# Tied to drain_stderr_excerpt's 500-byte head/tail window: listing every expected file would blow past it and lose the diagnostic.
+# Tied to drain_stderr_excerpt's 500-character head/tail window: listing every expected file would blow past it and lose the diagnostic.
 _VERIFY_PATH_LIST_CAP = 10
 
 

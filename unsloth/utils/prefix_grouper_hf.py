@@ -145,6 +145,7 @@ def _wrap_forward(original):
         if (
             kwargs.get("past_key_values", None) is not None
             or kwargs.get("past_key_value", None) is not None
+            or kwargs.get("cache", None) is not None
         ):
             raise RuntimeError("PrefixGrouper: prefix_seg_info requires prefill with no KV cache.")
         base = self.__dict__.get("config", None)

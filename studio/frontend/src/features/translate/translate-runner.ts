@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type CachedModelRepo,
   getInferenceStatus,
+  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -23,7 +25,11 @@ import {
   subscribeJobListeners,
   useDownloadManagerStore,
 } from "@/features/hub/download-manager/download-manager-controller";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import {
+  modelIdsMatch,
+  pinnedCheckpoint,
+  servedCheckpoint,
+} from "@/features/hub/lib/model-identity";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
@@ -33,7 +39,6 @@ import {
 import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
-  HY_MT2_SAMPLING,
   TRANSLATE_CONTEXT_TOKENS,
   TRANSLATE_MAX_TOKENS,
   type TranslateModelId,
@@ -41,6 +46,7 @@ import {
   dedicatedTranslateModel,
   translateMessages,
   translatePromptModel,
+  translationSampling,
 } from "./models";
 import { quantOnDisk } from "./quant-on-disk";
 import {
@@ -119,16 +125,48 @@ type LocalModel = {
   /** Null for a model with no quants to pick from; the load fetches whatever it needs. */
   variant: string | null;
   sizeBytes: number;
+  fp8?: true;
 };
+
+type CachedModelsListing = () => Promise<readonly CachedModelRepo[]>;
+
+/** One /api/hub/cached-models read shared by every row of a probe pass, fetched on first use. */
+export function sharedCachedModelsListing(
+  signal?: AbortSignal,
+): CachedModelsListing {
+  let listing: Promise<readonly CachedModelRepo[]> | null = null;
+  return () => (listing ??= listCachedModels(undefined, signal));
+}
+
+async function repoOnDisk(
+  repo: string,
+  list: CachedModelsListing,
+): Promise<boolean | null> {
+  try {
+    const wanted = repo.toLowerCase();
+    const row = (await list()).find(
+      (entry) => entry.repo_id.toLowerCase() === wanted,
+    );
+    return row !== undefined && row.partial !== true;
+  } catch {
+    return null;
+  }
+}
 
 /** Disk first: a quant already on disk needs no Hub listing. `remote: false` never asks the Hub. */
 export async function translateModelDownloaded(
   model: LocalModel,
   signal?: AbortSignal,
-  options?: { remote?: boolean },
+  options?: { remote?: boolean; cachedModels?: CachedModelsListing },
 ): Promise<boolean | null> {
   const quant = model.variant?.toLowerCase();
-  if (!quant) return null;
+  if (!quant)
+    return model.fp8
+      ? repoOnDisk(
+          model.repo,
+          options?.cachedModels ?? (() => listCachedModels(undefined, signal)),
+        )
+      : null;
   return quantOnDisk(
     quant,
     async (localOnly) =>
@@ -139,7 +177,7 @@ export async function translateModelDownloaded(
 }
 
 async function downloadModel(
-  model: LocalModel & { variant: string },
+  model: LocalModel,
   hfToken: string | null,
   signal: AbortSignal,
   onPhase: (phase: TranslatePhase) => void,
@@ -151,7 +189,7 @@ async function downloadModel(
   const kind = DOWNLOAD_KIND.MODEL;
   const jobKey = jobKeyOf(kind, model.repo, model.variant);
   const ours = (variant: string | null) =>
-    (variant ?? "").toLowerCase() === model.variant.toLowerCase();
+    (variant ?? "").toLowerCase() === (model.variant ?? "").toLowerCase();
   onPhase({
     kind: "downloading",
     downloadedBytes: 0,
@@ -269,10 +307,12 @@ async function ensureLocalModel(
 
   const hfToken = useHfTokenStore.getState().token || null;
   // An unreadable listing is left to the load, which fetches a missing file itself.
-  const { variant } = model;
-  if (variant && (await translateModelDownloaded(model, signal)) === false) {
+  if (
+    (model.variant || model.fp8) &&
+    (await translateModelDownloaded(model, signal)) === false
+  ) {
     signal.throwIfAborted();
-    await downloadModel({ ...model, variant }, hfToken, signal, onPhase);
+    await downloadModel(model, hfToken, signal, onPhase);
   }
   signal.throwIfAborted();
   onPhase({ kind: "loading" });
@@ -315,10 +355,14 @@ async function ensureLocalModel(
 }
 
 async function chatModel(signal: AbortSignal): Promise<string> {
-  const picked = useChatRuntimeStore.getState().params.checkpoint;
+  const { params, loadedModels, activeGgufVariant } =
+    useChatRuntimeStore.getState();
+  const picked = params.checkpoint;
   if (isExternalModelId(picked)) return picked;
+  // Two loaded quants of a repo both answer to its bare id: only the quant's own name reaches it.
+  const served = servedCheckpoint(loadedModels, picked, activeGgufVariant);
   // The slot serving Chat's pick, which is not the primary under Keep multiple models loaded.
-  const status = await getInferenceStatus(signal, picked || undefined);
+  const status = await getInferenceStatus(signal, served || undefined);
   if (
     !status.active_model ||
     status.is_audio ||
@@ -327,7 +371,9 @@ async function chatModel(signal: AbortSignal): Promise<string> {
   ) {
     throw new TranslateRunError("noChatModel");
   }
-  return status.active_model;
+  // Pinned: a quant loaded beside it mid-translation would take the bare repo id.
+  const pinned = pinnedCheckpoint(served, activeGgufVariant);
+  return pinned !== picked ? pinned : status.active_model;
 }
 
 /** A provider's model by its own id, never the internal `external::...` one. */
@@ -391,7 +437,9 @@ async function prepareTranslation(options: TranslateSetup): Promise<{
   const promptModel = translatePromptModel(modelId, custom);
   const sampling =
     dedicated?.sampling ??
-    (custom && isTranslationOnlyRepo(custom.id) ? HY_MT2_SAMPLING : null);
+    (custom && isTranslationOnlyRepo(custom.id)
+      ? translationSampling(custom.id)
+      : null);
   const base = await baseRequest(sampling, requestModel);
 
   const complete = async (

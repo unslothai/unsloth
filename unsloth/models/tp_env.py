@@ -16,7 +16,8 @@ read once. The world splits into pp x dp x cp x tp ranks (pp outermost, tp the i
 DeviceMesh, size-1 axes left out). Tensor parallel alone:
 - FastLanguageModel / FastModel.from_pretrained: 16-bit and pre-quantized bitsandbytes 4-bit checkpoints load
   through sharded_loading (each rank reads its slices of the attention / MLP projections); quantizing on load
-  loads in full and is sharded at get_peft_model.
+  loads in full and is sharded at get_peft_model, unless the whole 4-bit model would not fit the GPU: then each
+  rank keeps only its shards of the quantized projections and routed experts as transformers quantizes them.
 - get_peft_model: apply_tensor_parallel over mesh["tp"] once LoRA is attached (full-size LoRA, 1-GPU init).
 - Trainer.__init__: tensor parallel if get_peft_model did not apply it; native FSDP2 shards over mesh["dp"]
   (UNSLOTH_FSDP2=1), otherwise gradients are averaged over mesh["dp"] before clipping and the optimizer step.
@@ -120,6 +121,11 @@ _REFUSED_LOAD_FLAGS = (
     # Refused again at Trainer init ("tp / pp x precision"); here before any shard is read.
     ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
 )
+# Expert parallel (UNSLOTH_EP_SIZE): 8-bit weights and fp8 training have no ep cell in the capability registry.
+_REFUSED_EP_LOAD_FLAGS = (
+    ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
+    ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
+)
 _REFUSED_PIPELINE_LOAD_FLAGS = (
     ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("qat_scheme", "QAT (qat_scheme)"),
@@ -159,6 +165,38 @@ def tensor_parallel_env_load(fn):
     @functools.wraps(fn)
     def from_pretrained(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["load"]:
+            from .ep_native import ep_env_size
+            if ep_env_size() > 1:  # expert parallel (UNSLOTH_EP_SIZE): the experts load per rank
+                from .ep_native import (
+                    ep_env_load,
+                    ep_refuse_fast_inference,
+                    ep_refuse_per_expert_lists,
+                )
+
+                from .tp_native import refuse_hf_distributed_kwargs
+
+                values = _bound(fn, args, kwargs)
+                ep_refuse_fast_inference(values)
+                refused = [what_ for key, what_ in _REFUSED_EP_LOAD_FLAGS if values.get(key)]
+                if refused:
+                    raise NotImplementedError(
+                        f"Unsloth: UNSLOTH_EP_SIZE={ep_env_size()} (expert parallel) does not support "
+                        + "; ".join(refused)
+                        + ". Unset UNSLOTH_EP_SIZE (or ep in UNSLOTH_PARALLEL) to run this script with DDP "
+                        "or UNSLOTH_FSDP2=1."
+                    )
+                # Every branch, the whole adapter / QAT load included: apply_expert_parallel shards it later.
+                refuse_hf_distributed_kwargs(values, "expert parallel", "apply_expert_parallel")
+                sharded = not _is_adapter(values) and values.get("qat_scheme") is None
+                _DEPTH["load"] += 1
+                try:
+                    loaded = ep_env_load(fn, args, kwargs, sharded)
+                finally:
+                    _DEPTH["load"] -= 1
+                # Refuse now, not at get_peft_model: a load_in_4bit gpt-oss has per-expert Linear4bit lists.
+                ep_refuse_per_expert_lists(loaded[0] if isinstance(loaded, tuple) else loaded)
+                return loaded
         if layout is None or _DEPTH["load"]:
             return fn(*args, **kwargs)
         values = _bound(fn, args, kwargs)
@@ -179,6 +217,12 @@ def tensor_parallel_env_load(fn):
                 + "; ".join(refused)
                 + f". Unset {unset} to run this script with DDP or UNSLOTH_FSDP2=1."
             )
+        from .tp_native import refuse_hf_distributed_kwargs
+
+        # Every branch below (whole load included): Unsloth splits / shards the model after the load.
+        refuse_hf_distributed_kwargs(
+            values, what, "apply_tensor_parallel" if layout.tp > 1 else "apply_pipeline_parallel"
+        )
         from .fsdp2_load import fsdp2_sharded_load_requested
 
         if fsdp2_sharded_load_requested():
@@ -202,8 +246,14 @@ def tensor_parallel_env_load(fn):
                     out = fn(*args, **kwargs)
                 else:
                     from .pp_load import _pipeline_loading
+                    from .pp_native import PPConfig
+
+                    v = getattr(layout, "stages_per_rank", None)
                     with _pipeline_loading(
-                        lambda: layout.pp_mesh, layout.schedule, None, auto = True
+                        lambda: layout.pp_mesh,
+                        layout.schedule,
+                        None if v is None else PPConfig(stages_per_rank = v),
+                        auto = True,
                     ):
                         out = fn(*args, **kwargs)
             finally:
@@ -219,11 +269,15 @@ def tensor_parallel_env_load(fn):
                     *args, **kwargs
                 )  # full load; get_peft_model shards it (Params4bit included)
                 return _check_pipeline_model(out, layout) if layout.pp > 1 else out
-            from .tp_native import _sharded_from_pretrained
+            from .tp_native import (
+                HFDistributedKwargsError,
+                _sharded_from_pretrained,
+                _tp_load_quantizing,
+            )
 
             try:
-                # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load; a
-                # pre-quantized bitsandbytes 4-bit checkpoint loads sharded.
+                # Quantizing on load (load_in_4bit of a 16-bit checkpoint) keeps the full load unless its 4-bit
+                # form does not fit the GPU (_tp_load_quantizing); a pre-quantized bnb 4-bit checkpoint loads sharded.
                 four_bit = _four_bit(values, fn)
                 # Full finetuning trains the embedding, so it must stay on the GPU.
                 host_embed = not values.get("full_finetuning")
@@ -232,10 +286,14 @@ def tensor_parallel_env_load(fn):
                         "mesh": mesh,
                         "plan": None,
                         "prequantized_only": four_bit,
+                        "quantize_on_load": _tp_load_quantizing,
+                        "quantize_on_load_auto": True,
                         "materialize_kwargs": {"host_embed": host_embed},
                     }
                 ) as state:
                     out = fn(*args, **kwargs)
+            except HFDistributedKwargsError:
+                raise  # a whole load would forward the same kwarg to transformers
             except ValueError as exc:
                 if not str(exc).startswith("Unsloth:") or "sharded loading" not in str(exc):
                     raise
@@ -333,6 +391,18 @@ def tensor_parallel_env_peft(fn):
     @functools.wraps(fn)
     def get_peft_model(*args, **kwargs):
         layout = env_layout()
+        if layout is None and not _DEPTH["peft"]:
+            from .ep_native import ep_env_apply, ep_env_size
+            if ep_env_size() > 1:  # expert parallel: shard the experts once LoRA is attached
+                _DEPTH["peft"] += 1
+                try:
+                    out = fn(*args, **kwargs)
+                finally:
+                    _DEPTH["peft"] -= 1
+                model = _model_of(out)
+                if model is not None:
+                    ep_env_apply(model)
+                return out
         if layout is None or _DEPTH["peft"] or layout.tp == 1 or layout.pp > 1:
             # Under UNSLOTH_PP_SIZE tensor parallel comes after the split, at the Trainer.
             return fn(*args, **kwargs)
@@ -361,7 +431,7 @@ def _levels(model):
 def parallel_env_requested():
     return any(
         str(os.environ.get(name, "")).strip() not in ("", "1")
-        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE")
+        for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE")
     )
 
 

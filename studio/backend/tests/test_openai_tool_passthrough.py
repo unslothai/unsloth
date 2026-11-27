@@ -168,6 +168,19 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in exc.detail
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
+    def test_passthrough_paths_show_the_server_message_not_its_json_body(self):
+        from routes.inference import _anthropic_upstream_error, _openai_passthrough_error
+
+        message = "Failed to initialize samplers: penalty_repeat must be finite and greater than 0"
+        raw = json.dumps(
+            {"error": {"code": 400, "message": message, "type": "invalid_request_error"}}
+        )
+        expected = f"llama-server error: {message}"
+        assert _openai_passthrough_error(400, raw).detail == expected
+        assert _anthropic_upstream_error(raw) == expected
+        long_raw = json.dumps({"error": {"code": 400, "message": "x" * 800}})
+        assert _friendly_upstream_error(long_raw) == "llama-server error: " + "x" * 500
+
     def test_anthropic_upstream_error_rewords_context_overflow(self):
         from routes.inference import _anthropic_upstream_error
 
