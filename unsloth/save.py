@@ -3089,6 +3089,8 @@ def save_to_gguf(
         if created_gguf_directory:
             _remove_empty_directory(gguf_directory)
         conversion_staging, created_gguf_directory = None, False
+    # Deleted after quantizing (want_full_precision below), so it must never take a prior export's name.
+    intermediate_is_transient = not is_gpt_oss and first_conversion not in quantization_method
     try:
         initial_files, is_vlm_update = _convert_into_gguf_directory(
             model_name = model_name,
@@ -3101,9 +3103,7 @@ def save_to_gguf(
             print_output = print_output,
             gguf_directory = gguf_directory,
             conversion_staging = conversion_staging,
-            # Deleted after quantizing (want_full_precision below), so it must never take a prior export's name.
-            intermediate_is_transient = not is_gpt_oss
-            and first_conversion not in quantization_method,
+            intermediate_is_transient = intermediate_is_transient,
         )
     except BaseException:
         if conversion_staging is not None:
@@ -3262,6 +3262,15 @@ def save_to_gguf(
             for m in methods_to_quantize
             if os.path.exists(os.path.join(gguf_directory, f"{model_name}.{m.upper()}.gguf"))
         }
+
+        def _drop_transient_intermediate():
+            # A retry converts again and would take a leftover intermediate for a prior export: it would
+            # write a second one beside it and never remove the first.
+            if intermediate_is_transient:
+                for f in initial_files:
+                    if "-mmproj" not in os.path.basename(f).lower():
+                        Path(f).unlink(missing_ok = True)
+
         # Each llama-quantize pass loads the whole base GGUF into RAM, so run two at once only with headroom for two copies, else a multi-quant export that fit sequentially OOMs.
         try:
             base_bytes = sum(
@@ -3303,7 +3312,7 @@ def save_to_gguf(
                     fut.cancel()
                 first_exc = next((f.exception() for f in done if f.exception() is not None), None)
                 if first_exc is not None:
-                    # Remove only outputs this run created: a pre-existing file, or a canceled pass that never wrote, stays, so a rerun never deletes a prior artifact. The base is kept for retry.
+                    # Remove only outputs this run created: a pre-existing file, or a canceled pass that never wrote, stays, so a rerun never deletes a prior artifact. A requested base is kept.
                     wait(future_to_idx)
                     for method in methods_to_quantize:
                         if method in preexisting_outputs:
@@ -3311,6 +3320,7 @@ def save_to_gguf(
                         Path(
                             os.path.join(gguf_directory, f"{model_name}.{method.upper()}.gguf")
                         ).unlink(missing_ok = True)
+                    _drop_transient_intermediate()
                     raise first_exc
                 for fut, i in future_to_idx.items():
                     quantized_files[i] = fut.result()
@@ -3320,7 +3330,11 @@ def save_to_gguf(
                 print(
                     f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes..."
                 )
-                quantized_files.append(_quantize_one(quant_method))
+                try:
+                    quantized_files.append(_quantize_one(quant_method))
+                except BaseException:
+                    _drop_transient_intermediate()
+                    raise
 
         all_saved_locations.extend(quantized_files)
         quants_created = len(quantized_files) > 0

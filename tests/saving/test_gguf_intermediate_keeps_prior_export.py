@@ -139,3 +139,41 @@ def test_without_a_prior_file_the_names_are_unchanged(monkeypatch, tmp_path):
     _, _, quantized = _export(tmp_path, monkeypatch, ["q4_k_m"], True, [])
     ((source, _),) = quantized
     assert os.path.basename(source) == "MyModel.BF16.gguf"
+
+
+@pytest.mark.parametrize("prior", [[], ["MyModel.BF16.gguf"]], ids = ["empty-dir", "prior-bf16"])
+def test_a_failed_quantize_leaves_no_intermediate_for_the_retry(monkeypatch, tmp_path, prior):
+    """The intermediate of a failed Q4-only export was kept; the retry took it for a prior export, wrote a
+    second one beside it and never removed the first. A prior export is still left alone."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "model").mkdir()
+    gguf_directory = tmp_path / "model_gguf"
+    gguf_directory.mkdir()
+    for name in prior:
+        (gguf_directory / name).write_bytes(USER_BYTES)
+    _wire(monkeypatch, _Converter(), [], True)
+    working = save_mod.quantize_gguf
+
+    def _export_q4():
+        return save_mod.save_to_gguf(
+            model_name = "MyModel",
+            model_type = "llama",
+            model_dtype = "bfloat16",
+            model_directory = str(tmp_path / "model"),
+            quantization_method = ["q4_k_m"],
+            gguf_directory = str(gguf_directory),
+        )
+
+    def _full_disk(*args, **kwargs):
+        raise RuntimeError("llama-quantize: No space left on device")
+
+    for _ in range(2):
+        monkeypatch.setattr(save_mod, "quantize_gguf", _full_disk)
+        with pytest.raises(RuntimeError):
+            _export_q4()
+        assert sorted(os.listdir(gguf_directory)) == prior
+    monkeypatch.setattr(save_mod, "quantize_gguf", working)
+    _export_q4()
+    assert sorted(os.listdir(gguf_directory)) == sorted(prior + ["MyModel.Q4_K_M.gguf"])
+    for name in prior:
+        assert (gguf_directory / name).read_bytes() == USER_BYTES
