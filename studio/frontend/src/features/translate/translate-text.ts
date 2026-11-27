@@ -62,10 +62,7 @@ function styleOf({ mode, tone }: TranslatePromptOptions): string | null {
 
 export type TranslateMessage = { role: "user"; content: string };
 
-/**
- * Hy-MT's model cards specify target-only instructions. Adding the source
- * language can make Hy-MT3 return text in that language.
- */
+/** Hy-MT's model-card prompts name only the target: naming the source can make Hy-MT3 reply in the source language. */
 export function hyMtInstruction(options: TranslatePromptOptions): string {
   if (options.custom) return fillPlaceholders(options.custom, options);
   const style = styleOf(options);
