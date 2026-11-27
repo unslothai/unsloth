@@ -6592,8 +6592,15 @@ class DiffusionStatusResponse(BaseModel):
     request_batching: Optional[Dict[str, str]] = Field(
         None,
         description = "How concurrent text-to-image requests share pipeline calls on this load: mode 'any', "
-        "'compiled_sizes' (static compile, only batch sizes already compiled) or 'serial' (CUDA graphs, every request "
-        "renders alone), with the reason; null when nothing is loaded.",
+        "'compiled_sizes' (static compile, only batch sizes already compiled), 'measured' (an idle race measured a faster "
+        "shared call on this card: only the winning batch sizes and shapes) or 'serial' (every request renders alone), "
+        "with the reason; null when nothing is loaded.",
+    )
+    batch_trace: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Process counters for request batching: requests admitted, idle direct dispatches, joins, "
+        "realized call sizes, why requests rendered alone, rows per pipeline call, and (with "
+        "UNSLOTH_STUDIO_IMAGE_BATCH_TRACE=1) denoiser invocations, rows and block executions.",
     )
     fp8_gemm: Optional[Dict[str, Any]] = Field(
         None,

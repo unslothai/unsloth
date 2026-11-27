@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import gc
 import inspect
 import os
@@ -49,6 +50,104 @@ MODEL_OFFLOAD_REASON = (
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
 MAX_GRAPHS_PER_MODULE = 4
+
+# Calls that carry several requests' images (image_request_batching): only these sizes record a graph of their own,
+# next to the size-1 graphs, at most MAX_BATCHED_GRAPHS per module, and only where the caller allows a recording (an
+# idle warm-up, never a user's request). A full cache never evicts for them; an OOM recording one drops only them.
+BATCH_GRAPH_SIZES = (2, 4)
+MAX_BATCHED_GRAPHS = 2
+# Extra pool a batched graph may take, in MiB; unset = what the card has free beyond BATCH_GRAPH_MARGIN_MB.
+BATCH_GRAPH_POOL_ENV = "UNSLOTH_DIFFUSION_BATCH_GRAPH_POOL_MB"
+BATCH_GRAPH_MARGIN_MB = 1024
+_BATCH_ROWS: "contextvars.ContextVar[Optional[tuple]]" = contextvars.ContextVar(
+    "unsloth_graph_batch_rows", default = None
+)
+
+
+_BATCH_CANVAS: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "unsloth_graph_batch_canvas", default = None
+)
+
+
+@contextlib.contextmanager
+def batch_rows(
+    rows: int,
+    *,
+    capture: bool = False,
+    canvas: Optional[str] = None,
+):
+    """Calls in this context carry ``rows`` requests; ``capture`` allows a new batched graph to record. ``canvas`` (the
+    batch race's shape token) labels every batched graph this context records or replays, so a verdict raced at one
+    canvas is never satisfied by a same-size graph of another (graphs key on tensor shapes)."""
+    token = _BATCH_ROWS.set((int(rows), bool(capture)))
+    canvas_token = _BATCH_CANVAS.set(None if canvas is None else str(canvas))
+    try:
+        yield
+    finally:
+        _BATCH_CANVAS.reset(canvas_token)
+        _BATCH_ROWS.reset(token)
+
+
+def current_batch_rows() -> Optional[tuple]:
+    return _BATCH_ROWS.get()
+
+
+_FORCED_EAGER: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "unsloth_graph_forced_eager", default = False
+)
+
+
+@contextlib.contextmanager
+def forced_eager():
+    """Every graph handle runs eager in this context, whatever a caller's ``set_bypass(False)`` says (the batch race's
+    eager arm: generate() re-arms the graphs before each chunk)."""
+    token = _FORCED_EAGER.set(True)
+    try:
+        yield
+    finally:
+        _FORCED_EAGER.reset(token)
+
+
+def eager_forced() -> bool:
+    return bool(_FORCED_EAGER.get())
+
+
+def _batch_pool_budget_bytes() -> Optional[int]:
+    raw = (os.environ.get(BATCH_GRAPH_POOL_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0, int(float(raw) * 2**20))
+    except ValueError:
+        return None
+
+
+def _free_device_bytes(index: Optional[int] = None) -> Optional[int]:
+    """Free bytes on card ``index`` (the call's operands), else the current card."""
+    try:
+        torch = _torch()
+        free, _total = (
+            torch.cuda.mem_get_info() if index is None else torch.cuda.mem_get_info(index)
+        )
+        return int(free)
+    except Exception:  # noqa: BLE001 - unreadable: the recording's own OOM path still guards
+        return None
+
+
+def _has_reference(kwargs: Any) -> bool:
+    """A call carrying edit reference states (an edit's image scope), as opposed to plain text-to-image."""
+    return isinstance(kwargs, dict) and any(
+        kwargs.get(name) is not None for name in _REFERENCE_KWARGS
+    )
+
+
+def _is_oom(exc: BaseException) -> bool:
+    try:
+        from .diffusion_batched import is_oom_error
+        return bool(is_oom_error(exc))
+    except Exception:  # noqa: BLE001
+        return "out of memory" in str(exc).lower()
+
 
 # Three per the PyTorch docs. The warmup forces lazy allocations OUTSIDE the capture.
 WARMUP_ITERS = 3
@@ -827,24 +926,45 @@ def _has_float(key: tuple) -> bool:
 
 # Private pools per graph OOM a dual-DiT family; the graphs never replay concurrently, so share.
 _POOL_BOX: list = [None]
+# Batch-size graphs (batch_rows > 1) record into their own pool, shared by every batched graph (both DiTs of a dual-DiT
+# family included): torch frees a pool's blocks only once no graph uses it, so in the size-1 graphs' pool dropping the
+# batched graphs would give back nothing. "shared" (env) records them beside the size-1 graphs instead.
+BATCH_POOL_ENV = "UNSLOTH_DIFFUSION_BATCH_GRAPH_POOL"
+_BATCH_POOL_BOX: list = [None]
+
+
+def _batch_pool_split() -> bool:
+    return (os.environ.get(BATCH_POOL_ENV) or "split").strip().lower() != "shared"
+
+
+def _pool_box() -> list:
+    """The pool box a capture in this context records into."""
+    rows = _BATCH_ROWS.get()
+    if rows is not None and rows[0] > 1 and _batch_pool_split():
+        return _BATCH_POOL_BOX
+    return _POOL_BOX
+
 
 # A pool id handed to a capture after the last graph recorded into it died is a dangling pointer.
 _LIVE_WRAPPERS: "weakref.WeakSet" = weakref.WeakSet()
 
 
 def _drop_pool_if_unused() -> None:
-    """Drop shared pool id once no live graph uses it (else use_count assert); check per graph."""
-    try:
-        pool = _POOL_BOX[0]
-        if pool is None:
-            return
-        for wrapper in tuple(_LIVE_WRAPPERS):
-            for entry in tuple(wrapper.cache.values()):
-                if getattr(entry, "pool_token", pool) == pool:  # handles are fresh tuples per call
-                    return
-        _POOL_BOX[0] = None
-    except Exception:  # noqa: BLE001
-        pass
+    """Drop each shared pool id once no live graph uses it (else use_count assert); check per graph."""
+    for box in (_POOL_BOX, _BATCH_POOL_BOX):
+        try:
+            pool = box[0]
+            if pool is None:
+                continue
+            if any(
+                getattr(entry, "pool_token", pool) == pool  # handles are fresh tuples per call
+                for wrapper in tuple(_LIVE_WRAPPERS)
+                for entry in tuple(wrapper.cache.values())
+            ):
+                continue
+            box[0] = None
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # A failed capture (torch >= 2.11) pins its graph and pool forever via the host allocator.
@@ -940,8 +1060,9 @@ def retire_failed_capture(
     with _FAILED_LOCK:
         # A collision with another recording left nothing behind: kept alive, but not a failure the budget counts.
         (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
-    if pool is not None and _POOL_BOX[0] == pool:
-        _POOL_BOX[0] = None
+    for box in (_POOL_BOX, _BATCH_POOL_BOX):
+        if pool is not None and box[0] == pool:
+            box[0] = None
     if not begun_elsewhere:
         note_pool_retired()  # whatever the failed recording took stays cached until the next capture's entry flush
 
@@ -1010,6 +1131,34 @@ def _allocator_segments() -> list:
     except TypeError:
         snapshot = native()
     return snapshot["segments"]
+
+
+def _pool_id_bytes(pool: Any) -> int:
+    """Device bytes pool id ``pool`` holds now, 0 if unreadable or None."""
+    if pool is None:
+        return 0
+    try:
+        want = tuple(pool)
+        return sum(
+            int(seg.get("total_size", 0))
+            for seg in _allocator_segments()
+            if tuple(seg.get("segment_pool_id") or ()) == want
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _first_device_index(args: tuple, kwargs: dict) -> Optional[int]:
+    torch = _torch()
+    for value in (*args, *kwargs.values()):
+        index = (
+            getattr(getattr(value, "device", None), "index", None)
+            if torch.is_tensor(value)
+            else None
+        )
+        if index is not None:  # a CPU operand says nothing about the card
+            return index
+    return None
 
 
 def _pool_bytes(graph: Any) -> int:
@@ -1358,7 +1507,16 @@ class GraphedForward:
             "evictions": 0,
             "speed_eager": 0,
             "length_eager": 0,
+            "batch_captures": 0,
+            "batch_eager": 0,
+            "batch_capture_failures": 0,
         }
+        # Graph keys recorded inside a coalesced call -> its request count (batch_rows); every other key is size 1.
+        self._batched: dict = {}
+        # Batched graph key -> the race canvas tokens it served (batch_rows ``canvas``); read only beside _batched.
+        self._batched_canvas: dict = {}
+        # Why this load records no more batched graphs (an OOM recording one), else None.
+        self._batched_off: Optional[str] = None
         self.valid_token: Any = None
         # A text-length-keyed denoiser would record a graph per prompt; each image scope records
         # lengths only in its first render, sealed once a graph replays or the render ends, then
@@ -1470,10 +1628,96 @@ class GraphedForward:
         # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
         release_cached_outside_capture(clear_cublas = getattr(self, "placement", None) is not None)
 
+    def _invalidate_for_placement(self, token: Any) -> None:
+        """The recorded graphs replay the weight addresses of the placement they saw; a new placement records anew."""
+        if self.cache:
+            self.stats["invalidations"] += 1
+            # Not reset(): empty_cache re-pays cudaMallocs; pool stays with allocator.
+            dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
+            self.cache.clear()
+            _note_dropped_pools(dropped)  # the next capture flushes it before it records
+            _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
+        getattr(self, "_batched", {}).clear()
+        getattr(self, "_edit_keys", set()).clear()
+        self._warmed.clear()
+        self.valid_token = token
+
+    def _unbatched_count(self) -> int:
+        batched = getattr(self, "_batched", {})
+        return sum(1 for k in self.cache if k not in batched)
+
+    def _eviction_victim(self, incoming_edit: bool) -> Any:
+        """The least recently replayed size-1 graph a full planned cache may drop for a new size-1 key, else None: an
+        edit's first; an edit never drops a text-to-image graph. Batched graphs have their own budget."""
+        batched = getattr(self, "_batched", {})
+        edits = getattr(self, "_edit_keys", set())
+        victim = next((k for k in self.cache if k in edits and k not in batched), None)
+        if victim is not None or incoming_edit:
+            return victim
+        return next((k for k in self.cache if k not in batched), None)
+
+    def _batched_refusal(
+        self,
+        rows: tuple,
+        device: Optional[int] = None,
+    ) -> Optional[str]:
+        """Why a call carrying ``rows`` requests may not record a new graph here, else None."""
+        count, capture = rows
+        if getattr(self, "_batched_off", None):
+            return self._batched_off
+        if not capture:
+            return "no recording on a user's request"
+        if getattr(self, "placement", None) is not None:
+            # A failed recording under an offload placement poisons the whole load; only resident loads record them.
+            return "offloaded denoiser: batched calls run eager"
+        if count not in BATCH_GRAPH_SIZES:
+            return f"batch size {count} has no graph"
+        batched = getattr(self, "_batched", {})
+        if sum(1 for k in batched if k in self.cache) >= MAX_BATCHED_GRAPHS:
+            return "batched graph cap reached"
+        # Priced from the size-1 graph's own pool growth, not the whole shared pool.
+        need = int(self.stats.get("size1_graph_bytes", 0) or 0) * count
+        budget = _batch_pool_budget_bytes()
+        if budget is not None and need > budget:
+            return "over the batched graph pool budget"
+        free = _free_device_bytes(device)
+        if free is not None and need and need > free - BATCH_GRAPH_MARGIN_MB * 2**20:
+            return "not enough free memory for a batched graph"
+        return None
+
+    def drop_batched(self, size: Optional[int] = None) -> int:
+        """Drop the batched graphs (of ``size`` only, when given); the size-1 graphs stay. Returns how many. Their memory
+        goes back only from their own pool (the default): with ``BATCH_POOL_ENV=shared`` the size-1 graphs keep the one
+        pool alive and nothing returns to the card."""
+        batched = getattr(self, "_batched", {})
+        keys = [k for k, v in batched.items() if size is None or v == int(size)]
+        gone = [getattr(self.cache.pop(k), "pool_token", None) for k in keys if k in self.cache]
+        for k in keys:
+            batched.pop(k, None)
+        if gone:
+            _note_dropped_pools(gone)
+            _drop_pool_if_unused()
+            self._release()
+        return len(gone)
+
+    def _drop_batched(self, reason: Optional[str] = None) -> None:
+        batched = getattr(self, "_batched", {})
+        gone = [
+            getattr(self.cache.pop(k), "pool_token", None) for k in list(batched) if k in self.cache
+        ]
+        batched.clear()
+        if reason is not None:
+            self._batched_off = reason
+        if gone:
+            _note_dropped_pools(gone)
+            _drop_pool_if_unused()
+
     def reset(self) -> "GraphedForward":
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
         dropped = bool(self.cache)
         self.cache.clear()
+        getattr(self, "_batched", {}).clear()
+        getattr(self, "_edit_keys", set()).clear()
         if dropped:
             note_pool_retired()  # counted where it drops; the _release below flushes and acknowledges it
         self._recorded.clear()
@@ -1511,6 +1755,7 @@ class GraphedForward:
         # pool slices; caller's _release frees both once the failed capture's frames are gone.
         dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
         self.cache.clear()
+        getattr(self, "_batched", {}).clear()
         _note_dropped_pools(dropped)
         _drop_pool_if_unused()
         return self
@@ -1545,6 +1790,10 @@ class GraphedForward:
             "max_graphs": int(self.max_graphs),
             "cap_hit": bool(self.cap_hit),
             "length_sealed": bool(getattr(self, "length_sealed", False)),
+            "batched_graphs": sorted(
+                v for k, v in getattr(self, "_batched", {}).items() if k in self.cache
+            ),
+            "batched_off": getattr(self, "_batched_off", None),
             "placement": None if self.placement is None else self.placement.mode,
             "stats": dict(self.stats),
             "fallback": None
@@ -1771,6 +2020,7 @@ class GraphedForward:
             not self.enabled
             or _bg_eager_forced()
             or self.bypassed
+            or _FORCED_EAGER.get()
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
             or getattr(self.module, "_unsloth_step_cache", None)
@@ -1786,15 +2036,7 @@ class GraphedForward:
             # The recorded graphs replay the weight addresses of the placement they saw; a new placement records anew.
             token = self.placement.token()
             if token != self.valid_token:
-                if self.cache:
-                    self.stats["invalidations"] += 1
-                    # Not reset(): empty_cache re-pays cudaMallocs; pool stays with allocator.
-                    dropped = [getattr(e, "pool_token", None) for e in self.cache.values()]
-                    self.cache.clear()
-                    _note_dropped_pools(dropped)  # the next capture flushes it before it records
-                    _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
-                self._warmed.clear()
-                self.valid_token = token
+                self._invalidate_for_placement(token)
             refusal = self.placement.refusal(self.stats)
             if self._judge and speed_check_enabled():
                 self._judge_keys()
@@ -1886,6 +2128,14 @@ class GraphedForward:
             # Outside the key handler: an error in the eager forward propagates instead of running it twice.
             return self._eager(eager_args, eager_kwargs)
 
+        rows = _BATCH_ROWS.get() if entry is None else None
+        if rows is not None and rows[0] > 1:
+            refusal = self._batched_refusal(rows, _first_device_index(eager_args, eager_kwargs))
+            if refusal is not None:
+                self.stats["batch_eager"] += 1
+                return self._eager_as_recorded(eager_args, eager_kwargs)
+        else:
+            rows = None
         if entry is None:
             if _uncapturable(key):
                 self.stats["refused_object"] += 1
@@ -1945,6 +2195,23 @@ class GraphedForward:
                     warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                     return call(*warm_args, **warm_kwargs)
                 except Exception as exc:  # noqa: BLE001 - like a failed capture: never fails the render
+                    if rows is not None and _is_oom(exc):
+                        # Out of memory warming a batched shape (as when recording one): drop only the batched
+                        # graphs, keep the size-1 ones, and run this step eager like the other unrecorded shapes.
+                        self._real_warm_closed.add(key)
+                        exc.__traceback__ = None
+                        warm_args = warm_kwargs = live = None
+                        self._drop_batched(f"out of memory warming a batch of {rows[0]}")
+                        self.stats["batch_capture_failures"] += 1
+                        if self.logger is not None:
+                            self.logger.warning(
+                                "diffusion.cuda_graph: no memory to warm a batch-%d graph on %s; batched calls run "
+                                "eager, the size-1 graphs keep replaying",
+                                rows[0],
+                                type(self.module).__name__,
+                            )
+                        self._release()
+                        return self._eager_as_recorded(eager_args, eager_kwargs)
                     # Copies can OOM or fail: this load runs eager like after a failed capture.
                     self.poison(exc)
                     self.stats["fallbacks"] += 1
@@ -1974,14 +2241,26 @@ class GraphedForward:
                 spec = _flatten((args, kwargs), live)
                 warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                 return call(*warm_args, **warm_kwargs)
-            if len(self.cache) >= self.max_graphs and self.plan is not None:
-                # A planned call keys on the prompt length, so evict the least recently replayed graph.
-                gone = getattr(self.cache.pop(next(iter(self.cache))), "pool_token", None)
+            # Batched graphs have their own budget (MAX_BATCHED_GRAPHS): they never take a size-1 key's slot.
+            batched_here = rows is not None
+            victim = (
+                self._eviction_victim(_has_reference(kwargs))
+                if not batched_here
+                and self.plan is not None
+                and self._unbatched_count() >= self.max_graphs
+                else None
+            )
+            if victim is not None:
+                # A planned call keys on the prompt length, so evict the least recently replayed graph: a batched one
+                # first, then an edit's; an edit never evicts a text-to-image graph (it runs ungraphed instead).
+                self._batched.pop(victim, None)
+                getattr(self, "_edit_keys", set()).discard(victim)
+                gone = getattr(self.cache.pop(victim), "pool_token", None)
                 self.stats["evictions"] += 1
                 _note_dropped_pools([gone])
                 # The last graph on the shared pool takes the pool with it; never hand its id to the next capture.
                 _drop_pool_if_unused()
-            if len(self.cache) >= self.max_graphs:
+            if not batched_here and self._unbatched_count() >= self.max_graphs:
                 # The recorded graphs keep replaying: one rare new key is no reason to drop them.
                 self.stats["cap_skips"] += 1
                 if not self.cap_hit:
@@ -2013,6 +2292,21 @@ class GraphedForward:
                 _restore_stream(stream_before)
                 if "already recording" not in str(exc):
                     _heal_generators()  # before anything eager draws from the CUDA RNG
+                if rows is not None and self.placement is None and _is_oom(exc):
+                    # Out of memory recording a batched graph: drop only the batched graphs, keep the size-1 ones.
+                    self._drop_batched(f"out of memory recording a batch of {rows[0]}")
+                    self.stats["batch_capture_failures"] += 1
+                    if self.logger is not None:
+                        self.logger.warning(
+                            "diffusion.cuda_graph: no memory for a batch-%d graph on %s; batched calls run eager, "
+                            "the size-1 graphs keep replaying",
+                            rows[0],
+                            type(self.module).__name__,
+                        )
+                    exc.__traceback__ = None
+                    self._release()
+                    # The size-1 graphs keep replaying: run like the other unrecorded shapes beside them.
+                    return self._eager_as_recorded(eager_args, eager_kwargs)
                 if self.placement is not None:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
                     self.placement.release_slots()  # nothing will replay into the ring for this load
@@ -2034,6 +2328,15 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             entry = captured
             self.cache[key] = entry
+            if rows is not None:
+                self._batched[key] = rows[0]
+                canvas = _BATCH_CANVAS.get()
+                self.__dict__.setdefault("_batched_canvas", {})[key] = (
+                    set() if canvas is None else {canvas}
+                )
+                self.stats["batch_captures"] += 1
+            if _has_reference(kwargs):
+                self.__dict__.setdefault("_edit_keys", set()).add(key)
             if scope is not None:
                 self._scope_captures[scope] = self._scope_captures.get(scope, 0) + 1
             self._unsloth_capture_device = capture_device()
@@ -2054,6 +2357,17 @@ class GraphedForward:
                     self._sealed_scopes.add(scope)
             if self.plan is not None:
                 self.cache[key] = self.cache.pop(key)
+            if key in getattr(self, "_batched", {}):
+                now = _BATCH_ROWS.get()
+                if now is None or now[0] <= 1:
+                    # A size-1 call (true CFG has two rows too) replays this graph: it is a size-1 graph now.
+                    self._batched.pop(key, None)
+                    getattr(self, "_batched_canvas", {}).pop(key, None)
+                elif _BATCH_CANVAS.get() is not None:
+                    # Same shapes at another race canvas (steps, guidance): this graph serves that one too.
+                    self.__dict__.setdefault("_batched_canvas", {}).setdefault(key, set()).add(
+                        _BATCH_CANVAS.get()
+                    )
 
         live: list = []
         _flatten((args, kwargs), live)
@@ -2258,7 +2572,9 @@ class GraphedForward:
 
             graph = torch.cuda.CUDAGraph()
             # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
-            pool = _POOL_BOX[0]
+            box = _pool_box()
+            pool = box[0]
+            pool_before = _pool_id_bytes(pool)
             if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
                 pool = torch.cuda.graph_pool_handle()
             recorder = _graph_without_flush if recapture else _graph_with_flush
@@ -2278,19 +2594,26 @@ class GraphedForward:
                 if skip_stats is not None:
                     skip.stats = skip_stats
         self.stats["pool_bytes"] = _pool_bytes(graph)
+        if _BATCH_ROWS.get() is None or _BATCH_ROWS.get()[0] <= 1:
+            # This size-1 graph's own pool growth: what a batch-k graph of it is priced from (k times).
+            grown = max(0, int(self.stats["pool_bytes"]) - int(pool_before))
+            self.stats["size1_graph_bytes"] = max(
+                int(self.stats.get("size1_graph_bytes", 0)), grown
+            )
         if key is not None:
             self._recorded[key] = None
             while len(self._recorded) > 4 * self.max_graphs:
                 self._recorded.pop(next(iter(self._recorded)))
-        if _POOL_BOX[0] is None:
+        box = _pool_box()
+        if box[0] is None:
             try:
-                _POOL_BOX[0] = graph.pool()
+                box[0] = graph.pool()
             except Exception:  # noqa: BLE001 - a private pool per graph still works
                 pass
 
         entry.graph = graph
         # The pool this graph recorded into (see _drop_pool_if_unused), not whatever the box holds by now.
-        entry.pool_token = pool if pool is not None else _POOL_BOX[0]
+        entry.pool_token = pool if pool is not None else box[0]
         out_tensors: list = []
         entry.out_spec = _flatten(out, out_tensors)
         entry.out_tensors = out_tensors
@@ -3183,7 +3506,8 @@ def seal_lengths(handles: Any) -> None:
 
 
 def set_bypass(handles: Any, on: bool) -> None:
-    """Run eager without dropping graphs, for every handle."""
+    """Run eager without dropping graphs, for every handle; inside ``forced_eager`` they stay bypassed."""
+    on = bool(on) or eager_forced()
     for handle in handles or ():
         try:
             handle.set_bypass(on)

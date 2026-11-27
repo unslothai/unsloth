@@ -961,3 +961,26 @@ def test_planned_skips_survive_the_post_render_reset():
     ss.reset_static_step_skip(pipe, None)
     stats = ss.static_skip_stats(pipe)
     assert stats["stats"]["skipped"] == stats["planned_skips"] == 9
+
+
+def test_a_forced_eager_scope_survives_the_per_chunk_graph_reset(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """generate() re-arms the graphs before every chunk (set_bypass False without a step cache): the race's eager arm
+    must still run eager through the real chunk path."""
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = dmod.DiffusionBackend()
+    _load_into(backend, tmp_path)
+    seen = []
+    handle = types.SimpleNamespace(set_bypass = lambda on: seen.append(bool(on)))
+    object.__setattr__(backend._state, "cuda_graphs", (handle,))
+    monkeypatch.setattr(dmod.cuda_graph, "note_render_steps", lambda *a, **k: None)
+    with cg.forced_eager():
+        backend.generate(prompt = "a sloth", steps = 25)
+    assert seen and all(seen), seen
+    seen.clear()
+    backend.generate(prompt = "a sloth", steps = 25)
+    assert seen == [False]
+    backend.unload()

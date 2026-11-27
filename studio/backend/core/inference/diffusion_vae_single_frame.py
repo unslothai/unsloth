@@ -81,6 +81,16 @@ def _tiles(vae: Any, z: Any) -> bool:
     return z.shape[-1] > w or z.shape[-2] > h
 
 
+def _coalesced_call() -> bool:
+    """Inside a call carrying several requests (image_request_batching through diffusion_cuda_graph.batch_rows)."""
+    try:
+        from .diffusion_cuda_graph import current_batch_rows
+    except Exception:  # noqa: BLE001
+        return False
+    rows = current_batch_rows()
+    return rows is not None and rows[0] > 1
+
+
 def _fast_decode(
     self: Any,
     z: Any,
@@ -90,6 +100,16 @@ def _fast_decode(
     if not _single_frame(self, z) or _tiles(self, z):
         return stock(z, return_dict = return_dict)
     import torch
+
+    if getattr(z, "shape", (1,))[0] > 1 and _coalesced_call():
+        # Several requests' images: decode one at a time, like the strip decoder, so the peak is one feature map and
+        # each image decodes exactly as its own request would.
+        out = torch.cat([_fast_decode(self, part, return_dict = False)[0] for part in z.split(1)])
+        if not return_dict:
+            return (out,)
+        from diffusers.models.autoencoders.vae import DecoderOutput
+
+        return DecoderOutput(sample = out)
 
     gate = self._unsloth_sf_gate
     gate.on = True
