@@ -31,6 +31,8 @@ class _Power:
 POWER = {
     "l4": _Power(2040.0, 0.05, {"today": 1290.0, "cutlass": 855.0, "paired": 1171.0}),
     "rtx6000_ada": _Power(2505.0, 0.05, {"today": 1240.0, "cutlass": 1180.0, "paired": 1035.0}),
+    # clock-stable card (A100-like): sustained timings match the short ones, so the short timings decide
+    "stable": _Power(1410.0, 0.05, {"today": 1410.0, "cutlass": 1410.0, "paired": 1410.0}),
 }
 # tile speed at equal clock relative to today's path, and rows per tile
 _TILE_SPEED = {0: 0.90, 1: 0.93, 2: 0.97}
@@ -159,10 +161,17 @@ def _clean(monkeypatch):
 _REAL_RACE, _REAL_PAIRED = cut.race, cut.paired_cost_us
 
 
-def _run_load(monkeypatch, card: str, dit: str) -> dict:
-    """One int8 load of ``dit`` on the modelled card; returns route, race inputs and image-row pair count."""
-    for d in _STATE:
-        d.clear()
+def _run_load(
+    monkeypatch,
+    card: str,
+    dit: str,
+    fresh: bool = True,
+) -> dict:
+    """One int8 load of ``dit`` on the modelled card; returns route, race inputs and image-row pair count.
+    ``fresh=False``: keep the process state of earlier loads and flip the switch through ``_swap_on``, as production."""
+    if fresh:
+        for d in _STATE:
+            d.clear()
     sim = _Card(POWER[card])
     races: list = []
     real_race, real_paired = _REAL_RACE, _REAL_PAIRED
@@ -240,7 +249,10 @@ def _run_load(monkeypatch, card: str, dit: str) -> dict:
 
     # absent on a tree without the family switch
     switch = getattr(cut, "set_paired_rows", None)
-    if switch is not None:
+    if not fresh:
+        monkeypatch.setattr(g8, "_split_cards", lambda t: [0])
+        assert g8._swap_on(type(dit, (torch.nn.Module,), {})(), None, 0) == 0
+    elif switch is not None:
         switch(0, type(dit, (), {})())
     g8._CUT_TRITON_ON[0] = True
     inv = INVENTORIES[dit]
@@ -399,3 +411,26 @@ def test_race_cache_key_splits_only_the_paired_family(monkeypatch):
     cut.set_paired_rows(0, type(H3I, (), {})())
     assert g8._cut_cache_key(0) == plain + "|paired_rows"
     assert g8._cut_cache_key(1) == g8._cut_cache_key(1).replace("|paired_rows", "")
+
+
+def test_h3_image_after_h3_video_in_one_process(monkeypatch):
+    """H3 video (same 5 weight shapes, unpaired image-row races) then H3-Image on one card, no state reset in between:
+    the second load must race paired again, not reuse the video load's in-process plan or live races."""
+    video = "MiniMaxH3VideoTransformer3DModel"
+    monkeypatch.setitem(INVENTORIES, video, INVENTORIES[H3I])
+    vid = _run_load(monkeypatch, "rtx6000_ada", video)
+    assert _image_rows_on_cutlass(vid, video) == 300 and vid["image_pairs"] == 0
+    img = _run_load(monkeypatch, "rtx6000_ada", H3I, fresh = False)
+    assert _image_rows_on_cutlass(img, H3I) == 0, img["route"]
+    assert img["image_pairs"] == 9, img
+    # and back: a video load after H3-Image keeps its unpaired winners
+    again = _run_load(monkeypatch, "rtx6000_ada", video, fresh = False)
+    assert again["route"] == vid["route"] and again["image_pairs"] == 0
+
+
+def test_h3_image_short_timing_winners_skip_the_pair_check(monkeypatch):
+    """Below video rows the pair check needs the sustained timings to have decided: a clock-stable card keeps its
+    short-timing winners unpaired, as before this switch."""
+    r = _run_load(monkeypatch, "stable", H3I)
+    assert r["image_pairs"] == 0, r
+    assert _image_rows_on_cutlass(r, H3I) == 300, r["route"]

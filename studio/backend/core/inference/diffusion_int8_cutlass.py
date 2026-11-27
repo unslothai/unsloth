@@ -804,8 +804,9 @@ def race(
     dims = tiles(fam)
     rows = {t: int(dims[t][0]) for t in top if 0 <= t < len(dims)}
     best, fastest = pick(timing, top, base_name, m, rows)
-    if best is not None and paired_for(m, index):
-        # winners must also win where the clock is shared with today's path
+    if best is not None and paired_for(m, index) and (m >= _HUGE_M or info.get("sustained")):
+        # winners must also win where the clock is shared with today's path; below video rows only when the
+        # sustained timings decided (a clock-stable card keeps its short-timing winners)
         wins = [t for t in top if timing[t] < timing[base_name] * (1.0 - _MARGIN)]
         with torch.cuda.device(dev):
             paired = paired_cost_us(
