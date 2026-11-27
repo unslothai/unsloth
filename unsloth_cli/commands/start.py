@@ -9043,14 +9043,10 @@ def antigravity(
     )
     # A printed command must create a fresh listener when it is eventually run.
     if not launch:
-        command = [
-            "unsloth",
-            "start",
-            "antigravity",
-            "--model",
-            model or entry["id"],
-            *_typed_options(ctx),
-        ]
+        command = ["unsloth", "start", "antigravity"]
+        if model or _looks_like_model(entry["id"]):
+            command += ["--model", model or entry["id"]]
+        command += _typed_options(ctx)
         if yolo:
             command.append("--yolo")
         _run(

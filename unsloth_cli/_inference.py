@@ -36,30 +36,67 @@ _MPI_ENV_PAIRS = (
 _openers: dict = {}
 
 
+def _build_opener(follow_redirects: bool, loopback: bool, *handlers):
+    import urllib.error
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.HTTPError(
+                req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+            )
+
+    handlers = list(handlers)
+    # urllib proxies 127.0.0.1 unless no_proxy lists it, leaking the bearer key to http_proxy.
+    if loopback:
+        handlers.append(urllib.request.ProxyHandler({}))
+    if not follow_redirects:
+        handlers.append(_NoRedirect)
+    return urllib.request.build_opener(*handlers)
+
+
 def _opener(follow_redirects: bool, loopback: bool):
     key = (follow_redirects, loopback)
     if key not in _openers:
-        import urllib.error
-        import urllib.request
-
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, req, fp, code, msg, headers, newurl):
-                raise urllib.error.HTTPError(
-                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
-                )
-
-        # urllib proxies 127.0.0.1 unless no_proxy lists it, leaking the bearer key to http_proxy.
-        handlers = [urllib.request.ProxyHandler({})] if loopback else []
-        if not follow_redirects:
-            handlers.append(_NoRedirect)
-        _openers[key] = urllib.request.build_opener(*handlers)
+        _openers[key] = _build_opener(follow_redirects, loopback)
     return _openers[key]
 
 
-def urlopen_no_redirect(request, timeout):
+def urlopen_no_redirect(
+    request,
+    timeout,
+    *,
+    on_connect = None,
+):
     """urlopen errors on redirects: following one would send a bearer token to an unvetted base (or
     accept its identity proof), letting a port squatter relay a real Unsloth's response."""
-    return _opener(False, is_loopback_url(request.full_url)).open(request, timeout = timeout)
+    loopback = is_loopback_url(request.full_url)
+    if on_connect is None:
+        return _opener(False, loopback).open(request, timeout = timeout)
+
+    import http.client
+    import urllib.request
+
+    def track_socket(connection_class):
+        class Connection(connection_class):
+            def connect(self):
+                super().connect()
+                on_connect(self.sock)
+
+        return Connection
+
+    class HTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(track_socket(http.client.HTTPConnection), req)
+
+    class HTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(
+                track_socket(http.client.HTTPSConnection), req, context = self._context
+            )
+
+    opener = _build_opener(False, loopback, HTTPHandler(), HTTPSHandler())
+    return opener.open(request, timeout = timeout)
 
 
 def urlopen_local(request, timeout):

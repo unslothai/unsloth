@@ -5,16 +5,18 @@
 
 import json
 import secrets
+import selectors
+import socket
 import threading
 import urllib.error
 import urllib.request
 from collections import defaultdict, deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from unsloth_cli._inference import urlopen_no_redirect
+from unsloth_cli._inference import _USER_AGENT, urlopen_no_redirect
 
 
 # agy accepts values beginning with a dash, including a literal "--settings"
@@ -228,6 +230,48 @@ def _gemini_stream(lines):
     yield last
 
 
+@contextmanager
+def _cancel_on_disconnect(client):
+    done, cancelled = threading.Event(), threading.Event()
+    upstream = None
+
+    def shutdown_upstream():
+        if upstream is not None:
+            with suppress(OSError):
+                # Wake the reader without clearing an SSLSocket's TLS state from this thread.
+                socket.socket.shutdown(upstream, socket.SHUT_RDWR)
+
+    def connected(connection):
+        nonlocal upstream
+        upstream = connection
+        if cancelled.is_set():
+            shutdown_upstream()
+
+    def watch():
+        with selectors.DefaultSelector() as selector:
+            selector.register(client, selectors.EVENT_READ)
+            while not done.is_set():
+                if not selector.select(0.1):
+                    continue
+                try:
+                    if client.recv(1, socket.MSG_PEEK):
+                        done.wait(0.1)
+                        continue
+                except OSError:
+                    pass
+                cancelled.set()
+                shutdown_upstream()
+                return
+
+    watcher = threading.Thread(target = watch, daemon = True)
+    watcher.start()
+    try:
+        yield connected, cancelled
+    finally:
+        done.set()
+        watcher.join()
+
+
 class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # Prompts and tool results belong to the agent session.
@@ -261,15 +305,25 @@ class _Handler(BaseHTTPRequestHandler):
             headers = {
                 "Authorization": f"Bearer {self.server.key}",
                 "Content-Type": "application/json",
+                "User-Agent": _USER_AGENT,
             },
         )
+        with _cancel_on_disconnect(self.connection) as (connected, cancelled):
+            with suppress(BrokenPipeError, ConnectionResetError):
+                self._forward(request, connected, cancelled)
+
+    def _forward(self, request, connected, cancelled):
         try:
-            response = urlopen_no_redirect(request, timeout = 1200)
+            response = urlopen_no_redirect(request, timeout = 1200, on_connect = connected)
         except urllib.error.HTTPError as exc:
             with exc:
-                return self._error(exc.code, exc.read(4096).decode(errors = "replace"))
+                if not cancelled.is_set():
+                    self._error(exc.code, exc.read(4096).decode(errors = "replace"))
+            return
         except OSError as exc:
-            return self._error(502, str(exc))
+            if not cancelled.is_set():
+                self._error(502, str(exc))
+            return
 
         with response:
             self.send_response(200)
@@ -281,7 +335,8 @@ class _Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 return
             except (OSError, ValueError, KeyError, TypeError) as exc:
-                self._send_event({"error": {"code": 502, "message": str(exc)}})
+                if not cancelled.is_set():
+                    self._send_event({"error": {"code": 502, "message": str(exc)}})
 
     def _send_event(self, event):
         self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")

@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import http.client
 import json
+import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -13,6 +16,87 @@ from unsloth_cli.antigravity import (
     antigravity_endpoint,
     session_settings,
 )
+
+
+def test_endpoint_sends_the_cli_user_agent_to_inference():
+    received = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            received.append(self.headers["User-Agent"])
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"finish_reason":"stop"}]}\n\n')
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as backend:
+        thread = threading.Thread(target = backend.serve_forever)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{backend.server_port}"
+            with antigravity_endpoint(base, "backend-key", "test-model", {}) as (url, token):
+                req = urllib.request.Request(
+                    url + "/v1beta/models/unsloth:streamGenerateContent",
+                    data = b'{"contents":[{"parts":[{"text":"hello"}]}]}',
+                    headers = {"x-goog-api-key": token},
+                )
+                with urllib.request.urlopen(req, timeout = 3) as response:
+                    assert b'"finishReason": "STOP"' in response.read()
+        finally:
+            backend.shutdown()
+            thread.join()
+
+    assert received == ["unsloth-cli"]
+
+
+@pytest.mark.parametrize("stream_started", [False, True], ids = ["prefill", "buffered-tool-call"])
+def test_endpoint_closes_upstream_when_client_cancels(stream_started):
+    upstream_ready = threading.Event()
+    upstream_cancelled = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if stream_started:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(
+                    b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+                    b'"function":{"name":"read_file","arguments":"{"}}]}}]}\n\n'
+                )
+                self.wfile.flush()
+            upstream_ready.set()
+            self.connection.settimeout(3)
+            try:
+                if not self.connection.recv(1):
+                    upstream_cancelled.set()
+            except ConnectionResetError:
+                upstream_cancelled.set()
+            except TimeoutError:
+                pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as backend:
+        thread = threading.Thread(target = backend.serve_forever)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{backend.server_port}"
+            with antigravity_endpoint(base, "backend-key", "test-model", {}) as (url, token):
+                client = http.client.HTTPConnection(url.removeprefix("http://"), timeout = 3)
+                try:
+                    client.request(
+                        "POST",
+                        "/v1beta/models/unsloth:streamGenerateContent",
+                        body = b'{"contents":[{"parts":[{"text":"hello"}]}]}',
+                        headers = {"x-goog-api-key": token},
+                    )
+                    assert upstream_ready.wait(3), "the backend never received the request"
+                finally:
+                    client.close()
+                assert upstream_cancelled.wait(2), "the backend connection stayed open after cancel"
+        finally:
+            backend.shutdown()
+            thread.join()
 
 
 def test_tool_results_follow_call_ids_even_when_returned_in_reverse_order():

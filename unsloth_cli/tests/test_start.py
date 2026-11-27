@@ -9119,6 +9119,37 @@ def test_antigravity_no_launch_prints_replayable_launcher_command(fake_studio):
     assert "GOOGLE_GEMINI_BASE_URL" not in result.output
 
 
+def test_antigravity_no_launch_replays_the_inferred_local_checkpoint(fake_studio, monkeypatch):
+    local_path = "/srv/models/local-checkpoint"
+    public_id = "local-checkpoint"
+    fake_studio.state["models"] = [{"id": public_id, "loaded": True, "context_length": 32768}]
+    monkeypatch.setattr(
+        start,
+        "_inference_status",
+        lambda *args: {
+            "active_model": public_id,
+            "model_identifier": local_path,
+            "requested_context_length": 32768,
+        },
+    )
+    load_targets = []
+
+    def load(base, key, model, options, payload):
+        load_targets.append(payload["model_path"])
+        return {"status": "already_loaded", "model": public_id}
+
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+    runner = CliRunner()
+    preview = runner.invoke(
+        start.start_app, ["antigravity", "--no-launch", "--context-length", "32768"]
+    )
+    assert preview.exit_code == 0, preview.output
+    command = _launch_command(preview.output)
+    replay = runner.invoke(start.start_app, [*command[2:], "--no-launch"])
+    assert replay.exit_code == 0, replay.output
+    assert load_targets == [local_path, local_path]
+
+
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
