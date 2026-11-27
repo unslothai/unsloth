@@ -30679,7 +30679,7 @@ def _clip_turn_tool_results(
             continue
         if len(text) - _CLIPPED_RESULT_MIN_CHARS <= _CLIP_NOTICE_CHARS:
             continue
-        # Searched with the caller's counter: per-character rates differ by script (CJK vs Latin).
+        # The caller's counter: chars per token differ by script (CJK vs Latin).
         low, high = _CLIPPED_RESULT_MIN_CHARS, len(text) - _CLIP_NOTICE_CHARS
         message["content"] = _clip_text(text, low)
         over = count_tokens(floor) - target
@@ -30783,8 +30783,7 @@ def _fit_external_context(
         messages = fit_oversized_attachments(
             messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
         )
-        # The reply in progress is never evicted, unless shortening its tool results cannot fit it;
-        # its request always stays, as the summary never covers it.
+        # The request always stays; the rest of the turn too, unless clipping cannot fit it.
         if _clip_turn_tool_results(
             messages,
             turn,
