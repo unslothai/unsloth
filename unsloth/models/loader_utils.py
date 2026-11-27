@@ -2042,6 +2042,49 @@ def _resolved_revision(
     return memo[key]
 
 
+_COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _cached_missing_adapter_error(
+    model_name,
+    model_config,
+    revision,
+    token = None,
+    local_files_only = False,
+):
+    """The PeftConfig probe's error, without its Hub HEAD, when the cache records no adapter_config.json at the
+    commit the config probe loaded (transformers' own cached_file shortcut). None means: run the probe."""
+    if (
+        model_config is None
+        or local_files_only
+        or not isinstance(model_name, str)
+        or not model_name
+        or _env_says_offline()
+        or os.path.exists(model_name)
+    ):
+        return None
+    try:
+        # A resolve the config probe already ran (memo hit); transformers < 5.18 stamps the config instead.
+        resolved = _resolved_revision(model_name, revision, token, local_files_only)
+        if _ResolvedRevision is not None and isinstance(resolved, _ResolvedRevision):
+            commit = resolved.resolved
+        elif isinstance(revision, str) and _COMMIT_HASH_RE.fullmatch(revision):
+            commit = revision
+        else:
+            commit = getattr(model_config, "_commit_hash", None)
+        if not isinstance(commit, str) or not _COMMIT_HASH_RE.fullmatch(commit):
+            return None
+        from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+        from peft.utils import CONFIG_NAME
+
+        if try_to_load_from_cache(model_name, CONFIG_NAME, revision = commit) is not _CACHED_NO_EXIST:
+            return None
+    except Exception:
+        return None
+    # peft's own wording, so callers matching on it behave the same.
+    return ValueError(f"Can't find '{CONFIG_NAME}' at '{model_name}'")
+
+
 _TOKEN_FROM_KWARGS = object()
 
 
