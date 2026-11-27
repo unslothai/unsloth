@@ -635,6 +635,7 @@ def test_verify_oom_is_no_verdict(monkeypatch):
     monkeypatch.setattr(torch.cuda, "device", lambda index: contextlib.nullcontext())
     assert tg.verify(0, torch.bfloat16) is False
     assert (0, torch.bfloat16) not in tg._STATE["verified"]  # checked again next time
+    assert tg.check_pending(0, torch.bfloat16) is True  # the dispatcher keeps the card a candidate
     assert not tg._STATE["failed"]
 
 
@@ -675,3 +676,169 @@ def test_eligible_bounds_strided_offsets():
     assert a.numel() < 2**31 and (a.shape[0] - 1) * a.stride(0) > 2**31
     assert not tg.eligible(a, sa, w.t(), sb, None, torch.bfloat16)
     assert tg.eligible(a.contiguous(), sa, w.t(), sb, None, torch.bfloat16)
+
+
+class _Deferred:
+    """A self-check (bf16 or accumulator) that hits an OOM until ``passes()``: no verdict meanwhile, then a pass."""
+
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        bf16_oom = True,
+        precise_oom = False,
+    ):
+        self.bf16_ok, self.precise_ok = not bf16_oom, not precise_oom
+        self.bf16_calls, self.precise_calls = [], []
+        self.capturing = False
+        self.precise_known = set()
+        monkeypatch.setattr(us, "_TRITON_RETRY_S", 0.0, raising = False)
+
+        def verify(index, dt):
+            self.bf16_calls.append((index, dt))
+            return self.bf16_ok
+
+        def verify_precise(index):
+            self.precise_calls.append(index)
+            if self.precise_ok:
+                self.precise_known.add(index)
+            return self.precise_ok
+
+        monkeypatch.setattr(tg, "verify", verify)
+        monkeypatch.setattr(tg, "verified", lambda index, dt: self.bf16_ok)
+        monkeypatch.setattr(tg, "check_pending", lambda index, dt: not self.bf16_ok, raising = False)
+        monkeypatch.setattr(tg, "verify_precise", verify_precise)
+        monkeypatch.setattr(
+            tg,
+            "precise_pending",
+            lambda index: self.bf16_ok and index not in self.precise_known,
+            raising = False,
+        )
+        monkeypatch.setattr(tg, "_capturing", lambda device: self.capturing)
+
+    def passes(self):
+        self.bf16_ok = self.precise_ok = True
+
+
+def _traced_calls(monkeypatch, on):
+    monkeypatch.setattr(us, "_traced", lambda t: on)
+    monkeypatch.setattr(us, "_compiling", lambda: on)
+
+
+def test_oom_deferred_self_check_retries_from_an_eager_call(monkeypatch):
+    # Codex P2: an OOM in the install-time self-check left the card out of the dispatcher for the whole process.
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    k = _Kernel(monkeypatch)
+    d = _Deferred(monkeypatch)
+    tq._make_quant_config(tq.TQ_FP8)
+    fallback_tag = "unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0"
+    assert ccfg.cache_key_tag == fallback_tag
+    assert us.gemm_path(0)["triton_gemm"]["eager"] is False
+    calls.clear()
+    _call()  # still OOM: the tensorwise GEMM, a retry was made
+    assert calls == ["tensorwise32"] and k.eager == [] and len(d.bf16_calls) == 2
+    d.passes()
+    calls.clear()
+    _call()
+    assert k.eager == [torch.bfloat16] and calls == []
+    assert us.gemm_path(0)["triton_gemm"] == {
+        "eager": True,
+        "compiled": False,  # graphs traced from here on keep the fallback until the next install
+        "precise_accumulate": True,
+    }
+    assert ccfg.cache_key_tag == fallback_tag
+    _traced_calls(monkeypatch, True)
+    calls.clear()
+    _call()
+    assert k.traced == [] and calls == ["tensorwise32"]
+    _traced_calls(monkeypatch, False)
+    # The next install (the next load) rebuilds the dispatcher: compiled path and its cache tag.
+    us.install()
+    assert us.gemm_path(0)["triton_gemm"] == {
+        "eager": True,
+        "compiled": True,
+        "precise_accumulate": True,
+    }
+    assert ccfg.cache_key_tag == f"{fallback_tag}:gemm=triton-0-{tg.source_digest()}:precise=0"
+    _traced_calls(monkeypatch, True)
+    _call()
+    assert k.traced == [torch.bfloat16]
+
+
+def test_deferred_self_check_never_retries_inside_a_capture_or_a_trace(monkeypatch):
+    calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    k = _Kernel(monkeypatch)
+    d = _Deferred(monkeypatch)
+    tq._make_quant_config(tq.TQ_FP8)
+    assert len(d.bf16_calls) == 1
+    d.passes()  # memory is free now, but no retry may run here:
+    _traced_calls(monkeypatch, True)
+    _call()
+    d.capturing = True
+    _traced_calls(monkeypatch, False)
+    _call()
+    assert len(d.bf16_calls) == 1 and k.eager == [] and k.traced == []
+    d.capturing = False
+    calls.clear()
+    _call()
+    assert len(d.bf16_calls) == 2 and k.eager == [torch.bfloat16] and calls == []
+
+
+def test_deferred_self_check_backs_off_between_retries(monkeypatch):
+    rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    _Kernel(monkeypatch)
+    d = _Deferred(monkeypatch)
+    monkeypatch.setattr(us, "_TRITON_RETRY_S", 3600.0, raising = False)
+    tq._make_quant_config(tq.TQ_FP8)
+    for _ in range(5):
+        _call()
+    assert len(d.bf16_calls) == 2  # install + one eager retry, then the back-off holds
+
+
+def test_oom_deferred_accumulator_check_retries_from_an_eager_call(monkeypatch):
+    import torch.compiler.config as ccfg
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    calls = rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    k = _Kernel(monkeypatch)
+    d = _Deferred(monkeypatch, bf16_oom = False, precise_oom = True)
+    tq._make_quant_config(tq.TQ_FP8)
+    tag = f"unsloth_fp8_unit_scale=256:rowwise-missing=0:acc32=0:gemm=triton-0-{tg.source_digest()}"
+    assert ccfg.cache_key_tag == tag
+    assert us.gemm_path(0)["triton_gemm"]["precise_accumulate"] is False
+    calls.clear()
+    _call(fast = False)
+    assert calls == ["tensorwise32"] and k.eager == []
+    d.passes()
+    calls.clear()
+    _call(fast = False)
+    assert k.eager == [torch.bfloat16] and calls == []
+    # A precise GEMM traced now keeps the fallback the cache tag names; the next install moves both.
+    _traced_calls(monkeypatch, True)
+    calls.clear()
+    _call(fast = False)
+    assert k.traced == [] and calls == ["tensorwise32"]
+    _call(fast = True)
+    assert k.traced == [torch.bfloat16]
+    _traced_calls(monkeypatch, False)
+    us.install()
+    assert ccfg.cache_key_tag == f"{tag}:precise=0"
+    _traced_calls(monkeypatch, True)
+    _call(fast = False)
+    assert k.traced == [torch.bfloat16, torch.bfloat16]
+
+
+def test_a_real_self_check_failure_is_not_retried(monkeypatch):
+    rf._fake_card(monkeypatch, (12, 0), rowwise_ok = False)
+    _Kernel(monkeypatch)
+    d = _Deferred(monkeypatch)
+    tq._make_quant_config(tq.TQ_FP8)
+    monkeypatch.setattr(
+        tg, "check_pending", lambda index, dt: False, raising = False
+    )  # a mismatch verdict, cached
+    _call()
+    _call()
+    assert len(d.bf16_calls) == 2  # the one retry learned the verdict, then nothing more

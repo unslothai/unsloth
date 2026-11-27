@@ -437,6 +437,21 @@ def verified(index: Any, output_dtype: Any) -> bool:
     return bool(_STATE["verified"].get((index, output_dtype))) and not _STATE["failed"].get(index)
 
 
+def check_pending(index: Any, output_dtype: Any) -> bool:
+    """The self-check has no verdict for this card and dtype yet (it hit an OOM): a later call may still pass it."""
+    return (
+        triton is not None
+        and (index, output_dtype) not in _STATE["verified"]
+        and not _STATE["failed"].get(index)
+    )
+
+
+def precise_pending(index: Any) -> bool:
+    """The accumulator check has no verdict for this bf16-verified card yet (it hit an OOM)."""
+    import torch
+    return triton is not None and index not in _STATE["precise"] and verified(index, torch.bfloat16)
+
+
 def verify(index: int, output_dtype: Any) -> bool:
     """Bit-exact self-check of every config, with and without bias, cached per (card, dtype). OOM is no verdict:
     False now, retried next call. Never raises."""
