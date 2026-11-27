@@ -8590,6 +8590,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
         # Only a release this index publishes, so a CUDA family change never pins an unservable one.
         # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        # cu130 tops out at the minor below install.ps1 $Cu130TorchCeiling (exclusive, "2.15.0"), so both keep
+        # the same releases; raise them together once a 2.15 cu130 win_amd64 wheel is published.
         $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
         if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
                 [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {
