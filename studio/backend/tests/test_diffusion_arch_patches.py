@@ -254,7 +254,6 @@ def _krea2_named_norms_forward(
     image_rotary_emb,
     attention_mask = None,
 ):
-    # The pre-fix body: norm1 / norm2 bound to names, so each stays live through attn / ff.
     modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
     prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
     norm1 = self.norm1(hidden_states)
@@ -316,7 +315,7 @@ def test_krea2_forward_is_bit_equal_to_named_norms_with_one_less_buffer_live():
     hs = torch.randn(1, seq, dim, dtype = torch.bfloat16)
     tm = torch.randn(1, 1, 6 * dim, dtype = torch.bfloat16)
     with torch.inference_mode():
-        ap._krea2_block_forward(blk, hs, tm, image_rotary_emb)  # warm
+        ap._krea2_block_forward(blk, hs, tm, image_rotary_emb)
         got, peak = _peak_live_bytes(lambda: ap._krea2_block_forward(blk, hs, tm, image_rotary_emb))
         ref, ref_peak = _peak_live_bytes(
             lambda: _krea2_named_norms_forward(blk, hs, tm, image_rotary_emb)
