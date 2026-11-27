@@ -24,6 +24,7 @@ import {
 } from "@/features/training";
 import {
   llmStepGuidance,
+  rowsAfterAutomaticEvalHoldout,
   runDataParallelSize,
   trainedRowCount,
 } from "@/features/training/lib/step-guidance";
@@ -73,6 +74,9 @@ export function ParamsSection({
       gradientAccumulation: state.gradientAccumulation,
       packing: state.packing,
       datasetTotalRows: state.datasetTotalRows,
+      datasetSource: state.datasetSource,
+      uploadedEvalFile: state.uploadedEvalFile,
+      evalSteps: state.evalSteps,
       datasetSliceStart: state.datasetSliceStart,
       datasetSliceEnd: state.datasetSliceEnd,
       setProjectName: state.setProjectName,
@@ -152,14 +156,23 @@ export function ParamsSection({
         s.planRequestKey === s.wantedPlanKey,
     }),
   );
+  const slicedRows = trainedRowCount(
+    store.datasetTotalRows,
+    store.datasetSliceStart,
+    store.datasetSliceEnd,
+  );
+  // Uploads without a separate eval file use the trainer's bounded automatic holdout.
+  const trainingRows =
+    slicedRows !== null &&
+    store.datasetSource === "upload" &&
+    !store.uploadedEvalFile &&
+    store.evalSteps > 0
+      ? rowsAfterAutomaticEvalHoldout(slicedRows)
+      : slicedRows;
   const stepGuidance = store.isDecision
     ? null
     : llmStepGuidance(
-        trainedRowCount(
-          store.datasetTotalRows,
-          store.datasetSliceStart,
-          store.datasetSliceEnd,
-        ),
+        trainingRows,
         store.batchSize,
         store.gradientAccumulation,
         dataParallelSize,

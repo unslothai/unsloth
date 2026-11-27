@@ -43,6 +43,12 @@ export function trainedRowCount(
   return rows > 0 ? rows : null;
 }
 
+/** Mirrors split_dataset_for_evaluation in core/training/eval_dataset.py. */
+export function rowsAfterAutomaticEvalHoldout(rows: number): number {
+  if (rows < 32) return rows;
+  return rows - Math.min(Math.floor(rows / 2), Math.max(16, Math.min(128, Math.floor(0.05 * rows))));
+}
+
 type PlanLayout = {
   mode: ParallelMode;
   worldSize: number;
