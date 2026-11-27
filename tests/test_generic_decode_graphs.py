@@ -238,6 +238,61 @@ def test_batches_over_the_knob_decode_eagerly(host, llama, monkeypatch):
     assert GG.stats(llama)["replays"] == 8
 
 
+@pytest.mark.skipif(
+    "UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ" in os.environ, reason = "cap overridden by the environment"
+)
+def test_rl_rollout_batches_take_the_graph_by_default(host, llama):
+    """GRPO without vLLM decodes num_generations x per-device batch rows (8 to 64) in one generate():
+    the default cap takes such a batch through the graph path, tokens equal to eager."""
+    assert GG.MAX_BSZ == 64
+    for bsz in (32, 64):
+        ids, mask = _ids(llama, bsz, pad = 2)
+        s = _both(llama, ids, mask)
+        assert s["captures"] == 1 and s["replays"] == 8 and s["refusals"] == {}, s
+    ids, mask = _ids(llama, 65, pad = 2)
+    s = _both(llama, ids, mask)
+    assert s["captures"] == 0 and s["refusals"] == {"batch over max": 9}, s
+
+
+def _rollout(model, ids, mask, graphs, eos, sample):
+    scope = vision._GraphDecodeSteps(model) if graphs else contextlib.nullcontext()
+    torch.manual_seed(7)
+    with torch.inference_mode(), scope:
+        return model.generate(
+            input_ids = ids,
+            attention_mask = mask,
+            max_new_tokens = 10,
+            do_sample = sample,
+            temperature = 1.5,
+            top_k = 0,
+            repetition_penalty = 1.3,
+            cache_implementation = "static",
+            pad_token_id = 0,
+            eos_token_id = eos,
+            disable_compile = True,
+        )
+
+
+@pytest.mark.parametrize("sample", [False, True])
+def test_rollout_batch_with_per_row_eos_and_processors_matches_eager(host, llama, sample):
+    """A 32-row rollout where rows stop at different steps (per-row EOS), seeded sampling and a logits
+    processor (repetition penalty) outside the graph: tokens equal to eager, every step replayed."""
+    ids, mask = _ids(llama, 32, pad = 2)
+    _fresh(llama)
+    probe = _rollout(llama, ids, mask, False, None, sample)[:, ids.shape[1] :]
+    # The token row 0 emits at step 3: an EOS that ends some rows early and leaves others running.
+    eos = int(probe[0, 3])
+    stops = (probe == eos).float().argmax(1)
+    assert (probe == eos).any(1).sum() < 32
+    _fresh(llama)
+    eager = _rollout(llama, ids, mask, False, eos, sample)
+    graphed = _rollout(llama, ids, mask, True, eos, sample)
+    assert torch.equal(eager, graphed)
+    s = GG.stats(llama)
+    assert s["captures"] == 1 and s["refusals"] == {} and s["replays"] >= 1, s
+    assert len(set(stops.tolist())) > 1
+
+
 def test_counts_captures_refusals_and_recompiles_separately(host, llama):
     def compiles():
         return counters["stats"]["unique_graphs"], sum(counters["recompiles"].values())
