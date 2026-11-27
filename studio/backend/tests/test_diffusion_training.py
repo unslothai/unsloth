@@ -2096,6 +2096,25 @@ def test_complete_event_records_family_and_catalog():
     assert st["catalog_path"] == "/loras/w.safetensors"
 
 
+def test_status_reports_the_jobs_trigger_for_deploy(_isolated_runs_dir):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "instance_prompt": "a photo in mystyle"})
+    st = _wait_status(svc, "completed")
+    assert st["instance_prompt"] == "a photo in mystyle"
+    record = _wait_record(_isolated_runs_dir, job_id)
+    assert record["instance_prompt"] == st["instance_prompt"]
+
+    svc.start(dict(_CFG))
+    assert _wait_status(svc, "completed")["instance_prompt"] is None
+
+
+def test_status_route_returns_the_trigger(client):
+    client._fake.status_extra = {"instance_prompt": "a photo in mystyle"}
+    assert (
+        client.get("/api/train/diffusion/status").json()["instance_prompt"] == "a photo in mystyle"
+    )
+
+
 def test_status_route_returns_preparation_counts(client):
     # The response model filters unknown keys, so the counts reach the UI only if it declares them.
     client._fake.status_extra = {

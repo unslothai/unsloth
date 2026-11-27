@@ -1425,6 +1425,9 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
+# Encoder stays stock: edits / I2V follow their input latents, and fusing it moved Qwen-Image-Edit (0.195 LPIPS)
+# and Wan 2.2 TI2V I2V (0.016 mean) renders against a bit-identical rerun.
+_STOCK_ENCODER_VAES = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 
 def _is_rms(norm: Any) -> bool:
@@ -2722,7 +2725,7 @@ def _install(
             n += int(diffusion_vae_strips.install(vae, logger))
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger, encoder)
+        n = install_wan_vae(vae, logger, encoder and name not in _STOCK_ENCODER_VAES)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
         n = install_hv15_vae(vae, logger, encoder)

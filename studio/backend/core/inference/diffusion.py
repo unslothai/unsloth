@@ -5074,6 +5074,12 @@ def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
             _KEY_TOKENIZERS.setdefault(tok, dup)
 
 
+def prime_coalesce_tokenizers_for(state: Any) -> None:
+    """Resident denoisers render serially (request_batching), so they need no tokenizer copies."""
+    if _denoiser_streams_from_host(state):
+        prime_coalesce_tokenizers(state.family, state.pipe)
+
+
 class _NoKeyTokenizer(Exception):
     """No private tokenizer copy yet: the prompt renders alone."""
 
@@ -16879,7 +16885,7 @@ class DiffusionBackend:
                 raise
             render_t0 = time.perf_counter()
             # Inside the slot, so no render uses the tokenizers while they are copied.
-            prime_coalesce_tokenizers(state.family, state.pipe)
+            prime_coalesce_tokenizers_for(state)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None

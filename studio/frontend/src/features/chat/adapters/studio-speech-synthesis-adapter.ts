@@ -423,10 +423,8 @@ export async function generateCustomTtsAudio(
     { beforeRetry: assertConnectionSnapshot },
   );
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    const body = await response.json().catch(() => null);
+    throw new Error(formatApiErrorBody(body) ?? `HTTP ${response.status}`);
   }
   const bytes = await response.arrayBuffer();
   const contentType =

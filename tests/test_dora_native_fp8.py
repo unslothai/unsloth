@@ -116,7 +116,7 @@ def test_no_fp8_linear_leaves_peft_alone():
 
 @pytest.mark.parametrize("path", ["unsloth/models/llama.py", "unsloth/models/vision.py"])
 def test_get_peft_model_patches_before_creating_the_adapters(path):
-    tree = ast.parse(open(os.path.join(ROOT, path)).read())
+    tree = ast.parse(open(os.path.join(ROOT, path), encoding = "utf-8").read())
     found = False
     for fn in ast.walk(tree):
         if not (isinstance(fn, ast.FunctionDef) and fn.name == "get_peft_model"):
