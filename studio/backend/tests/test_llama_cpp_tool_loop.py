@@ -7992,9 +7992,7 @@ def test_whole_document_retry_replaces_an_argument_compacted_search_call(monkeyp
     monkeypatch.setattr(
         llama_cpp,
         "_archive_and_recall",
-        lambda conversation, *_a, **_kw: dict(
-            conversation = conversation, counts = {}, recalled = False
-        ),
+        lambda conversation, *_a, **_kw: dict(conversation = conversation, counts = {}, recalled = False),
     )
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     monkeypatch.setattr(
@@ -8002,7 +8000,12 @@ def test_whole_document_retry_replaces_an_argument_compacted_search_call(monkeyp
     )
     monkeypatch.setattr(llama_cpp, "_conversation_recall_reserve", lambda _thread_id: 0)
 
-    def inject(messages, scope, *, whole_document_only = False):
+    def inject(
+        messages,
+        scope,
+        *,
+        whole_document_only = False,
+    ):
         built = tools.build_synthetic_search_exchange(
             tool_name = "search_knowledge_base",
             call_prefix = "rag_auto_",
