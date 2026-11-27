@@ -157,6 +157,9 @@ class _UnslothDeviceStats:
         self.major = 0
         self.minor = 0
         self.multi_processor_count = 0
+        # MLX hosts return this from torch.cuda.get_device_properties. Inductor's cache key reads gcnArchName when
+        # torch.version.cuda is None (CacheBase.get_system), so every CPU torch.compile raised AttributeError there.
+        self.gcnArchName = name
 
 
 class _CPUBackendSelected(Exception):
