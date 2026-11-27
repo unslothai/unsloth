@@ -59,6 +59,20 @@ def test_the_driver_header_is_parsed_as_install_ps1_reads_it(monkeypatch):
         wr._driver_cuda_version.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "env, minor",
+    [
+        ({}, "3.13"),
+        ({"UNSLOTH_PYTHON": "3.12"}, "3.12"),
+        ({"UNSLOTH_PYTHON": "3.13.9"}, "3.13"),
+        ({"UNSLOTH_PYTHON": ""}, "3.13"),
+    ],
+)
+def test_repair_builds_its_venv_with_the_python_install_ps1_selects(env, minor):
+    # Repair (UNSLOTH_TORCH_UPGRADE=1) does not keep the running venv's minor: a 3.12 home moves to 3.13.
+    assert wr._repair_python_minor(env) == minor
+
+
 def test_the_route_gate_matches_install_ps1():
     install = Path(__file__).resolve().parents[3] / "install.ps1"
     body = re.search(

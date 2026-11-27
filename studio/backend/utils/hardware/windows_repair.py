@@ -11,6 +11,7 @@ Torch-free: package metadata and the cached nvidia-smi capability query, so the 
 from __future__ import annotations
 
 import functools
+import os
 import platform as _platform
 import re
 import sys
@@ -68,9 +69,16 @@ def _driver_cuda_version() -> Optional[tuple[int, int]]:
         return None
 
 
+def _repair_python_minor(environ = os.environ) -> str:
+    """The Python minor a Repair builds its venv with: UNSLOTH_PYTHON when set, else install.ps1's 3.13
+    (UNSLOTH_TORCH_UPGRADE=1 does not keep the existing venv's minor)."""
+    match = re.match(r"\s*(3\.\d+)", environ.get("UNSLOTH_PYTHON") or "")
+    return match.group(1) if match else "3.13"
+
+
 def _managed_route_host() -> bool:
-    """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows with the Python 3.13 venv."""
-    return _platform.machine().lower() in ("amd64", "x86_64") and sys.version_info[:2] == (3, 13)
+    """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows, and the venv Repair builds is 3.13."""
+    return _platform.machine().lower() in ("amd64", "x86_64") and _repair_python_minor() == "3.13"
 
 
 def windows_repair_recommendation(
