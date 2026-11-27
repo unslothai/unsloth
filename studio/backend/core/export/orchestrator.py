@@ -164,6 +164,7 @@ class ExportOrchestrator:
             self._last_op = {
                 "seq": self._op_seq,
                 "kind": self._active_op_kind,
+                "id": self._active_op_id,
                 "status": status,
                 "output_path": output_path if success else None,
                 "error": None if success else (message or None),

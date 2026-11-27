@@ -290,3 +290,49 @@ test("cancelling a run attached from another tab stops whatever runs", async () 
     useExportRuntimeStore.getState().reset();
   }
 });
+
+test("timeout recovery waits for the export's own operation result", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const store = useExportRuntimeStore.getState();
+  store.reset();
+  stub.resetStub();
+  let exportId: string | undefined;
+  let statusRequests = 0;
+  stub.responses.set("exportGGUF", ({ op_id }: { op_id: string }) => {
+    exportId = op_id;
+    throw new Error("Cloudflare 524");
+  });
+  stub.responses.set("getExportStatus", () => {
+    statusRequests += 1;
+    const status = {
+      is_export_active: false,
+      last_op_seq: statusRequests,
+      last_op_kind: "export_gguf",
+      last_op_status: "success",
+    };
+    return {
+      ...status,
+      last_op_id: statusRequests === 4 ? exportId : "another-operation",
+      last_op_output_path: statusRequests === 4 ? "my-export" : "another-export",
+    };
+  });
+
+  try {
+    const run = store.runExport(params());
+    await tick();
+    assert.equal(useExportRuntimeStore.getState().reconnecting, true);
+
+    // The first poll sees a different export finish. The next sees our result.
+    t.mock.timers.tick(1500);
+    await tick();
+    t.mock.timers.tick(1500);
+    await run;
+
+    const result = useExportRuntimeStore.getState();
+    assert.equal(result.phase, "success");
+    assert.equal(result.result?.outputPath, "my-export");
+  } finally {
+    stub.resetStub();
+    useExportRuntimeStore.getState().reset();
+  }
+});
