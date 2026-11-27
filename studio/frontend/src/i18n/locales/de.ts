@@ -4512,6 +4512,7 @@ export const de = {
       unsupportedFileType: "Nicht unterstützter Dateityp",
       uploadOneFileType: "Laden Sie eine {types}-Datei hoch.",
       datasetUploaded: "Datensatz hochgeladen",
+      importPandasJson: ".json als pandas-Spalten importieren",
       evalDatasetUploaded: "Eval-Datensatz hochgeladen",
       uploadOneFileAtATime: "Laden Sie jeweils eine Datei hoch",
       uploadSingleFileDescription:

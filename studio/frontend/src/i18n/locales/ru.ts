@@ -4480,6 +4480,7 @@ export const ru = {
       unsupportedFileType: "Неподдерживаемый тип файла",
       uploadOneFileType: "Загрузите один файл {types}.",
       datasetUploaded: "Датасет загружен",
+      importPandasJson: "Импортировать .json как столбцы pandas",
       evalDatasetUploaded: "Датасет для оценки загружен",
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:

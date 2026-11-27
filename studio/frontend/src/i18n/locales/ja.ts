@@ -4422,6 +4422,7 @@ export const ja = {
       unsupportedFileType: "サポートされていないファイル形式です",
       uploadOneFileType: "{types} ファイルを1つアップロードしてください。",
       datasetUploaded: "データセットをアップロードしました",
+      importPandasJson: ".json を pandas の列形式としてインポート",
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",

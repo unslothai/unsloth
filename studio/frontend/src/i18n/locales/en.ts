@@ -4471,6 +4471,7 @@ export const en = {
       unsupportedFileType: "Unsupported file type",
       uploadOneFileType: "Upload one {types} file.",
       datasetUploaded: "Dataset uploaded",
+      importPandasJson: "Import .json as pandas columns",
       evalDatasetUploaded: "Eval dataset uploaded",
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:

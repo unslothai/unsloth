@@ -101,18 +101,22 @@ export async function checkDatasetFormat({
 
 export function uploadTrainingDataset(
   file: File,
+  jsonColumns = false,
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (jsonColumns) form.append("json_columns", "true");
 
   return uploadTrainingDatasetForm(form);
 }
 
 export function uploadNativeTrainingDataset(
   nativePathLease: string,
+  jsonColumns = false,
 ): Promise<UploadDatasetResponse> {
   const form = new FormData();
   form.append("nativePathLease", nativePathLease);
+  if (jsonColumns) form.append("json_columns", "true");
 
   return uploadTrainingDatasetForm(form);
 }
