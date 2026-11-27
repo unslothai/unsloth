@@ -13,10 +13,11 @@ import {
 
 registerBundlerResolver();
 
-const [ggufFit, variantSort, modelIdentity, ggufFilename, format] =
+const [ggufFit, variantSort, variantOrder, modelIdentity, ggufFilename, format] =
   await Promise.all([
     import("../src/lib/gguf-fit.ts"),
     import("../src/features/hub/lib/gguf-variant-sort.ts"),
+    import("../src/features/model-picker/components/model-selector/variant-order.ts"),
     import("../src/features/hub/lib/model-identity.ts"),
     import("../src/features/hub/lib/gguf-filename.ts"),
     import("../src/features/hub/lib/format.ts"),
@@ -35,9 +36,25 @@ type Card = {
 
 function loadCard(
   useState?: (initial: unknown) => [unknown, (next: unknown) => void],
+  {
+    variants = VARIANTS,
+    defaultVariant = "Q4_K_M",
+  }: {
+    variants?: typeof VARIANTS;
+    defaultVariant?: string | null;
+  } = {},
 ): Card {
   const noop = () => undefined;
   const anyExport = new Proxy({}, { get: () => noop });
+  const modelPickerExport = new Proxy(
+    { pickerOrderedGgufVariants: variantOrder.pickerOrderedGgufVariants },
+    {
+      get: (target, property) =>
+        property in target
+          ? target[property as keyof typeof target]
+          : noop,
+    },
+  );
   return loadWithStubs<Card>(
     new URL(
       "../src/features/hub/catalog/gguf-download-card.tsx",
@@ -64,7 +81,8 @@ function loadCard(
       "../lib/format": format,
       "./use-gguf-variant-fetch-state": {
         useGgufVariantFetchState: () => ({
-          variants: VARIANTS,
+          variants,
+          defaultVariant,
           loading: false,
           error: null,
           refreshError: null,
@@ -119,7 +137,7 @@ function loadCard(
       "@/config/env": anyExport,
       "@/i18n": { useT: () => (key: string) => key },
       "@/features/chat": anyExport,
-      "@/features/model-picker": anyExport,
+      "@/features/model-picker": modelPickerExport,
       "@/lib/chevron-icons": anyExport,
       "@/lib/copy-to-clipboard": anyExport,
       "@/lib/toast": anyExport,
@@ -149,8 +167,27 @@ function elements(node: unknown, out: StubElement[] = []): StubElement[] {
   return out;
 }
 
-function renderOnMac(unifiedLoadBudgetGb: number | null) {
-  const tree = loadCard().GgufDownloadCard({
+function textContent(node: unknown, out: string[] = []): string[] {
+  if (typeof node === "string") {
+    out.push(node);
+  } else if (Array.isArray(node)) {
+    for (const child of node) textContent(child, out);
+  } else if (node && typeof node === "object" && "props" in node) {
+    for (const value of Object.values((node as StubElement).props)) {
+      textContent(value, out);
+    }
+  }
+  return out;
+}
+
+function renderOnMac(
+  unifiedLoadBudgetGb: number | null,
+  options?: {
+    variants?: typeof VARIANTS;
+    defaultVariant?: string | null;
+  },
+) {
+  const tree = loadCard(undefined, options).GgufDownloadCard({
     repoId: "unsloth/Qwen3-8B-GGUF",
     isActive: false,
     activeQuant: null,
@@ -165,17 +202,32 @@ function renderOnMac(unifiedLoadBudgetGb: number | null) {
     (node) => "fit" in node.props && "lookupTableBytes" in node.props,
   );
   const rows = nodes
-    .map(
-      (node) => node.props.item as { quant: string; fit: string } | undefined,
-    )
-    .filter((item) => item !== undefined);
+    .filter((node) => node.props.item !== undefined)
+    .map((node) => {
+      const rendered = (node.type as (props: unknown) => unknown)(node.props);
+      return {
+        item: node.props.item as { quant: string; fit: string },
+        recommended: node.props.recommended === true,
+        text: textContent(rendered).join(" "),
+      };
+    });
+  const triggerButton = nodes.find(
+    (node) =>
+      node.type === "button" &&
+      String(node.props.className).includes("hub-menu-trigger"),
+  );
   const badge = trigger
     ? (trigger.type as (props: unknown) => unknown)(trigger.props)
     : null;
   return {
     recommended: trigger?.props.quant,
     recommendedFit: trigger?.props.fit,
-    fits: Object.fromEntries(rows.map((row) => [row.quant, row.fit])),
+    fits: Object.fromEntries(rows.map((row) => [row.item.quant, row.item.fit])),
+    rowRecommended: Object.fromEntries(
+      rows.map((row) => [row.item.quant, row.recommended]),
+    ),
+    rowText: Object.fromEntries(rows.map((row) => [row.item.quant, row.text])),
+    triggerText: triggerButton ? textContent(triggerButton).join(" ") : "",
     tooltip: elements(badge)
       .flatMap((node) => [node.props.children].flat())
       .filter((child) => typeof child === "string"),
@@ -197,6 +249,47 @@ test("without a Metal budget the Hub GGUF card keeps ranking by memory", () => {
   const card = renderOnMac(null);
   assert.equal(card.recommended, "BF16");
   assert.deepEqual(card.fits, { BF16: "fits", Q8_0: "fits", Q4_K_M: "fits" });
+});
+
+test("the Hub GGUF card labels the recommended quant on the trigger and row", () => {
+  const card = renderOnMac(7.5);
+  assert.equal(card.recommended, "Q4_K_M");
+  assert.ok(card.triggerText.includes("recommended"));
+  assert.deepEqual(card.rowRecommended, {
+    Q4_K_M: true,
+    Q8_0: false,
+    BF16: false,
+  });
+  assert.ok(card.rowText.Q4_K_M.includes("recommended"));
+  assert.ok(!card.rowText.Q8_0.includes("recommended"));
+});
+
+test("the Hub GGUF recommendation follows the backend default when it fits", () => {
+  const card = renderOnMac(null);
+  assert.equal(card.recommended, "BF16");
+  assert.equal(card.rowRecommended.Q4_K_M, true);
+  assert.ok(!card.triggerText.includes("recommended"));
+});
+
+test("downloaded and partial variants do not show the recommended label", () => {
+  const downloaded = renderOnMac(7.5, {
+    variants: VARIANTS.map((variant) =>
+      variant.quant === "Q4_K_M"
+        ? { ...variant, downloaded: true }
+        : variant,
+    ),
+  });
+  assert.equal(downloaded.rowRecommended.Q4_K_M, true);
+  assert.ok(!downloaded.rowText.Q4_K_M.includes("recommended"));
+  assert.ok(!downloaded.triggerText.includes("recommended"));
+
+  const partial = renderOnMac(7.5, {
+    variants: VARIANTS.map((variant) =>
+      variant.quant === "Q4_K_M" ? { ...variant, partial: true } : variant,
+    ),
+  });
+  assert.equal(partial.rowRecommended.Q4_K_M, true);
+  assert.ok(!partial.rowText.Q4_K_M.includes("recommended"));
 });
 
 test("an over-budget quant on a Mac points at the Metal budget, not the VRAM Budget", () => {
