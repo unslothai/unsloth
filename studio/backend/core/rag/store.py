@@ -294,9 +294,12 @@ def set_document_embedding_model(
     conn: sqlite3.Connection, document_id: str, embedding_model: str
 ) -> None:
     """Record which embedder actually produced this document's vectors. Written after
-    the encode, because the process can swap backends part way through a job."""
+    the encode, because the process can swap backends part way through a job. Skips an unchanged
+    value: the rag_vec_epoch trigger fires on any SET of the column, and a bump here would drop the
+    warm vec cache that the following add_chunks would otherwise extend in place."""
     conn.execute(
-        "UPDATE documents SET embedding_model=? WHERE id=?", (embedding_model, document_id)
+        "UPDATE documents SET embedding_model=? WHERE id=? AND embedding_model IS NOT ?",
+        (embedding_model, document_id, embedding_model),
     )
     conn.commit()
 
