@@ -116,6 +116,8 @@ _ALLOWED_TP_DROP_GUARDS = {
     "tensor_parallel and self._tensor_split_aborts(binary, model_identifier, _planned_cache_pair)",
     # Capability: pre-b9455 llama.cpp refused quantized KV under tensor split; binary-wide.
     "tensor_parallel and self._tensor_quant_kv_unsupported_binary(binary, _planned_cache_pair)",
+    # Capability: llama.cpp has no --split-mode tensor for this architecture on this build.
+    "tensor_parallel and _tp_arch_refused",
     # Capacity: >= 2 GPUs clearing the reserve; gated on plan_tp so manual mode skips it.
     "plan_tp and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.

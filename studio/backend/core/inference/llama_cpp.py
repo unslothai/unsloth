@@ -9011,6 +9011,8 @@ class LlamaCppBackend:
         self._last_load_warning: Optional[str] = None
         # Same, for a quant fallback: the download fills the pair, the launch publishes it.
         self._variant_fallback_warning: Optional[str] = None
+        # Why a tensor-parallel request launched with a layer split instead; cleared per load.
+        self._tensor_parallel_notice: Optional[str] = None
         # The route's Hub notice for the running model, so /status matches the load response.
         self.hub_access_warning: Optional[str] = None
         self._pending_variant_fallback: Optional[tuple[str, str]] = None
@@ -17346,7 +17348,11 @@ class LlamaCppBackend:
     @property
     def last_load_warning(self) -> Optional[str]:
         """Advisory notice from the most recent load, or None. Read by the route."""
-        notices = (self._variant_fallback_warning, self._last_load_warning)
+        notices = (
+            self._variant_fallback_warning,
+            self._tensor_parallel_notice,
+            self._last_load_warning,
+        )
         return " ".join(notice for notice in notices if notice) or None
 
     def _begin_load_warnings(self) -> None:
@@ -18237,6 +18243,10 @@ class LlamaCppBackend:
     # Binaries that refused quantized KV under tensor split, keyed per binary not model; consulted only when an axis is quantized, since f16 still splits.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
+    # (binary, mtime, architecture) that llama.cpp refused under --split-mode tensor: the
+    # allow-list is per architecture and per build, so an update re-asks.
+    _tensor_split_unsupported_archs: set[tuple[str, int, str]] = set()
+
     # Warned binary dirs: the env is rebuilt per launch and probe, so warn once per binary.
     _missing_cuda_runtime_warned: set[str] = set()
 
@@ -18270,6 +18280,44 @@ class LlamaCppBackend:
             return False
         key = cls._binary_key(binary)
         return key is not None and key in cls._tensor_quant_kv_unsupported_binaries
+
+    _TENSOR_SPLIT_ARCH_UNSUPPORTED_RE = re.compile(
+        r"split_mode_tensor not implemented for architecture '([^']+)'", re.IGNORECASE
+    )
+
+    @classmethod
+    def _tensor_split_unsupported_arch(cls, output: str) -> Optional[str]:
+        """The architecture llama.cpp named when it refused --split-mode tensor, else None."""
+        match = cls._TENSOR_SPLIT_ARCH_UNSUPPORTED_RE.search(output or "")
+        return match.group(1).strip().lower() if match else None
+
+    @classmethod
+    def _record_tensor_split_unsupported_arch(
+        cls, binary: Optional[str], architecture: Optional[str]
+    ) -> None:
+        key = cls._binary_key(binary)
+        if key is not None and architecture:
+            cls._tensor_split_unsupported_archs.add((*key, architecture.strip().lower()))
+
+    @classmethod
+    def _tensor_split_arch_unsupported(
+        cls, binary: Optional[str], architecture: Optional[str]
+    ) -> bool:
+        """True once this binary refused --split-mode tensor for this architecture."""
+        key = cls._binary_key(binary)
+        return (
+            key is not None
+            and bool(architecture)
+            and (*key, architecture.strip().lower()) in cls._tensor_split_unsupported_archs
+        )
+
+    @staticmethod
+    def _tensor_split_arch_notice(architecture: str) -> str:
+        return (
+            f"Tensor parallelism is not available in llama.cpp for this model's "
+            f"architecture ({architecture}), so it was loaded with a layer split "
+            f"across the GPUs instead."
+        )
 
     @classmethod
     def _tensor_split_cache_key(
@@ -26175,7 +26223,17 @@ class LlamaCppBackend:
                     and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
                 ):
                     try:
-                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                        from utils.models.gguf_metadata import (
+                            read_gguf_architecture,
+                            read_gguf_nextn_predict_layers,
+                        )
+
+                        # This build already refused tensor mode for the architecture, so the
+                        # load below runs a layer split: pick the drafter that split would get.
+                        if self._tensor_split_arch_unsupported(
+                            binary, read_gguf_architecture(model_path)
+                        ):
+                            return False
                         return bool(
                             _launch_caps(binary).get("mtp_token")
                             and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
@@ -26365,6 +26423,9 @@ class LlamaCppBackend:
 
                 self._mmproj_fallback_reason = None
                 self._variant_fallback_warning = None
+                # Per load, not per _begin_load_warnings(): the narrowed-GPU respawn re-prices only
+                # the memory notices, and its layer split still needs this explanation.
+                self._tensor_parallel_notice = None
             # Reset at the teardown, not where the binary resolves: early bails keep the old server.
             self._launch_binary_revision = self._binary_revision(binary)
             (
@@ -26743,6 +26804,26 @@ class LlamaCppBackend:
                 # Reset before the branch so an earlier launch's recorded drop cannot excuse this one.
                 self._arch_gate_dropped_tensor_split = None
                 self._arch_gate_dropped_tensor_parallel = False
+                # llama.cpp already refused tensor mode for this architecture on this build:
+                # launch the layer split directly, on every GPU the tensor launch would use.
+                _tp_arch_refused = self._tensor_split_arch_unsupported(binary, self._architecture)
+                if tensor_parallel and _tp_arch_refused:
+                    logger.info(
+                        "Tensor parallelism skipped: this llama.cpp build does not "
+                        "implement --split-mode tensor for the '%s' architecture; "
+                        "loading with a layer split.",
+                        self._architecture,
+                    )
+                    tensor_parallel = False
+                    extra_args = strip_split_mode_only(extra_args)
+                    planned_flash_attn = _replanned_flash_attn(tensor_parallel)
+                    preserve_multi_gpu_on_layer = True
+                if _tp_arch_refused and (intent.tensor_parallel or preserve_multi_gpu_on_layer):
+                    # Recorded, so a later tensor request matches this layer server.
+                    self._arch_gate_dropped_tensor_parallel = True
+                    self._tensor_parallel_notice = self._tensor_split_arch_notice(
+                        self._architecture
+                    )
                 # Auto ratio is set only under auto tensor; manual loads must not inherit it.
                 self._auto_tensor_split = None
                 self._auto_tensor_split_emitted = None
@@ -34062,9 +34143,11 @@ class LlamaCppBackend:
                         ):
                             _sched_abort_seen = True
                         # Scan the full buffer: gdb output can bury the assert.
-                        _tensor_capability_crash = self._is_tensor_split_assert(
-                            "\n".join(self._stdout_lines)
-                        ) or self._is_tensor_quant_kv_unsupported(_startup_output)
+                        _tensor_capability_crash = (
+                            self._is_tensor_split_assert("\n".join(self._stdout_lines))
+                            or self._is_tensor_quant_kv_unsupported(_startup_output)
+                            or self._tensor_split_unsupported_arch(_startup_output) is not None
+                        )
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         # A GPF in the prepended system libamdhip64 exits -11 with no
                         # symbol-lookup line (#18948), so a signal crash also earns the retry.
@@ -34806,6 +34889,17 @@ class LlamaCppBackend:
                         raise RuntimeError(
                             "llama-server aborted on --split-mode tensor "
                             "(split-axis geometry); retrying with layer split."
+                        )
+                    # The architecture is not on llama.cpp's tensor allow-list: no retry
+                    # below can change that, so latch it and go straight to the layer split.
+                    _ts_arch = self._tensor_split_unsupported_arch(_ts_out)
+                    if _ts_arch:
+                        LlamaCppBackend._record_tensor_split_unsupported_arch(binary, _ts_arch)
+                        self._kill_process()
+                        raise RuntimeError(
+                            "Tensor parallelism is not supported for this model's "
+                            f"architecture ({_ts_arch}) in llama.cpp; retrying with "
+                            "layer split."
                         )
                     # Pre-b9455 llama.cpp refusing a quantized KV cache in tensor mode.
                     # Latched on this first spawn for the same reason as the abort
