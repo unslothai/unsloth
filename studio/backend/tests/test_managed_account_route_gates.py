@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -171,18 +172,35 @@ _HTTP_PAYLOAD = {
 }
 
 
+def _shaped_like(real, fake):
+    """A stub that takes whatever the real function takes, and nothing else: a call the real
+    signature would reject still fails here, and a parameter added to it does not break the stub."""
+    signature = inspect.signature(real)
+
+    def stub(*args, **kwargs):
+        signature.bind(*args, **kwargs)
+        return fake(*args, **kwargs)
+
+    return stub
+
+
 @pytest.fixture
 def recipe_store(monkeypatch):
     from routes.data_recipe import library
 
     saved = []
     monkeypatch.setattr(
-        library.db, "upsert_recipe", lambda record, base: saved.append(record) or record
+        library.db,
+        "upsert_recipe",
+        _shaped_like(library.db.upsert_recipe, lambda record, *_: saved.append(record) or record),
     )
     monkeypatch.setattr(
         library.db,
         "import_legacy",
-        lambda recipes, executions: saved.extend(recipes) or {"recipes": len(recipes)},
+        _shaped_like(
+            library.db.import_legacy,
+            lambda recipes, *_: saved.extend(recipes) or {"recipes": len(recipes)},
+        ),
     )
     return saved
 
