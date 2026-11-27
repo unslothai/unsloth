@@ -27,6 +27,8 @@ type PersistRecipeFn = (input: {
   name: string;
   payload: RecipePayloadResult["payload"];
   keepalive?: boolean;
+  // Exit saves get no later chance, so they may also try a write whose answer was lost.
+  recover?: boolean;
 }) => Promise<{
   id: string;
   updatedAt: number;
@@ -330,11 +332,12 @@ export function useRecipePersistence({
       payload: RecipePayloadResult["payload"],
       signature: string,
       keepalive: boolean,
+      recover = keepalive,
     ): Promise<void> => {
       const { recipeId: id, onPersistRecipe: persist } = latest.current;
       const seq = ++savedRef.current.seq;
       setSaveLoading(true);
-      const done: Promise<void> = persist({ id, name, payload, keepalive })
+      const done: Promise<void> = persist({ id, name, payload, keepalive, recover })
         .then(
           (result) => {
             if (seq < savedRef.current.applied) {
@@ -421,7 +424,7 @@ export function useRecipePersistence({
         void running.done.then(() => flush(keepalive, false));
         return;
       }
-      void runSave(name, payload, signature, keepalive);
+      void runSave(name, payload, signature, keepalive, true);
     };
     const onPageHide = () => flush(true);
     const onVisibilityChange = () => {

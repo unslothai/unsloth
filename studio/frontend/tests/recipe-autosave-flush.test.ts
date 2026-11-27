@@ -864,3 +864,14 @@ test("an upload removed during a save is cleaned when it lands after the editor 
   await s.server.release();
   assert.deepEqual(s.uploads.removed, ["removed-mid-save"]);
 });
+
+test("an in-app exit after a save whose answer was lost still lands the newer edit", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.edit({ columns: ["second"] });
+  s.editor.unmount();
+  await s.server.cancelOldest(true);
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+});

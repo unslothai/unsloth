@@ -119,12 +119,13 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       name: string;
       payload: RecipePayload;
       keepalive?: boolean;
+      recover?: boolean;
     }) => {
       // The server keeps the updatedAt sent, so a save builds on one in flight; an unanswered
       // one tries both.
       const confirmed = editedVersion.current;
       const inFlight = inFlightVersion.current;
-      const unanswered = input.keepalive ? unansweredVersion.current : undefined;
+      const unanswered = input.recover ? unansweredVersion.current : undefined;
       const bases =
         inFlight !== undefined
           ? [inFlight]
