@@ -21,8 +21,7 @@ on:
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      # Directory glob asserted by test_stt_model_search_locator_contract.py.
-      # Only the tests/ files the jobs execute.
+      # Glob asserted by test_stt_model_search_locator_contract.py; only tests the jobs run.
       - 'tests/studio/playwright_*.py'
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_stt_model_search_locator_contract.py'
@@ -82,12 +81,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
-  # See studio-backend-ci.yml for the trade, and the note below.
+  # Group per workflow, ref and event; see studio-backend-ci.yml for the trade-off.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # On PR branches it gives latest-only; on main cancel-in-progress is off, and GitHub cancels every
-  # pending run once a newer one queues, so a merge burst leaves only the tip running; detection
-  # survives there, per-commit attribution does not.
+  # Main cancels pending runs, so detection survives but per-commit attribution does not.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -100,14 +96,12 @@ jobs:
     # Do not tighten: a timeout is for hangs, and runner stalls would turn into red builds.
     timeout-minutes: 30
     strategy:
-      # Shard boundaries are the Unsloth instances: a boot, its password and its scripts stay
-      # on one runner. One Unsloth at a time per runner.
+      # One shard is one Unsloth: boot, password and scripts stay on one runner, one at a time.
       fail-fast: false
       matrix:
         # Must stay a list: test_chat_ui_shards_cover_everything reads it.
         shard: [chat, extra]
-        # include: entries add engines to existing shards. `extra` is chromium-only, so it skips
-        # webkit's ~100 MB of apt (test_ui_shard_engines.py).
+        # extra is chromium-only, so it skips ~100 MB of webkit apt (test_ui_shard_engines.py).
         include:
           - shard: chat      # permission controls + banner "other engines" drive all three
             engines: chromium firefox webkit
@@ -131,8 +125,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
-        # Bounded and retried: an apt stall is silent and the run reports `cancelled`.
-        # The job's 30 stays the backstop.
+        # Apt stalls are silent (reported cancelled); the job's 30 min timeout is the backstop.
         timeout-minutes: 20
         env:
           RETRY_ATTEMPTS: '2'
@@ -179,8 +172,7 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
-        # from the near-full repo cache budget.
+        # Main only: PR-scoped caches serve one PR, evict main's copies from a near-full cache.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -222,9 +214,8 @@ jobs:
         # `wait: pw-install` step after the install.
         background: true
         # --with-deps stays unconditional: apt installs libraries outside the cache, so a restored
-        # cache without it gives browsers that cannot start; retries go through the shared helper,
-        # not inline (bash -e killed the inline retry); 2 x 300 s attempts; apt stalled 3x in one
-        # day past the 30-minute timeout
+        # cache without it leaves browsers unable to start; retries use the shared helper (bash -e
+        # killed the inline retry); 2 x 300 s attempts; apt stalled past the 30-minute timeout.
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -579,9 +570,8 @@ jobs:
           mkdir -p logs/playwright_staged_download_rows
           python tests/studio/playwright_staged_download_rows.py
 
-      # The Text encoder precision control: what the select sends to the plan and to the load, that
-      # Default omits the field entirely, that a refresh race cannot leave a stale reading, and that
-      # the select follows the build the backend reports back, downgrade or decline included.
+      # The select sends its value to plan and load (Default omits it), a refresh race cannot leave
+      # it stale, it follows the backend's reported build, downgrades and declines included.
       - name: Image text encoder precision regression (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -610,8 +600,7 @@ jobs:
           fi
           python tests/studio/playwright_tool_activity.py --json
 
-      # The backend log budget cannot see new frontend polling; only a browser can.
-      # Last in the shard: it idles two minutes and rotates the bootstrap password.
+      # Log budget misses frontend polling; last in shard, it rotates the bootstrap password.
       - name: Every polled path is declared in the log budget (Playwright)
         if: matrix.shard == 'extra'
         env:
@@ -629,7 +618,6 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
-      # Model-picker per-model-config regression on its own port.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
         if: matrix.shard == 'extra'
         run: |
@@ -769,8 +757,7 @@ jobs:
     env:
       # A release published mid-run puts an update card over the controls the scripts click.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'
-    # Own job: three engines would push later ui-smoke steps past its limit. Stubs the
-    # /status reads, so no model or GPU is needed, but a real browser layout is.
+    # Own job: 3 engines would overrun the limit; /status stubbed, but browser layout is real.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -778,8 +765,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps
-        # Bounded and retried: an apt stall is silent and the run reports `cancelled`.
-        # The job's 30 stays the backstop.
+        # Apt stalls are silent (reported cancelled); the job's 30 min timeout is the backstop.
         timeout-minutes: 20
         env:
           RETRY_ATTEMPTS: '2'
@@ -831,8 +817,7 @@ jobs:
 
       - name: Install Playwright browsers
         id: pw-install
-        # CDN download and apt are separate helper calls, each with its own retry budget:
-        # 2 x 300s plus lock wait, twice, fits the job's 30.
+        # CDN and apt retry separately: 2 x 300s plus lock wait, twice, fits the job's 30.
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -886,8 +871,7 @@ jobs:
             probe chromium firefox webkit
           fi
 
-      # Main only, and only after the install succeeded: the key is immutable, so a partial
-      # download saved once would break every later run.
+      # Main only, after install: the key is immutable; a partial save breaks all later runs.
       - name: Save the apt archive cache
         if: >-
           (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))

@@ -10,8 +10,7 @@ name: MLX CI on Mac M1
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip draft PRs, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'unsloth/__init__.py'
@@ -51,8 +50,7 @@ on:
       - 'pyproject.toml'
       - 'tests/__init__.py'
       - 'tests/_shared/**'
-      # Every job here `uses:` the pip cache pair, so an edit to either action changes
-      # what it runs.
+      # Every job here uses the pip cache pair, so editing either action changes what it runs.
       - '.github/actions/pip-cache-restore/**'
       - '.github/actions/pip-cache-save/**'
   push:
@@ -93,8 +91,7 @@ on:
       - 'pyproject.toml'
       - 'tests/__init__.py'
       - 'tests/_shared/**'
-      # Every job here `uses:` the pip cache pair, so an edit to either action changes
-      # what it runs.
+      # Every job here uses the pip cache pair, so editing either action changes what it runs.
       - '.github/actions/pip-cache-restore/**'
       - '.github/actions/pip-cache-save/**'
 
@@ -112,8 +109,7 @@ jobs:
   dispatch:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: dispatch
-    # macos-26, not macos-15: same hardware class, but macos-15's queue tail was measured ~5x longer.
-    # That is a property of today's pool; re-measure if queues look wrong.
+    # macos-26 (same class as macos-15, shorter queue today); re-measure if queues look wrong.
     runs-on: macos-26
     # Budget covers the cmake llama.cpp build for GGUF export and the capability-verdict boots.
     timeout-minutes: 40
@@ -141,9 +137,8 @@ jobs:
             pyproject.toml
             studio/backend/requirements/*.txt
 
-      # torch is installed explicitly from the CPU index: zoo excludes it on darwin-arm64 but the spoofed
-      # tests need it. unsloth-zoo comes from git main with deps (PyPI lacks MLX support) to pull the MLX wheels;
-      # unsloth is installed --no-deps so it does not fight that dep set.
+      # torch comes from the CPU index (zoo excludes it on darwin-arm64; spoofed tests need it);
+      # unsloth-zoo from git main with deps (PyPI lacks MLX); unsloth --no-deps to avoid clashes.
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -277,8 +272,7 @@ jobs:
             --format merged \
             --dir "$PWD/mlx_workdir/merged_16bit"
 
-      # Exits 0 with a warning when GGUF export was skipped during train (a llama.cpp converter limit);
-      # LoRA and merged_16bit stay the gating signal.
+      # Train skipped GGUF export (converter limit): warn, exit 0; LoRA and merged_16bit gate.
       - name: MLX export round-trip — RELOAD GGUF via llama-cli (fresh process)
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -311,8 +305,7 @@ jobs:
           done
 
       # ---------------------------------------------------------------
-      # Mac capability verdict on real Apple Silicon, with MLX genuinely present or genuinely unimportable.
-      # One boot per step: the self-heal runs once per process.
+      # Real Apple Silicon verdict; one boot per step since self-heal runs once per process.
       # ---------------------------------------------------------------
       - name: Provision an Unsloth venv for the capability-verdict boots
         run: |
@@ -388,8 +381,7 @@ jobs:
             'gemma-3-270m-it-Q4_K_M.gguf' \
             /tmp/ggufs
 
-      # Runs the downloaded binaries with no secrets and clears the Actions command files first, so a
-      # tampered prebuilt cannot influence the job.
+      # No secrets; Actions command files cleared, so a tampered prebuilt cannot touch the job.
       - name: Unsloth prebuilt llama.cpp GGUF inference smoke (Mac M1)
         run: |
           set -euo pipefail
