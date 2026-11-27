@@ -16,6 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { CONTEXT_LENGTHS } from "@/config/training";
 import {
   useDrafterCapability,
@@ -56,6 +57,7 @@ export function ParamsSection({
   mode?: "simple" | "advanced";
 }): ReactElement {
   const t = useT();
+  const isMlx = usePlatformStore((state) => state.appleSilicon);
   // Simple mode hides the section, but a drafter turned on earlier still needs its capability.
   const drafterEnabled = useTrainingConfigStore((state) => state.drafterEnabled);
   useDrafterCapability(drafterEnabled);
@@ -75,6 +77,10 @@ export function ParamsSection({
       packing: state.packing,
       datasetTotalRows: state.datasetTotalRows,
       datasetSource: state.datasetSource,
+      datasetFormat: state.datasetFormat,
+      isAudioModel: state.isAudioModel,
+      isVisionModel: state.isVisionModel,
+      isDatasetAudio: state.isDatasetAudio,
       uploadedEvalFile: state.uploadedEvalFile,
       evalSteps: state.evalSteps,
       datasetSliceStart: state.datasetSliceStart,
@@ -161,13 +167,12 @@ export function ParamsSection({
     store.datasetSliceStart,
     store.datasetSliceEnd,
   );
-  // Uploads without a separate eval file use the trainer's bounded automatic holdout.
   const trainingRows =
     slicedRows !== null &&
     store.datasetSource === "upload" &&
     !store.uploadedEvalFile &&
     store.evalSteps > 0
-      ? rowsAfterAutomaticEvalHoldout(slicedRows)
+      ? rowsAfterAutomaticEvalHoldout(slicedRows, store, isMlx)
       : slicedRows;
   const stepGuidance = store.isDecision
     ? null
