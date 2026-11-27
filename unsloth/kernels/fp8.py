@@ -1967,11 +1967,29 @@ def _quantize_fp8_per_row(x, scale_ub = None):
     return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
 
 
+def _clear_failed_probe(device):
+    # A failed probe GEMM must not poison the context: surface any error it left (synchronize), then a kernel
+    # launch check reads, and so resets, the last CUDA error.
+    if torch.device(device).type != "cuda":
+        return
+    try:
+        torch.cuda.synchronize(device)
+    except Exception:
+        pass
+    try:
+        torch.ones(1, device = device).add_(1).item()
+    except Exception:
+        pass
+
+
 def _rowwise_gemm_works(gemm, device):
+    # Any failure means the kernel is missing here ("Rowwise scaling is not currently supported" on the Windows
+    # wheels, cuBLASLt CUBLAS_STATUS_NOT_SUPPORTED on older ones, "cutlass cannot initialize" for FBGEMM on sm120).
     x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
     try:
         return bool((gemm(x) == 128).all())
     except Exception:
+        _clear_failed_probe(device)
         return False
 
 
@@ -2727,21 +2745,33 @@ def fp8_fbgemm_block_linear(
     return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
 
-def test_has_fbgemm():
+def test_has_fbgemm(device = None):
     # Probe whether the faster FBGEMM works on this GPU: RTX 4090/5090 and SM100 (Blackwell B200/B100)
-    # fail with CUTLASS SM90 kernels.
+    # fail with CUTLASS SM90 kernels. None = not known yet (out of memory): the caller probes again later.
+    device = _fbgemm_probe_device() if device is None else torch.device(device)
     M, N, K = 128, 128, 128
-    xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = "cuda")
+    try:
+        with torch.cuda.device(device):
+            xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = device)
+            block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = device)
+    except torch.cuda.OutOfMemoryError:
+        return None
+    except Exception:
+        return (
+            False  # no usable card here: the Triton kernels, as when the import-time probe raised
+        )
     wq = xq
     M, K = xq.shape
     N, _ = wq.shape
-    block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = "cuda")
     has_fbgemm = False
     try:
-        out = torch.ops.fbgemm.f8f8bf16_blockwise(xq, wq, block_scale, block_scale)
-        assert torch.unique(out).item() == 128
+        with torch.cuda.device(device):
+            out = torch.ops.fbgemm.f8f8bf16_blockwise(xq, wq, block_scale, block_scale)
+            assert torch.unique(out).item() == 128
         has_fbgemm = True
         del out
+    except torch.cuda.OutOfMemoryError:
+        has_fbgemm = None
     except Exception as e:
         error_str = str(e).lower()
         # Disable FBGEMM on any CUTLASS/CUDA error (MMA, arch mismatch, launch, etc.)
@@ -2767,43 +2797,112 @@ def test_has_fbgemm():
             )
         has_fbgemm = False
     del block_scale, xq
-    torch.cuda.empty_cache()
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
     return has_fbgemm
 
 
-fp8_block_quant_linear = fp8_torch_block_quant_forward
+def _fbgemm_probe_device():
+    """The card this process computes on: one picked with set_device, else LOCAL_RANK's under torchrun (the
+    probe may run before set_device), else the current one. Never a blind GPU 0."""
+    current = torch.cuda.current_device()
+    if current != 0:
+        return torch.device("cuda", current)
+    try:
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+    except ValueError:
+        local = 0
+    return torch.device("cuda", local if 0 <= local < torch.cuda.device_count() else 0)
+
+
+def _fbgemm_block_installed():
+    # >= 1.4.0 is fast and accurate (older versions corrupt some shapes whatever the input values) and
+    # ~15% faster than torchao, but consumer GPUs fail, so it is probed before use.
+    try:
+        import fbgemm_gpu
+        return Version(fbgemm_gpu.__version__) >= Version("1.4.0")
+    except Exception:
+        return False
+
+
 if "UNSLOTH_HAS_FBGEMM" not in os.environ:
     os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
-try:
-    import fbgemm_gpu
+_FBGEMM_BLOCK = []  # [probe result] once known
 
-    # >= 1.4.0 is fast and accurate (older versions corrupt some shapes whatever the input values) and
-    # ~15% faster than torchao, but consumer GPUs fail, so probe it.
-    if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
-        # Suppress CUDA printf during the probe: on Blackwell (SM100) FBGEMM's SM90 CUTLASS kernel floods
-        # stdout with "Arch conditional MMA" before aborting.
-        from unsloth.import_fixes import suppress_cuda_printf
-        with suppress_cuda_printf():
-            _has_fbgemm = test_has_fbgemm()
-        if _has_fbgemm:
-            os.environ["UNSLOTH_HAS_FBGEMM"] = "1"
-            logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
-            fp8_block_quant_linear = fp8_fbgemm_block_linear
-        else:
-            os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
-except:
-    pass
-# Decode-sized calls take the GEMV whichever block GEMM was selected above.
-if (
-    fp8_block_quant_linear is fp8_torch_block_quant_forward
-    and torch.version.hip is None
-    and _SM_COUNTS
-    and min(_SM_COUNTS) >= 100
-):
-    _fp8_block_small_m_first.__wrapped__ = fp8_torch_block_quant_forward
-    fp8_block_quant_linear = _fp8_block_small_m_first
-else:
-    fp8_block_quant_linear = _with_fp8_block_gemv(fp8_block_quant_linear)
+
+def fbgemm_block_fp8_available():
+    """Whether FBGEMM's block FP8 GEMM works here. Probed once, on first need, on this process's own card: at
+    import it ran on GPU 0, so every torchrun rank opened a CUDA context there. Sets UNSLOTH_HAS_FBGEMM."""
+    if _FBGEMM_BLOCK:
+        return _FBGEMM_BLOCK[0]
+    if not _fbgemm_block_installed() or not torch.cuda.is_available():
+        _FBGEMM_BLOCK.append(False)
+        return False
+    # Suppress CUDA printf during the probe: on Blackwell (SM100) FBGEMM's SM90 CUTLASS kernel floods
+    # stdout with "Arch conditional MMA" before aborting.
+    from unsloth.import_fixes import suppress_cuda_printf
+
+    device = _fbgemm_probe_device()
+    try:
+        # The guard covers suppress_cuda_printf's synchronize too, else it syncs (and opens) the current card.
+        with torch.cuda.device(device), suppress_cuda_printf():
+            has_fbgemm = test_has_fbgemm(device)
+    except torch.cuda.OutOfMemoryError:
+        has_fbgemm = None
+    except Exception:
+        has_fbgemm = False
+    if has_fbgemm is None:
+        return False  # out of memory: not known yet, so not latched
+    _FBGEMM_BLOCK.append(has_fbgemm)
+    os.environ["UNSLOTH_HAS_FBGEMM"] = "1" if has_fbgemm else "0"
+    if has_fbgemm:
+        logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
+    return has_fbgemm
+
+
+def _pick_fp8_block_quant_linear(block_forward):
+    # Decode-sized calls take the GEMV whichever block GEMM was selected.
+    if (
+        block_forward is fp8_torch_block_quant_forward
+        and torch.version.hip is None
+        and _SM_COUNTS
+        and min(_SM_COUNTS) >= 100
+    ):
+        _fp8_block_small_m_first.__wrapped__ = fp8_torch_block_quant_forward
+        return _fp8_block_small_m_first
+    return _with_fp8_block_gemv(block_forward)
+
+
+def resolve_fp8_block_quant_linear():
+    """Bind fp8_block_quant_linear (and FP8Linear.forward) to the block GEMM for this host, probing FBGEMM if it
+    is installed. The loader calls it before the model is built; it is a no-op once bound."""
+    global fp8_block_quant_linear
+    if fp8_block_quant_linear is not _fp8_block_quant_linear_unresolved:
+        return fp8_block_quant_linear
+    has_fbgemm = fbgemm_block_fp8_available()
+    if not _FBGEMM_BLOCK:
+        # Probe ran out of memory: the Triton / torch route for now, probed again on the next call.
+        return _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)
+    fp8_block_quant_linear = _pick_fp8_block_quant_linear(
+        fp8_fbgemm_block_linear if has_fbgemm else fp8_torch_block_quant_forward
+    )
+    if FP8Linear is not None and getattr(FP8Linear.forward, "_unsloth_fp8_unresolved", False):
+        FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+    return fp8_block_quant_linear
+
+
+def _fp8_block_quant_linear_unresolved(X, weight, weight_scale):
+    # FBGEMM installed, not probed yet. A compiled region cannot probe: the torch route, probed when eager.
+    if torch.compiler.is_compiling():
+        return _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)(X, weight, weight_scale)
+    return resolve_fp8_block_quant_linear()(X, weight, weight_scale)
+
+
+fp8_block_quant_linear = _fp8_block_quant_linear_unresolved
+if not _fbgemm_block_installed():
+    # Nothing to probe: bound now, exactly as before.
+    _FBGEMM_BLOCK.append(False)
+    fp8_block_quant_linear = _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)
 
 
 # Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
@@ -2874,6 +2973,8 @@ if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+    if fp8_block_quant_linear is _fp8_block_quant_linear_unresolved:
+        FP8Linear.forward._unsloth_fp8_unresolved = True
 
 # Fused grouped matmul has no backward: dequant for training, gate on self.training so
 # the checkpoint no-grad forward and its recompute match.

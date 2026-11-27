@@ -976,6 +976,7 @@ async def _start_page_video(
     video_id: str,
     queued_account: Optional[AccountContext] = None,
     pinned_model: Optional[tuple] = None,
+    batch: Optional[str] = None,
 ) -> None:
     """The Video page's start: switch if asked, authorize, reserve the engine. Raises the HTTP
     refusal; a busy engine is VIDEO_GENERATION_BUSY_MSG, which the queue waits out.
@@ -1047,6 +1048,7 @@ async def _start_page_video(
         draft_decode = request.draft_decode,
         video_id = video_id,
         record_outcome = False,
+        **_batch_kwargs(batch),
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.
     for attempt in range(2):
@@ -1095,8 +1097,10 @@ async def _start_page_video(
             raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
-    _note_generation_account()
-    reset_media_generation_progress("video")
+    if batch != "join":
+        # A rider is not the running job: the job's owner and its progress log stay as they are.
+        _note_generation_account()
+        reset_media_generation_progress("video")
 
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
@@ -1114,6 +1118,13 @@ async def video_generate_progress(
         outcome = outcome_of(video_id, current_account_id())
         if outcome is not None:
             return VideoGenerateProgressResponse(**outcome)
+    # A clip riding the running job's batch answers its own account, never the job's owner's view.
+    member_of = getattr(backend, "member_progress", None)
+    if callable(member_of):
+        member = member_of(video_id, current_account_id())
+        if member is not None:
+            log_media_generation_progress("video", member)
+            return VideoGenerateProgressResponse(**member)
     # The backend rechecks the owner under its lock; a successor can reserve mid-poll.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
@@ -1952,9 +1963,15 @@ def _sync_jobs() -> None:
         open_jobs = [job for job in _account_jobs().values() if not job.terminal]
     if not open_jobs:
         return
-    gen = get_video_backend().generate_progress()
+    backend = get_video_backend()
+    shared = backend.generate_progress()
+    # By id: a clip riding another clip's batch is not the running job's own record.
+    by_id = getattr(backend, "progress_for_video", None)
     now = int(_time.time())
     for job in open_jobs:
+        gen = shared
+        if callable(by_id):
+            gen = by_id(job.id) or shared
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
             with _jobs_lock:
@@ -2024,9 +2041,10 @@ def _await_generate_settled(video_id: str, timeout: float = _DELETE_SETTLE_TIMEO
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
+    by_id = getattr(backend, "progress_for_video", None)
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
-        gen = backend.generate_progress()
+        gen = (by_id(video_id) or {}) if callable(by_id) else backend.generate_progress()
         if (gen.get("video_id") != video_id or not gen.get("active")) and _encoding_outcome(
             video_id
         ) is None:
@@ -2541,6 +2559,7 @@ async def _start_openai_video(
     seed: int,
     created_at: Optional[int] = None,
     queued_account: Optional[AccountContext] = None,
+    batch: Optional[str] = None,
 ):
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.media_auto_switch import (
@@ -2643,6 +2662,7 @@ async def _start_openai_video(
                 input_reference = reference,
                 video_id = video_id,
                 seed = seed,
+                **_batch_kwargs(batch),
             )
             controls = dict(
                 negative_prompt = body.negative_prompt,
@@ -2686,8 +2706,10 @@ async def _start_openai_video(
             raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
-    _note_generation_account()
-    reset_media_generation_progress("video")
+    if batch != "join":
+        # A rider is not the running job: the job's owner and its progress log stay as they are.
+        _note_generation_account()
+        reset_media_generation_progress("video")
 
     # Use begin_generate's resolved canvas; reference-image requests render at source aspect.
     if isinstance(resolved, dict) and resolved.get("width") and resolved.get("height"):
@@ -3175,6 +3197,16 @@ async def _cancel_queued_or_running(video_id: Optional[str]) -> bool:
             expected_video_id = video_id,
             expected_account = current_account_id(),
         )
+    stop_rider = getattr(backend, "cancel_rider", None)
+    caller = current_account().account_id
+    # No id from the job's own account stops its render below (and its riders with it).
+    if (
+        callable(stop_rider)
+        and (video_id is not None or _reserved_generation_account(backend) != caller)
+        and await asyncio.to_thread(stop_rider, video_id, caller)
+    ):
+        # The caller's clip rode another clip's batch; that render keeps going for the others.
+        return True
     # One read: a second could name a successor and hand it back as expected_account.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
@@ -3444,9 +3476,12 @@ _QUEUE_WAIT = "wait"
 _QUEUE_CONFLICT = "conflict"
 
 
-async def _start_queued_video(entry: _QueuedVideo) -> str:
+async def _start_queued_video(entry: _QueuedVideo, batch: Optional[str] = None) -> str:
     """Start ``entry`` if the engine is free: moved (it started, failed or is gone), wait (the
-    engine is busy) or conflict (the model changed under it; it keeps its place, the next may go)."""
+    engine is busy) or conflict (the model changed under it; it keeps its place, the next may go).
+    ``batch`` "open" lets it gather the compatible clips behind it; "join" adds it to the running
+    clip's gathering batch (the engine is busy by then, so the busy reads are skipped)."""
+    joining = batch == "join"
     from core.inference import media_keepwarm, video_queue
     from core.inference.gpu_arbiter import VIDEO
     from core.inference.llama_keepwarm import InferenceActivityReservation
@@ -3454,7 +3489,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
     async with _video_start_lock():
         if entry not in _VIDEO_QUEUE:
             return _QUEUE_MOVED
-        if await asyncio.to_thread(_video_engine_busy):
+        if not joining and await asyncio.to_thread(_video_engine_busy):
             return _QUEUE_WAIT
         active = await asyncio.to_thread(_queued_account_active, entry.account)
         if entry not in _VIDEO_QUEUE:
@@ -3472,7 +3507,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
             await activity.start()
             await media_keepwarm.begin_request(VIDEO)
             entered = True
-            if await asyncio.to_thread(_video_engine_busy):
+            if not joining and await asyncio.to_thread(_video_engine_busy):
                 entry.starting = False
                 return _QUEUE_WAIT
             if entry.kind == "page":
@@ -3483,6 +3518,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
                     entry.id,
                     queued_account = entry.account,
                     pinned_model = entry.pinned_model,
+                    **({"batch": batch} if batch else {}),
                 )
             else:
                 start = _start_openai_video(
@@ -3495,6 +3531,7 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
                     seed = entry.seed,
                     created_at = entry.created_at,
                     queued_account = entry.account,
+                    **({"batch": batch} if batch else {}),
                 )
             await arun_as(entry.account, start)
             started = True
@@ -3507,6 +3544,10 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
             wait = _video_wait(exc)
             if wait is None and await asyncio.to_thread(_video_engine_busy):
                 wait = "busy"
+            if joining and wait is not None:
+                # Refused a seat in the batch: it keeps its place and starts on its own later.
+                entry.starting = False
+                return _QUEUE_WAIT
             if wait == "conflict":
                 entry.idle_conflicts += 1
                 if entry.idle_conflicts >= VIDEO_QUEUE_IDLE_CONFLICTS:
@@ -3531,21 +3572,138 @@ async def _start_queued_video(entry: _QueuedVideo) -> str:
     return _QUEUE_MOVED
 
 
+def _batch_kwargs(batch: Optional[str]) -> dict:
+    if batch == "open":
+        return {"batch_open": True}
+    if batch == "join":
+        return {"join": True}
+    return {}
+
+
+def _batch_shape(entry: _QueuedVideo) -> Optional[tuple]:
+    """What a queued clip must share with its neighbours to ride one denoise, read off the request; None
+    when it renders alone (image, reference, soundtrack or continuation inputs, or a family that never
+    batches). The engine checks again against the resolved request before it takes the clip."""
+    from core.inference import video_batch
+
+    family = entry.clip_key[0] if entry.clip_key else None
+    if family not in video_batch.BATCH_FAMILIES:
+        return None
+    if entry.kind == "page":
+        request = entry.page
+        if request is None or any(
+            (
+                request.first_frame,
+                request.last_frame,
+                request.reference_images,
+                request.reference_videos,
+                request.reference_audios,
+                request.continuation_video,
+                request.draft_decode,
+            )
+        ):
+            return None
+        controls = (
+            request.guidance,
+            request.guidance_2,
+            request.flow_shift,
+            request.fps,
+            request.model,
+            entry.pinned_model,
+        )
+    else:
+        body = entry.body
+        inputs = entry.inputs
+        if (
+            body is None
+            or entry.reference is not None
+            or body.last_frame
+            or body.reference_images
+            or getattr(inputs, "reference_audios", None)
+            or getattr(inputs, "decoded_images", None) is not None
+        ):
+            return None
+        controls = (body.guidance, None, None, body.fps, body.model, None)
+    return (tuple(entry.clip_key), entry.steps, controls)
+
+
+def _batch_mates(head: _QueuedVideo, ordered: list) -> list:
+    """The clips right behind ``head`` in fair order that can share its denoise. Contiguous only: a clip
+    is never started ahead of an earlier one that could not join, so no waiting clip is passed over."""
+    from core.inference import video_batch
+
+    if video_batch.mode() == "off":
+        return []
+    shape = _batch_shape(head)
+    if shape is None:
+        return []
+    try:
+        index = ordered.index(head)
+    except ValueError:
+        return []
+    mates = []
+    for entry in ordered[index + 1 :]:
+        if len(mates) + 1 >= video_batch.max_rows() or entry.starting:
+            break
+        if _batch_shape(entry) != shape:
+            break
+        mates.append(entry)
+    return mates
+
+
+async def _fill_video_batch(mates: list) -> None:
+    """Hand the waiting compatible clips to the job that just started, in fair order, then seal it."""
+    from core.inference.video import get_video_backend
+
+    backend = get_video_backend()
+    forming = getattr(backend, "forming_batch", None)
+    try:
+        for mate in mates:
+            if not callable(forming) or not await asyncio.to_thread(forming):
+                break
+            if _admitting and mate.arrival > min(_admitting):
+                break
+            outcome = await _start_queued_video(mate, batch = "join")
+            if outcome != _QUEUE_MOVED:
+                break
+    finally:
+        await _seal_video_batch()
+
+
+async def _seal_video_batch() -> None:
+    from core.inference.video import get_video_backend
+    seal = getattr(get_video_backend(), "seal_batch", None)
+    if callable(seal):
+        await asyncio.to_thread(seal)
+
+
 async def _drain_video_queue_once() -> bool:
     """Start the next video in fair order; True when the queue moved. A head whose model changed
     under it is moved aside for this pass (it keeps its place), so it never holds up the rest."""
-    for entry in _ordered_queue():
+    ordered = _ordered_queue()
+    for entry in ordered:
         if _admitting and entry.arrival > min(_admitting):
             # An earlier request is still on its way in; its _end_admission wakes this.
             return False
+        mates = _batch_mates(entry, ordered)
         try:
-            outcome = await _start_queued_video(entry)
+            outcome = await _start_queued_video(entry, batch = "open" if mates else None)
         except Exception as exc:  # noqa: BLE001 -- the next video must still start
             logger.exception("Could not settle queued video %s", entry.id)
             if entry in _VIDEO_QUEUE:
                 await _settle_failed_queued_video(entry, exc)
             entry.starting = False
+            if mates:
+                await _seal_video_batch()
             return True
+        if mates:
+            try:
+                if outcome == _QUEUE_MOVED:
+                    await _fill_video_batch(mates)
+            except Exception:  # noqa: BLE001 -- the started clip renders, with or without riders
+                logger.exception("Could not hand queued videos to the running batch")
+            finally:
+                await _seal_video_batch()
         if outcome == _QUEUE_CONFLICT:
             continue
         return outcome == _QUEUE_MOVED

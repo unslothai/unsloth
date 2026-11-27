@@ -1294,6 +1294,18 @@ def __get_model_name(
 
     assert load_in_fp8 in (True, False, "block")
     if load_in_fp8 != False:
+        # The FBGEMM probe is lazy (at import it ran on GPU 0 for every torchrun rank): run it now, on this rank's
+        # card, so UNSLOTH_HAS_FBGEMM is known. Only once the FP8 kernels are loaded; never imports them here.
+        import sys
+
+        _resolve_fp8 = getattr(
+            sys.modules.get("unsloth.kernels.fp8"), "resolve_fp8_block_quant_linear", None
+        )
+        if _resolve_fp8 is not None:
+            try:
+                _resolve_fp8()
+            except Exception:
+                pass
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
                 # Faster row scaling only works if FBGEMM works; otherwise use the slower blockwise type.
