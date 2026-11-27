@@ -56086,8 +56086,7 @@ async def openai_image_generations(
             ),
         )
     if body.output_format != "png":
-        # data[].url serves the gallery PNG, so a jpeg/webp answer has to be inline: an explicit
-        # url is refused, an omitted response_format becomes b64_json (as gpt-image models answer).
+        # data[].url serves the gallery PNG, so jpeg/webp is inline: url is refused, omitted means b64_json.
         if "response_format" not in body.model_fields_set or body.response_format is None:
             body.response_format = "b64_json"
         elif body.response_format != "b64_json":
@@ -56691,7 +56690,7 @@ async def _generate_openai_images(
 
     def _persist() -> list[ImageGenerationData]:
         items: list[ImageGenerationData] = []
-        # The response is the gallery file itself: base64 the bytes just written, not a re-read.
+        # Base64 the gallery bytes just written, not a re-read.
         with image_gallery.keep_written_bytes() as written:
             for record in image_gallery.save_many(_gallery_saves()):
                 if want_b64:
@@ -56701,7 +56700,7 @@ async def _generate_openai_images(
                         if png is not None
                         else image_gallery.image_b64(record["id"])
                     )
-                    if encoded is None:  # vanished between write and read — fail the call
+                    if encoded is None:  # vanished between write and read
                         raise RuntimeError("generated image could not be read back for encoding")
                     items.append(ImageGenerationData(b64_json = encoded))
                 else:
@@ -56711,8 +56710,7 @@ async def _generate_openai_images(
         return items
 
     async def _write_gallery_after_response() -> None:
-        # jpeg/webp: the response did not need the PNG, so the lossless gallery copy is written here,
-        # after it. Holds the marker until the records exist, as the inline persist does.
+        # jpeg/webp: the lossless gallery copy is written after the response, under the marker.
         global _diffusion_persist_active
         _diffusion_persist_active += 1
         try:
@@ -56767,6 +56765,5 @@ async def _generate_openai_images(
     return ImageGenerationResponse(created = created, data = data, **echo)
 
 
-# Gallery PNG writes for jpeg/webp responses, still running after their response was sent. Held
-# here so the loop keeps a strong reference until each finishes.
+# Gallery writes still running after their jpeg/webp response: strong references until each finishes.
 _background_gallery_persists: set[asyncio.Task] = set()

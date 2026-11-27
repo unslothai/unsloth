@@ -299,8 +299,7 @@ def encode_lossy(image: Any, output_format: str, quality: int) -> bytes:
     elif pil_format == "WEBP" and image.mode not in ("RGB", "RGBA"):
         image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
     buf = io.BytesIO()
-    # WebP method 0: libwebp's default 4 takes ~120 ms on a 1024x1024 image (about 4x method 0) for
-    # ~25% fewer bytes, slower than the PNG this format is asked for to avoid.
+    # WebP method 0: libwebp's default 4 is ~4x slower (~120 ms at 1024px) for ~25% fewer bytes.
     extra = {"method": 0} if pil_format == "WEBP" else {}
     image.save(buf, format = pil_format, quality = int(quality), **extra)
     return buf.getvalue()
