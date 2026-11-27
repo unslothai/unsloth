@@ -681,9 +681,11 @@ GROUPED_DECODE_CALLS = [0]
 # end (HF generate, LoRA attached, CUDA-graph decode) on Qwen3-0.6B / Qwen3-4B / Llama-3.2-1B, batch
 # 2-16, prompts 128-2048: below these some model ran slower. Other cards keep SDPA. Unmasked SDPA GQA
 # (equal-length rows, e.g. one GRPO prompt per batch) is faster than the grouped route on L4 / A100;
-# on an A100 short caches lose too (the grouped route's extra launches are not hidden).
+# on an A100 short caches lose too (the grouped route's extra launches are not hidden). On a T4 (fp16,
+# torch 2.11) the grouped route won every batch 2-16 x prompt 128-2048 cell with or without CUDA graphs,
+# unmasked by 1.1x to 3.8x (GRPO's one-prompt batches), so it starts at the smallest cache measured.
 _GROUPED_DECODE_MIN_TOKENS = {
-    "T4": (8192, 1024, 256),
+    "T4": (256, 256, 256),
     "L4": (None, 2048, 1024),
     "A100": (None, 16384, 8192),
 }
