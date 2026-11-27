@@ -4913,6 +4913,15 @@ def _linux_math_core_count(
     return physical_count
 
 
+def _studio_cpu_thread_cap(env: Mapping[str, str]) -> Optional[int]:
+    # run.py and main.py reject an invalid value; other callers keep llama.cpp's default.
+    try:
+        cap = int(env.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        return None
+    return cap if cap > 0 else None
+
+
 def _spilled_decode_threads(
     n_threads: Optional[int] = None, extra_args: Optional[Iterable[str]] = None
 ) -> Optional[int]:
@@ -25391,6 +25400,10 @@ class LlamaCppBackend:
             replay = _strip_flag_pairs(replay, _THREAD_OVERRIDE_FLAGS)
             for name in ("OMP_NUM_THREADS", "OMP_WAIT_POLICY"):
                 env.pop(name, None)
+            cap = _studio_cpu_thread_cap(env)
+            if cap is not None:
+                replay.extend(["--threads", str(cap)])
+                env["OMP_NUM_THREADS"] = str(cap)
         replay.extend(["--gpu-layers", "0", "--fit", "off", "--device", "none"])
         if has_mmproj:
             replay.append("--no-mmproj-offload")
@@ -25865,7 +25878,8 @@ class LlamaCppBackend:
         tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
         gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
         gpu_ids_are_vulkan_ordinals = intent.gpu_ids_are_vulkan_ordinals
-        n_threads = intent.n_threads
+        thread_cap = _studio_cpu_thread_cap(os.environ)
+        n_threads = intent.n_threads if (intent.n_threads or 0) > 0 else thread_cap
         n_parallel = intent.n_parallel
         n_batch = intent.n_batch
         n_ubatch = intent.n_ubatch
@@ -31842,15 +31856,11 @@ class LlamaCppBackend:
                     and not threads_overridden
                 )
 
-                # Omit --threads when unset: -1 means all hyperthreads, which slows decode.
-                if (
-                    sys.platform == "win32"
-                    and full_offload_tuning_active
-                    and not threads_overridden
-                ):
-                    cmd.extend(["--threads", "2"])
-                elif n_threads is not None and n_threads > 0:
-                    cmd.extend(["--threads", str(n_threads)])
+                launch_threads = (
+                    min(2, thread_cap or 2) if _drop_full_offload_threads else n_threads
+                )
+                if not threads_overridden and launch_threads is not None and launch_threads > 0:
+                    cmd.extend(["--threads", str(launch_threads)])
 
                 if _caps.get("supports_jinja", True):
                     if not _extra_args_set_any_flag(extra_args, {"--jinja", "--no-jinja"}):

@@ -1831,3 +1831,48 @@ class TestHipRocrSegfaultRetriesBundleOnly:
         assert launches[1][1]["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
         assert _fit_mode(launches[1][0]) == "on"
         assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+
+def test_cpu_replay_keeps_studio_thread_cap_after_removing_gpu_tuning():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    env = {"UNSLOTH_CPU_THREADS": "8", "OMP_NUM_THREADS": "2", "OMP_WAIT_POLICY": "PASSIVE"}
+    replay = LlamaCppBackend._cpu_isolated_replay(
+        ["llama-server", "-m", "m.gguf", "--threads", "2"],
+        env,
+        {},
+        drop_full_offload_threads = True,
+    )
+
+    assert replay is not None
+    assert replay.count("--threads") == 1
+    assert replay[replay.index("--threads") + 1] == "8"
+    assert env["OMP_NUM_THREADS"] == "8"
+    assert "OMP_WAIT_POLICY" not in env
+
+
+def _thread_values(cmd):
+    return [cmd[i + 1] for i, token in enumerate(cmd) if token in ("-t", "--threads")]
+
+
+@pytest.mark.parametrize(
+    "platform, cap, expected",
+    [
+        ("linux", None, []),
+        ("linux", "6", ["6"]),
+        ("win32", None, ["2"]),
+        ("win32", "6", ["2"]),
+        ("win32", "1", ["1"]),
+    ],
+)
+def test_every_launch_honours_the_studio_thread_cap(monkeypatch, tmp_path, platform, cap, expected):
+    if cap is None:
+        monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_CPU_THREADS", cap)
+    monkeypatch.setattr(sys, "platform", platform)
+    launches, loaded, error = _run_full_offload_spawns(
+        monkeypatch, tmp_path, outputs = ["", ""], returncodes = [-11, None]
+    )
+    assert error is None and loaded and len(launches) == 2
+    assert [_thread_values(cmd) for cmd, _env in launches] == [expected, expected]
