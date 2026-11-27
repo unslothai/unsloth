@@ -454,9 +454,12 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             raise self._second_gradient(p)
         if id(p) in self._pending_ids:
             return  # accumulated again before its batch was stepped: stepped once, with the sum
+        nbytes = grad.numel() * grad.element_size()
+        if self._pending and self._pending_bytes + nbytes > self.batch_bytes:
+            self._flush_pending()  # a batch never exceeds batch_bytes (one larger weight steps alone)
         self._pending.append(p)
         self._pending_ids.add(id(p))
-        self._pending_bytes += grad.numel() * grad.element_size()
+        self._pending_bytes += nbytes
         if self._pending_bytes >= self.batch_bytes or not self._queue_flush():
             self._flush_pending()
 

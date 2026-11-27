@@ -669,7 +669,9 @@ def test_reentrant_checkpointing_steps_one_batch_per_block(af, monkeypatch):
     are stepped together when it ends, not one launch sequence per weight."""
     x = torch.randn(4, 8)
     model = _Blocks(False)
-    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(model.parameters(), lr = 1e-2))
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(model.parameters(), lr = 1e-2), batch_bytes = 1 << 20
+    )
     batches = []
     step_params = wrapper._step_params
     monkeypatch.setattr(
@@ -793,3 +795,29 @@ def test_deferred_weights_are_stepped_in_bounded_batches(af, monkeypatch):
     assert _weights_equal(standard, head)
     assert wrapper.deferred_steps == 2 * 2
     assert max(sizes) <= wrapper.batch_bytes
+
+
+def test_ready_batches_never_exceed_batch_bytes(af, monkeypatch):
+    """A gradient that would push the waiting batch past batch_bytes steps that batch first; only a weight larger
+    than batch_bytes is stepped alone, so a multi-tensor update never spans more than the planner budgets."""
+    model = _tiny_model().float()
+    params = [p for p in model.parameters() if p.requires_grad]
+    size = lambda q: q.numel() * q.element_size()
+    limit = 3 * max(size(p) for p in params if p.dim() == 2 and p.shape[0] != 96)
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(model.parameters(), lr = 1e-3), batch_bytes = limit
+    )
+    batches = []
+    step_params = wrapper._step_params
+    monkeypatch.setattr(
+        wrapper,
+        "_step_params",
+        lambda ps: (batches.append([size(p) for p in ps if p.grad is not None]), step_params(ps)),
+    )
+    ids = torch.randint(0, 96, (2, 12))
+    with wrapper.armed():
+        model(input_ids = ids, labels = ids).loss.backward()
+    wrapper.step()
+    batches = [b for b in batches if b]
+    assert len(batches) > 1 and any(len(b) > 1 for b in batches)
+    assert all(sum(b) <= limit or len(b) == 1 for b in batches), batches
