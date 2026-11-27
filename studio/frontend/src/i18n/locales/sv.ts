@@ -2559,6 +2559,10 @@ export const sv = {
         confirmDescriptionChatOnly:
           "Stoppar servern och kör installationsprogrammet igen. Det här är en installation med endast chatt, så installationsprogrammet uppgraderar den även till den fullständiga installationen med PyTorch, flera gigabyte totalt. Chattar och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Reparera nu",
+        recommendedTorch:
+          "Reparation rekommenderas: den här installationen har PyTorch {torch}, äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på.",
+        recommendedDriver:
+          "PyTorch {torch} är äldre än den hanterade {managedTorch} som GPU:er i RTX 50-serien stöds på, men den här GPU-drivrutinen stöder inte CUDA 13. Uppdatera GPU-drivrutinen först och reparera sedan installationen.",
       },
       resetPreferences: {
         sectionTitle: "Riskzon",
@@ -4644,6 +4648,8 @@ export const sv = {
       unsupportedFileType: "Filtypen stöds inte",
       uploadOneFileType: "Ladda upp en {types}-fil.",
       datasetUploaded: "Datauppsättningen har laddats upp",
+      importPandasJson: "Importera .json som pandas-kolumner",
+      importSemicolonCsv: "Använd semikolon som avgränsare för .csv",
       evalDatasetUploaded: "Eval-datauppsättningen har laddats upp",
       uploadOneFileAtATime: "Ladda upp en fil i taget",
       uploadSingleFileDescription:
@@ -4717,6 +4723,12 @@ export const sv = {
       epochs: "Epoker",
       useMaxSteps: "Använd maxsteg",
       useEpochs: "Använd epoker",
+      stepGuidancePass: "Ungefär {steps} steg är ett varv över dina {rows} rader med en effektiv batch på {batch}.",
+      stepGuidanceFloor: "Ett varv över dina {rows} rader är bara {passSteps} steg med en effektiv batch på {batch}, så ungefär {steps} steg (några varv) är ett rimligt minimum.",
+      stepGuidanceCap: "Ett varv över dina {rows} rader är {passSteps} steg med en effektiv batch på {batch}; {steps} steg tränar på en del av dem, vilket ofta räcker för en första körning.",
+      stepGuidanceEpoch: "En epok är ungefär {passSteps} steg över dina {rows} rader med en effektiv batch på {batch}.",
+      stepGuidancePacking: "Packning slår ihop korta rader, så ett varv kan ta färre steg.",
+      useSuggestedSteps: "Använd {steps}",
       maxStepsTooltip: "Åsidosätt totalt antal optimerarsteg.",
       epochsTooltip: "Antal fullständiga genomgångar av datauppsättningen.",
       contextLength: "Kontext",

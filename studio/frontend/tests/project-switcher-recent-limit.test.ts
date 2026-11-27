@@ -14,7 +14,6 @@ test("the switcher lists the six most recent projects, not all of them", () => {
     SWITCHER,
     /const recent = sortProjectsByActivity\(projects\)\.slice\(0, RECENT_PROJECT_LIMIT\);/,
   );
-  // The menu draws the capped list, not the prop.
   assert.match(SWITCHER, /\{recentProjects\.map\(\(project\) => \{/);
   assert.ok(
     !SWITCHER.includes("{projects.map("),

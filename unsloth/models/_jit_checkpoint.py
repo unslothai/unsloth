@@ -33,8 +33,7 @@ def _world():
 
 
 def _agreement_group(dist):
-    """A CPU (gloo) group: the vote is a host-side int, so it never waits for the device stream at a step
-    boundary. Collective to create, which is fine at install time (every rank builds the Trainer)."""
+    """CPU gloo group: host-side vote, no device sync; collective creation is fine at install."""
     if "gloo" in str(dist.get_backend()).lower():
         return None
     try:
@@ -58,9 +57,8 @@ def _any_rank(dist, flag, group):
 
 def _agree(manager):
     if getattr(manager, "_unsloth_jit_done", False):
-        # Every rank agreed on one checkpoint at the same check and training is stopping: a later timer (the
-        # same signal heard later on another rank, or a repeat) must not start a second one. All ranks set
-        # this flag at the same check, so all of them skip the vote from here on.
+        # After one agreed checkpoint training stops; later timers (another rank's signal, a repeat)
+        # must not start another; all ranks set the flag at the same check and skip the vote.
         manager.is_checkpoint_requested = False
         return
     pending = bool(getattr(manager, _PENDING, False))
@@ -83,8 +81,7 @@ def _patch_manager(manager):
     manager._unsloth_jit_group = _agreement_group(dist) if dist is not None else None
 
     def _enable_checkpoint():
-        # The timer thread only marks the request; the main thread turns it into is_checkpoint_requested at a
-        # check every rank reaches (_agree), so no rank can act on it alone.
+        # Timer only sets a flag; it applies at a check all ranks reach, so no rank acts alone.
         setattr(manager, _PENDING, True)
 
     manager._enable_checkpoint = _enable_checkpoint

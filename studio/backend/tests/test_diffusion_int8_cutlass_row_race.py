@@ -86,7 +86,6 @@ def test_large_calls_record_their_buckets_once(monkeypatch):
         g8._note_rows(0, key, m)
     assert len(writes) == 2  # one per new bucket, none for repeats or small calls
     assert table["ck|rows"] == {repr(key): [4096, 4224]}
-    # the kill switch records nothing
     monkeypatch.setenv(cut.ROW_RACE_ENV, "0")
     g8._note_rows(0, key, 5000)
     assert len(writes) == 2

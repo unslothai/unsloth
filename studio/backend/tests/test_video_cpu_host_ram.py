@@ -31,8 +31,7 @@ _REAL_AVAILABLE = dm._available_system_memory_mib
 _REAL_MMAP = gguf_mmap.gguf_mmap_enabled
 _REAL_RELEASE = getattr(v, "_resident_video_cpu_release_gb", None)
 
-# Declared on-disk sizes of the tiny test checkpoints: NTFS allocates sparse files in full, so the files hold only
-# their headers and the size the guard reads comes from here.
+# Test checkpoints are header-only (NTFS allocates sparse files in full); sizes are declared.
 _DECLARED_SIZES = {}
 
 
@@ -165,8 +164,7 @@ def test_ltx25_gguf_on_a_24_gib_cgroup_is_refused_before_download(host):
 def test_real_cgroup_limit_reading_drives_the_refusal(host, monkeypatch):
     """Through the real host-RAM readers: a 24 GiB cgroup (1 GiB used, so 23 GiB left) on a huge host refuses."""
     host("cpu", 1, 1)
-    # Undo only the two readings the fake cgroup must now drive; system total / available and the credit are fixed so
-    # the number is the same on every OS and runner.
+    # Restore only the two readings the fake cgroup drives; the rest stay fixed on every OS.
     monkeypatch.setattr(dm, "_host_ram_capacity_mib", _REAL_CAPACITY)
     monkeypatch.setattr(dm, "_available_system_memory_mib", _REAL_AVAILABLE)
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (2_000_000, 1_000_000))
@@ -296,8 +294,7 @@ def test_cpu_prices_the_dense_float32_encoder_the_loader_keeps():
 
 
 def test_wan13_price_matches_its_cpu_measurement():
-    """Wan2.1 1.3B stores umT5 and the DiT in float32; measured on Colab CPU-HM at 832x480x33: 9.45 GB anonymous peak
-    (umT5 read through its file mapping). Priced just under it."""
+    """Wan2.1 1.3B float32 umT5 (mmapped) and DiT; 9.45 GB anon CPU-HM peak, priced just under."""
     need = vch.cpu_video_host_need(WAN13, model_kind = "pipeline")
     assert need.text_encoder_gb == 0.0
     assert WAN13_MEASURED_ANON_GB - 0.5 <= need.total_gb <= WAN13_MEASURED_ANON_GB
@@ -385,8 +382,7 @@ def test_accelerator_host_skips_the_target_probe(host, monkeypatch):
 
 
 def test_cpu_check_follows_the_callers_target(host, sizing_must_not_run, monkeypatch):
-    """The probe-free reading says CPU but the loader's own resolver says CUDA (as the fp16 host tests mock it): the
-    loader's answer wins and nothing is sized."""
+    """The loader's resolver beats the probe-free CPU reading, so nothing is sized."""
     host("cuda", 4, 4, probe_free_cpu = True)
     cpu = _target("cpu")
     monkeypatch.setattr(dd, "resolve_diffusion_device_target", lambda *a, **k: cpu)

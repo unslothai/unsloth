@@ -28,7 +28,8 @@ test("the training GPU override hint says multi-node training is not part of thi
 for (const page of ["images/images-page.tsx", "video/video-page.tsx"]) {
   test(`the ${page} device hint says one job across machines is not part of this release`, () => {
     const source = readFileSync(new URL(`../src/features/${page}`, import.meta.url), "utf8");
-    const hint = source.match(/hint="(Which card this model loads on\.[^"]*)"/);
+    // A plain string, or a template that appends the shared multi-GPU batch-split note.
+    const hint = source.match(/hint=(?:"|\{`)(Which card this model loads on\.[^"`]*)["`]/);
     assert.ok(hint, "device hint not found");
     assert.match(hint[1], TWO_MACHINES);
     assert.match(hint[1], NOT_RELEASED);

@@ -16,8 +16,7 @@ from .test_stt_mtmd_context import MODEL, runtime  # noqa: F401 - shared protoco
 def test_public_transcription_without_native_count_keeps_legacy_capacity(
     runtime, monkeypatch, preloaded_manual
 ):
-    # The supported upstream b9415 macOS fallback can transcribe Qwen3-ASR and has /props,
-    # but predates /v1/chat/completions/input_tokens. Public clients cannot send a UI setting.
+    # b9415 predates /v1/chat/completions/input_tokens; public clients cannot send UI settings.
     runtime.wire.count_status = 404
     if preloaded_manual:
         runtime.sidecar.load(MODEL, context_length = 4096)

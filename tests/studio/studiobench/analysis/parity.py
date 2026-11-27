@@ -307,8 +307,7 @@ def compare_styles(base: dict, treat: dict) -> tuple[str, str]:
             "selector list is written against Unsloth's markup and does not survive a rename; "
             "this is a probe that needs fixing, not two arms that agree"
         )
-    # STYLE_SELECTORS includes Send and Stop, so differing run state moves the digest on identical
-    # threads. NOT_COMPARABLE rather than MATCH, since one aggregate digest covers everything.
+    # Send/Stop run state moves the digest on identical threads, so NOT_COMPARABLE, not MATCH.
     if (bs.get("elements") != ts.get("elements") or bs.get("digest") != ts.get("digest")) and (
         generation_disagrees(base, treat) and _run_state_disagrees(base, treat)
     ):

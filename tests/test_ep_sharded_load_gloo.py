@@ -103,6 +103,19 @@ def _step(epn, model, rank, world, mesh, vocab):
     return float(value), grads
 
 
+def _save_refused(model):
+    """save_pretrained of a sharded load before apply: (message or "ran", what the destination holds after)."""
+    dest = tempfile.mkdtemp()
+    with open(os.path.join(dest, "keep.txt"), "w") as f:
+        f.write("x")
+    try:
+        model.save_pretrained(dest)
+        said = "ran"
+    except RuntimeError as exc:
+        said = str(exc)
+    return said, sorted(os.listdir(dest))
+
+
 def _case_sharded_16bit(rank, world, tmp):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -141,6 +154,7 @@ def _case_sharded_16bit(rank, world, tmp):
         out["unapplied_forward"] = "ran"
     except RuntimeError as exc:
         out["unapplied_forward"] = str(exc)
+    out["unapplied_save"] = _save_refused(model)
 
     ref, model, full = _lora(_load(ckpt)), _lora(model), _lora(full)
     lora = lambda m: {k: p.detach().clone() for k, p in m.named_parameters() if "lora_" in k}  # noqa: E731
@@ -152,6 +166,7 @@ def _case_sharded_16bit(rank, world, tmp):
     out["ref"] = _step(epn, ref, rank, world, None, vocab)
     out["full"] = _step(epn, full, rank, world, mesh, vocab)
     out["sharded"] = _step(epn, model, rank, world, mesh, vocab)
+    out["applied_holds"] = tpn._holds_unapplied_shards(model)
     return out
 
 
@@ -326,8 +341,10 @@ def _case_prequantized_per_expert(rank, world, tmp):
     out["models"] = len(state["models"])
     out["stats"] = dict(model.__dict__.get("_unsloth_tp_load_stats") or {})
     out["held"] = _stack_bytes(model)
+    out["unapplied_save"] = _save_refused(model)
     model = lora(model)
     out["sharded"] = _step(epn, model, rank, world, mesh, _Q4["vocab_size"])
+    out["applied_holds"] = tpn._holds_unapplied_shards(model)
     have = _snapshot_4bit(model)
     out["compared"] = len(want)
     out["diffs"] = sorted(
@@ -404,6 +421,8 @@ def test_ep_sharded_16bit_load_keeps_only_local_experts_and_matches_full_load():
             r["stats"]["sharded_expert_stacks"] > 0 and r["stats"]["quantized_on_load"] is False
         ), r["stats"]
         assert "apply_expert_parallel" in r["unapplied_forward"], r["unapplied_forward"]
+        assert "apply_expert_parallel" in r["unapplied_save"][0], r["unapplied_save"]
+        assert r["unapplied_save"][1] == ["keep.txt"] and r["applied_holds"] is False, r
         # PEFT sized and seeded the expert LoRA from the whole stack, as on one GPU.
         assert r["lora_equal"]
         assert r["sharded"][0] == r["full"][0], (r["sharded"][0], r["full"][0])
@@ -427,6 +446,8 @@ def test_ep_prequantized_per_expert_4bit_load_keeps_only_local_experts():
         assert r["models"] == 1 and r["stats"].get("prequantized"), r
         assert r["stats"]["sharded_expert_stacks"] == 4, r["stats"]
         assert r["held"] * 2 == r["full_bytes"], (r["held"], r["full_bytes"])
+        assert "apply_expert_parallel" in r["unapplied_save"][0], r["unapplied_save"]
+        assert r["unapplied_save"][1] == ["keep.txt"] and r["applied_holds"] is False, r
         assert r["compared"] == 12 and not r["diffs"], r["diffs"]
         assert r["sharded"][0] == r["full"][0]
         got, want = r["sharded"][1], r["full"][1]

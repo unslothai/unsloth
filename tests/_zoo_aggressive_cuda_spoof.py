@@ -16,8 +16,7 @@ def apply() -> None:
     if getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
         return
 
-    # Import bitsandbytes before the spoof flips is_available(), or its CUDA backend import fails
-    # with a non-ImportError on a CPU-only wheel.
+    # Import bitsandbytes before spoofing is_available(); CPU wheels raise non-ImportError.
     try:
         import bitsandbytes  # noqa: F401
     except Exception:

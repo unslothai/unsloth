@@ -51,8 +51,7 @@ def test_the_serving_engine_then_falls_back_to_transformers(monkeypatch):
 
 
 def test_a_cancelled_transcription_does_not_disable_the_engine():
-    """A cancel closes the socket deliberately. Treating that as a broken runtime would
-    disable whisper.cpp for the rest of the session every time someone stops a recording."""
+    """A deliberate cancel closes the socket; it must not disable whisper.cpp for the session."""
     cancel_event = threading.Event()
     cancel_event.set()
 
@@ -115,8 +114,7 @@ def test_an_already_downloaded_snapshot_is_not_fetched_again(monkeypatch):
 
 
 def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
-    """Only a GGUF selection redirected by a broken runtime needs preparing. An engine
-    that was never installed already routes its own download through Transformers."""
+    """Only broken-runtime GGUF redirects need preparing; never-installed engines need none."""
     from core.inference import stt_sidecar
     from routes import inference as inference_routes
 

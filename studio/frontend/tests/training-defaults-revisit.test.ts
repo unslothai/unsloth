@@ -22,6 +22,9 @@ const { useTrainingConfigStore } = await import(
 const { deriveTrainingReadiness } = await import(
   "../src/features/training/hooks/use-training-readiness.ts"
 );
+const { buildTrainingStartPayload } = await import(
+  "../src/features/training/api/mappers.ts"
+);
 
 type Store = typeof useTrainingConfigStore;
 
@@ -37,6 +40,9 @@ const DATASET = {
 let requests: string[] = [];
 let failNext = false;
 let audioTypeKnown = true;
+let modelSize: number | null = null;
+let bnb4Bit = false;
+let deviceBackend = "cuda";
 
 function details(): Record<string, unknown> {
   return {
@@ -48,12 +54,19 @@ function details(): Record<string, unknown> {
     audio_type_known: audioTypeKnown,
     is_lora: false,
     model_type: "text",
-    model_size_bytes: null,
+    model_size_bytes: modelSize,
+    bnb_4bit: bnb4Bit,
     max_position_embeddings: 40960,
   };
 }
 
 setAuthFetchHandler((input) => {
+  if (input === "/api/system/hardware") {
+    return Response.json({
+      device_backend: deviceBackend,
+      gpu: { vram_free_gb: 11.63 },
+    });
+  }
   if (!input.startsWith("/api/models/config/")) {
     return new Response("{}", { status: 404 });
   }
@@ -71,6 +84,9 @@ beforeEach(() => {
   requests = [];
   failNext = false;
   audioTypeKnown = true;
+  modelSize = null;
+  bnb4Bit = false;
+  deviceBackend = "cuda";
   useHfTokenStore.setState({ token: "" });
   useTrainingConfigStore.getState().reset();
 });
@@ -213,4 +229,47 @@ test("the first visit after a page reload still asks", async () => {
   assert.equal(requests.length, 2);
   await visitTrain(reloaded);
   assert.equal(requests.length, 2);
+});
+
+test("a cached bitsandbytes checkpoint defaults to QLoRA on CUDA", async () => {
+  const model = "unsloth/Qwen3-8B-unsloth-bnb-4bit";
+  modelSize = 4_975_369_365 + 2_504_973_894;
+  bnb4Bit = true;
+  useTrainingConfigStore.getState().selectTrainingModel(model, "text", {
+    knownCached: true,
+    localPath: "/cache/models--unsloth--Qwen3-8B-unsloth-bnb-4bit/snapshots/abc",
+  });
+  await settled();
+  assert.match(requests[0], /prefer_local_cache=true/);
+  const config = useTrainingConfigStore.getState();
+  assert.equal(config.trainingMethod, "qlora");
+  assert.equal(buildTrainingStartPayload(config, null).load_in_4bit, true);
+
+  config.setTrainingMethod("lora");
+  await visitTrain();
+  const manualConfig = useTrainingConfigStore.getState();
+  assert.equal(manualConfig.trainingMethod, "lora");
+  assert.equal(buildTrainingStartPayload(manualConfig, null).load_in_4bit, false);
+});
+
+test("the ordinary hardware choice still selects LoRA for 16-bit weights that fit", async () => {
+  modelSize = 3 * 1024 ** 3;
+  await pickModel();
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "lora");
+});
+
+test("the cached CUDA recommendation does not change the non-CUDA policy", async () => {
+  modelSize = 3 * 1024 ** 3;
+  bnb4Bit = true;
+  deviceBackend = "rocm";
+  await pickModel();
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "lora");
+});
+
+test("a bitsandbytes repo picked from the Hub also defaults to QLoRA on CUDA", async () => {
+  modelSize = 4_975_369_365 + 2_504_973_894;
+  bnb4Bit = true;
+  await pickModel();
+  assert.doesNotMatch(requests[0], /prefer_local_cache=true/);
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "qlora");
 });

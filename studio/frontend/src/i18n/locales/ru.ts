@@ -2424,6 +2424,10 @@ export const ru = {
         confirmDescriptionChatOnly:
           "Останавливает сервер и повторно запускает установщик. Это установка «Только чат», поэтому установщик также переведёт её на полную установку с PyTorch, в сумме несколько гигабайт. Чаты и настройки сохраняются. Это может занять несколько минут.",
         confirmAction: "Восстановить",
+        recommendedTorch:
+          "Рекомендуется восстановление: в этой установке PyTorch {torch}, старее управляемой версии {managedTorch}, на которой поддерживаются GPU серии RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} старее управляемой версии {managedTorch}, на которой поддерживаются GPU серии RTX 50, но этот драйвер GPU не поддерживает CUDA 13. Сначала обновите драйвер GPU, затем восстановите установку.",
       },
       resetPreferences: {
         sectionTitle: "Опасная зона",
@@ -4476,6 +4480,8 @@ export const ru = {
       unsupportedFileType: "Неподдерживаемый тип файла",
       uploadOneFileType: "Загрузите один файл {types}.",
       datasetUploaded: "Датасет загружен",
+      importPandasJson: "Импортировать .json как столбцы pandas",
+      importSemicolonCsv: "Использовать точку с запятой как разделитель для .csv",
       evalDatasetUploaded: "Датасет для оценки загружен",
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:
@@ -4549,6 +4555,12 @@ export const ru = {
       epochs: "Эпохи",
       useMaxSteps: "Использовать макс. шаги",
       useEpochs: "Использовать эпохи",
+      stepGuidancePass: "Около {steps} шагов это один проход по вашим {rows} строкам при эффективном батче {batch}.",
+      stepGuidanceFloor: "Один проход по вашим {rows} строкам занимает всего {passSteps} шагов при эффективном батче {batch}, поэтому около {steps} шагов (несколько проходов) это разумный минимум.",
+      stepGuidanceCap: "Один проход по вашим {rows} строкам занимает {passSteps} шагов при эффективном батче {batch}; {steps} шагов обучают на части данных, чего часто хватает для первого запуска.",
+      stepGuidanceEpoch: "Одна эпоха это около {passSteps} шагов по вашим {rows} строкам при эффективном батче {batch}.",
+      stepGuidancePacking: "Упаковка объединяет короткие строки, поэтому проход может занять меньше шагов.",
+      useSuggestedSteps: "Использовать {steps}",
       maxStepsTooltip: "Переопределить общее число шагов оптимизатора.",
       epochsTooltip: "Количество полных проходов по датасету.",
       contextLength: "Контекст",

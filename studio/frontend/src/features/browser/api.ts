@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type { PageRequest } from "./frame-message";
 import { onPageStorageWrite, pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
 
@@ -157,8 +158,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
     const detail = payload?.detail;
     const botCheck = typeof detail === "object" && detail !== null && (detail as { botCheck?: unknown }).botCheck === true;
-    const raw = botCheck ? (detail as { message?: unknown }).message : detail;
-    const message = typeof raw === "string" ? raw : `HTTP ${response.status}`;
+    const message = formatApiErrorBody(payload) ?? `HTTP ${response.status}`;
     throw new BrowserFetchError(message.replace(/^Failed to fetch URL:\s*/, ""), botCheck);
   }
   if (response.headers.get("X-Unsloth-Browser-Kind") === "html") {

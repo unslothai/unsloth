@@ -5,8 +5,7 @@ import { create } from "zustand";
 
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
-// Whether RAG can run on this host: the KB list answers 200 with a marker, other endpoints 503.
-// Gate only on isUnavailable(); everything is optimistic until the backend actually answers.
+// Gate only on isUnavailable(); optimistic until the KB list's 200 or a 503 answers.
 
 interface RagAvailabilityMarker {
   ragAvailable?: unknown;
@@ -16,8 +15,7 @@ interface RagAvailabilityMarker {
 const DEFAULT_UNAVAILABLE_REASON =
   "RAG is unavailable on this machine: the sqlite-vec extension could not be loaded.";
 
-// Match only the extension name: a proxy 503 or a generic "RAG is unavailable" must not persist a
-// capability verdict from a transient outage.
+// Match only the sqlite-vec name: a proxy 503 or generic RAG text must not persist a verdict.
 const RAG_UNAVAILABLE_MARKERS = ["sqlite-vec"];
 
 function isRagUnavailableDetail(detail: string | null | undefined): detail is string {
@@ -81,8 +79,7 @@ export function noteRagAvailability(body: unknown): void {
 }
 
 /**
- * A 2xx from a gated endpoint clears a stale unavailable; the list is excluded since it
- * answers 200 either way and its marker is the authority.
+ * A 2xx from a gated endpoint clears a stale unavailable; the list's marker, not its 200, decides.
  */
 export function noteRagResponse(status: number, body: unknown): void {
   if (status === 503) {

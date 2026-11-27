@@ -133,8 +133,7 @@ _UNDECODABLE_PREFIXES = (
 
 
 def _mime_is_bounded(image: Any) -> bool:
-    """Metadata is not where megabytes may hide from the byte budgets on either side;
-    an entry whose mimeType runs past the bound is not a picture this path sends."""
+    """Metadata must not hide megabytes from byte budgets; an over-long mimeType is not sent."""
     mime = image.get("mimeType") if isinstance(image, dict) else None
     return not (isinstance(mime, str) and len(mime) > MAX_MCP_IMAGE_MIME_CHARS)
 
@@ -305,8 +304,7 @@ def eligible_replay_images(
 
 
 def replay_image_total(messages: Sequence[dict], parsed: "dict | None" = None) -> int:
-    """Pictures counted as the tool loop admits them (per result quota, at most the cap per parallel
-    batch); parsed collects each result's images for eligible_replay_images."""
+    """Counts images the loop admits (per-result quota, batch cap); fills parsed for replay."""
     call_names = resolve_tool_names(messages)
     total = 0
     batch = 0
@@ -664,8 +662,7 @@ def trim_image_url_turns(
 
 
 def _merge_into_trailing_user_turn(conversation: list, parts: list[dict]) -> bool:
-    """Folds parts into a trailing user turn, since two user messages in a row break strict VLM
-    templates."""
+    """Folds parts into the last user turn; adjacent user messages break strict VLM templates."""
     last = conversation[-1] if conversation else None
     if not isinstance(last, dict) or last.get("role") != "user":
         return False
@@ -926,8 +923,7 @@ def promote_history(
     reserve_for_caller: bool = False,
     limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
 ) -> list[dict]:
-    """Strips the envelope from tool text either way, so text-only models never see base64. limit
-    None keeps every picture, for a compacting chat whose tool loop keeps them too."""
+    """Strips envelopes either way (text-only models never see base64); limit None keeps all."""
     out, _payloads, promoted = _promote(
         messages, vision, local = False, reserve_for_caller = reserve_for_caller, limit = limit
     )
@@ -943,8 +939,7 @@ def promote_history_local(
     decode_cache: "dict | None" = None,
     caller_images: Sequence = (),
 ) -> tuple[list[dict], list[str]]:
-    """For backends taking pixels beside the prompt; caller_images supplies pixels for existing
-    markers, which keep their positions and survive trimming"""
+    """Pixel-beside-prompt backends; caller_images fills existing markers, kept through trims."""
     out, payloads, _promoted = _promote(
         messages, vision, local = True, decode_cache = decode_cache, caller_images = caller_images
     )

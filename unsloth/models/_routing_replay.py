@@ -118,8 +118,7 @@ def _active_adapters(model):
 
 
 def _router_extra_args(module, parent):
-    # Routers taking e_score_correction_bias or expert_bias get the same-named tensor from the
-    # parent MoE block; None when a required argument has none
+    # Routers with e_score_correction_bias or expert_bias take it from the parent; else None.
     try:
         params = list(inspect.signature(module.forward).parameters.values())[1:]
     except (TypeError, ValueError):
@@ -189,14 +188,17 @@ _CHECK_LOGIT_STDS = (1.0, 4.0)
 
 def _check_formula(rr, module, x, extra):
     """None when the cached zoo formula reproduces this router's own top-k weights, else why not.
-    The zoo stores False when it found none (sigmoid / correction bias routers, MiniMax-M2, HY-V3,
-    LFM2-MoE): replay would silently keep natural routing there, so it counts as a failure too."""
+    The zoo stores False when it found none (routers it has no formula for; older zoo: also sigmoid /
+    correction bias routers): replay would silently keep natural routing there, so it counts as a failure too."""
     formula = getattr(module, "_unsloth_replay_formula", None)
     if formula is False or formula is None:
-        return "routing replay has no weight formula for this router (e.g. sigmoid routing)"
+        return "routing replay has no weight formula for this router"
     fn = rr._formulas().get(formula) if hasattr(rr, "_formulas") else None
     if fn is None:
         return f"unknown routing replay weight formula {formula!r}"
+    # Sigmoid routers (DeepSeek-V3, GLM-4 MoE) scale their top-k weights by routed_scaling_factor; the zoo
+    # records the factor it matched (older zoo: none, so 1.0).
+    weight_scale = float(getattr(module, "_unsloth_replay_scale", 1.0))
     with torch.no_grad():
         output = module.forward(x, **extra)
         positions = rr._split_router_output(output)
@@ -217,7 +219,7 @@ def _check_formula(rr, module, x, extra):
                 if dense
                 else output[wi].reshape(ids.shape)
             )
-            candidate = fn(logits, ids).to(weights.dtype).float()
+            candidate = (fn(logits, ids).float() * weight_scale).to(weights.dtype).float()
             if not torch.allclose(candidate, weights.float(), rtol = 2e-2, atol = 2e-3):
                 return f"the {formula} weight formula does not reproduce its routing weights"
     return None
@@ -230,9 +232,8 @@ def _remove_hook(module, name, extras, hook_id):
 
 
 def prepare_routing_replay(model, before):
-    """Primes router formulas outside compilation; detaches replay hooks during disable_adapter and
-    non-policy set_adapter (PEFT reference scoring); a router that cannot be primed keeps natural
-    routing and loses its replay hook with a warning"""
+    """Primes router formulas outside compilation; detaches replay hooks in disable_adapter and
+    non-policy set_adapter (PEFT ref scoring); unprimable routers warn, keep natural routing."""
     hooks = _new_hooks(model, before)
     if not hooks:
         return 0

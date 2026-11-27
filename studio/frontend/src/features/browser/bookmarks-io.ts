@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Netscape bookmark HTML, as Chrome, Edge, Firefox and Safari export it.
-// Folders are <H3> headings, each followed by a <DL> of links.
+// Netscape bookmark HTML as browsers export it; <H3> folder headings each followed by <DL>.
 
 import { downloadFile } from "@/lib/native-files";
 import { isWebUrl } from "./address";

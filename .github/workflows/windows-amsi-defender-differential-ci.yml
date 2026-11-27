@@ -12,8 +12,7 @@ name: "Windows: AMSI and Defender differential"
 on:
   workflow_dispatch:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
@@ -44,12 +43,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The Server image disables Defender's scanning and cloud lookups and excludes C:\ and D:\, so the
+      # AMSI control could never fire. Re-enable them (Server has no Tamper Protection); no samples are sent.
+      - name: Turn Defender protection back on
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Remove-MpPreference -ExclusionPath 'C:\', 'D:\' -ErrorAction Continue
+          foreach ($pair in @(
+              @{ DisableRealtimeMonitoring = $false }, @{ DisableScriptScanning = $false },
+              @{ DisableBehaviorMonitoring = $false }, @{ DisableIOAVProtection = $false },
+              @{ MAPSReporting = 2 }, @{ SubmitSamplesConsent = 2 })) {
+            try { Set-MpPreference @pair -ErrorAction Stop } catch { Write-Host "::warning::could not set $($pair.Keys): $($_.Exception.Message)" }
+          }
+          $s = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          $p = Get-MpPreference -ErrorAction SilentlyContinue
+          Write-Host "real-time=$($s.RealTimeProtectionEnabled) tamper=$($s.IsTamperProtected) script-scanning-off=$($p.DisableScriptScanning) MAPS=$($p.MAPSReporting) exclusions=$(@($p.ExclusionPath) -join ';')"
+
       - name: Exempt the comparison directory from on-access scanning
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # Exclude BEFORE writing: on-access protection could remove a copy mid-layout. The
-          # explicit scan ignores exclusions, so the verdict is unaffected.
+          # Exclude before writing (on-access may remove a copy); explicit scans ignore them.
           $root = Join-Path $env:RUNNER_TEMP 'sides'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
           Add-MpPreference -ExclusionPath $root -ErrorAction Continue
@@ -71,7 +86,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $head = (git rev-parse HEAD).Trim()
           if ($env:PR_BASE) {
-            # The merge base, not the base tip.
             $base = (git merge-base $env:PR_BASE $head).Trim()
           } else {
             $base = (git rev-parse 'HEAD~1').Trim()
@@ -97,8 +111,7 @@ jobs:
                 Write-Host "::notice::$f does not exist at $($sha.Substring(0,8)) ($side); skipping it on that side"
                 continue
               }
-              # Copy the blob as bytes: capturing as PowerShell text changes line endings and encoding,
-              # so the scanned file would not be the shipped file.
+              # Copy bytes, not text: text capture changes line endings and encoding.
               $psi = New-Object System.Diagnostics.ProcessStartInfo
               $psi.FileName = 'git'
               $psi.ArgumentList.Add('show')
@@ -191,8 +204,7 @@ jobs:
                 $noResult += "$side/$($file.Name) [the probe wrote no result]"
                 continue
               }
-              # Parse strictly: under 'Continue' an invalid file gave a null row that silently left
-              # the measured set.
+              # Parse strictly: 'Continue' let an invalid file silently drop out of the set.
               $parsed = $null
               try {
                 $parsed = Get-Content -Raw -LiteralPath $json -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -379,8 +391,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $controlDir | Out-Null
           $controlFile = Join-Path $controlDir 'control.txt'
           $fired = $false
-          # A control fires only on something observed. Write a benign canary of the same size
-          # first, so a missing EICAR file means Defender rather than an ACL or I/O error.
+          # Canary first: a missing EICAR file then means Defender, not an ACL or I/O error.
           $canaryFile = Join-Path $controlDir 'canary.txt'
           $canaryOk = $false
           try {
@@ -456,7 +467,8 @@ jobs:
               $cloudNote = "MAPSReporting is Disabled ($bafsNote)"
             } else {
               $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
-              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'fail') {
+              # Not a bare 'fail': a successful run prints the legend "other - failure".
+              if ($LASTEXITCODE -eq 0 -and $mapsOut -notmatch 'ValidateMapsConnection failed') {
                 $cloudReady = $true
                 $cloudNote = "MAPSReporting=$($pref.MAPSReporting), connection validated ($bafsNote)"
               } else {
@@ -498,8 +510,7 @@ jobs:
               $text = (& $mp -Scan -ScanType 3 -File $file.FullName -DisableRemediation 2>&1 | Out-String)
               # Capture immediately: $LASTEXITCODE is overwritten by the next external call.
               $code = $LASTEXITCODE
-              # Read text AND exit code: MpCmdRun has returned 0 with a threat named, and 0 is the
-              # only documented clean code.
+              # Text and exit code: MpCmdRun exits 0 on a threat; only 0 is documented clean.
               $hit = [bool]($text -match 'found\s+([1-9]\d*)\s+threat')
               $state = if ($hit) { 'FLAGGED' } elseif ($code -ne 0) { "UNSCANNED (exit $code)" } else { 'clean' }
               Write-Host ("  {0,-8} {1,-24} {2}" -f $side, $file.Name, $state)

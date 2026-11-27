@@ -625,6 +625,23 @@ def load_preview_slice(
     return preview_slice, total_rows
 
 
+def _start_hub_rows_lookup(request: CheckFormatRequest, hf_token):
+    """A getter for the Hub split's row count, or None when the request is not a Hub id read over the network."""
+    if request.prefer_local_cache or _is_local_dataset_ref(request.dataset_name):
+        return None
+    try:
+        if resolve_dataset_path(request.dataset_name).exists() or _datasets_reads_locally(
+            request.dataset_name
+        ):
+            return None
+        from hub.services.datasets.row_counts import start_hub_split_rows
+        return start_hub_split_rows(
+            request.dataset_name, request.subset, request.train_split, hf_token
+        )
+    except Exception:
+        return None
+
+
 def check_format_response(
     request: CheckFormatRequest,
     hf_token: Optional[str] = None,
@@ -640,12 +657,17 @@ def check_format_response(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
+        # A Hub id's preview streams rows and has no total, so its split size is asked of the Hub
+        # alongside it; the answer is read only after the preview (and its access gate) succeeded.
+        hub_rows = _start_hub_rows_lookup(request, hf_token)
         preview_slice, total_rows = load_preview_slice(
             request,
             hf_token,
             PREVIEW_SIZE,
             allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
         )
+        if total_rows is None and hub_rows is not None:
+            total_rows = hub_rows()
         preview_slice = _decode_preview_rows_once(preview_slice)
 
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)

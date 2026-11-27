@@ -517,6 +517,8 @@ def _ring_copy(sources: list[Any], device: Any) -> list[Any]:
     ]
     done: list[Any] = [None] * buffers
     stream = torch.cuda.Stream(device = device)
+    # The targets come from the current stream's pool: wait for its queued work before the side stream writes them.
+    stream.wait_stream(torch.cuda.current_stream(device))
 
     def _fill(slot: int, src8: Any, offset: int, size: int) -> None:
         event = done[slot]

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Runs watched by a browser, keyed by (account, run) then follower; durable means
-cancel_on_disconnect off, not tab gone; wait_tool_decision park ceiling relies on it; heartbeats,
-not refcount"""
+"""Browser-watched runs keyed by (account, run) then follower; durable means cancel_on_disconnect
+off, not tab gone; heartbeats, not refcount; wait_tool_decision's park ceiling relies on it."""
 
 from __future__ import annotations
 
@@ -60,7 +59,6 @@ def subscriber_departed(
 
 
 def is_attended(run_id: str, account_id: str = "") -> bool:
-    """Whether ANY follower of ``account_id``'s ``run_id`` has been heard from recently."""
     if not run_id:
         return False
     key = _key(account_id, run_id)
@@ -80,7 +78,6 @@ def is_attended(run_id: str, account_id: str = "") -> bool:
 
 
 def attendance_for_tests(run_id: str, account_id: str = "") -> int:
-    """How many followers are currently stamped for ``account_id``'s ``run_id``."""
     with _LOCK:
         return len(_SEEN.get(_key(account_id, run_id)) or {})
 

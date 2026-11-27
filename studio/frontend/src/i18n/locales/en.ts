@@ -50,7 +50,7 @@ export const en = {
     scope: "Show on",
     scopeNewChat: "New chat page",
     scopeChats: "Chats",
-    scopeAll: "All pages",
+    scopeAll: "All pages (everything)",
     positionValue: "Horizontal {x}%, vertical {y}%",
     newChat: "New chat preview",
     conversation: "Conversation preview",
@@ -2454,6 +2454,10 @@ export const en = {
         confirmDescriptionChatOnly:
           "Stops the server and reruns the installer. This is a Chat only install, so the installer also upgrades it to the full install with PyTorch, several gigabytes in total. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
+        recommendedTorch:
+          "Repair recommended: this install has PyTorch {torch}, older than the managed {managedTorch} that RTX 50-series GPUs are supported on.",
+        recommendedDriver:
+          "PyTorch {torch} is older than the managed {managedTorch} that RTX 50-series GPUs are supported on, but this GPU driver does not support CUDA 13. Update the GPU driver first, then repair the installation.",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
@@ -4467,6 +4471,8 @@ export const en = {
       unsupportedFileType: "Unsupported file type",
       uploadOneFileType: "Upload one {types} file.",
       datasetUploaded: "Dataset uploaded",
+      importPandasJson: "Import .json as pandas columns",
+      importSemicolonCsv: "Use semicolon delimiter for .csv",
       evalDatasetUploaded: "Eval dataset uploaded",
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
@@ -4540,6 +4546,12 @@ export const en = {
       epochs: "Epochs",
       useMaxSteps: "Use Max Steps",
       useEpochs: "Use Epochs",
+      stepGuidancePass: "About {steps} steps is one pass over your {rows} rows at an effective batch of {batch}.",
+      stepGuidanceFloor: "One pass over your {rows} rows is only {passSteps} steps at an effective batch of {batch}, so about {steps} steps (a few passes) is a sensible minimum.",
+      stepGuidanceCap: "One pass over your {rows} rows is {passSteps} steps at an effective batch of {batch}; {steps} steps trains on part of it, which is often enough for a first run.",
+      stepGuidanceEpoch: "One epoch is about {passSteps} steps over your {rows} rows at an effective batch of {batch}.",
+      stepGuidancePacking: "Packing joins short rows, so a pass can take fewer steps.",
+      useSuggestedSteps: "Use {steps}",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
       contextLength: "Context",

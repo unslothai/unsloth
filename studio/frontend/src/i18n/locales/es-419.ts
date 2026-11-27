@@ -2661,6 +2661,10 @@ export const es419 = {
         confirmDescriptionChatOnly:
           "Detiene el servidor y vuelve a ejecutar el instalador. Esta es una instalación de solo chat, así que el instalador también la actualiza a la instalación completa con PyTorch, varios gigabytes en total. Se conservan los chats y la configuración. Puede tardar varios minutos.",
         confirmAction: "Reparar ahora",
+        recommendedTorch:
+          "Se recomienda reparar: esta instalación tiene PyTorch {torch}, anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} es anterior al {managedTorch} administrado con el que se admiten las GPU de la serie RTX 50, pero este controlador de GPU no admite CUDA 13. Actualiza primero el controlador de GPU y luego repara la instalación.",
       },
       resetPreferences: {
         sectionTitle: "Zona de peligro",
@@ -4831,6 +4835,8 @@ export const es419 = {
       unsupportedFileType: "Tipo de archivo no compatible",
       uploadOneFileType: "Sube un archivo {types}.",
       datasetUploaded: "Conjunto de datos subido",
+      importPandasJson: "Importar .json como columnas de pandas",
+      importSemicolonCsv: "Usar punto y coma como delimitador en .csv",
       evalDatasetUploaded: "Conjunto de datos de evaluación subido",
       uploadOneFileAtATime: "Sube un archivo a la vez",
       uploadSingleFileDescription:
@@ -4908,6 +4914,12 @@ export const es419 = {
       epochs: "Épocas",
       useMaxSteps: "Usar pasos máximos",
       useEpochs: "Usar épocas",
+      stepGuidancePass: "Unos {steps} pasos son una pasada por tus {rows} filas con un lote efectivo de {batch}.",
+      stepGuidanceFloor: "Una pasada por tus {rows} filas son solo {passSteps} pasos con un lote efectivo de {batch}, así que unos {steps} pasos (varias pasadas) es un mínimo razonable.",
+      stepGuidanceCap: "Una pasada por tus {rows} filas son {passSteps} pasos con un lote efectivo de {batch}; {steps} pasos entrenan con una parte, lo que suele alcanzar para una primera ejecución.",
+      stepGuidanceEpoch: "Una época son unos {passSteps} pasos por tus {rows} filas con un lote efectivo de {batch}.",
+      stepGuidancePacking: "El empaquetado une filas cortas, así que una pasada puede requerir menos pasos.",
+      useSuggestedSteps: "Usar {steps}",
       maxStepsTooltip: "Reemplaza el total de pasos del optimizador.",
       epochsTooltip: "Número de pasadas completas sobre el conjunto de datos.",
       contextLength: "Contexto",

@@ -103,8 +103,7 @@ def test_macos_reveals_a_file_with_open_dash_r(macos, spawned, tmp_path):
 
 
 def test_macos_opens_a_directory_rather_than_revealing_it(macos, spawned, tmp_path):
-    """``open -R`` on a directory shows its PARENT with it selected, which for
-    a sandbox is the root holding every other chat's."""
+    """open -R on a directory shows its parent, the sandbox root holding every other chat's."""
     path_utils.reveal_in_file_manager(tmp_path)
     assert spawned.popen == [["open", str(tmp_path)]]
 
@@ -143,8 +142,7 @@ def test_windows_never_waits_on_explorer_or_reads_its_exit_code(windows, spawned
 
 
 def test_windows_keeps_a_comma_in_the_path_out_of_the_select_flag(windows, spawned, tmp_path):
-    """``/select,`` is comma-delimited and a filename may contain one: the path is
-    passed quoted after the flag, the documented form, so Explorer reads it whole."""
+    """A comma in a filename would split /select, so the path is passed quoted after the flag."""
     target = tmp_path / "q3, final.csv"
     target.write_text("a,b\n")
     path_utils.reveal_in_file_manager(target)
@@ -192,8 +190,7 @@ def test_native_linux_keeps_an_awkward_name_in_one_argument(native_linux, spawne
 
 
 def test_a_deeply_nested_path_is_passed_through_whole(native_linux, spawned, tmp_path):
-    """Sandbox names are derived, but a project workspace can sit arbitrarily
-    deep under a home the user chose."""
+    """Workspaces can sit arbitrarily deep under the user's home, so the path must pass whole."""
     target = tmp_path.joinpath(*[f"level_{i}" for i in range(40)])
     target.mkdir(parents = True)
     path_utils.reveal_in_file_manager(target)
@@ -225,8 +222,7 @@ def test_a_broken_symlink_launches_nothing_anywhere(host, spawned, tmp_path, req
 
 
 class _VanishesAfterTheGuard:
-    """Present for the existence guard but gone by the branch, since the two are separate stats; a
-    chat deleted or migrated in between is simulated one layer up by the endpoint's own tests."""
+    """Exists for the existence guard but is gone by the branch: the two are separate stats."""
 
     def __init__(self, real: Path) -> None:
         self._real = real
@@ -254,8 +250,7 @@ class _VanishesAfterTheGuard:
 def test_a_target_that_vanishes_after_the_guard_never_opens_its_parent(
     native_linux, spawned, tmp_path
 ):
-    """The parent of a sandbox is the root holding every other chat's, so the
-    Linux fallback must fail closed rather than widen to it."""
+    """The parent of a sandbox holds every other chat, so the Linux fallback must fail closed."""
     root = tmp_path / "sandbox"
     (root / "thread-1").mkdir(parents = True)
     with pytest.raises(FileNotFoundError):
@@ -305,8 +300,7 @@ def test_a_sandbox_swapped_for_a_file_is_refused_not_revealed(host, spawned, tmp
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_a_sandbox_swapped_for_a_directory_symlink_is_refused(host, spawned, tmp_path, request):
-    """``is_dir()`` follows links, so a sandbox replaced by one would pass a
-    naive check and open the TARGET. The guard asks for the link's own type."""
+    """is_dir() follows links and would open the target; the guard checks the link's own type."""
     request.getfixturevalue(host)
     elsewhere = tmp_path / "somewhere-else"
     elsewhere.mkdir()
@@ -339,8 +333,7 @@ def test_a_symlinked_cache_entry_is_still_revealed_without_expect_dir(
 
 @pytest.mark.parametrize("host", ["macos", "windows", "native_linux"])
 def test_the_same_swap_is_still_revealed_without_expect_dir(host, spawned, tmp_path, request):
-    """The cached-model reveal points at a real file, so the flag is opt-in and
-    the default behaviour is unchanged."""
+    """The cached-model reveal points at a real file, so the flag is opt-in; default unchanged."""
     request.getfixturevalue(host)
     target = tmp_path / "model.gguf"
     path_utils.reveal_in_file_manager(_SwappedForAFile(target))

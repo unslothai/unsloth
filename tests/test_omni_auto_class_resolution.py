@@ -53,15 +53,13 @@ def test_ordinary_vlms_are_never_rerouted(config_name):
 
 
 def test_nothing_matching_returns_None_rather_than_a_concrete_class():
-    """Returning the concrete class the checkpoint names is WRONG: it is in no
-    auto mapping, so it leaves the processor set and downgrades to AutoTokenizer."""
+    """A concrete class is in no auto mapping; returning it would downgrade to AutoTokenizer."""
     assert _resolve_omni_auto_model(transformers.LlamaConfig()) is None
     assert _resolve_omni_auto_model(object()) is None
 
 
 def test_every_class_the_resolver_can_return_takes_a_processor():
-    """The resolver's answer decides processor selection, so every possible
-    answer must be in the set that selects AutoProcessor."""
+    """Every class the resolver can return must be in the set that selects AutoProcessor."""
     import unsloth.models.loader as loader
 
     processor_classes = _multimodal_auto_classes()
@@ -141,9 +139,8 @@ def test_offload_embedding_declines_a_model_it_cannot_inspect(requested, capsys)
 
 
 def test_omni_reaches_the_vllm_guard_rather_than_the_language_model_path():
-    """Without the needs_processor term, is_vlm_config is False for an omni
-    checkpoint (its vision config hides under thinker_config), which skips the
-    guard and calls load_vllm with is_vision_model=False for an unsupported model."""
+    """Without needs_processor, is_vlm_config is False for omni checkpoints (vision config sits
+    under thinker_config), so the guard is skipped and load_vllm gets is_vision_model=False."""
     from unsloth.models.vision import VLLM_SUPPORTED_VLM
 
     config = _omni_config()
@@ -185,8 +182,7 @@ def _pretrained_base():
 
 
 def test_a_getter_that_fails_internally_is_not_read_as_a_bad_signature():
-    """Skipping it would cost the module its input-gradient hook, so under PEFT
-    with gradient checkpointing backward fails or the adapter trains on nothing."""
+    """Skipping it loses the input-grad hook: PEFT with checkpointing fails or trains nothing."""
     Base = _pretrained_base()
 
     class RaisesInside(Base):

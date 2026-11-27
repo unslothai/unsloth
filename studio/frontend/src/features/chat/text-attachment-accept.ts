@@ -1197,14 +1197,27 @@ export function cachedTextAttachment(file: File): string | undefined {
 }
 
 /** caches text decoded during attachment validation so sending does not reread the file. */
-export async function readTextAttachmentOnce(file: File): Promise<string> {
+export async function readTextAttachmentOnce(
+  file: File,
+  // A paste is already a string: decoding its bytes would honour a pasted XML charset.
+  pasted?: string,
+): Promise<string> {
   const cached = decodedOnce.get(file);
   if (cached !== undefined) {
     return cached;
   }
-  const text = await readTextAttachment(file);
+  const text =
+    pasted === undefined ? await readTextAttachment(file) : utf8RoundTrip(pasted);
   decodedOnce.set(file, text);
   return text;
+}
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** The text a UTF-8 encode and decode of `text` yields, without the bytes. */
+function utf8RoundTrip(text: string): string {
+  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  return body.replace(LONE_SURROGATE, "\uFFFD");
 }
 
 // source file MIME types are unreliable, so extensions must also match.

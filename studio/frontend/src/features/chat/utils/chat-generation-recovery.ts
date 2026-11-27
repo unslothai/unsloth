@@ -4,6 +4,7 @@
 import type { ChatGenerationStatus } from "../api/chat-generation-api";
 import {
   createThinkTagTracker,
+  deltaReasoningText,
   extractDeltaText,
   markLiteralThinkTags,
   markPendingThinkTag,
@@ -28,30 +29,46 @@ const TERMINAL = new Set<StoredGenerationStatus>([
 
 export function generationChunkHasSubstantiveDelta(payload: unknown): boolean {
   const delta = (
-    payload as {
-      choices?: Array<{
-        delta?: {
-          content?: unknown;
-          reasoning_content?: unknown;
-          reasoning_details?: unknown;
-        };
-      }>;
-    }
+    payload as { choices?: Array<{ delta?: { content?: unknown } }> }
   )?.choices?.[0]?.delta;
-  const reasoning =
-    typeof delta?.reasoning_content === "string" ? delta.reasoning_content : "";
-  const reasoningDetails = Array.isArray(delta?.reasoning_details)
-    ? delta.reasoning_details.some(
-        (part) =>
-          part !== null &&
-          typeof part === "object" &&
-          typeof (part as { text?: unknown }).text === "string" &&
-          Boolean((part as { text: string }).text),
-      )
-    : false;
   return Boolean(
-    reasoning || reasoningDetails || extractDeltaText(delta?.content).text,
+    deltaReasoningText(delta) || extractDeltaText(delta?.content).text,
   );
+}
+
+export type RecoveredReply = {
+  raw: string;
+  reasoningOpen: boolean;
+  parseThink: boolean;
+  splitReasoningSeen: boolean;
+};
+
+// Marked as the live stream marks them, so a recovered reply parses the same way.
+export function appendRecoveredDelta(
+  reply: RecoveredReply,
+  deltaRecord: unknown,
+): RecoveredReply {
+  let { raw, reasoningOpen, parseThink, splitReasoningSeen } = reply;
+  const content = (deltaRecord as { content?: unknown } | null | undefined)
+    ?.content;
+  const reasoning = deltaReasoningText(deltaRecord);
+  const { text: delta, hasStructuredReasoning } = extractDeltaText(content);
+  if (reasoning || hasStructuredReasoning) parseThink = true;
+  if (reasoning) {
+    if (!reasoningOpen) raw += "<think>";
+    raw += markLiteralThinkTags(reasoning);
+    reasoningOpen = true;
+    splitReasoningSeen = true;
+  }
+  if (delta) {
+    if (reasoningOpen) raw += "</think>";
+    raw +=
+      splitReasoningSeen && typeof content === "string"
+        ? markLiteralThinkTags(delta)
+        : delta;
+    reasoningOpen = false;
+  }
+  return { raw, reasoningOpen, parseThink, splitReasoningSeen };
 }
 
 export function generationChunkCountsTowardTiming(payload: unknown): boolean {

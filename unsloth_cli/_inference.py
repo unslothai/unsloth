@@ -57,9 +57,8 @@ def _opener(follow_redirects: bool, loopback: bool):
 
 
 def urlopen_no_redirect(request, timeout):
-    """urlopen that errors on any redirect: following a 3xx would send a bearer
-    token (or accept an identity proof) to a base we never vetted, letting a port
-    squatter relay a real Unsloth's response."""
+    """urlopen errors on redirects: following one would send a bearer token to an unvetted base (or
+    accept its identity proof), letting a port squatter relay a real Unsloth's response."""
     return _opener(False, is_loopback_url(request.full_url)).open(request, timeout = timeout)
 
 
@@ -144,9 +143,8 @@ _cache_env_seeded = False
 
 
 def _seed_cache_env() -> None:
-    """Pin cache locations as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION
-    would resolve against the cwd, leaving unsloth_compiled_cache that cache_cleanup misses
-    (issue 8865)."""
+    """Pin cache paths as the backend does: unsloth_zoo's relative UNSLOTH_COMPILE_LOCATION resolves
+    against cwd, leaving unsloth_compiled_cache that cache_cleanup misses (issue 8865)."""
     global _cache_env_seeded
     if _cache_env_seeded:
         return
@@ -442,8 +440,7 @@ def render_columns(
 
 
 def stats_hit_token_limit(stats) -> bool:
-    """Whether end-of-generation stats show the reply ran out of budget: safetensors sets truncated;
-    MLX and llama-server set finish_reason to length."""
+    """Token limit hit: safetensors sets truncated; MLX/llama-server set finish_reason=length."""
     if not isinstance(stats, dict):
         return False
     return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
@@ -503,8 +500,7 @@ def _image_payload(part) -> Optional[str]:
 
 
 def _local_image_request(messages: list, several: bool):
-    """Studio's local route shape: an image marker where each image stood plus payloads in order; a
-    model that reads one image per conversation gets only the newest turn's image, like the app."""
+    """Image markers and payloads in order; one-image models see only the newest turn's image."""
     owners = []  # (message index, user ordinal, payloads)
     ordinal = 0
     for index, message in enumerate(messages):
@@ -1133,6 +1129,7 @@ class HttpChatBackend:
     """
 
     def __init__(self, base_url: str, token: str) -> None:
+        self.image_generator: Optional[str] = None
         self._base = base_url
         self._token = token
         self.reply_hit_token_limit = False
@@ -1162,8 +1159,50 @@ class HttpChatBackend:
             },
             method = method,
         )
+        if self.image_generator and path == "/v1/chat/completions":
+            request.add_header("X-Unsloth-Events", "1")
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
+
+    def _signed_gallery_url(self, image_id: str) -> Optional[str]:
+        from urllib.parse import quote
+
+        gallery_path = f"/api/inference/images/gallery/{quote(image_id, safe = '')}"
+        try:
+            with self._request("GET", f"{gallery_path}/signed-url", timeout = 10) as response:
+                payload = json.load(response)
+        except (OSError, ValueError):
+            return None
+        path = payload.get("url") if isinstance(payload, dict) else None
+        if isinstance(path, str) and path.startswith(f"{gallery_path}/file-signed?token="):
+            return self._base + path
+        return None
+
+    def _require_image_swap_support(self) -> None:
+        from urllib.error import HTTPError
+
+        try:
+            with self._request("GET", "/api/settings/chat-image-swap", timeout = 10) as response:
+                settings = json.load(response)
+        except HTTPError as exc:
+            if exc.code != 404:
+                raise typer.BadParameter(
+                    f"Studio could not verify image swapping support (HTTP {exc.code}).",
+                    param_hint = "--image-generator",
+                ) from None
+            settings = None
+        except (OSError, ValueError):
+            settings = None
+        if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
+            raise typer.BadParameter(
+                "This Studio server did not report chat image swapping support. Update Studio and try again.",
+                param_hint = "--image-generator",
+            )
+        if settings.get("managed_by_env") is True and not settings["enabled"]:
+            raise typer.BadParameter(
+                "This Studio server has chat image swapping disabled by UNSLOTH_CHAT_IMAGE_SWAP.",
+                param_hint = "--image-generator",
+            )
 
     def ensure_loaded(
         self,
@@ -1221,6 +1260,17 @@ class HttpChatBackend:
             typer.echo(f"Model load failed: {reason}", err = True)
             raise typer.Exit(code = 1)
         loaded = loaded if isinstance(loaded, dict) else {}
+        if self.image_generator and (
+            loaded.get("is_mlx")
+            or loaded.get("is_npu")
+            or loaded.get("is_audio")
+            or loaded.get("is_diffusion")
+            or loaded.get("engine", "auto") != "auto"
+        ):
+            raise typer.BadParameter(
+                "Image swapping requires a GGUF or Transformers chat model.",
+                param_hint = "--image-generator",
+            )
         self.supports_images = bool(loaded.get("is_vision"))
         self._model_id = self._pinned_model_id(loaded.get("model") or model, loaded, payload)
         if _is_local(self._model_id):
@@ -1320,6 +1370,15 @@ class HttpChatBackend:
             "stream": True,
             "enable_thinking": enable_thinking,
         }
+        if self.image_generator:
+            body.update(
+                enable_tools = True,
+                enabled_tools = ["generate_image"],
+                image_generator = self.image_generator,
+                max_tool_calls_per_message = 1,
+                parallel_tool_calls = False,
+                permission_mode = "off",
+            )
         sampling = dict(
             temperature = temperature,
             top_p = top_p,
@@ -1355,6 +1414,27 @@ class HttpChatBackend:
                         parsed = json.loads(data)
                     except ValueError:
                         continue
+                    if (
+                        self.image_generator
+                        and parsed.get("type") == "tool_end"
+                        and parsed.get("tool_name") == "generate_image"
+                    ):
+                        result = str(parsed.get("result", ""))
+                        if result.startswith("Error:"):
+                            typer.echo(result, err = True)
+                        for line in result.splitlines():
+                            if line.startswith("__FILES__:"):
+                                for file in json.loads(line.removeprefix("__FILES__:")):
+                                    image_id = file.get("gallery_image_id")
+                                    if isinstance(image_id, str) and image_id:
+                                        url = self._signed_gallery_url(image_id)
+                                        receipt = f"Saved gallery image {image_id}"
+                                        typer.echo(
+                                            f"{receipt} at {url}"
+                                            if url
+                                            else f"{receipt}. Open the Studio Images gallery.",
+                                            err = True,
+                                        )
                     if "error" in parsed:
                         raise RuntimeError(
                             f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
@@ -1398,8 +1478,7 @@ class HttpChatBackend:
 
 
 def server_load_opts(ctx, load_opts: dict) -> dict:
-    """Drop untyped load options so the server keeps a resident model's settings or applies
-    the model's saved ones."""
+    """Drop untyped load options: a resident model keeps its settings, else saved ones apply."""
     opts = dict(load_opts)
     for name in ("load_in_4bit", "max_seq_length", "tensor_parallel"):
         source = ctx.get_parameter_source(name)
@@ -1419,6 +1498,7 @@ def connect_studio_server(
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     trust_remote_code: bool = False,
+    image_generator: Optional[str] = None,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1454,6 +1534,9 @@ def connect_studio_server(
     if not token:
         return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
+    if image_generator:
+        backend._require_image_swap_support()
+        backend.image_generator = image_generator
     from unsloth_cli._npu import npu_model_path, prepare_npu_model
 
     npu_path = npu_model_path(model)

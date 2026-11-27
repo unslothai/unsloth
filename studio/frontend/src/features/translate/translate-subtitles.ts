@@ -3,6 +3,8 @@
 
 import {
   TRANSLATE_CHUNK_CHARS,
+  type TranslateChunk,
+  joinPassage,
   restoreChunkWhitespace,
   splitForTranslation,
 } from "./translate-text.ts";
@@ -289,11 +291,20 @@ export async function translateTextList(
       continue;
     }
     let joined = "";
+    let previous: TranslateChunk | undefined;
     for (const chunk of splitForTranslation(text)) {
       options.signal.throwIfAborted();
-      joined += chunk.text
-        ? restoreChunkWhitespace(chunk, await complete(chunk.text))
-        : chunk.after;
+      if (!chunk.text) {
+        joined += chunk.after;
+        continue;
+      }
+      joined = joinPassage(
+        joined,
+        restoreChunkWhitespace(chunk, await complete(chunk.text)),
+        previous,
+        chunk,
+      );
+      previous = chunk;
     }
     out.push(joined.trim());
   }

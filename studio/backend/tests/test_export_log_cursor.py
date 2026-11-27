@@ -66,8 +66,7 @@ def test_clear_logs_snapshots_current_seq(orchestrator) -> None:
 
 
 def test_sse_default_cursor_catches_all_current_run_lines(orchestrator) -> None:
-    """POST-then-SSE race: lines emitted right after clear_logs() must reach a later SSE, so
-    get_run_start_seq() is the default cursor."""
+    """Lines after clear_logs() must reach a later SSE, so get_run_start_seq() is the default."""
     _append(orchestrator, "previous run line A")
     _append(orchestrator, "previous run line B")
 

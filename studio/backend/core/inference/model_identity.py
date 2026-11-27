@@ -96,7 +96,6 @@ def same_repo(
     *,
     probe: bool = False,
 ) -> bool:
-    """The same model, or two variants of one GGUF repo (repo:variant beside the bare repo)."""
     if same_model(left, right, probe = probe):
         return True
     left_repo, _ = split_variant(left, probe = probe)

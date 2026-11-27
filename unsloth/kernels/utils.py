@@ -276,19 +276,11 @@ elif DEVICE_TYPE in ("mlx", "npu"):
     ABSMAX_BUFFERS = []
 else:
     if DEVICE_COUNT > 0:
-        _CUDA_STREAMS = {
-            (index := torch.cuda.device(i).idx): ctypes.c_void_p(
-                torch._C._cuda_getCurrentRawStream(index)
-            )
-            for i in range(DEVICE_COUNT)
-        }
-        CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        for k, v in _CUDA_STREAMS.items():
-            CUDA_STREAMS[k] = v
-        CUDA_STREAMS = tuple(CUDA_STREAMS)
-        del _CUDA_STREAMS
+        # Each card's default stream at import, which torch represents as a NULL handle. Not queried: the first stream
+        # query opens a CUDA context on the current card, GPU 0 in a worker that picks its card after import.
+        CUDA_STREAMS = tuple(ctypes.c_void_p(None) for _ in range(DEVICE_COUNT))
+        WEIGHT_BUFFERS = [None] * DEVICE_COUNT
+        ABSMAX_BUFFERS = [None] * DEVICE_COUNT
     else:
         CUDA_STREAMS = ()
         WEIGHT_BUFFERS = []
@@ -1566,9 +1558,9 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
-# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
-# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
-_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+# Rows from which bnb gemm_4bit replaces the GEMV (default: above the cap). T4 used it from 4 rows until the
+# GEMV dequantized each tile once for all rows: Colab T4 Llama-3.2-3B decode at 4 rows, 115 vs 92 tok/s.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {}
 _GEMV_ROWS_BNB_FROM = {}
 
 
@@ -2124,7 +2116,7 @@ def vllm_lora_rounding(on = True):
         if not _VLLM_LORA_ROUNDING_NOTICE[0]:
             _VLLM_LORA_ROUNDING_NOTICE[0] = True
             print(
-                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so GRPO training does "
+                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so RL training does "
                 "too (UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
             )
     try:

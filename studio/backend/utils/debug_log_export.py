@@ -23,8 +23,7 @@ STREAM_CHUNK_BYTES = 64 * 1024
 
 _READ_CHUNK_BYTES = 256 * 1024
 
-# Dropped whole, never split: a cut between key and value leaks the credential.
-# Matches the viewer's MAX_LINE_BYTES since _ANSI_RE backtracks quadratically.
+# Dropped whole: a cut leaks the credential. Matches MAX_LINE_BYTES; _ANSI_RE is quadratic.
 MAX_RECORD_BYTES = 32 * 1024
 OVERSIZED_MARKER = "[oversized log record omitted]"
 TRUNCATED_MARKER = "[export time budget reached, rest of this log omitted]"
@@ -116,8 +115,7 @@ def _redact_record(raw: bytes) -> str:
 
 
 def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]:
-    """Drops whatever the seek lands inside, since redaction keys on a credential's name beside its
-    value."""
+    """Drop the partial line at the seek: redaction keys on a credential name beside its value."""
     size = os.fstat(fd).st_size
     if size <= allowance:
         return 0, size
@@ -126,8 +124,7 @@ def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]
     handle.seek(start - 1)
     if handle.read(1) == b"\n":
         return start, size
-    # Scan to a real newline: starting mid-record can leak a secret whose key was cut off.
-    # Bounded by the fstat size, since a live log has no EOF.
+    # Scan to a newline, else a cut-off secret can leak; fstat bounds it as live logs lack EOF.
     scanned = start
     while scanned < size:
         probe = handle.read(min(MAX_RECORD_BYTES, size - scanned))
@@ -174,7 +171,6 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
             record = buffer[position:newline]
             position = newline + 1
             if dropping:
-                # The rest of a record already given up on.
                 dropping = False
                 yield OVERSIZED_MARKER
             elif len(record) > MAX_RECORD_BYTES:
@@ -192,8 +188,7 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
     if dropping:
         yield OVERSIZED_MARKER
     elif buffer:
-        # at_eof alone cannot tell a cut record from a complete one; the descriptor size can.
-        # A cut record can leak the first characters of a secret past the redactor.
+        # The descriptor size, not at_eof, tells a cut record apart; else secret prefixes leak.
         if at_eof:
             cut = False
         else:
@@ -220,8 +215,7 @@ def _newest_first_across_families(
 
 
 def _warning_line(member: str, exc: BaseException) -> str:
-    """Names the member, never the path: str(exc) on an OSError appends the filename, leaking a host
-    path."""
+    """Names the member, never the path: str(exc) on an OSError appends a host path."""
     code = getattr(exc, "errno", None)
     return redact_log_text(
         f"{member}: {type(exc).__name__} (errno {code if code is not None else 'unknown'})"
@@ -257,8 +251,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                     with handle:
                         skipped, size = _seek_to_tail(handle, fd, allowance)
                         if size > 0 and skipped >= size:
-                            # remaining is not spent: this is one file's property and the
-                            # next source may still fit.
+                            # Budget kept: a skip is per file; the next source may still fit.
                             if allowance < MAX_SOURCE_TAIL_BYTES:
                                 warnings.append(f"{member}: omitted, export size budget reached")
                             else:
@@ -296,8 +289,7 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                     block = b"".join(pending)
                                     pending.clear()
                                     destination.write(block)
-                                # Charged even on a partial read; inside the with because
-                                # tell() needs an open handle.
+                                # Charged even on a partial read; tell() needs the open handle.
                                 remaining -= max(0, handle.tell() - before)
                 except OSError as exc:
                     # Keeps what was copied first; a partial log is worth reading, and the warning says why it stops.

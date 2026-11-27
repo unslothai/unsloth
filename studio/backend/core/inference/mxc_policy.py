@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import ntpath
@@ -435,6 +436,72 @@ def _with_session_packages(env: dict[str, str], workdir: str) -> dict[str, str]:
     return env
 
 
+def _egress_denied_cidrs() -> list[str]:
+    from .providers import _METADATA_IPS
+    from .sandbox_egress import _LOCAL_NAT64, _NAT64, _THIS_NETWORK
+
+    ipv4 = [_THIS_NETWORK] + [
+        ipaddress.ip_network(cidr) for cidr in ("169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+    ]
+    ipv4 += [ipaddress.ip_network(ip) for ip in _METADATA_IPS if ip.version == 4]
+    ipv4 = list(ipaddress.collapse_addresses(ipv4))
+    ipv6 = [_LOCAL_NAT64] + [
+        ipaddress.ip_network(cidr) for cidr in ("::/128", "fe80::/10", "ff00::/8")
+    ]
+    ipv6 += [ipaddress.ip_network(ip) for ip in _METADATA_IPS if ip.version == 6]
+    for network in ipv4:
+        address = int(network.network_address)
+        ipv6.append(
+            ipaddress.ip_network((int(_NAT64.network_address) | address, 96 + network.prefixlen))
+        )
+        ipv6.append(
+            ipaddress.ip_network(((0x2002 << 112) | (address << 80), 16 + network.prefixlen))
+        )
+    return [str(network) for network in (*ipv4, *ipaddress.collapse_addresses(ipv6))]
+
+
+def _egress_rules(plan) -> dict:
+    if not getattr(plan, "egress_proxy", False):
+        return {}
+    if not getattr(plan, "egress_rules_probe", False):
+        from . import mxc_probe
+
+        # The fallback tiers refuse a policy with egress rules, and wxc-exec does not report the tier.
+        cancel_event = plan.cancel_event
+        available, _ = mxc_probe.probe(
+            plan.argv[0],
+            execution_kind = "terminal",
+            cancel_event = cancel_event,
+            egress_rules = True,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise MxcPolicyError("execution cancelled during MXC egress qualification")
+        if not available:
+            return {}
+    return {"deny": [{"to": [{"cidr": cidr} for cidr in _egress_denied_cidrs()]}]}
+
+
+def _download_rc_dir() -> str:
+    directory = mxc_runtime._studio_root() / "mxc-runtime" / "download-rc"
+    directory.mkdir(parents = True, exist_ok = True)
+    # MXC filters addresses. curl can restrict redirect schemes, and GNU Wget can only cap the count.
+    files = (
+        (".curlrc", 'proto = "=http,https"\nproto-redir = "=http,https"\n'),
+        ("wgetrc", "netrc = off\nmax_redirect = 0\n"),
+    )
+    for name, text in files:
+        path = directory / name
+        try:
+            current = path.read_text(encoding = "utf-8")
+        except OSError:
+            current = None
+        if current != text:
+            staged = directory / f"{name}.{uuid.uuid4().hex}"
+            staged.write_text(text, encoding = "utf-8")
+            os.replace(staged, path)
+    return _safe_canonical_path(str(directory), directory = True)
+
+
 def build_launch_request(
     plan,
     *,
@@ -458,6 +525,10 @@ def build_launch_request(
     selected_runtime = _selected_runtime(plan)
     runtime_roots = _runtime_read_roots(selected_runtime, _trusted_terminal_path_dirs(plan))
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
+    egress_rules = _egress_rules(plan)
+    rc_dir = _download_rc_dir() if egress_rules else None
+    if rc_dir:
+        readonly = _without_nested(readonly + [rc_dir])
     _reject_grants_over_dacl_journal([workdir, *readonly])
     # Tier 3 walks every readonly tree per launch, so a one-time grant skips it. Read fresh: a grant on a stale cached on would outlive another process opt-out
     mxc_read_grants.refresh_saved_switches()
@@ -475,9 +546,21 @@ def build_launch_request(
     if cwd_alias is not None:
         cwd_alias = _checked_cwd_alias(cwd_alias, workdir_identity)
     run_id = run_id or uuid.uuid4().hex
-    workload_env = _with_session_packages(dict(plan.env), workdir)
+    workload_env = dict(plan.env)
+    # Downloads use the tool binaries on the isolated PATH, with no session-installed executables.
+    if not rc_dir:
+        workload_env = _with_session_packages(workload_env, workdir)
     # MXC ProcessContainer validator requires LOCALAPPDATA; point it inside the session, not at the real profile
     workload_env.setdefault("LOCALAPPDATA", workdir)
+    if rc_dir:
+        wgetrc = os.path.join(rc_dir, "wgetrc")
+        workload_env.update(
+            CURL_HOME = rc_dir,
+            WGETRC = wgetrc,
+            SYSTEM_WGETRC = wgetrc,
+            # cmd would otherwise run a curl.bat the workload left in the current directory.
+            NoDefaultCurrentDirectoryInExePath = "1",
+        )
     ui_policy = _studio_ui_policy()
     config = {
         "version": MXC_SCHEMA_VERSION,
@@ -500,7 +583,7 @@ def build_launch_request(
         },
         # 0.8.0 blocked host loopback too, and "deny" is the only value the DACL tier accepts.
         "network": {
-            "egress": {"default": "allow"},
+            "egress": {"default": "allow", **egress_rules},
             "ingress": {"default": "allow", "hostLoopback": "deny"},
         },
         "processContainer": {
@@ -522,6 +605,7 @@ def build_launch_request(
         "configBytes": config_bytes,
         "policyHash": policy_hash_of_bytes(config_bytes),
         "requireCompleteScan": required,
+        "egressRules": bool(egress_rules),
         "launchLimitations": limitations,
     }
     return request

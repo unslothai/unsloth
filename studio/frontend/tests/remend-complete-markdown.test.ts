@@ -289,8 +289,7 @@ function collectRemendCopies(nodeModules: string, found: string[]): string[] {
 }
 
 test("every remend in the tree is the pinned one, including Streamdown's", async () => {
-  // streamdown pins remend exactly, so without overrides.remend npm nests an older copy.
-  // Assert the version where Streamdown resolves it, not just where this file does.
+  // remend pinned exactly; without overrides.remend npm nests old copies. Check Streamdown's.
   const copies = collectRemendCopies(
     path.join(FRONTEND_ROOT, "node_modules"),
     [],

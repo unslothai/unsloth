@@ -26,8 +26,7 @@ export function videoCpuRamCheck(
     return { status: "unknown", hostGib: null, minGib };
   }
   const hostGib = Math.round(hostRamBytes / GIB);
-  // Compared in bytes with 5% slack: a 32 GB machine reports ~31.3 GiB after firmware and kernel
-  // reservations, and must not be told it is below a 32 GiB minimum.
+  // 5% slack in bytes: a 32 GB machine reads ~31.3 GiB after reservations, not below 32 GiB.
   const status = hostRamBytes >= minRamBytes * 0.95 ? "ok" : "below";
   return { status, hostGib, minGib };
 }

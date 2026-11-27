@@ -152,8 +152,7 @@ class _FakeStatus:
 
 
 class _FakeApi:
-    """Enough of the Kaggle client to drive the survey, recording which kernels
-    were status-checked so a test can assert where the walk stopped."""
+    """Fake client recording status-checked kernels, so a test can see where the walk stopped."""
 
     def __init__(
         self,
@@ -361,8 +360,7 @@ def test_a_single_foreign_kernel_stands_the_job_down():
 
 
 def test_a_foreign_kernel_blocks_even_when_a_slot_is_free():
-    """One foreign kernel leaves one slot, which the arithmetic alone would
-    happily hand to a one-kernel run. The policy overrides the arithmetic."""
+    """A foreign kernel blocks even when a slot is free; policy overrides the arithmetic."""
     from gate import concurrency_verdict
 
     clear, why = concurrency_verdict(_busy("danielhanchen/somebody-else"), kernels_needed = 1)
@@ -522,8 +520,7 @@ def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
     """The job timeout must exceed the gate's own worst case, so it answers rather than being killed."""
     import gate
 
-    # Per account: auth, username and quota at the socket ceiling, then one survey budget shared
-    # across all accounts, plus the call in flight when it expires.
+    # Worst case: 3 socket-timeout calls per account, one survey budget, one call in flight.
     accounts = len(gate.DEFAULT_ACCOUNT_ENVS)
     worst = (
         accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
@@ -556,8 +553,7 @@ def test_a_rerun_of_the_same_run_id_does_not_reroll(monkeypatch, tmp_path):
     assert first[1]["should_run"] == second[1]["should_run"]
 
 
-# An exhausted weekly quota is the one stand-down that exits nonzero, with a message for the
-# PR author; everything else stays green.
+# Only an exhausted weekly quota exits nonzero, with a PR-author message; all else stays green.
 
 # _run_gate passes --budget-hours 1 --reserve-hours 20, so 21h is the floor.
 EXHAUSTED = {
@@ -744,8 +740,7 @@ def test_reference_absent_is_not_a_failure():
     assert verdict["status"] == "absent"
 
 
-# A reference from a different step count must be refused loudly: the fp16 scaler skips the
-# first steps, so runs of different lengths are not comparable.
+# Refuse a different step count: fp16 scaler skips the first steps, so runs are not comparable.
 
 
 def test_a_reference_from_a_different_step_count_is_refused(tmp_path):
@@ -903,8 +898,7 @@ def _perturb(
     abs_floor: float = 0.05,
     factor: float = 0.5,
 ) -> list[dict]:
-    """Shifts one value by a factor scaled by max(|value|, abs_floor), the same scale
-    check_reference uses."""
+    """Shifts a value by factor times max(|value|, abs_floor), the scale check_reference uses."""
     out = [dict(m) for m in metrics]
     value = float(out[index][field])
     out[index][field] = value + max(abs(value), abs_floor) * factor
@@ -1145,8 +1139,7 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 
 
 def test_matching_infinite_grad_norms_are_within_band(tmp_path):
-    """Matching infinite grad norms (same sign) must be decided before the division, since abs(inf -
-    inf) is NaN after an fp16 overflow."""
+    """Decide matching inf grad norms before dividing: inf - inf is NaN after an fp16 overflow."""
     from run_t4_smoke import check_reference
 
     inf = float("inf")
@@ -1204,8 +1197,7 @@ def test_a_field_that_stopped_being_logged_is_out_of_band(tmp_path):
     assert verdict["status"] == "out_of_band"
 
 
-# Under fp16 every overflowing step is skipped (steps 1-3 in the reference), so a short run
-# can apply no update while everything else looks healthy.
+# Under fp16 overflowing steps are skipped, so a short run can apply no update.
 
 
 def test_a_run_whose_every_step_was_skipped_is_a_failure():
@@ -1304,8 +1296,7 @@ def test_the_loss_scale_pin_lowers_the_starting_scale():
     ],
 )
 def test_the_loss_scale_pin_is_never_fatal(trainer):
-    """A transformers release that moves the scaler must cost a footnote in
-    the report, not a Kaggle session."""
+    """A transformers release that moves the scaler must cost a footnote, not a Kaggle session."""
     from run_t4_smoke import pin_initial_loss_scale
 
     state = pin_initial_loss_scale(trainer, 2048.0)
@@ -1548,8 +1539,7 @@ def test_every_registered_leg_is_either_carried_or_explicitly_unwired():
 
 
 def test_an_unwired_leg_still_builds():
-    """An unwired leg is unwired because its INSTALL fails on the image, not because the payload
-    rots, so it must still build when someone switches it on."""
+    """Unwired legs fail INSTALL on the image, not from payload rot, so they must still build."""
     from legs import UNWIRED
     for name in UNWIRED:
         assert name in LEG_NAMES, (
@@ -1567,8 +1557,7 @@ def _build_all_paths(tmp_path):
 
 
 def test_generated_cells_compile(tmp_path):
-    """Generated cells must parse: a shell fragment spliced into a Python list once cost a Kaggle
-    session."""
+    """Cells must compile: a shell fragment spliced into Python once cost a Kaggle session."""
     seen = 0
     for path, driver in _build_all_paths(tmp_path).items():
         for name, nb in {"driver": driver, **_payload_notebooks(driver)}.items():
@@ -1672,8 +1661,7 @@ def test_the_re_emitted_report_is_one_line_the_launcher_can_parse(tmp_path, monk
 def test_a_payload_that_crashed_without_a_report_is_reported_as_failed(
     tmp_path, monkeypatch, returncode
 ):
-    """A crash with no report must count as a failed verdict, not infra or partial, which both exit
-    green."""
+    """A crash with no report is a failed verdict; infra or partial would both exit green."""
     stdout, reports = _drive_run_cell(
         tmp_path, monkeypatch, returncode = returncode, stderr = "CUDA error: an illegal memory access"
     )
@@ -1755,8 +1743,7 @@ def _drive_verify_cell(
 def test_a_dependency_that_exits_the_process_on_import_still_leaves_a_verdict(
     tmp_path, monkeypatch
 ):
-    """SystemExit is a BaseException, so an import-time sys.exit escapes the handlers that catch
-    Exception."""
+    """SystemExit is a BaseException, so an import-time sys.exit skips Exception handlers."""
     raised, stdout, reports = _drive_verify_cell(
         tmp_path, monkeypatch, import_raises = SystemExit("no supported accelerator")
     )
@@ -1845,8 +1832,7 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
 
 
 def test_runtime_paths_are_assembled_from_root_rather_than_interpolated(tmp_path):
-    """Paths are built from ROOT: a literal {ROOT} made the reference look absent, so nothing was
-    checked."""
+    """Build paths from ROOT; a literal {ROOT} made the reference look absent and skip checks."""
     run = _cell(_payload_notebooks(_build(tmp_path))["t4_control.ipynb"], 3)
     assert 'str(ROOT / "references" / "t4_qwen2.5-0.5b.json")' in run
     assert 'str(ROOT / "pins" / "control.txt")' in run
@@ -1890,8 +1876,7 @@ def test_every_leg_resolves_the_dependencies_of_the_package_under_test(tmp_path)
 
 
 def test_the_grpo_leg_installs_vllm_before_anything_pulls_torch(tmp_path):
-    """vLLM pins torch. Resolving it last walks torch backwards under a
-    stack that is already installed against the newer one."""
+    """vLLM pins torch, so it must install first or torch walks backwards under a newer stack."""
     from legs import LEGS
 
     groups = LEGS["grpo"].install
@@ -1901,8 +1886,7 @@ def test_the_grpo_leg_installs_vllm_before_anything_pulls_torch(tmp_path):
 # The image's torch: every vLLM pinning another torch died before a training step.
 KAGGLE_IMAGE_TORCH = "2.10.0"
 
-# vLLM releases pinning exactly KAGGLE_IMAGE_TORCH (PyPI metadata, 2026-08-11); see
-# legs.UNWIRED["grpo"].
+# vLLM releases pinning exactly KAGGLE_IMAGE_TORCH (PyPI metadata); see legs.UNWIRED["grpo"].
 VLLM_RELEASES_PINNING_IMAGE_TORCH = ("0.17.0", "0.17.1", "0.18.0", "0.18.1", "0.19.0", "0.19.1")
 
 
@@ -1970,15 +1954,13 @@ def test_the_grpo_leg_asks_for_the_utilization_both_platforms_measured(tmp_path)
 
 
 def test_the_grpo_leg_no_longer_carries_xformers():
-    """Its vLLM backend is gone at this version, so it would be a package
-    nothing selects, resolved against a torch it has opinions about."""
+    """Its vLLM backend is gone at this version: an unselected package resolved against torch."""
     from legs import LEGS
     assert not any("xformers" in i for g in LEGS["grpo"].install for i in g)
 
 
 def test_every_leg_is_either_wired_or_explained():
-    """The invariant that outlives any particular leg. A leg missing from both
-    KERNELS and UNWIRED is one nobody runs and nobody has written down why."""
+    """A leg in neither KERNELS nor UNWIRED is one nobody runs and nobody has explained."""
     from legs import KERNELS, LEGS, UNWIRED
 
     wired = {name for kernel in KERNELS for name in kernel}
@@ -1987,8 +1969,7 @@ def test_every_leg_is_either_wired_or_explained():
 
 
 def test_nothing_is_both_wired_and_unwired():
-    """UNWIRED is a list of open questions. An entry for a leg that already
-    runs is a stale note, and a stale note is worse than none."""
+    """UNWIRED lists open questions; a wired leg listed there is a stale note worse than none."""
     from legs import KERNELS, UNWIRED
 
     wired = {name for kernel in KERNELS for name in kernel}
@@ -2018,7 +1999,6 @@ def test_an_unwired_note_says_what_is_unknown_or_what_replaced_it():
                 f"{name} says it is being re-measured without saying what would "
                 f"settle it, which is a rejection with the deadline removed"
             )
-            # The deciding run must be named.
             assert re.search(r"\b(ab\d+|unsloth-probe-[a-z0-9-]+)\b", note), (
                 f"{name} is under re-measurement and names no run that will "
                 f"decide it, so nobody can go and read the answer"
@@ -2043,8 +2023,7 @@ def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
 
 
 def test_control_and_canary_still_share_a_session():
-    """Control and canary share a session as a matched pair; splitting them adds an uncontrolled
-    variable."""
+    """Control and canary must share a session; splitting them adds an uncontrolled variable."""
     from legs import KERNELS
     assert any(set(k) >= {"control", "canary"} for k in KERNELS), KERNELS
 
@@ -2068,8 +2047,7 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
 
 
 def test_the_grpo_leg_still_pins_the_vllm_that_matches_the_image():
-    """The vLLM pin must match the image's torch to the patch release rather than be old; any other
-    release replaces torch, which killed three probe sessions."""
+    """vLLM must match the image torch to the patch release; any other release replaces torch."""
     from legs import LEGS
 
     install = " ".join(part for group in LEGS["grpo"].install for part in group)
@@ -2186,8 +2164,7 @@ def test_the_workflow_tells_the_gate_which_label_arrived():
 
 
 def test_a_dispatched_ref_is_resolved_to_one_commit():
-    """Resolve a dispatched ref to one commit, since each leg pip-installs independently and could
-    diverge."""
+    """Resolve a dispatched ref to one commit; legs pip-install separately and could diverge."""
     workflow = _workflow()
     steps = workflow["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
@@ -2214,9 +2191,8 @@ def test_a_dispatched_ref_is_resolved_to_one_commit():
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
 def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
-    """Executes the resolve step with git stubbed, since pattern matching passes a script that
-    writes the wrong thing; its four branches are no input, a mutable branch or tag, a commit,
-    and a ref resolving to nothing."""
+    """Runs the resolve step with git stubbed, since pattern matching would pass a script that
+    writes the wrong output; covers no input, branch or tag, commit, and unresolvable ref."""
     steps = _workflow()["jobs"]["gate"]["steps"]
     script = next(s for s in steps if s.get("id") == "ref")["run"]
 
@@ -2368,8 +2344,7 @@ def _kernels_per_invocation() -> int:
 def test_the_job_deadline_exceeds_the_launchers_worst_case():
     """The job timeout must exceed the launcher's worst case, or release() can be killed unfinished."""
     worst = _launcher_worst_case_seconds()
-    # An allowance for steps before the launcher; the launcher itself refuses to push without
-    # the whole of `worst` left.
+    # Allowance for steps before the launcher; it refuses to push without all of worst left.
     before_the_launcher = 900
     timeout_s = _workflow()["jobs"]["t4-smoke"]["timeout-minutes"] * 60
     assert timeout_s >= worst + before_the_launcher, (
@@ -2477,8 +2452,7 @@ def test_the_harness_suite_runs_before_any_kernel_is_pushed():
 
 
 def test_the_cpu_torch_wheel_is_installed_before_anything_that_depends_on_it():
-    """CPU torch must come first: peft would pull the CUDA build, and pip then leaves that torch in
-    place."""
+    """CPU torch must install first: peft would pull the CUDA build, and pip keeps that torch."""
     steps = _workflow()["jobs"]["t4-smoke"]["steps"]
     names = [s.get("name") for s in steps]
     lines = [
@@ -2550,7 +2524,6 @@ def test_a_step_count_that_could_only_report_red_stands_the_run_down():
         stood_down, reason = check_steps.decide(bad, SMOKE_DIR)
         assert stood_down, f"{bad!r} would have been pushed"
         assert reason
-    # The floor is derived from the committed reference and the payload's own verdict.
     from run_t4_smoke import optimisation_failures
 
     metrics = check_steps.reference_metrics(SMOKE_DIR)
@@ -2589,8 +2562,7 @@ def test_the_dispatched_step_count_is_checked_before_a_kernel_is_paid_for():
     for step in (check, build):
         assert "inputs.max_steps" not in step["run"]
     assert "--max-steps $MAX_STEPS" in build["run"]
-    # The build step's count source is tested by executing it in
-    # test_an_alternate_spelling_of_the_step_count_keeps_the_reference_band.
+    # The build step's count source is checked by running the step, in the test below.
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
@@ -2712,8 +2684,7 @@ def test_an_evidence_upload_outage_cannot_colour_the_check_red():
     assert "steps.evidence.outcome == 'failure'" in warn["if"]
     assert "::warning" in warn["run"]
     report = steps[names.index("Report")]
-    # always() so a failed upload still reaches the verdict; gated on evidence existing, since a
-    # dispatching run approves but produces none.
+    # always() so a failed upload reaches the verdict; gated on evidence, which dispatch lacks.
     assert report["if"].startswith("always()")
     assert "hashFiles('kaggle_evidence/**/*_output.ipynb')" in report["if"]
     assert "steps.evidence" not in report["if"]
@@ -2794,8 +2765,7 @@ def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, repo
 
 
 def test_a_kernel_that_reported_nothing_still_names_its_cause(tmp_path):
-    """The summary must name a silent kernel's cause without the artifact, so the Kaggle log is
-    flattened."""
+    """Name a silent kernel's cause without its artifact, since the Kaggle log is flattened."""
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "launch_result.json").write_text(
@@ -2920,8 +2890,7 @@ def test_the_goal_packages_are_the_ones_this_ci_exists_to_watch():
 
 
 def test_the_packages_the_upgrade_groups_move_are_recorded(tmp_path):
-    """Packages an upgrade group moves via dependencies must be in GOAL_PACKAGES, or they go
-    unattributed."""
+    """Packages moved by upgrade groups must be in GOAL_PACKAGES, or they go unattributed."""
     from versions import GOAL_PACKAGES
     for package in ("tokenizers", "safetensors", "huggingface_hub", "datasets"):
         assert package in GOAL_PACKAGES, package
@@ -2980,8 +2949,7 @@ def test_a_pin_that_really_broke_is_still_a_failure(tmp_path):
 
 
 def test_a_distribution_whose_name_is_not_its_import_name_is_still_found():
-    """`unsloth_zoo` installs as `unsloth-zoo`, and asking for the wrong one
-    records "not installed" for a package that is."""
+    """unsloth_zoo installs as unsloth-zoo; the wrong name records it as not installed."""
     from versions import _DISTRIBUTION
     assert _DISTRIBUTION["unsloth_zoo"] == "unsloth-zoo"
 
@@ -3004,8 +2972,7 @@ def test_a_package_that_is_installed_and_unimportable_is_not_read_as_fine():
 
 
 def test_a_pin_that_did_not_hold_is_a_failure():
-    """A control whose pins were overridden is not a control, and every
-    comparison drawn against it is wrong with nothing else showing it."""
+    """Overridden pins void a control: every comparison drawn against it is silently wrong."""
     from versions import pin_failures
 
     resolved = {
@@ -3205,8 +3172,7 @@ def test_the_other_gptoss_assertions_fire(mutate, expected):
     assert any(expected in f for f in failures_for(report, _Args())), report
 
 
-# With num_iterations=1 and beta=0 the GRPO loss is zero on a healthy run; reward_std is the
-# signal, since zero spread means zero advantage.
+# With num_iterations=1 and beta=0 GRPO loss is zero when healthy; reward_std is the signal.
 
 
 class _GrpoArgs:
@@ -3246,8 +3212,7 @@ def test_the_grpo_leg_passes_a_healthy_run_whose_loss_is_zero():
 
 
 def test_a_group_with_no_reward_spread_is_the_failure_that_matters():
-    """Zero reward_std gives zero GRPO advantage: the optimizer applies nothing and nothing else
-    flags it."""
+    """Zero reward_std means zero advantage: no update is applied and nothing else flags it."""
     failures_for, report = _shared_setup_3()
     for entry in report["log_history"]:
         entry["reward_std"] = 0.0
@@ -3259,8 +3224,7 @@ def test_a_group_with_no_reward_spread_is_the_failure_that_matters():
 
 
 def test_completions_that_are_all_empty_are_caught_even_when_rewards_agree():
-    """N empty strings score identically, so the reward checks alone would
-    call an engine that produced nothing a clean run."""
+    """Empty strings score alike, so rewards alone would pass an engine that produced nothing."""
     failures_for, report = _shared_setup_3()
     report["completions"] = [["", "", "", ""]]
     assert any(
@@ -3309,8 +3273,7 @@ def test_the_launcher_takes_one_notebook_per_kernel():
 
 
 def test_the_reports_of_every_kernel_are_gathered(tmp_path):
-    """Each kernel collects into its own directory so two cannot overwrite
-    each other's kernel.log; the extraction has to walk into them."""
+    """Each kernel gets its own directory so kernel.log files cannot overwrite each other."""
     import launch
 
     (tmp_path / "k1").mkdir()
@@ -3347,8 +3310,7 @@ def test_the_log_fallback_reads_kaggles_own_json_record_shape(tmp_path):
 
 
 def test_a_report_split_across_log_records_is_still_read(tmp_path):
-    """Kaggle chunks stdout by write, not by line, so the prefix and payload can land in different
-    records; flattening must join them before splitting lines."""
+    """Kaggle chunks stdout per write, so flattening must join records before splitting lines."""
     import launch
 
     records = [
@@ -3392,8 +3354,7 @@ def test_a_kernel_that_could_not_be_pushed_does_not_lose_the_other(tmp_path):
     assert "at_capacity" in proc.stdout
 
 
-# flashinfer JIT links with -lcuda, but the image has only libcuda.so.1, so the link fails.
-# Making -lcuda resolvable fixes every JIT op at once.
+# flashinfer JIT links -lcuda, but the image has only libcuda.so.1; a shim fixes all JIT ops.
 
 
 def _grpo_module():
@@ -3408,8 +3369,7 @@ def _grpo_module():
 
 
 def test_the_shim_does_nothing_when_the_stub_is_already_there(monkeypatch):
-    """Most images ship it. Touching LIBRARY_PATH anyway would be a change
-    with no reason, on a machine that was already fine."""
+    """Most images ship the stub; touching LIBRARY_PATH anyway is a change with no reason."""
     grpo = _grpo_module()
     monkeypatch.setattr(grpo.os.path, "exists", lambda p: "lib64" in str(p))
     monkeypatch.delenv("LIBRARY_PATH", raising = False)
@@ -3477,8 +3437,7 @@ def test_the_shim_keeps_an_existing_library_path(monkeypatch, tmp_path):
 
 
 def test_the_shim_reports_rather_than_raises_when_there_is_no_driver(monkeypatch, tmp_path):
-    """A machine with no driver at all is not a machine this can fix, and a
-    payload that dies here would report nothing about GRPO."""
+    """No driver: the shim reports rather than raises, so the payload still reports on GRPO."""
     grpo = _grpo_module()
     monkeypatch.setattr(grpo.os.path, "exists", lambda p: False)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
@@ -3497,8 +3456,7 @@ def test_the_shim_reports_rather_than_raises_when_there_is_no_driver(monkeypatch
 
 
 def test_the_payload_applies_the_shim_before_it_touches_vllm():
-    """Ordering is the whole point: flashinfer JITs on first use, and the
-    first use is inside the engine build."""
+    """The shim must come first: flashinfer JITs on first use, inside the engine build."""
     source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     applied = source.index("make_libcuda_linkable()")
     built = source.index('report["vllm"] = vllm_facts()')
@@ -3506,8 +3464,7 @@ def test_the_payload_applies_the_shim_before_it_touches_vllm():
 
 
 def test_what_the_shim_did_reaches_the_report():
-    """Otherwise a future green run cannot be told from one that never needed
-    it, and the next person re-derives all of this."""
+    """Otherwise a green run cannot be told from one that never needed the shim."""
     source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert 'report["libcuda_shim"] = libcuda' in source
 
@@ -3552,8 +3509,7 @@ def test_a_libcuda_the_linker_will_not_search_for_does_not_count(monkeypatch, tm
 
 
 def test_the_searched_directories_are_the_ones_flashinfer_passes():
-    """Pinned, because widening this list is exactly how the check went wrong.
-    These two are what appear as -L on the failing ninja line."""
+    """Pinned, since widening this list broke the check; these are the failing ninja -L dirs."""
     source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert '"/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"' in source
 
@@ -3567,8 +3523,7 @@ def test_the_grpo_payload_gives_a_base_model_a_chat_template():
 
 
 def test_the_chat_template_the_payload_installs_actually_renders():
-    """A template that does not render trades a failure at step 1 for a
-    failure at step 1 with a longer traceback."""
+    """A template that does not render gives the same step-1 failure with a longer traceback."""
     import re
 
     jinja2 = pytest.importorskip("jinja2")
@@ -3588,8 +3543,7 @@ def test_the_chat_template_the_payload_installs_actually_renders():
     assert "<|im_start|>user\nU<|im_end|>" in rendered
 
 
-# The canary resolves with unsloth_zoo, whose caps hold transformers and trl back, so only the
-# frontier leg can detect regressions in their newest releases.
+# unsloth_zoo caps hold transformers and trl back; only the frontier leg sees new regressions.
 
 
 def test_the_frontier_leg_resolves_dependencies_rather_than_skipping_them():
@@ -3684,7 +3638,6 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
         work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote, fetch_exit)))}"
         stub = work / "bin"
         stub.mkdir(parents = True)
-        # Stub `git` answers ls-remote from LS_OUT and fetch from GIT_FETCH_EXIT, recording fetches.
         (stub / "git").write_text(
             "#!/bin/sh\n"
             'case "$1" in\n'
@@ -3712,7 +3665,6 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
         return written, log.read_text(encoding = "utf-8")
 
     sha = "a" * 40
-    # A commit GitHub does not serve stands the run down.
     written, fetched = drive(sha, "", fetch_exit = 128)
     assert written == {"stand_down": "true"}
     assert sha in fetched, "the SHA was accepted without asking GitHub for it"
@@ -3721,7 +3673,6 @@ def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_pa
     assert written == {"ref": sha}
     assert sha in fetched
 
-    # A branch resolved by ls-remote is also checked for fetchability.
     branch_sha = "b" * 40
     written, fetched = drive("main", f"{branch_sha}\trefs/heads/main\n", fetch_exit = 128)
     assert written == {"stand_down": "true"}

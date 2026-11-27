@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The render call Streamdown makes once a diagram scrolls into view, on the real mermaid, with
-// an Image that records the address a browser would request instead of fetching it.
+// Streamdown's render on real mermaid; an Image records the address a browser would request.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DOMImplementation } from "@xmldom/xmldom";

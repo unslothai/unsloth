@@ -158,8 +158,7 @@ def test_a_clip_reaches_llama_server_as_input_video(monkeypatch, url, expected):
 
 
 def test_the_translated_part_is_the_only_video_key_left(monkeypatch):
-    """A part left spelled video_url would be refused by llama-server as an unsupported type:
-    it accepts image_url, input_audio and input_video, and nothing else."""
+    """llama-server refuses video_url; it accepts only image_url, input_audio and input_video."""
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
         client.post("/v1/chat/completions", json = _part_body(_DATA_URI))
@@ -191,8 +190,7 @@ def test_every_clip_in_a_turn_is_translated(monkeypatch):
 
 
 def test_a_clip_in_an_older_turn_is_translated_too(monkeypatch):
-    """_inject_video_part only ever touches the newest user turn, so a parts-carried clip on an
-    earlier turn would otherwise reach llama-server still spelled video_url."""
+    """_inject_video_part only touches the newest user turn; older clips would stay video_url."""
     backend = _VideoGguf()
     body = {
         "model": "test/model.gguf",
@@ -332,8 +330,7 @@ def test_every_clip_is_served_in_request_order_on_a_non_gguf_backend():
 
 
 def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
-    """_request_video_rejection runs only when a pre-switch validation happens, so with
-    auto-switch off a file:// clip reached the backend and was decoded as base64."""
+    """Auto-switch off skips the pre-switch check, so file-scheme clips were decoded as base64."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -345,8 +342,7 @@ def test_an_unsupported_scheme_is_refused_on_the_non_gguf_path_too():
 
 
 def test_admission_compacts_a_clip_after_translation_too():
-    """The server-side tool loop recosts the conversation after _translate_video_parts has
-    renamed the part, so matching video_url alone priced the payload as dense prompt text."""
+    """Recosting runs after translation; matching video_url alone priced clips as dense text."""
     import copy
 
     big = "data:video/mp4;base64," + "A" * 40_000
@@ -370,8 +366,7 @@ def test_admission_compacts_a_clip_after_translation_too():
 
 
 def test_a_remote_clip_is_refused_on_a_non_gguf_backend():
-    """Only llama-server fetches a clip for itself. A transformers or MLX model is handed bytes,
-    so forwarding the URL would feed it the text of the URL instead of the video."""
+    """Only llama-server fetches URLs; transformers and MLX need bytes, not the URL text."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -406,8 +401,7 @@ def test_a_bare_path_is_refused_without_naming_a_scheme(monkeypatch):
 
 
 def test_bare_base64_is_not_mistaken_for_a_scheme(monkeypatch):
-    """':' is not in the base64 alphabet, which is what separates a URL from payload. A scheme
-    check that scanned the whole string would refuse legitimate clips."""
+    """Only ':' marks a scheme (not in base64); scanning the whole string refuses real clips."""
     backend = _VideoGguf()
     with _client(monkeypatch, backend) as client:
         response = client.post("/v1/chat/completions", json = _part_body("QUJDREVGR0hJSktM"))
@@ -582,8 +576,7 @@ def test_a_durable_chat_run_still_takes_a_plain_text_turn():
 
 @pytest.mark.parametrize("role", ["system", "assistant"])
 def test_a_clip_on_a_non_user_turn_is_refused(monkeypatch, role):
-    """OpenAI places media on user turns only, and llama-server renders the marker into whichever
-    turn carried it, so anywhere else the result is template-dependent."""
+    """Media belongs on user turns only, else llama-server output is template-dependent."""
     body = {
         "model": "test/model.gguf",
         "stream": False,
@@ -639,8 +632,7 @@ def test_the_rolling_context_does_not_price_a_clip_as_text():
 
 
 def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
-    """video_url used to land here. Registering it must not have widened the catch-all: an
-    unregistered type still has to be refused rather than silently dropped."""
+    """Registering video_url must not widen the catch-all; unknown types must still be refused."""
     body = {
         "model": "test/model.gguf",
         "stream": False,
@@ -667,8 +659,7 @@ def test_an_unknown_part_type_is_still_refused_by_name(monkeypatch):
     ],
 )
 def test_a_remote_video_url_is_refused(monkeypatch, url):
-    """llama-server fetches the clip and follows redirects (common/http.h set_follow_location), so a
-    public URL redirecting to a private address defeats host checks; the shape is refused."""
+    """Remote URLs are refused: llama-server follows redirects, which defeats host checks."""
     with _client(monkeypatch, _VideoGguf()) as client:
         response = client.post("/v1/chat/completions", json = _part_body(url))
     assert response.status_code == 400
@@ -722,8 +713,7 @@ def _older_turn_body(clip = _DATA_URI):
 
 
 def test_a_clip_on_an_older_turn_is_refused_on_a_non_gguf_backend():
-    """GGUF keeps a clip on the turn that carried it, while non-GGUF flattens parts and MLX attaches
-    the clips to the newest turn; refusing stops the backends diverging."""
+    """GGUF keeps a clip on its turn; non-GGUF and MLX do not, so refuse it to stop divergence."""
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -769,8 +759,7 @@ def test_gguf_still_keeps_a_clip_on_the_turn_that_carried_it(monkeypatch):
 
 
 def test_validation_does_not_copy_the_clip():
-    """Validation runs twice per request and only wants the verdict, so slicing the header off
-    to get it copied the whole payload each time: 89 MB for a clip at the limit."""
+    """Validation runs twice per request; header slicing copied the whole 89 MB clip each time."""
     import tracemalloc
 
     from models.inference import ChatCompletionRequest
@@ -813,8 +802,7 @@ def test_the_measured_verdict_agrees_on_the_cap_boundary():
 
 
 def test_a_part_carried_clip_is_transcoded_like_the_legacy_field(monkeypatch):
-    """main shrinks the clip before llama-server samples it, but only on the legacy field path; the
-    same pass must cover parts, or resolution depends on the spelling."""
+    """Only the legacy field is shrunk; parts need it too, else resolution depends on spelling."""
     seen = []
 
     def _shrink(
@@ -868,8 +856,7 @@ def test_the_aggregate_cap_counts_the_legacy_field_too():
 
 
 def test_recosting_drops_a_clip_the_conversation_has_evicted():
-    """truncate_oldest can evict the turn that carried the clip. Charging it from the opening
-    payload kept every later round reserved at the full budget for media no longer sent."""
+    """truncate_oldest may evict clips; recosting must drop them or later rounds over-reserve."""
     from models.inference import ChatCompletionRequest
 
     clip = "data:video/mp4;base64," + "A" * 40_000
@@ -899,8 +886,7 @@ def test_recosting_still_charges_a_clip_the_conversation_kept():
 
 
 def test_the_legacy_field_is_not_charged_twice_during_recosting():
-    """_inject_video_part splices the legacy clip in as input_video before the loop, so charging the
-    field too priced it at 2x and clamped the lease toward the whole KV budget."""
+    """_inject_video_part splices in the legacy clip; the field too would charge it twice."""
     from models.inference import ChatCompletionRequest
 
     clip = "A" * 40_000

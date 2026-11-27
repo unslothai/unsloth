@@ -26,6 +26,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sh
 
 from test_ep_moe_families_gloo import FAMILIES, _local_config, _rows, _sum_loss  # noqa: E402
 
+_SHARED = ("shared_expert", "shared_experts", "shared_mlp")
+SHARED_FAMILIES = ("qwen2_moe", "glm4_moe", "deepseek_v3", "qwen3_next", "hunyuan_v1_moe")
+
 LIST_FAMILIES = (
     "mixtral",
     "olmoe",
@@ -81,6 +84,8 @@ def _case_list_family(
     experts = None,
     gc = False,
     experts_and_router_only = False,
+    warm = False,
+    shared_dropout = False,
 ):
     import torch.distributed as dist
     from peft import get_peft_model_state_dict
@@ -89,6 +94,33 @@ def _case_list_family(
 
     build, tpn, epn = _modules()
     lists = epn._lists()
+    shared_calls = {"ref": 0, "ep": 0}
+
+    def count_shared(model, key):
+        # `warm`: one no-grad forward first so pass 1 learns which children it may skip.
+        if not warm:
+            return
+        with torch.no_grad():
+            model(input_ids = rows[rank][0], use_cache = False)
+        if (
+            shared_dropout
+        ):  # after the warm forward, as PEFT set_adapter to an adapter with LoRA dropout would
+            for block in tpn.moe_blocks_with_experts(model):
+                for name in _SHARED:
+                    for m in getattr(block, name, torch.nn.Module()).modules():
+                        for adapter in list(getattr(m, "lora_dropout", {}).keys()):
+                            m.lora_dropout[adapter] = torch.nn.Dropout(0.0).train()
+                            m.lora_dropout[
+                                adapter
+                            ].p = 1e-9  # active, draws randomness, numerically a no-op
+        for block in tpn.moe_blocks_with_experts(model):
+            for name in _SHARED:
+                child = block._modules.get(name)
+                if child is not None:
+                    child.register_forward_hook(
+                        lambda *a: shared_calls.__setitem__(key, shared_calls[key] + 1)
+                    )
+
     if config is not None:
         repo = _local_config(tmp, rank, config)
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("ep",))["ep"]
@@ -101,8 +133,10 @@ def _case_list_family(
     vocab = tpn._text_config(ref).vocab_size
     rows = [_rows(vocab, r) for r in range(world)]
     n = sum(int((lab[:, 1:] != -100).sum()) for _, lab in rows)
+    count_shared(ref, "ref")
     for ids, lab in rows:
         (_sum_loss(ref, ids, lab) / n).backward()
+    ref_calls = shared_calls["ref"]
     want = {k: p.grad.detach().clone() for k, p in ref.named_parameters() if p.grad is not None}
     want_loss = sum(float(_sum_loss(ref, i, lab).detach()) for i, lab in rows) / n
     want_norm = float(
@@ -111,12 +145,25 @@ def _case_list_family(
     want_adapter = {k: v.detach().clone() for k, v in get_peft_model_state_dict(ref).items()}
 
     model = _build(build, repo, overrides, gc, experts_and_router_only)
-    epn.apply_expert_parallel(model, mesh)
+    import contextlib
+    import io
+
+    printed, device_bytes = io.StringIO(), epn._device_total_bytes
+    epn._device_total_bytes = (
+        lambda: 2**40
+    )  # a GPU the tiny model fits: the rank-0 hint toward data parallel
+    try:
+        with contextlib.redirect_stdout(printed):
+            epn.apply_expert_parallel(model, mesh)
+    finally:
+        epn._device_total_bytes = device_bytes
     listed = lists.list_blocks(model)
     group = epn._mesh(model).get_group()
+    count_shared(model, "ep")
     ddp = DistributedDataParallel(model)
     loss = _sum_loss(ddp, *rows[rank]) * world / n
     loss.backward()
+    ep_calls = shared_calls["ep"]
     epn.ep_sync_expert_grads(model)
     value = loss.detach() / world
     dist.all_reduce(value)
@@ -164,6 +211,9 @@ def _case_list_family(
         "held": held,
         "range": (shard.lo, shard.hi, shard.experts),
         "calls": shard.calls,
+        "shared_calls": (ep_calls, ref_calls / world),
+        "pass1_skips": {k: [n for n, _ in v] for k, v in getattr(shard, "skip", {}).items()},
+        "hint": "transformers 4.x per-expert modules" in printed.getvalue(),
     }
 
 
@@ -297,10 +347,14 @@ def _case_random_router(rank, world, tmp):
     block = model[0]
     torch.manual_seed(10 + rank)
     same = []
-    for _ in range(3):
+    for step in range(3):
         block.draws.clear()
         model(torch.randn(6, 8)).sum().backward()
-        same.append(len(block.draws) == 2 and torch.equal(block.draws[0], block.draws[1]))
+        # Step 0 adds one no-grad pass 1 (skip learning).
+        same.append(
+            len(block.draws) == (3 if step == 0 else 2)
+            and all(torch.equal(block.draws[0], d) for d in block.draws)
+        )
     return {"same": same}
 
 
@@ -586,12 +640,71 @@ def _check(results, world):
 
 @pytest.mark.parametrize("family", LIST_FAMILIES)
 def test_ep_expert_lists_match_one_process(family):
-    _check(_spawn("_case_list_family", **_spec(family)), 2)
+    results = _spawn("_case_list_family", **_spec(family))
+    _check(results, 2)
+    # rank 0 alone points a model that fits one GPU to data parallel / transformers 5
+    assert [r["hint"] for r in results] == [True, False], [r["hint"] for r in results]
+
+
+def test_list_exchange_hint_only_when_the_whole_model_fits_one_gpu(monkeypatch):
+    _, _, epn = _modules()
+    model = torch.nn.Linear(4, 4)  # 80 bytes of fp32 parameters
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: 1000)
+    hint = epn._list_exchange_hint(model, 2, 2)
+    assert "2 mixture-of-experts blocks" in hint and "UNSLOTH_EP_SIZE" in hint, hint
+    assert (
+        epn._list_exchange_hint(model, 0, 2) is None
+    )  # fused experts only: no per-expert exchange
+    setattr(
+        model.weight, epn._EP, ("list", 4, 2)
+    )  # a sharded expert tensor counts ep times: 64 * 8 + 16 bytes
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: 800)
+    assert epn._list_exchange_hint(model, 2, 8) is None
+    assert epn._list_exchange_hint(model, 2, 2) is not None
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: None)  # no GPU to compare with
+    assert epn._list_exchange_hint(model, 2, 2) is None
 
 
 @pytest.mark.parametrize("family", ("mixtral", "qwen2_moe"))
 def test_ep_expert_lists_with_checkpointing_match_one_process(family):
     _check(_spawn("_case_list_family", gc = True, **_spec(family)), 2)
+
+
+@pytest.mark.parametrize("family", SHARED_FAMILIES)
+@pytest.mark.parametrize("gc", (False, True))
+def test_ep_expert_lists_run_the_shared_expert_once(family, gc):
+    """After the first forward, pass 1 skips the shared expert: calls and results match one process."""
+    if gc and family not in ("qwen2_moe", "deepseek_v3"):
+        pytest.skip("checkpointing: two families are enough")
+    results = _spawn("_case_list_family", gc = gc, warm = True, **_spec(family))
+    _check(results, 2)
+    for r in results:
+        got, want = r["shared_calls"]
+        assert want > 0 and got == want, r["shared_calls"]
+        assert any(r["pass1_skips"].values()), r["pass1_skips"]
+
+
+def test_ep_expert_lists_run_the_shared_expert_in_pass1_while_its_dropout_draws():
+    """A shared expert dropout enabled after warmup still runs in pass 1, keeping the RNG in sync."""
+    results = _spawn("_case_list_family", warm = True, shared_dropout = True, **_spec("qwen2_moe"))
+    _check(results, 2)
+    for r in results:
+        got, want = r["shared_calls"]
+        assert want > 0 and got == 2 * want, r["shared_calls"]
+
+
+def test_ep_expert_lists_watch_only_shared_expert_children():
+    """A router as wide as the hidden size is H to H too, but only the shared expert children are candidates."""
+    from unsloth.models import ep_expert_lists as lists
+
+    block = torch.nn.Module()
+    block.gate = torch.nn.Linear(4, 4)
+    block.shared_expert = torch.nn.Linear(4, 4)
+    block.experts = torch.nn.ModuleList([torch.nn.Linear(4, 4)])
+    with lists._watch_shapes(block) as found:
+        x = torch.randn(3, 4)
+        block.gate(x), block.shared_expert(x), block.experts[0](x)
+    assert found == {"shared_expert": torch.float32}, found
 
 
 def test_ep_expert_lists_three_ranks_one_without_experts():
@@ -694,3 +807,53 @@ def test_ep_env_load_keeps_the_zoo_per_expert_paths(monkeypatch):
     assert epn.ep_env_load(lambda: "loaded", (), {}, False) == "loaded"
     assert os.environ["UNSLOTH_MOE_STACKED_LORA"] == "0"
     assert os.environ["UNSLOTH_MOE_GROUPED"] == "1"
+
+
+def test_ep_expert_lists_grouped_experts_only_for_standard_expert_mlps():
+    """The grouped local experts take only the 4.x expert MLPs whose forward is down(act(gate(x)) * up(x)), untouched;
+    off the GPU (or fp32) every block keeps the per-expert loop and says why."""
+    import types
+
+    import transformers.models.qwen3_moe.modeling_qwen3_moe as qwen3_moe
+    from transformers import Qwen3MoeConfig
+    from unsloth.models import ep_expert_lists as lists
+
+    config = Qwen3MoeConfig(hidden_size = 16, moe_intermediate_size = 8, intermediate_size = 8)
+    lst = torch.nn.Module()
+    for e in range(4):
+        lst.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
+    saved = os.environ.pop(lists._GROUPED_ENV, None)  # the caller's kill switch must not leak in
+    try:
+        shard = types.SimpleNamespace(lo = 2, hi = 4)
+        experts, names = lists._grouped_spec(shard, lst, [3, 1])
+        assert list(experts) == [lst._modules["2"], lst._modules["3"]]
+        assert names == ("gate_proj", "up_proj", "down_proj")
+        assert lists._grouped_spec(shard, lst, [3, 1])[0] is experts  # the ModuleList is reused
+        # Only experts that received rows: one with none keeps unset gradients, as in the loop.
+        assert list(lists._grouped_spec(shard, lst, [0, 2])[0]) == [lst._modules["3"]]
+        rows = torch.randn(3, 16)
+        assert lists._grouped_locals(shard, lst, rows, torch.arange(3), [2, 1]) is None
+        assert shard.grouped_declined == "cpu torch.float32 rows", shard.grouped_declined
+        lst._modules["3"].register_forward_hook(lambda *a: None)
+        assert "hooks" in lists._grouped_spec(shard, lst, [3, 1])
+        lst._modules["0"].forward = lambda x: x
+        assert "hooks" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), lst, [1, 1])
+        fresh = torch.nn.Module()
+        for e in range(2):
+            fresh.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
+        fresh._modules["1"].down_proj.weight_fake_quantizer = torch.nn.Identity()
+        assert "QAT" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), fresh, [1, 1])
+        del fresh._modules["1"].down_proj.weight_fake_quantizer
+        fresh._modules["1"].down_proj.register_forward_hook(lambda m, a, out: out * 2)
+        assert "projections" in lists._grouped_spec(
+            types.SimpleNamespace(lo = 0, hi = 2), fresh, [1, 1]
+        )
+        os.environ[lists._GROUPED_ENV] = "0"
+        assert (
+            lists._grouped_spec(types.SimpleNamespace(lo = 2, hi = 4), lst, [1, 1])
+            == f"{lists._GROUPED_ENV}=0"
+        )
+    finally:
+        os.environ.pop(lists._GROUPED_ENV, None)
+        if saved is not None:
+            os.environ[lists._GROUPED_ENV] = saved

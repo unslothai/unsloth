@@ -247,8 +247,7 @@ def test_apply_step_cache_on_flux2_renders(stock_tail_hook):
 
 
 def test_apply_step_cache_adopts_a_cache_enabled_before_the_patch(stock_tail_hook):
-    """An FBCache enabled with the stock tail hook (same threshold, so apply_step_cache adopts it rather than
-    re-enabling) must run the patched tail too, not the bound stock method diffusers captured at registration."""
+    """Adopted FBCache must run the patched tail, not the stock method diffusers captured."""
     torch, FirstBlockCacheConfig, *_ = _diffusers()
     model, inputs = _tiny_flux2()
     pipe = _Flux2Pipe(model, inputs)

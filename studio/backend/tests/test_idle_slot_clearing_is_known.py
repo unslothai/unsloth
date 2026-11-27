@@ -79,7 +79,6 @@ class TestTheRouteAsksTheBackend:
         assert can_yield(_Backend(False)) is False
 
     def test_a_backend_that_cannot_say_does_not_yield(self):
-        """No load yet, a stub, or an older backend object. Declining is safe;
-        promising the same cells twice is not."""
+        """Unknown backend state: declining is safe, promising the same cells twice is not."""
         assert can_yield(_Backend(None)) is False
         assert can_yield(None) is False

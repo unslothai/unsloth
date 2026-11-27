@@ -62,15 +62,17 @@ def test_block_head_matches_full_logits_without_building_them():
     full = model(x).logits
     head = BlockHead(model)
     assert head.head is model.head
-    seen = []
-    model.head.register_forward_hook(lambda m, a, out: seen.append(tuple(out.shape)))
-    model.head._forward_hooks.clear()  # a hooked head is not fusable; check the fused path with a clean one
-    model.__dict__.pop("_unsloth_diffusion_fused_head", None)
-    head = BlockHead(model)
     block = head.logits(x, 4, 8)
     assert torch.allclose(block, full[:, 4:8], atol = 1e-6)
+    # The same head gaining a hook after a fused call keeps the model's own logits, so the hook sees every row.
+    seen = []
+    model.head.register_forward_hook(lambda m, a, out: seen.append(tuple(out.shape)))
+    hooked = BlockHead(model)
+    assert hooked.head is None and torch.equal(hooked.logits(x, 4, 8), full[:, 4:8])
+    assert seen == [(2, 12, VOCAB)]
+    model.head._forward_hooks.clear()
     # A head that is not a plain Linear keeps the model's own logits.
-    model.__dict__["_unsloth_diffusion_fused_head"] = (model.head, None)
+    model.head = torch.nn.Sequential(model.head)
     fallback = BlockHead(model)
     assert fallback.head is None and torch.equal(fallback.logits(x, 4, 8), full[:, 4:8])
 
@@ -126,17 +128,21 @@ def test_llada_frames_show_the_canvas_filling_in():
     assert torch.equal(out, _sample(_Bidirectional()))
 
 
-def test_llada_projects_only_the_active_block():
+def test_llada_projects_only_the_active_block(monkeypatch):
     model = _Bidirectional()
     rows = []
-    # Vocabulary projections only: inside the backbone forward the head returns its input (width 16).
-    model.head.register_forward_hook(
-        lambda m, a, out: rows.append(out.shape[1]) if out.shape[-1] == VOCAB else None
-    )
-    model.__dict__["_unsloth_diffusion_fused_head"] = (
-        model.head,
-        model.head,
-    )  # the hook makes it look wrapped
+    linear = torch.nn.functional.linear
+
+    def observe(
+        inputs,
+        weight,
+        bias = None,
+    ):
+        if weight is model.head.weight:
+            rows.append(inputs.shape[1])
+        return linear(inputs, weight, bias)
+
+    monkeypatch.setattr(torch.nn.functional, "linear", observe)
     _sample(model)
     assert rows and set(rows) == {8}  # block_length rows, never the 19-token canvas
 

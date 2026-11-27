@@ -336,10 +336,18 @@ def _pattern_value(patterns: dict, module: str, default):
     return default
 
 
+def _vllm_scales_lora_per_module() -> bool:
+    try:
+        installed = tuple(int(n) for n in re.findall(r"\d+", version("vllm") or "")[:2])
+    except PackageNotFoundError:
+        return False
+    return installed >= (0, 32)
+
+
 def _mixed_lora_scale(adapter_dir: str) -> bool:
     """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
 
-    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    vLLM before 0.32 applies that one scale to every module, so such an adapter scores wrong.
     Patterns are resolved per module like PEFT does, against the module names stored in the
     adapter weights; without readable weights the pattern keys stand in for module names.
     """
@@ -419,9 +427,19 @@ def process_results(doc, results):
     response = results[0]
     # a single-line option ends at the first newline, where a single-line dataset's stop ends it
     first_line = response.split("\\n")[0]
-    match = any((response if "\\n" in gold else first_line).strip() == gold for gold in golds)
-    return {"exact_match": float(match)}
+    for gold in golds:
+        candidate = (response if "\\n" in gold else first_line).rstrip()
+        if candidate == gold or candidate.lstrip() == gold:
+            return {"exact_match": 1.0}
+    return {"exact_match": 0.0}
 """
+
+
+def _csv_text(value):
+    import pyarrow as pa
+
+    # a typed scalar survives pandas' NA pass ("NA" stays text) and keeps all-empty columns string
+    return pa.scalar(value or None, type = pa.string())
 
 
 def _stop_sequence(data_file: Path, target_key: str) -> str:
@@ -493,9 +511,25 @@ def make_dataset_task(
                 "TARGET_KEY", repr(target_key)
             )
         )
+        if builder == "csv":
+            # Datasets fingerprints the converter; a stable import lets repeated runs reuse the cache.
+            target.write("\nfrom unsloth_cli.commands.eval import _csv_text\n")
     module = Path(target.name).stem
+    dumper = yaml.SafeDumper
+    if builder == "csv":
+        spec["dataset_kwargs"]["converters"] = dict.fromkeys((input_key, target_key), _csv_text)
+
+        class CsvTaskDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                return True
+
+        CsvTaskDumper.add_representer(
+            type(_csv_text),
+            lambda dumper, fn: dumper.represent_scalar("!function", f"{module}.{fn.__name__}"),
+        )
+        dumper = CsvTaskDumper
     (out_dir / f"{name}.yaml").write_text(
-        yaml.safe_dump(spec, sort_keys = False)
+        yaml.dump(spec, Dumper = dumper, sort_keys = False)
         + f"doc_to_target: !function {module}.doc_to_target\n"
         + f"process_results: !function {module}.process_results\n",
         encoding = "utf-8",
@@ -920,6 +954,22 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
                 rank = _adapter_rank(model_args["lora_local_path"])
+                per_module = _vllm_scales_lora_per_module()
+                if per_module:
+                    # vLLM 0.32+ PEFTHelper.validate_legal checks max_lora_rank against every rank_pattern value
+                    patterns = (
+                        _read_config(Path(model_args["lora_local_path"]) / "adapter_config.json")
+                        or {}
+                    ).get("rank_pattern")
+                    if isinstance(patterns, dict):
+                        rank = max(
+                            [rank]
+                            + [
+                                v
+                                for v in patterns.values()
+                                if isinstance(v, int) and not isinstance(v, bool)
+                            ]
+                        )
                 merge_hint = (
                     "Use --backend unsloth or --backend hf to evaluate it, or merge it with "
                     "`unsloth export <adapter> <output_dir> --format merged-16bit` "
@@ -930,11 +980,11 @@ def evaluate(
                         f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
                         f"but this adapter was trained with rank {rank}. {merge_hint}"
                     )
-                if _mixed_lora_scale(model_args["lora_local_path"]):
+                if not per_module and _mixed_lora_scale(model_args["lora_local_path"]):
                     _fail(
-                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
-                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
-                        f"wrong weights. {merge_hint}"
+                        "--backend vllm before 0.32 scales every LoRA module by lora_alpha / r and "
+                        "ignores rank_pattern / alpha_pattern, so this adapter would be scored with "
+                        f"the wrong weights. Upgrade vLLM to 0.32 or newer. {merge_hint}"
                     )
                 if rank > 16:
                     model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)
