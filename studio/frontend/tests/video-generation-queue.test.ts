@@ -10,6 +10,7 @@ import test from "node:test";
 import type { VideoQueueJob } from "../src/features/video/api.ts";
 import {
   oldestQueuedVideo,
+  recoverVideoJob,
   progressIsForVideo,
   queuedVideoLabel,
   queuedVideoNext,
@@ -90,6 +91,27 @@ test("after a reload a job caught starting is resumed too, and its start keeps b
   assert.equal(queuedVideoNext(jobs, "starting").kind, "queued");
 });
 
+test("a tab refresh keeps its own queued clip while another clip is rendering", async () => {
+  const rendering = { active: true, phase: "running", step: 3, total: 10, video_id: "tab-A" };
+  const recovered = await recoverVideoJob("tab-B", async (id) => {
+    assert.equal(id, "tab-B");
+    return rendering;
+  }, async () => [job("tab-B", "queued", { queue_position: 2 })]);
+  assert.deepEqual(recovered, {
+    kind: "queued",
+    job: { videoId: "tab-B", position: 2, etaSeconds: null },
+  });
+});
+
+test("a batch member resumes its own progress without adopting the parent", async () => {
+  const progress = { active: true, phase: "running", step: 3, total: 10, video_id: "member" };
+  let probe = 0;
+  const recovered = await recoverVideoJob("member", async () =>
+    probe++ === 0 ? { ...progress, video_id: "batch-parent" } : progress,
+  async () => [job("unrelated", "queued")]);
+  assert.deepEqual(recovered, { kind: "progress", progress });
+});
+
 test("Cancel while rendering names the followed clip, so a successor of the account is never stopped", () => {
   const page = readSrc("features/video/video-page.tsx");
   assert.match(page, /cancelVideoGeneration\(\s*queuedVideoId \?\? genVideoId\.current \?\? undefined,?\s*\)/);
@@ -150,7 +172,7 @@ test("the progress poll asks for its own clip by id, so a successor's record can
   await api.getVideoGenerateProgress();
   assert.equal(calls[1].path, "/api/inference/video/generate-progress");
   const page = readSrc("features/video/video-page.tsx");
-  assert.match(page, /const p = await getVideoGenerateProgress\(genVideoId\.current \?\? undefined\);/);
+  assert.match(page, /const p = await getVideoGenerateProgress\(videoId \?\? undefined\);/);
 });
 
 test("the queue route returns the account's jobs", async () => {
@@ -163,6 +185,8 @@ test("the queue route returns the account's jobs", async () => {
 
 test("the page queues on submit, cancels by id and resumes the queue on mount", () => {
   const page = readSrc("features/video/video-page.tsx");
+  assert.match(page, /storeVideoJob\(accepted\.video_id\)/);
+  assert.match(page, /recoverVideoJob\(savedJob, getVideoGenerateProgress, getVideoQueue\)/);
   assert.match(page, /if \(accepted\.status === "queued" && accepted\.video_id\) \{\s*startQueuePoll\(/);
   assert.match(page, /startGenPoll\(accepted\.video_id \?\? null\);/);
   assert.match(page, /const queued = oldestQueuedVideo\(await getVideoQueue\(\)\);/);
