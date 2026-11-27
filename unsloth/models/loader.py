@@ -198,6 +198,7 @@ from ._utils import (
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
     block_swap_shaped,
+    snapshot_residual_lora_load,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -2270,6 +2271,7 @@ class FastLanguageModel(FastLlamaModel):
                     lora_config = load_config,
                     loading_adapter = True,
                 ),
+                snapshot_residual_lora_load(load_config),
             ):
                 model = PeftModel.from_pretrained(
                     model,
@@ -3847,6 +3849,7 @@ class FastModel(FastBaseModel):
                         lora_config = load_config,
                         loading_adapter = True,
                     ),
+                    snapshot_residual_lora_load(load_config),
                 ):
                     model = PeftModel.from_pretrained(
                         model,
