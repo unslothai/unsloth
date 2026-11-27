@@ -22,8 +22,7 @@ import {
 import { backendDisplayName } from "../lib/llama-backend-labels";
 
 const JOB_POLL_MS = 700;
-// Opening the picker accepts a host resolve this recent: the page-load update check has
-// usually just run the same one. Folder changes, the install poll and apply stay fully forced.
+// Picker open reuses the page-load check's resolve; folder change, poll and apply stay forced.
 export const OPEN_REUSE_SECONDS = 120;
 
 export function useLlamaBackendSwitch() {
@@ -59,8 +58,6 @@ export function useLlamaBackendSwitch() {
 
   useEffect(() => {
     mounted.current = true;
-    // Opening the picker rechecks host capability (a resolve from the last OPEN_REUSE_SECONDS
-    // counts); during an install the poll repeats it.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh(true, OPEN_REUSE_SECONDS);
     return () => {

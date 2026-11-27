@@ -220,7 +220,7 @@ def resolve_prebuilt_for_host(
     extra_env: Optional[dict[str, str]] = None,
     max_age: Optional[float] = None,
 ) -> Optional[dict]:
-    """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest`` by default) with ``--output-format json``; return the parsed payload or None. Fail-open: any error -> None so a source build never blocks the app. ``extra_env`` carries what the resolver cannot re-derive: the arch a previous install recorded, which setup forwarded from a probe this subprocess does not have. Part of the cache key, so changing it re-resolves rather than replaying a value found without it. ``max_age`` lets a forced call accept an answer resolved at most that many seconds ago (every memoized answer came from a real resolver run); concurrent calls with the same key share one resolver child."""
+    """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest`` by default) with ``--output-format json``; return the parsed payload or None. Fail-open: any error -> None so a source build never blocks the app. ``extra_env`` carries what the resolver cannot re-derive: the arch a previous install recorded, which setup forwarded from a probe this subprocess does not have. Part of the cache key, so changing it re-resolves rather than replaying a value found without it. ``max_age`` lets a forced call accept an answer at most that old."""
     now = time.time()
     cache_key = (*mode, *extra_args, *sorted((extra_env or {}).items()))
     if memo.get("key") == cache_key:
@@ -287,7 +287,7 @@ def _run_resolver(
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
         logger.debug(log_message, error = str(exc))
         value = None
-    # Not stored if an install invalidated the memo while this child ran: its answer describes the host before that install.
+    # Not stored if an install invalidated the memo meanwhile (pre-install answer).
     if value is not None and single_flight.generation(memo) == gen:
         memo.update(at = now, key = cache_key, value = value)
     return value

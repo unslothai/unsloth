@@ -28,8 +28,7 @@ export type {
   LlamaEffectiveBackend,
 } from "./llama-backend-payload";
 
-/** Always refetches: the install on disk and the in-flight job change under it. With
- * forceRefresh, maxAgeSeconds lets the server reuse a host resolve at most that old. */
+/** Always refetches; with forceRefresh, maxAgeSeconds allows a server resolve at most that old. */
 export async function loadLlamaBackendStatus(
   forceRefresh = false,
   maxAgeSeconds?: number,

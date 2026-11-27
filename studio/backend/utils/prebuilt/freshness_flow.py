@@ -273,7 +273,6 @@ def fetch_latest_release_assets(
 
 
 def release_asset_sizes(release: dict) -> dict[str, int]:
-    """Asset name -> size (bytes) of one release object."""
     assets: dict[str, int] = {}
     for a in release.get("assets") or []:
         name, size = a.get("name"), a.get("size")
@@ -340,7 +339,7 @@ def latest_release_assets(
     fetch: Callable[[str], Optional[dict[str, int]]],
     max_age: Optional[float] = None,
 ) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart re-fetches. ``max_age`` lets a forced call accept sizes fetched at most that many seconds ago; concurrent fetches for the same repo share one GitHub read."""
+    """Newest-release asset sizes for `repo` (24h TTL, None if never fetched). ``max_age`` lets a forced call accept sizes at most that old."""
     if not repo:
         return None
     now = time.time()
@@ -457,7 +456,7 @@ def reset_caches(
     caches: tuple[dict, ...], *, drop_disk: bool, cache_dir: Callable[[], Path]
 ) -> None:
     """Drop the in-memory freshness caches; with drop_disk also the on-disk 24h release cache (see the component modules for why)."""
-    # invalidate() also bumps each cache's generation, so a fill already running when an install resets them does not write its pre-install answer back.
+    # Bumps generations so in-flight fills do not write pre-install answers back.
     for cache in caches:
         single_flight.invalidate(cache)
     if drop_disk:

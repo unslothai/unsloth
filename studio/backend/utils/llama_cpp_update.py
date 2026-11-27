@@ -732,7 +732,7 @@ _BACKEND_STATUS_MAX_AGE_CAP_SECONDS = 300.0
 
 
 def get_backend_status(*, force_refresh: bool = False, max_age: Optional[float] = None) -> dict:
-    """Return the installed backend and host-compatible alternatives. ``max_age`` (forced reads only) accepts a resolve and asset list at most that many seconds old, so opening the picker right after the page-load update check reuses that check's resolver run. An install clears both caches, so nothing from before it is reused."""
+    """Installed backend plus host-compatible alternatives. ``max_age`` (forced only) reuses a resolve at most that old; installs clear the caches."""
     if max_age is not None:
         max_age = max(0.0, min(float(max_age), _BACKEND_STATUS_MAX_AGE_CAP_SECONDS))
     reuse = {"max_age": max_age} if force_refresh and max_age else {}

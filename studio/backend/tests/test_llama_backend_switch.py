@@ -1429,7 +1429,7 @@ def test_windows_dlls_are_not_physical_gpu_evidence(tmp_path, monkeypatch):
 
 
 def _hold_until_joined(waiters: int) -> None:
-    """Block the single-flight leader until ``waiters`` other callers are parked on its call, so a sharing test does not depend on how fast its threads start (a fixed sleep let a slow runner's last thread arrive after the leader finished and start its own call)."""
+    """Block the leader until ``waiters`` callers are parked on it (a fixed sleep raced slow thread start-up)."""
     from utils.prebuilt import single_flight
 
     deadline = time.time() + 10
@@ -1493,7 +1493,6 @@ def test_concurrent_forced_resolves_share_one_child(monkeypatch, tmp_path):
         thread.join()
     assert len(calls) == 1
     assert len(results) == 3 and all(r == results[0] and r for r in results)
-    # Once the shared call ends, a new forced call runs its own child again.
     upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
     assert len(calls) == 2
 
@@ -1536,7 +1535,6 @@ def test_a_forced_resolve_reuses_only_within_max_age(monkeypatch, tmp_path):
     memo["at"] += 3600
     upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
     assert len(calls) == 4
-    # A different key is never reused.
     upd._flow.resolve_prebuilt_for_host(
         **_resolver_kwargs(tmp_path, memo, max_age = 120, extra_args = ("--install-dir", "x"))
     )
@@ -1732,7 +1730,6 @@ def test_opening_the_picker_after_the_update_check_reuses_its_resolve(monkeypatc
     # Folder change / apply / poll stay forced.
     upd.get_backend_status(force_refresh = True)
     assert len(calls) == 3 and len(fetched) == 2
-    # max_age only matters on a forced read, and an absurd one is capped.
     upd._backends_memo["at"] -= upd._BACKEND_STATUS_MAX_AGE_CAP_SECONDS + 1
     freshness._assets_memo["unslothai/llama.cpp"] = (
         freshness._assets_memo["unslothai/llama.cpp"][0]
