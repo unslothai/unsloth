@@ -10340,15 +10340,13 @@ def _mlx_lm_spec_for_installed_zoo() -> str:
 
 
 def _mlx_spec_for_installed_zoo(spec: str) -> str:
-    """`spec`, intersected with the range the installed zoo declares: this step runs before the core
-    phase (skipped on fresh installs), and e.g. mlx-vlm 0.7.1 beside an older zoo raises TypeError at
-    the first Qwen3.5 VLM training step, past the chat-only gate. Mirrors mlx_repair._install_packages."""
+    """`spec` intersected with the installed zoo's range: mlx-vlm 0.7.1 beside an older zoo raises
+    TypeError at the first Qwen3.5 VLM training step, past the chat-only gate."""
     declared = _zoo_declared_specifier(re.split(r"[<>=!~;\[ ]", spec, maxsplit = 1)[0])
     return f"{spec},{declared}" if declared else spec
 
 
 def _zoo_declared_specifier(name: str) -> str:
-    """The specifier the installed unsloth-zoo declares for `name`; "" without a zoo or a constraint."""
     try:
         from importlib.metadata import requires
         from packaging.requirements import Requirement
@@ -10371,9 +10369,8 @@ def _zoo_declared_specifier(name: str) -> str:
 
 
 def _mlx_pins_for_installed_zoo() -> tuple[str, ...]:
-    """_MLX_PINS, moved to the installed zoo's exact mlx pin when it has one. The core phase installs
-    zoo with deps, so ours beside a zoo pinning another mlx is undone there and redone next update;
-    on a fresh install it leaves mlx outside what zoo declares."""
+    """The installed zoo's exact mlx pin, else _MLX_PINS: the core phase installs zoo with deps, so a
+    different pin here is undone there and redone on every update."""
     declared = _zoo_declared_specifier("mlx")
     if not declared.startswith("==") or any(c in declared for c in ",*"):
         return _MLX_PINS
@@ -12246,8 +12243,7 @@ def install_python_stack() -> int:
     if _installer_replaced():
         raise _InstallerReplaced
 
-    # The MLX step honoured the OLD zoo's pins and ranges; re-resolve when they moved, since the
-    # startup self-heal will not correct it.
+    # The MLX step followed the OLD zoo; the startup self-heal will not correct a moved pin or range.
     if IS_MAC_ARM:
         _mlx_specs_now = _mlx_specs_for_installed_zoo()
         if _mlx_specs_used is None or _mlx_specs_now == _mlx_specs_used:

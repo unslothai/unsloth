@@ -394,7 +394,6 @@ def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
     assert spec.startswith(stack._MLX_VLM_SPEC)
     assert "<0.7.0" in spec and "0.31.3" not in spec
     assert stack._mlx_lm_spec_for_installed_zoo() == f"{stack._MLX_LM_SPEC},==0.31.3"
-    # The core phase reinstalls zoo with deps, so its exact mlx pin is the one that would stay.
     assert stack._mlx_pins_for_installed_zoo() == ("mlx==0.32.4", "mlx-metal==0.32.4")
 
 

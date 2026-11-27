@@ -4321,8 +4321,7 @@ def _caption(
 
 
 def _snapshot_or_headers(repo, tmp_path):
-    """A snapshot rebuilt from the repo's committed headers (real config, index and shard headers over sparse tensor
-    bytes), else its local snapshot."""
+    """The repo rebuilt from its committed config and shard headers over sparse bytes, else its local snapshot."""
     fixture = (
         Path(__file__).parent / "data" / "mlx_headers" / (repo.replace("/", "--") + ".json.gz")
     )

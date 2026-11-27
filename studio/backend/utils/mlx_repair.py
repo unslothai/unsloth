@@ -82,7 +82,7 @@ def _mlx_minimum(name: str) -> str:
 
 
 def _follows_zoo_mlx_pin(declared: str) -> bool:
-    """An exact zoo pin no older than 0.32.3: 0.32.2's GQA-8 decode read row 0's KV for every batch row (mlx#4431)."""
+    """An exact zoo pin no older than 0.32.3 (0.32.2 is mlx#4431)."""
     if not declared.startswith("==") or any(c in declared for c in ",*"):
         return False
     try:
@@ -93,9 +93,8 @@ def _follows_zoo_mlx_pin(declared: str) -> bool:
 
 
 def _install_packages() -> tuple[str, ...]:
-    """mlx-lm and mlx-vlm are narrowed to the specifier unsloth-zoo declares, as their call shapes
-    must match it. mlx takes the zoo's exact pin when it has one: intersecting two exact pins empties
-    the range, and ours beside a zoo pinning another release resolves back to the zoo's on update."""
+    """mlx-lm / mlx-vlm narrowed to the zoo's range (call shapes must match); mlx takes the zoo's exact
+    pin, since ours beside a different zoo pin is undone by the next core install."""
     packages = []
     for name, spec in _MLX_INSTALL_SPECS.items():
         declared = _zoo_declared_specifier(name)
