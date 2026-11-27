@@ -466,11 +466,13 @@ from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_fp16_hosted_int8 import (
+    FP16_CARD_HOSTED_INT8_AUTO_FAMILIES,
     fp16_card_hosted_int8_cached,
     fp16_card_hosted_int8_plan_source,
     fp16_card_hosted_int8_planned_scheme,
     fp16_card_hosted_int8_reason,
     fp16_card_hosted_int8_transformer,
+    hosted_auto_host_ram_shortfall,
     small_host_hosted_int8_reason,
 )
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -5148,6 +5150,15 @@ def _denoiser_streams_from_host(state: Any) -> bool:
     from .diffusion_memory import DENOISER_RESIDENT
 
     return denoiser_offload(getattr(state, "pipe", None), policy) != DENOISER_RESIDENT
+
+
+def _note_small_host_hosted_int8(pipe: Any, reason: str, *, picked: bool) -> None:
+    """Record on the pipe's small-host status whether AUTO took the hosted int8 ConvRot build, and why."""
+    from .diffusion_small_host import mark
+
+    info = dict(small_host_engaged_on(pipe) or {})
+    info["hosted_int8"] = {"picked": picked, "reason": reason}
+    mark(pipe, info)
 
 
 class DiffusionBackend:
@@ -10249,6 +10260,21 @@ class DiffusionBackend:
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
                     else None
                 )
+                # AUTO's measured hosted build declined only for host RAM: status says so beside the per-row build.
+                hosted_auto_ram_note = (
+                    hosted_auto_host_ram_shortfall(fam)
+                    if small_host_hosted is None
+                    and turing_auto_int8 is None
+                    and transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and not _has_active_lora(loras)
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    and getattr(fam, "name", None) in FP16_CARD_HOSTED_INT8_AUTO_FAMILIES
+                    and fp16_card_hosted_int8_reason(fam, TQ_INT8, target) is not None
+                    else None
+                )
+                if hosted_auto_ram_note is not None:
+                    logger.info("diffusion.fp16_hosted_int8: %s", hosted_auto_ram_note)
                 turing_auto_int8 = turing_auto_int8 or small_host_hosted
                 if turing_auto_int8 is not None:
                     logger.info(
@@ -11522,6 +11548,8 @@ class DiffusionBackend:
                                     try:
                                         # A float32 load (fp16-only card) widens the 9B encoder and the DiT in host
                                         # RAM: the small-host route keeps them at their stored bf16, memory-mapped.
+                                        # AUTO's hosted ConvRot DiT keeps that route even where the rest fits dense:
+                                        # the float32 encoder copy alone would take ~30 GB of host RAM (T4, 51 GB).
                                         small_host = self._small_host_decision(
                                             _base_local_dir or fetch_base,
                                             pipe_kwargs,
@@ -11529,6 +11557,8 @@ class DiffusionBackend:
                                             dtype,
                                             lora_active = _has_active_lora(loras),
                                             dense_denoiser = small_host_dense,
+                                            force = small_host_hosted is not None
+                                            and hosted_native_scheme is not None,
                                             fetch = _per_component_small_host_fetch(
                                                 fetch_base,
                                                 _base_local_dir,
@@ -11728,6 +11758,10 @@ class DiffusionBackend:
                                 ):
                                     plan = self._mark_small_host_hosted(
                                         pipe, plan, small_host_hosted, fam, logger
+                                    )
+                                elif hosted_auto_ram_note is not None and pipe is not None:
+                                    _note_small_host_hosted_int8(
+                                        pipe, hosted_auto_ram_note, picked = False
                                     )
                         elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
@@ -15115,8 +15149,10 @@ class DiffusionBackend:
         fetch: Optional[Callable[[], Any]] = None,
         variant: Optional[str] = None,
         dense_denoiser: bool = False,
+        force: bool = False,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot.
+        ``force``: engage the route whatever the dense load would need (``SMALL_HOST_ENV=1`` for this load only).
         ``fetch`` downloads what ``from_pretrained`` would when the snapshot holds no weights yet; ``variant``
         is the weight layout the load reads."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
@@ -15124,7 +15160,7 @@ class DiffusionBackend:
         total, available = host_ram_mib()
         # route cannot engage: skip the prefetch, the loader downloads what it reads
         can_engage = small_host_ineligible(dtype, device = device) is None and (
-            small_host_forced() or (available is not None and not lora_active)
+            force or small_host_forced() or (available is not None and not lora_active)
         )
         if (
             fetch is not None
@@ -15159,6 +15195,7 @@ class DiffusionBackend:
             pread_libraries = ("transformers",) if pread_available() else (),
             spill_free_mib = spill_capacity_mib(),
             dense_denoiser = dense_denoiser,
+            force = force,
         )
         if decision.engaged or decision.refuse:
             logger.info(
@@ -15280,6 +15317,7 @@ class DiffusionBackend:
         components = dict(info.get("components") or {})
         components["transformer"] = SMALL_HOST_HOSTED_INT8_COMPONENT
         info["components"] = components
+        info["hosted_int8"] = {"picked": True, "reason": reason}
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", components)
         return self._small_host_plan(pipe, plan, fam, logger)
