@@ -2124,7 +2124,7 @@ def vllm_lora_rounding(on = True):
         if not _VLLM_LORA_ROUNDING_NOTICE[0]:
             _VLLM_LORA_ROUNDING_NOTICE[0] = True
             print(
-                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so GRPO training does "
+                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so RL training does "
                 "too (UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
             )
     try:

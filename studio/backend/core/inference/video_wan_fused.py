@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused fp16 Triton kernels for diffusers' WanTransformerBlock on fp16-only GPUs (T4); bit-
-identical to stock float32 rounding, self-checked per device; fp16 CUDA non-ROCm, no grad, not
-compiling; UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0 (all), UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0 (rotary
-only)."""
+"""Fused Triton kernels for diffusers' WanTransformerBlock: the float32 norm / modulation / gated-residual chains in one
+pass each, so no [B, L, D] float32 temporaries. Bit-identical to stock float32 rounding, self-checked per device; fp16
+(T4) or bf16 (eager loads: GGUF, speed off) CUDA non-ROCm, no grad, not compiling; UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0
+(all), UNSLOTH_DIFFUSION_WAN_FUSED_BF16=0 (bf16 loads only), UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0 (rotary only)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
 WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
 WAN_FUSED_ANY_LENGTH_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ANY_LENGTH"
+# bf16 loads only (fp16 stays on): UNSLOTH_DIFFUSION_WAN_FUSED_BF16=0
+WAN_FUSED_BF16_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_BF16"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
 # ``_digest(WanTransformerBlock.forward)``: identical in diffusers 0.36.0, 0.37.0, 0.40.0 and main (80c7ed26).
@@ -40,15 +42,26 @@ def disabled() -> bool:
     return (os.environ.get(WAN_FUSED_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
+def _bf16_disabled() -> bool:
+    return (os.environ.get(WAN_FUSED_BF16_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _dtypes() -> tuple:
+    """Activation dtypes the fused block takes: fp16, and bf16 unless UNSLOTH_DIFFUSION_WAN_FUSED_BF16=0."""
+    import torch
+    return (torch.float16,) if _bf16_disabled() else (torch.float16, torch.bfloat16)
+
+
 def wanted(dtype: Any, device: Any = "cuda") -> bool:
-    """Only an fp16 CUDA (non-ROCm) load with Triton available: bf16 / fp32 loads keep the stock forward."""
+    """An fp16 or bf16 CUDA (non-ROCm) load with Triton available; fp32 loads keep the stock forward. A compiled block
+    traces stock (see _make_forward), so on bf16 this only changes eager blocks (GGUF, speed off)."""
     if disabled():
         return False
     try:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if dtype is not torch.float16 or not str(device).startswith("cuda"):
+    if dtype not in _dtypes() or not str(device).startswith("cuda"):
         return False
     if is_rocm_torch(torch):
         return False
@@ -312,7 +325,7 @@ def _kernels() -> Optional[dict]:
 
 
 def _stats(x: Any, eps: float) -> tuple:
-    """Per-row (mean, rstd) from PyTorch's own layer norm on the fp16 rows: bit-identical to ``layer_norm(x.float())``."""
+    """Per-row (mean, rstd) from PyTorch's own layer norm on the fp16 / bf16 rows: bit-identical to ``layer_norm(x.float())``."""
     import torch
 
     D = x.shape[-1]
@@ -338,8 +351,8 @@ def _affine_fp32_norm(norm: Any, dim: int) -> bool:
         and len(tuple(getattr(norm, "normalized_shape", ()))) == 1
         and torch.is_tensor(w)
         and torch.is_tensor(b)
-        and w.dtype in (torch.float32, torch.float16)
-        and b.dtype in (torch.float32, torch.float16)
+        and w.dtype in (torch.float32, torch.float16, torch.bfloat16)
+        and b.dtype in (torch.float32, torch.float16, torch.bfloat16)
         and tuple(w.shape) == (dim,)
         and tuple(b.shape) == (dim,)
         and w.is_contiguous()
@@ -350,7 +363,7 @@ def _affine_fp32_norm(norm: Any, dim: int) -> bool:
 def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
     import torch
 
-    if not torch.is_tensor(x) or x.dtype is not torch.float16 or not x.is_cuda or x.dim() != 3:
+    if not torch.is_tensor(x) or x.dtype not in _dtypes() or not x.is_cuda or x.dim() != 3:
         return False
     if torch.is_grad_enabled() and (
         x.requires_grad or any(p.requires_grad for p in block.parameters(recurse = False))
@@ -362,10 +375,10 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
     if D % 4 or not x.is_contiguous() or x.numel() == 0:
         return False
     table = getattr(block, "scale_shift_table", None)
-    # float32 as diffusers keeps it (_keep_in_fp32_modules); an fp16 table upcasts exactly in both paths
+    # float32 as diffusers keeps it (_keep_in_fp32_modules); an fp16 / bf16 table upcasts exactly in both paths
     if (
         not torch.is_tensor(table)
-        or table.dtype not in (torch.float32, torch.float16)
+        or table.dtype not in (torch.float32, x.dtype)
         or tuple(table.shape) != (1, 6, D)
     ):
         return False
@@ -373,7 +386,7 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
         return False
     if not torch.is_tensor(temb) or temb.device != x.device or temb.stride(-1) != 1:
         return False
-    if temb.dtype not in (torch.float16, torch.float32):
+    if temb.dtype not in (x.dtype, torch.float32):
         return False
     if temb.dim() == 4:
         if tuple(temb.shape) != (B, L, 6, D):
@@ -438,8 +451,8 @@ def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
     key = key.unflatten(2, (attn.heads, -1))
     value = value.unflatten(2, (attn.heads, -1))
     if (
-        query.dtype is not torch.float16
-        or key.dtype is not torch.float16
+        query.dtype is not hidden_states.dtype
+        or key.dtype is not hidden_states.dtype
         or not query.is_contiguous()
         or not key.is_contiguous()
         or query.shape[-1] % 2
@@ -492,7 +505,7 @@ def _fused_block(
     attn = _self_attention(block.attn1, n, rotary_emb) if rotary_emb is not None else None
     if attn is None:
         attn = block.attn1(n, None, None, rotary_emb)
-    attn = attn if attn.dtype is torch.float16 and attn.is_contiguous() else None
+    attn = attn if attn.dtype is x.dtype and attn.is_contiguous() else None
     if attn is None:
         raise _Fallback()
     x = k["gate_residual"](x, attn, temb, table, 2)
@@ -504,14 +517,15 @@ def _fused_block(
         mean, rstd = _stats(x, norm2.eps)
         n = k["affine_norm"](x, mean, rstd, norm2.weight, norm2.bias)
     attn = block.attn2(n, encoder_hidden_states, None, None)
+    dtype = x.dtype
     x = x + attn
-    if x.dtype is not torch.float16 or not x.is_contiguous():
+    if x.dtype is not dtype or not x.is_contiguous():
         raise _Fallback()
     # 3. feed-forward: norm3 + (c_shift, c_scale) = chunks 3, 4; c_gate = chunk 5
     mean, rstd = _stats(x, block.norm3.eps)
     n = k["modnorm"](x, mean, rstd, temb, table, 3, 4)
     ff = block.ffn(n)
-    if ff.dtype is not torch.float16 or not ff.is_contiguous() or ff.shape != x.shape:
+    if ff.dtype is not dtype or not ff.is_contiguous() or ff.shape != x.shape:
         raise _Fallback()
     return k["gate_residual"](x, ff, temb, table, 5)
 
@@ -549,6 +563,7 @@ def _make_forward(stock: Callable) -> Callable:
             return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
         key = (
             hidden_states.device.index,
+            hidden_states.dtype,
             temb.dim(),
             temb.dtype,
             not hasattr(self.norm2, "weight") or self.norm2.weight is None,
@@ -567,11 +582,13 @@ def _make_forward(stock: Callable) -> Callable:
                 try:
                     if ok:
                         logger.info(
-                            "video.wan_fused: fused fp16 modulation matched the stock block bit for bit"
+                            "video.wan_fused: fused %s modulation matched the stock block bit for bit",
+                            str(hidden_states.dtype).replace("torch.", ""),
                         )
                     else:
                         logger.warning(
-                            "video.wan_fused: fused fp16 modulation did not match the stock block; keeping stock"
+                            "video.wan_fused: fused %s modulation did not match the stock block; keeping stock",
+                            str(hidden_states.dtype).replace("torch.", ""),
                         )
                 except Exception:  # noqa: BLE001
                     pass
@@ -625,7 +642,7 @@ def install(
     device: Any = "cuda",
     logger: Any = None,
 ) -> bool:
-    """Point ``WanTransformerBlock.forward`` at the fused version for an fp16 load. Idempotent; False (and nothing
+    """Point ``WanTransformerBlock.forward`` at the fused version for an fp16 / bf16 load. Idempotent; False (and nothing
     patched) when not wanted, disabled, or the installed diffusers block is not the one this was built for. Must run
     before group-offload hooks are attached: they capture the block's bound forward at registration."""
     if not wanted(dtype, device):
@@ -674,7 +691,7 @@ def install(
     if logger is not None:
         try:
             logger.info(
-                "video.wan_fused: fused fp16 norm / modulation / gated-residual kernels installed"
+                "video.wan_fused: fused norm / modulation / gated-residual kernels installed"
             )
         except Exception:  # noqa: BLE001
             pass
@@ -687,7 +704,7 @@ def install_for_pipe(
     device: Any = "cuda",
     logger: Any = None,
 ) -> bool:
-    """Per-load entry: install for an fp16 Wan denoiser, otherwise make sure the stock forward is back."""
+    """Per-load entry: install for an fp16 / bf16 Wan denoiser, otherwise make sure the stock forward is back."""
     dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
     if not any(d is not None and type(d).__module__ == _MODULE for d in dits):
         uninstall()

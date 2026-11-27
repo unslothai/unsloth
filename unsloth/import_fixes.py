@@ -8608,6 +8608,22 @@ def fix_dynamo_config_thread_visibility():
         _patched_load_config.__unsloth_patched__ = True
         ConfigModule.load_config = _patched_load_config
 
+    # The get_hash() / config view caches are ContextVars too: fresh ones make every thread recompute, else
+    # Inductor's FX-graph cache key goes stale (as unsloth_zoo.torch_config._invalidate_caches).
+    _cache_vars = (
+        ("_hash_dirty_var", True),
+        ("_hash_cache_var", None),
+        ("_get_dict_dirty_keys_var", None),
+        ("_get_dict_cache_var", None),
+    )
+
+    def _invalidate_config_caches(module):
+        module_dict = module.__dict__
+        module_name = module_dict.get("__name__", "torch_config")
+        for attr, default in _cache_vars:
+            if isinstance(module_dict.get(attr, None), ContextVar):
+                original_setattr(module, attr, ContextVar(f"{module_name}.{attr}", default = default))
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
@@ -8622,6 +8638,7 @@ def fix_dynamo_config_thread_visibility():
                     # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
                     if _unset is not None and entry.env_value_default is not _unset:
                         entry.env_value_default = value
+                    _invalidate_config_caches(self)
             except Exception:
                 pass
 

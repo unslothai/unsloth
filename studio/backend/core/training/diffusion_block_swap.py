@@ -88,6 +88,18 @@ def int8_w8a8_env() -> Optional[bool]:
     return raw not in INT8_WEIGHT_ONLY_VALUES
 
 
+ROCM_W8A8_TRAIN_ENV = "UNSLOTH_DIFFUSION_ROCM_W8A8_TRAIN"
+
+
+def rocm_w8a8_train_opt_in(mode: Optional[str], cfg: Any = None) -> bool:
+    """Opt-in: int8 trains the W8A8 base (torch._int_mm) on ROCm, never weight-only. Off until measured faster there."""
+    if (mode or "").strip().lower() != "int8":
+        return False
+    if os.environ.get(ROCM_W8A8_TRAIN_ENV, "").strip().lower() not in ("1", "true", "yes", "on"):
+        return False
+    return int8_w8a8_for_run(cfg)
+
+
 def int8_w8a8_requested() -> bool:
     """int8 trains on the frozen W8A8 base by default (not torchao weight-only, whose tensor subclass cannot stream
     and cannot trace); UNSLOTH_DIFFUSION_INT8_TRAIN=weight-only keeps the weight-only base."""

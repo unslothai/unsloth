@@ -5162,6 +5162,16 @@ class DiffusionLoadRequest(BaseModel):
         "engages it on this load, over the env switch; it does not change an explicit attention_backend such as "
         "sage. The status record reports what engaged under resolved.int8_attention.",
     )
+    lora_fuse: Optional[Literal["auto", "on", "off"]] = Field(
+        None,
+        description = "Fold an unchanged LoRA set into the denoiser weights on this load, so renders skip the "
+        "adapter GEMMs (faster; the merged weights are rounded once to the model dtype, so output is slightly "
+        "less exact than the unfolded adapters). auto (the default, also when unset) follows the "
+        "UNSLOTH_DIFFUSION_LORA_FUSE environment switch, else off. on folds on a resident denoiser, or a group "
+        "offload that keeps every denoiser whole on the card, over the env switch. off never folds on this load, "
+        "over the env switch. Speed mode off still keeps the unfolded forward. The status record reports the choice "
+        "under resolved.lora_fuse (origin per_load / env / default) and the outcome under lora_fuse.",
+    )
     transformer_cache: Optional[Literal["off", "fbcache", "static"]] = Field(
         None,
         description = "Step caching. fbcache = First-Block-Cache: reuse the transformer tail "
@@ -5189,6 +5199,15 @@ class DiffusionLoadRequest(BaseModel):
         "to the one with the most free VRAM. Refused with a 400 when an index does not exist "
         "here; ignored on XPU / MPS / CPU, which have no applicator for a physical index.",
     )
+
+    @field_validator("lora_fuse", mode = "before")
+    @classmethod
+    def _normalize_lora_fuse(cls, value):
+        # "" reads as unset, like int8_attention.
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return value or None
+        return value
 
     @field_validator("int8_attention", mode = "before")
     @classmethod
@@ -6391,6 +6410,11 @@ class DiffusionResolvedControl(BaseModel):
         "weights being quantised in memory. Declared here or pydantic drops it and no API client "
         "ever sees the provenance. Null on every other control and on a runtime quantise.",
     )
+    origin: Optional[str] = Field(
+        None,
+        description = "lora_fuse only: where the fold choice came from, per_load (this load's lora_fuse), env "
+        "(UNSLOTH_DIFFUSION_LORA_FUSE) or default (off). Omitted on every other control.",
+    )
     replaced: Optional[str] = Field(
         None,
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
@@ -6417,6 +6441,14 @@ class DiffusionResolvedControl(BaseModel):
         description = "attention_backend only: how many attention modules route to each backend. Null on every "
         "other control.",
     )
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_origin(self, handler):
+        # Only lora_fuse sets it; every other control serializes exactly as before.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("origin") is None:
+            data.pop("origin", None)
+        return data
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
@@ -6521,6 +6553,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
         "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
         "everything on its primary card reports why it declined.",
+    )
+    replicas: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Native (sd.cpp) card replicas: one sd-server per card once a request waits, per card its role, "
+        "status (planned, spawning, ready, busy, dead, refused), --mmap, host RAM priced and requests dispatched, plus "
+        "waiting / in-flight counts; null when the load runs one sd-server.",
     )
     graph_engagement: Optional[Dict[str, Any]] = Field(
         None,

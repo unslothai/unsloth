@@ -1008,12 +1008,21 @@ def load_flux3_pipeline(
         name = "the processor",
     )
     check_cancelled()
+    from .diffusion_te_vision import drop_enabled, drop_vision_tower, vision_tower_skipped
+
+    # No FLUX.3 mode hands the encoder pixels (references go through the VAE): its vision tower is never read.
+    drop_vision = drop_enabled()
+
+    def _te_load(load_dtype: Any, local: bool) -> Any:
+        with vision_tower_skipped(drop_vision):
+            return Qwen3VLForConditionalGeneration.from_pretrained(
+                repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
+            )
+
     if text_encoder is None:
         text_encoder = cache_first(
             lambda local: _manual_cast_load(
-                lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
-                    repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
-                ),
+                lambda load_dtype: _te_load(load_dtype, local),
                 name = "text_encoder",
                 repo_id = repo_id,
                 dtype = dtype,
@@ -1026,6 +1035,8 @@ def load_flux3_pipeline(
         )
         text_encoder.eval()
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.flux3: the text encoder's unused vision tower is not loaded")
     if transformer is None and with_transformer:
 
         def _transformer(local: bool) -> Any:

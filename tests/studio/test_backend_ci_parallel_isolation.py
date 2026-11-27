@@ -207,6 +207,8 @@ BENIGN_TIMING = {
     ("test_anthropic_admission.py", "_until_queued"),
     # A 5 s poll deadline for two image requests to join one batch: descheduling only delays the poll.
     ("test_openai_images_load_swap.py", "test_a_batch_waiting_through_a_reload_carries_the_pin"),
+    # A 120 s poll deadline for the video generate job to go idle: descheduling only delays the poll.
+    ("test_video_batch.py", "_wait_idle"),
 }
 
 
