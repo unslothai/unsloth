@@ -1741,15 +1741,22 @@ def make_ancestral_scheduler(base_scheduler: Any) -> Any:
     Euler down to ``sigma_down = sigma_next**2 / sigma``, then re-noise up to ``sigma_next``. The last step (to 0)
     is plain Euler. Tokens named by ``keep_tokens`` (the conditioned first latent frame of an image-to-video stage)
     take the deterministic Euler step, so the conditioning the pipeline blends in x0 space is not re-noised. Noise
-    comes from ``noise_generator`` (the request's generator) for reproducible renders."""
+    comes from ``noise_generator`` (the request's generator) for reproducible renders.
+
+    Batched clips: ``noise_generator`` is one generator per row, and row i's noise is drawn from generator i at the
+    one-clip shape, exactly its solo draw; ``keep_tokens`` may be one entry per row (None for a row with nothing
+    to keep)."""
     import torch
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.utils.torch_utils import randn_tensor
 
     class LTX25EulerAncestralScheduler(FlowMatchEulerDiscreteScheduler):
         noise_generator: Any = None
-        # (keep, total): when a sample has ``total`` tokens, its first ``keep`` step deterministically.
-        keep_tokens: Optional[tuple[int, int]] = None
+        # (keep, total): when a sample has ``total`` tokens, its first ``keep`` step deterministically. A list holds
+        # one such entry (or None) per batch row.
+        keep_tokens: Any = None
+        # Each row's renoise comes from its own generator: rows never share a noise stream (video_batch).
+        per_row_noise = True
 
         def __deepcopy__(self, memo: dict) -> Any:
             # The pipelines deep-copy this for the audio stream; the generator is shared, not cloned, so the audio
@@ -1794,7 +1801,18 @@ def make_ancestral_scheduler(base_scheduler: Any) -> Any:
                 )
                 prev = (alpha_next / alpha_down) * x_down + renoise * noise
                 keep = self.keep_tokens
-                if keep is not None and prev.ndim == 3 and prev.shape[1] == keep[1] and keep[0] > 0:
+                if isinstance(keep, list):
+                    for row, row_keep in enumerate(keep[: prev.shape[0]]):
+                        if (
+                            row_keep is not None
+                            and prev.ndim == 3
+                            and prev.shape[1] == row_keep[1]
+                            and row_keep[0] > 0
+                        ):
+                            prev[row, : row_keep[0]] = deterministic[row, : row_keep[0]]
+                elif (
+                    keep is not None and prev.ndim == 3 and prev.shape[1] == keep[1] and keep[0] > 0
+                ):
                     prev[:, : keep[0]] = deterministic[:, : keep[0]]
             self._step_index += 1
             prev = prev.to(model_output.dtype)
@@ -2252,9 +2270,18 @@ def _render(
                 upsampler.to(video_latents.device)
             try:
                 # ``dtype`` reads a per-layer cast's compute dtype (fp16-card low-RAM route), else the weights'
-                upsampled = upsampler(
-                    video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
-                )
+                stage1_latents = video_latents.to(getattr(upsampler, "dtype", None) or param.dtype)
+                if stage1_latents.shape[0] > 1:
+                    # Batched clips (video_batch): one clip per call, as in each clip's own render.
+                    upsampled = torch.cat(
+                        [
+                            upsampler(stage1_latents[row : row + 1])
+                            for row in range(stage1_latents.shape[0])
+                        ],
+                        dim = 0,
+                    )
+                else:
+                    upsampled = upsampler(stage1_latents)
             finally:
                 if moved:
                     upsampler.to(home)
