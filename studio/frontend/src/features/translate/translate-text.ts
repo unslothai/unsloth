@@ -126,8 +126,15 @@ export type TranslateChunk = {
 // Hy-MT2 1.8B drops whole paragraphs from passages near 1,600 characters; 1,000 keeps them.
 export const TRANSLATE_CHUNK_CHARS = 1000;
 
-const SENTENCE_END = /[.!?;。！？；…]["'”’)\]]*\s+|[。！？；]/g;
-const LINE_END = /[.!?;。！？；…]["'”’)\]]*[^\S\n]*\n\s*|\n\s*\n\s*/g;
+const CLOSE = String.raw`["'”’)\]」』）]*`;
+const SENTENCE_END = new RegExp(
+  String.raw`[.!?;。！？；…]${CLOSE}\s+|[。！？；]${CLOSE}`,
+  "g",
+);
+const LINE_END = new RegExp(
+  String.raw`[.!?;。！？；…]${CLOSE}[^\S\n]*\n\s*|\n\s*\n\s*`,
+  "g",
+);
 const MID_LINE_END = new RegExp(
   `(?<!^[^\\S\\n]*\\d+)(?:${SENTENCE_END.source})`,
   "gm",

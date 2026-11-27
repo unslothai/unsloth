@@ -606,6 +606,25 @@ test("passages of a long line read as one text in the target language", () => {
     translateEach("一二三。\n\n四五六。", toEnglish, 5),
     "One sentence.\n\nOne sentence.",
   );
+  for (const [open, close] of [
+    ["“", "”"],
+    ["「", "」"],
+    ["『", "』"],
+  ]) {
+    const said = `他说：${open}一二三四五六七八九。${close}`.repeat(80);
+    for (const chunk of splitForTranslation(said))
+      assert.ok(!chunk.text.startsWith(close), chunk.text.slice(0, 10));
+    const toQuoted = (text: string) =>
+      text
+        .split(close)
+        .filter(Boolean)
+        .map(() => `He said, “One.”`)
+        .join(" ");
+    assert.equal(
+      translateEach(said, toQuoted),
+      Array(80).fill(`He said, “One.”`).join(" "),
+    );
+  }
   // A hard cut inside a long word or link of a spaced script stays glued.
   const link = `https://example.com/${"a".repeat(80)}`;
   assert.equal(
