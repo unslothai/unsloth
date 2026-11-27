@@ -133,6 +133,13 @@ export function translateSpeechTag(
   return own ?? SPEECH_REGIONS[code] ?? code;
 }
 
+export function translateTranscriptionTag(
+  code: string,
+  preferred?: readonly string[],
+): string {
+  return code === "yue" ? code : translateSpeechTag(code, preferred);
+}
+
 export function suggestedTargetLanguage(preferred: readonly string[]): string {
   for (const tag of preferred) {
     const lower = tag.toLowerCase();

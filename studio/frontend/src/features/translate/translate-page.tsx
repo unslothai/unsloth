@@ -145,6 +145,7 @@ import {
   translateLanguageLabel,
   translateLanguagesFor,
   translateSpeechTag,
+  translateTranscriptionTag,
   translatesLanguage,
 } from "./languages";
 import {
@@ -1500,7 +1501,9 @@ export function TranslatePage() {
     const video = !isAudioAttachmentFile(file);
     try {
       const language =
-        importPrefs.from === AUTO_SOURCE ? "" : translateSpeechTag(importPrefs.from);
+        importPrefs.from === AUTO_SOURCE
+          ? ""
+          : translateTranscriptionTag(importPrefs.from);
       const text = await transcribeAudioFile(file, controller.signal, t, language, video);
       if (text && useTranslateStore.getState().source === before) {
         loadText(text, video ? file.name : null);
