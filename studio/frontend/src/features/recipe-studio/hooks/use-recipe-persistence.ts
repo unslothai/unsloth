@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  BROWSER_ACCOUNT_KEY,
+  accountTransitionPending,
+  sameBrowserAccount,
+} from "@/lib/account-transition";
 import { useTimeFormat } from "@/lib/time-format";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -397,6 +402,8 @@ export function useRecipePersistence({
   }, [currentSignature, failedSignature, isDirty, persistRecipe, saveLoading]);
 
   useEffect(() => {
+    // Another tab may switch accounts first; its tokens must never carry this account's recipe.
+    const account = window.localStorage.getItem(BROWSER_ACCOUNT_KEY);
     const flush = (
       keepalive: boolean,
       unloading = keepalive,
@@ -409,6 +416,9 @@ export function useRecipePersistence({
       // Compare with what the save in flight will leave stored: undoing it still needs a save.
       const settled = running ? running.signature : saved;
       if (!ready || !saved || signature === settled || signature === failed) {
+        return;
+      }
+      if (accountTransitionPending() || !sameBrowserAccount(account)) {
         return;
       }
       // Only an unloading page sends on top of the save in flight; a hidden one may come back.

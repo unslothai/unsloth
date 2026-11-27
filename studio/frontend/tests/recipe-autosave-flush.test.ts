@@ -251,6 +251,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   };
   const off = (type: string, fn: () => void) => listeners.get(type)?.delete(fn);
   const doc = { visibilityState: "visible", addEventListener: on, removeEventListener: off };
+  const account = { marker: "alice" as string | null };
   Object.assign(globalThis, {
     window: {
       setTimeout: (fn: () => void) => {
@@ -260,6 +261,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
       clearTimeout: (id: number) => timers.delete(id),
       addEventListener: on,
       removeEventListener: off,
+      localStorage: { getItem: () => account.marker },
     },
     document: doc,
   });
@@ -315,6 +317,11 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   }>(new URL("../src/features/recipe-studio/hooks/use-recipe-persistence.ts", import.meta.url), {
     react: hooks,
     "@/lib/time-format": { useTimeFormat: () => undefined },
+    "@/lib/account-transition": {
+      BROWSER_ACCOUNT_KEY: "account",
+      accountTransitionPending: () => false,
+      sameBrowserAccount: (since: string | null) => since === account.marker,
+    },
     "@/lib/copy-to-clipboard": { copyToClipboard: async () => true },
     "@/shared/toast": {
       toastError: (title: string) => void errors.push(title),
@@ -381,6 +388,7 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
     server,
     errors,
     uploads,
+    account,
     edit: async (next: unknown) => {
       editorPayload = next;
       latest.rerender();
@@ -832,4 +840,16 @@ test("reopening waits for an exit save deferred behind a save in flight", async 
   await s.server.release();
   assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 200, 200]);
   assert.deepEqual(s.server.stored.payload, { columns: ["again"] });
+});
+
+test("an edit left after another tab switched accounts is not sent with the new account", async () => {
+  for (const leave of ["unmount", "pagehide"] as const) {
+    const s = setup();
+    await s.edit({ columns: ["alice"] });
+    s.account.marker = "bob";
+    if (leave === "pagehide") await s.fire("pagehide");
+    else s.editor.unmount();
+    await s.server.release();
+    assert.equal(s.server.puts.length, 0, leave);
+  }
 });
