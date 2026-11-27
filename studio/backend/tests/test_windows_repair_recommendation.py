@@ -73,6 +73,23 @@ def test_repair_builds_its_venv_with_the_python_install_ps1_selects(env, minor):
     assert wr._repair_python_minor(env) == minor
 
 
+@pytest.mark.parametrize(
+    "env, eligible",
+    [
+        ({}, True),
+        ({"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}, False),
+        ({"UNSLOTH_TORCH_INDEX_FAMILY": "cu130"}, True),
+        ({"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu128/"}, False),
+        ({"UNSLOTH_TORCH_INDEX_URL": "https://mirror.example/whl/cu130?x=1"}, True),
+        ({"UNSLOTH_PYTHON": "3.12"}, False),
+    ],
+)
+def test_an_index_override_off_cu130_closes_the_route(monkeypatch, env, eligible):
+    # install.ps1 honors these overrides before the driver, and the 2.13 route needs the cu130 leaf.
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    assert wr._managed_route_host(env) is eligible
+
+
 def test_the_route_gate_matches_install_ps1():
     install = Path(__file__).resolve().parents[3] / "install.ps1"
     body = re.search(

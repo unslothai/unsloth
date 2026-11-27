@@ -76,9 +76,25 @@ def _repair_python_minor(environ = os.environ) -> str:
     return match.group(1) if match else "3.13"
 
 
-def _managed_route_host() -> bool:
-    """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows, and the venv Repair builds is 3.13."""
-    return _platform.machine().lower() in ("amd64", "x86_64") and _repair_python_minor() == "3.13"
+def _index_override_leaf(environ = os.environ) -> Optional[str]:
+    """The torch index leaf a user override pins ("cu128"), as install.ps1's Get-TorchIndexUrl honors it
+    before the driver; None when nothing is overridden."""
+    url = (environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+    if url:
+        return re.split(r"[?#]", url, maxsplit = 1)[0].rstrip("/").split("/")[-1].lower()
+    family = (environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip().strip("/")
+    return family.split("/")[-1].lower() if family else None
+
+
+def _managed_route_host(environ = os.environ) -> bool:
+    """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows, the venv Repair builds is 3.13, and
+    no index override pins a leaf other than cu130."""
+    leaf = _index_override_leaf(environ)
+    return (
+        _platform.machine().lower() in ("amd64", "x86_64")
+        and _repair_python_minor(environ) == "3.13"
+        and leaf in (None, "cu130")
+    )
 
 
 def windows_repair_recommendation(
