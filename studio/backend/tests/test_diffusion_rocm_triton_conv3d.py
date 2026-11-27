@@ -638,6 +638,24 @@ def test_cold_call_runs_miopen_and_queues_the_variant(cold):
     assert cold.calls == 0
 
 
+def test_a_low_memory_skip_is_rearmed_by_the_next_cold_call(cold, monkeypatch):
+    vae = _vae()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+        assert R.install(vae) == 2
+    x = _x((1, 8, 3, 6, 6))
+    with torch.no_grad():
+        vae.conv(x)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(torch.cuda, "mem_get_info", lambda *_a: (1 << 20, 128 * GiB))
+        assert R._kick() is False
+    assert R._PENDING and R._PB.get("timer") is None and not cold.kicks
+    with torch.no_grad():
+        vae.conv(x)  # same variant, still cold: it must re-arm the prebuild
+    assert R._PB.get("timer") is not None
+    assert R._kick() is True and len(cold.kicks) == 1
+
+
 def test_manifest_listed_variant_routes_and_matches(cold, monkeypatch):
     monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
     vae = _vae()

@@ -728,7 +728,12 @@ def _note_pending(
     logger: Any = None,
 ) -> None:
     with _PB_LOCK:
-        if vk in _PENDING or vk in _READY or vk in _PB.get("inflight", ()):
+        if vk in _PENDING:
+            # A kick skipped for low free memory leaves its batch pending with no timer: re-arm on later cold calls.
+            if _PB.get("timer") is None and not _PB.get("live"):
+                _arm_timer()
+            return
+        if vk in _READY or vk in _PB.get("inflight", ()):
             return
         if _ATTEMPTS.get(vk, 0) >= MAX_ATTEMPTS:
             return
