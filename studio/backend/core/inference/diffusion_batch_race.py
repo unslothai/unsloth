@@ -63,6 +63,32 @@ NEIGHBOUR_PROMPTS = (
     "a cat sleeping on a pile of old books",
 )
 
+# The largest batch a race can run: every row needs its own race prompt, and the neighbour check needs size - 1 others.
+MAX_RACE_SIZE = min(len(RACE_PROMPTS), len(NEIGHBOUR_PROMPTS) + 1)
+
+
+def invalid_race_sizes(sizes: Optional[Sequence[Any]]) -> Optional[str]:
+    """Why these batch sizes cannot be raced (None when they all can): each must be an integer in 2..MAX_RACE_SIZE."""
+    if sizes is None:
+        return None
+    bad = [
+        k
+        for k in sizes
+        if isinstance(k, bool) or not isinstance(k, int) or not 2 <= k <= MAX_RACE_SIZE
+    ]
+    if not bad:
+        return None
+    return f"batch sizes must be integers from 2 to {MAX_RACE_SIZE}; got {bad}"
+
+
+def _pick_arm(verdicts: dict) -> str:
+    """The arm a size is decided by: among the arms that pass every requirement, the highest speedup bound; when none
+    passes, the highest bound (whose loss is recorded). Arm order breaks ties (``batched`` first)."""
+    arms = list(verdicts)
+    passing = [arm for arm in arms if verdicts[arm].get("promoted")]
+    return max(passing or arms, key = lambda arm: verdicts[arm].get("speedup_lb") or 0.0)
+
+
 _STORE: list = []
 # Cards with no fingerprint (no driver identity, no CUDA): status polls must not re-probe them every call.
 _UNIDENTIFIED: dict = {}
@@ -448,6 +474,9 @@ def run_race(
     that would compile."""
     from . import diffusion_cuda_graph as cuda_graph
 
+    bad = invalid_race_sizes(list(sizes))
+    if bad:
+        raise ValueError(bad)
     if not idle():
         raise RaceRefused("a request holds or waits for the generation slot")
     rng = random.Random(seed)
@@ -539,7 +568,7 @@ def run_race(
                 for arm in arms:
                     samples[arm].append((serial_times, times[arm]))
             verdicts = {arm: judge(samples[arm], seed = seed) for arm in arms}
-            best = max(arms, key = lambda arm: verdicts[arm]["speedup_lb"])
+            best = _pick_arm(verdicts)
             verdict = dict(
                 verdicts[best],
                 arm = best,

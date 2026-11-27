@@ -56371,7 +56371,7 @@ async def images_batching_race(
     """Explicit warm-up: on an idle engine, race serial against batched calls for the loaded model at this shape and
     persist the verdicts that decide whether concurrent requests share a call. Owner only; 409 when a request holds
     or waits for the slot (the race never runs on a user's request)."""
-    from core.inference.diffusion_batch_race import RACE_SIZES, RaceRefused
+    from core.inference.diffusion_batch_race import RACE_SIZES, RaceRefused, invalid_race_sizes
     from core.inference.diffusion_engine_router import (
         ENGINE_DIFFUSERS,
         active_engine_name,
@@ -56381,6 +56381,9 @@ async def images_batching_race(
     if account_access.managed_account():
         raise HTTPException(status_code = 403, detail = "Only the owner can run the batching race.")
     body = body or ImageBatchRaceRequest()
+    bad = invalid_race_sizes(body.sizes)
+    if bad:
+        raise HTTPException(status_code = 422, detail = bad)
     backend = get_active_diffusion_engine()
     race = getattr(backend, "batch_race", None)
     if race is None or active_engine_name() != ENGINE_DIFFUSERS:

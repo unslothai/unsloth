@@ -284,3 +284,116 @@ def test_a_graphed_race_with_handles_records_the_graph_path_and_a_fallback_recor
     fallback = race.effective_verdict(graphed, 2, types.SimpleNamespace(cuda_graphs = (handle,)))
     assert fallback["graph_missing"] is True and fallback["path"] == "eager"
     assert quality.path_of(fallback) == "eager"
+
+
+# ------------------------------------------------------------------------------------------- arm choice, race sizes
+
+
+def test_a_qualifying_arm_wins_over_a_faster_bound_that_fails_p95(monkeypatch):
+    """Serial 5 s per image at batch 2; the graphed call is 4 s but one timed repeat takes 11 s (higher bound, p95 over
+    the slack), the eager call is a steady 8 s (bound 1.25, p95 within). The eager arm passes both and must win."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    stored, dropped = {}, []
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
+    handle = types.SimpleNamespace(
+        set_bypass = lambda on: None, drop_batched = lambda size: dropped.append(size) or 0
+    )
+    clock = {"t": 0.0}
+    graphed = {"n": 0}
+
+    def generate(
+        prompt = None,
+        prompts = None,
+        seeds = None,
+        seed = None,
+        batch_size = 1,
+        **kw,
+    ):
+        rows = list(prompts) if prompts else [prompt]
+        row_seeds = list(seeds) if seeds else [seed]
+        if len(rows) == 1:
+            clock["t"] += 5.0
+        elif cg.eager_forced():
+            clock["t"] += 8.0
+        else:
+            graphed["n"] += 1  # the first graphed call is the untimed capture warm-up
+            clock["t"] += 11.0 if graphed["n"] == 5 else 4.0
+        return {"images": [types.SimpleNamespace(p = p, s = s) for p, s in zip(rows, row_seeds)]}
+
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 5,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    verdict = report["sizes"]["2"]
+    graphed_arm = verdict["arms"]["batched"]
+    assert (
+        graphed_arm["promoted"] is False
+        and graphed_arm["speedup_lb"] > verdict["arms"]["batched_eager"]["speedup_lb"]
+    )
+    assert (
+        verdict["promoted"] is True
+        and verdict["arm"] == "batched_eager"
+        and verdict["path"] == "eager"
+    )
+    assert stored[2]["promoted"] is True
+
+
+def test_no_qualifying_arm_records_the_best_bound_as_the_loss():
+    lost = race._pick_arm(
+        {
+            "batched": {"promoted": False, "speedup_lb": 1.2},
+            "batched_eager": {"promoted": False, "speedup_lb": 0.9},
+        }
+    )
+    assert lost == "batched"
+    both = race._pick_arm(
+        {
+            "batched": {"promoted": True, "speedup_lb": 1.2},
+            "batched_eager": {"promoted": True, "speedup_lb": 1.4},
+        }
+    )
+    assert both == "batched_eager"
+
+
+@pytest.mark.parametrize("sizes", [(16,), (2, 9), (1,), (0,)])
+def test_the_race_refuses_a_size_it_has_no_prompts_for_before_any_render(sizes):
+    calls = []
+    with pytest.raises(ValueError, match = "batch sizes"):
+        race.run_race(
+            lambda **kw: calls.append(kw) or {"images": []},
+            types.SimpleNamespace(cuda_graphs = ()),
+            idle = lambda: True,
+            width = 512,
+            height = 512,
+            sizes = sizes,
+        )
+    assert calls == [], "nothing renders before the sizes are checked"
+    assert race.MAX_RACE_SIZE == min(len(race.RACE_PROMPTS), len(race.NEIGHBOUR_PROMPTS) + 1)
+
+
+def test_the_race_endpoint_answers_422_for_an_unsupported_size(monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import routes.inference as inference
+
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference.images_batching_race(
+                inference.ImageBatchRaceRequest(sizes = [16]), current_subject = "x"
+            )
+        )
+    assert caught.value.status_code == 422
+    assert "2" in caught.value.detail and str(race.MAX_RACE_SIZE) in caught.value.detail
