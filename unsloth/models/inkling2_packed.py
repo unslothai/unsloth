@@ -321,6 +321,7 @@ def install_inkling2_packed_expert_loading() -> bool:
         }
         import dataclasses
 
+        full_mapping = list(load_config.weight_mapping or [])
         load_config = dataclasses.replace(load_config, weight_mapping = kept)
         originals = []
         for item in plan:
@@ -336,6 +337,13 @@ def install_inkling2_packed_expert_loading() -> bool:
             result = original(model, state_dict, checkpoint_files, load_config, *args, **kwargs)
             with torch.no_grad():
                 _fill(model, plan, getattr(load_config, "device_map", None))
+            # transformers records the converters it used for save_pretrained's reverse mapping: the dropped
+            # expert converters still describe this checkpoint's layout, so a save writes w13 / w2 as before.
+            used = {id(c) for c in getattr(model, "_weight_conversions", None) or ()}
+            dropped = {id(c) for c in full_mapping} - {id(c) for c in kept}
+            model._weight_conversions = [
+                c for c in full_mapping if id(c) in used or id(c) in dropped
+            ]
         except BaseException:
             for module, stack, param in originals:
                 module.__dict__.pop(stack, None)

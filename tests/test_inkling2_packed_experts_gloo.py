@@ -360,3 +360,23 @@ def test_packed_stacks_follow_the_device_map():
         model, "model.language_model.layers.5.mlp.experts", device_map
     ) == torch.device("cpu")
     assert loader._offloads_to_disk({"": "disk"}) and not loader._offloads_to_disk({"": 0})
+
+
+def test_packed_load_keeps_the_expert_converters_for_saving(tmp_path, monkeypatch):
+    """save_pretrained reverses the converters transformers recorded: the packed load records the same ones."""
+    _requirements()
+    _write_checkpoint(str(tmp_path))
+    loader = _loader()
+    assert loader.install_inkling2_packed_expert_loading()
+    monkeypatch.delenv(ENV, raising = False)
+    dense = _load(str(tmp_path))
+    monkeypatch.setenv(ENV, "1")
+    packed = _load(str(tmp_path))
+    names = lambda m: [
+        type(c).__name__ + str(getattr(c, "_original_source_patterns", ""))
+        for c in m._weight_conversions
+    ]  # noqa: E731
+    assert names(packed) == names(dense) and any("w13_weight" in n for n in names(packed)), (
+        names(packed),
+        names(dense),
+    )
