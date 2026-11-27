@@ -32,6 +32,7 @@ open(out, "wb").write(b"GGUF")
 def _trained_model(
     tmp_path,
     snapshot = True,
+    set_scale = None,
     **config_kwargs,
 ):
     torch.manual_seed(0)
@@ -60,6 +61,11 @@ def _trained_model(
                 for A0, B0, _ in getattr(module, "_unsloth_initial_lora", {}).values():
                     module.get_base_layer().weight.sub_(B0 @ A0)
     model.peft_config["default"].base_model_name_or_path = base_dir
+    if set_scale is not None:
+        # Rescaled after init: the live scale no longer matches the configured one or the initial one.
+        for module in model.modules():
+            if hasattr(module, "set_scale") and "default" in getattr(module, "scaling", {}):
+                module.set_scale("default", set_scale)
     with torch.no_grad():
         for name, param in model.named_parameters():
             if "lora_" in name:
@@ -95,6 +101,7 @@ def _config(folder):
         {"use_rslora": True, "rank_pattern": {"v_proj": 2}, "alpha_pattern": {"o_proj": 3}},
         {"init_lora_weights": "pissa", "alpha_pattern": {"o_proj": 3}},
         {"init_lora_weights": False, "snapshot": "loftq"},
+        {"init_lora_weights": "pissa", "set_scale": 2.0},
     ],
     ids = [
         "default",
@@ -106,6 +113,7 @@ def _config(folder):
         "rslora-patterns",
         "pissa-alpha_pattern",
         "loftq-unit-scale",
+        "pissa-set_scale",
     ],
 )
 def test_converter_input_applies_to_the_original_base(tmp_path, monkeypatch, config_kwargs):

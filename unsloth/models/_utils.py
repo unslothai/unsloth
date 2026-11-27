@@ -9344,6 +9344,12 @@ def snapshot_residual_lora_load(config):
                 PeftModel.load_adapter = hook["original"]
 
 
+def _configured_scaling(model, module, k):
+    # What a reload computes from the saved r and alpha; the live scale moves with set_scale / scale_layer.
+    r, alpha = module.r[k], module.lora_alpha[k]
+    return alpha / (math.sqrt(r) if getattr(model.peft_config.get(k), "use_rslora", False) else r)
+
+
 def _residual_lora_rows(model, adapters):
     from transformers.pytorch_utils import Conv1D
     for name, module in model.named_modules():
@@ -9388,7 +9394,8 @@ def _convertible_adapters(model, selected):
 
 def save_lora_relative_to_original_base(model):
     """Saves (and pushes) write PEFT's `path_initial_model_for_weight_conversion` form: a plain rank-2r LoRA on the
-    original base, `s * [B, -B0 * s0 / s] @ [A; A0]` (doubling r and alpha keeps the scale s), loadable anywhere.
+    original base, `c * [B * s / c, -B0 * s0 / c] @ [A; A0]` with c the configured scale, which doubling r and alpha
+    keeps, s the live one and s0 the initial one (1 for LoftQ), loadable anywhere.
     `load_adapter` into this live model, as Trainer resume and load_best_model_at_end do, slices it back to rank r."""
     import inspect
     import json
@@ -9406,13 +9413,14 @@ def save_lora_relative_to_original_base(model):
         for module, k, name in rows:
             key_A, key_B = f"{name}.lora_A.{k}.weight", f"{name}.lora_B.{k}.weight"
             A0, B0, scaling0 = module._unsloth_initial_lora[k]
-            scaling = module.scaling[k]
-            if key_A not in state_dict or key_B not in state_dict or not scaling0 or not scaling:
+            configured = _configured_scaling(model, module, k)
+            if key_A not in state_dict or key_B not in state_dict or not scaling0 or not configured:
                 return None
             A, B = state_dict[key_A].detach(), state_dict[key_B].detach()
             state_dict[key_A] = torch.cat([A, A0.to(A)], 0)
-            # LoftQ's s0 is 1, not s: scale B0, not B.
-            state_dict[key_B] = torch.cat([B, -B0.to(B) * (scaling0 / scaling)], 1)
+            state_dict[key_B] = torch.cat(
+                [B * (module.scaling[k] / configured), -B0.to(B) * (scaling0 / configured)], 1
+            )
         return state_dict
 
     @functools.wraps(original_save)
@@ -9532,9 +9540,10 @@ def _native_from_converted(model, adapter_name, folder):
     for module, k, key_A, key_B, r in plan:
         A, B = weights[key_A], weights[key_B]
         A0_live, B0_live, scaling0 = module._unsloth_initial_lora[k]
-        A0, B0 = A[r:].to(A0_live), (-B[:, r:] * (module.scaling[k] / scaling0)).to(B0_live)
+        configured = _configured_scaling(model, module, k)
+        A0, B0 = A[r:].to(A0_live), (-B[:, r:] * (configured / scaling0)).to(B0_live)
         weights[key_A] = A[:r].contiguous()
-        weights[key_B] = B[:, :r].contiguous()
+        weights[key_B] = (B[:, :r] * (configured / module.scaling[k])).contiguous()
         if not (torch.equal(A0, A0_live) and torch.equal(B0, B0_live)):
             base = module.get_base_layer().weight
             delta = scaling0 * (B0_live.float() @ A0_live.float() - B0.float() @ A0.float())
