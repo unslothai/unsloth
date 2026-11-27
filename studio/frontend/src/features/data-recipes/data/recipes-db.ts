@@ -75,9 +75,31 @@ export function primeRecipeCache(record: RecipeRecord): void {
   recentRecipeCache.set(record.id, record);
 }
 
-export async function saveRecipe(
-  input: SaveRecipeInput,
-): Promise<RecipeRecord> {
+const pendingSaves = new Map<string, Set<Promise<unknown>>>();
+
+/** Resolves once every save already sent for `id` has settled; null when none is pending. */
+export function settleRecipeSaves(id: string): Promise<void> | null {
+  const pending = pendingSaves.get(id);
+  if (!pending?.size) return null;
+  return Promise.allSettled([...pending]).then(() => undefined);
+}
+
+export function saveRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
+  const save = putRecipe(input);
+  if (input.id) {
+    const id = input.id;
+    const set = pendingSaves.get(id) ?? new Set();
+    pendingSaves.set(id, set);
+    set.add(save);
+    void save.catch(() => undefined).finally(() => {
+      set.delete(save);
+      if (!set.size) pendingSaves.delete(id);
+    });
+  }
+  return save;
+}
+
+async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
   const now = input.updatedAt ?? Date.now();
   const id = input.id ?? crypto.randomUUID();
   const existing = input.id

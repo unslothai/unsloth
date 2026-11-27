@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { isUnderKeepaliveBudget } from "@/lib/keepalive-budget";
+import { reserveKeepaliveBody } from "@/lib/keepalive-budget";
 import type {
   ChatPresetSource,
   RecommendedSamplingKey,
@@ -165,13 +165,14 @@ export async function saveChatSettingsPatch(
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
   const body = JSON.stringify(patch);
+  // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
+  const release = options.keepalive ? reserveKeepaliveBody(body) : null;
   const response = await authFetch("/api/chat/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body,
-    // keepalive only under the Fetch standard's 64 KiB in-flight budget; over it every engine fails.
-    keepalive: options.keepalive ? isUnderKeepaliveBudget(body) : undefined,
-  });
+    keepalive: options.keepalive ? release !== null : undefined,
+  }).finally(() => release?.());
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;
 }

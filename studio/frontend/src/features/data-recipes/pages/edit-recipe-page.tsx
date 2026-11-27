@@ -7,7 +7,13 @@ import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
+import {
+  getCachedRecipe,
+  getRecipe,
+  primeRecipeCache,
+  saveRecipe,
+  settleRecipeSaves,
+} from "../data/recipes-db";
 import { RecipeApiError } from "../data/recipes-api";
 import type { RecipeRecord } from "../types";
 
@@ -50,7 +56,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
   const reloadReadySent = useRef(false);
   const [loadState, setLoadState] = useState<LoadState>(() => {
     const cachedRecipe = getCachedRecipe(recipeId);
-    if (cachedRecipe) {
+    if (cachedRecipe && !settleRecipeSaves(recipeId)) {
       return { status: "ready", record: cachedRecipe };
     }
     return { status: "loading" };
@@ -58,15 +64,18 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
 
   useEffect(() => {
     let active = true;
+    const pending = settleRecipeSaves(recipeId);
     const cachedRecipe = getCachedRecipe(recipeId);
-    if (cachedRecipe) {
+    if (cachedRecipe && !pending) {
       // A later server read would replace edits already made in the open editor.
       setLoadState({ status: "ready", record: cachedRecipe });
       return;
     }
     setLoadState({ status: "loading" });
 
-    getRecipe(recipeId)
+    // Reopened while the last editor's exit save is in flight: start from the version it writes.
+    (pending ?? Promise.resolve())
+      .then(() => getCachedRecipe(recipeId) ?? getRecipe(recipeId))
       .then((record) => {
         if (!active) {
           return;
@@ -140,7 +149,11 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
             }),
           ),
         ).catch((error: AggregateError) => {
-          throw error.errors[0];
+          // A transport failure in any copy leaves the outcome unknown, so it outranks a 409.
+          throw (
+            error.errors.find((e) => !(e instanceof RecipeApiError)) ??
+            error.errors[0]
+          );
         });
         unansweredVersion.current = undefined;
         if (record.updatedAt >= (editedVersion.current ?? 0)) {

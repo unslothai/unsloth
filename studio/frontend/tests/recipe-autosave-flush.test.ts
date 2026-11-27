@@ -187,6 +187,11 @@ function fakeServer(initial: Stored) {
     otherWindowSaves: () => {
       stored = { ...stored, name: "Other window", updatedAt: stored.updatedAt + 5 };
     },
+    async releaseOldest() {
+      cancels.shift();
+      queue.shift()?.();
+      await settle();
+    },
     async cancelOldest(landed: boolean) {
       queue.shift();
       cancels.shift()?.(landed);
@@ -255,7 +260,10 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   db.primeRecipeCache({ ...server.stored });
 
   const { EditRecipePage } = loadWithStubs<{
-    EditRecipePage: (props: { recipeId: string }) => { props: Record<string, unknown> };
+    EditRecipePage: (props: { recipeId: string }) => {
+      type: unknown;
+      props: Record<string, unknown>;
+    };
   }>(new URL("../src/features/data-recipes/pages/edit-recipe-page.tsx", import.meta.url), {
     react: hooks,
     "react/jsx-runtime": {
@@ -307,8 +315,11 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
   });
 
   let editorPayload: unknown = null;
-  const editor = mount(() => {
-    const page = EditRecipePage({ recipeId: "r1" }).props;
+  const render = () => {
+    const element = EditRecipePage({ recipeId: "r1" });
+    // Loading renders RecipeLoadState, not the editor.
+    if (element.type !== "RecipeStudioPage") return null as never;
+    const page = element.props;
     return useRecipePersistence({
       recipeId: page.recipeId,
       initialRecipeName: page.initialRecipeName,
@@ -320,8 +331,14 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
       loadRecipe: hooks.useCallback((s: { payload: unknown }) => (editorPayload = s.payload), []),
       getCurrentPayloadFromStore: hooks.useCallback(() => editorPayload, []),
     });
-  });
-  editor.rerender();
+  };
+  let latest: ReturnType<typeof mount<ReturnType<typeof render>>>;
+  const open = () => {
+    latest = mount(render);
+    latest.rerender();
+    return latest;
+  };
+  const editor = open();
 
   const consoleError = console.error;
   console.error = () => undefined;
@@ -331,13 +348,14 @@ function setup({ payload = { columns: ["a"] } as unknown } = {}) {
 
   return {
     db,
+    open,
     editor,
     server,
     errors,
     uploads,
     edit: async (next: unknown) => {
       editorPayload = next;
-      editor.rerender();
+      latest.rerender();
       await settle();
     },
     rename: async (name: string) => {
@@ -643,4 +661,62 @@ test("the editor route remounts per recipe so pending versions never cross recip
     "utf8",
   );
   assert.match(route, /<EditRecipePage key=\{recipeId\} recipeId=\{recipeId\} \/>/);
+});
+
+test("reopening a recipe while its exit save is in flight starts from the saved version", async () => {
+  const s = setup();
+  await s.edit({ columns: ["left"] });
+  s.editor.unmount();
+  await settle();
+  const reopened = s.open();
+  await s.server.release();
+  reopened.rerender();
+  await settle();
+  await s.edit({ columns: ["again"] });
+  await s.fireDebounce();
+  await s.server.release();
+  assert.deepEqual(s.server.puts.map((p) => p.outcome), [200, 200]);
+  assert.deepEqual(s.server.stored.payload, { columns: ["again"] });
+});
+
+test("a recovery copy that landed without an answer is still tried as the base next time", async () => {
+  const s = setup();
+  await s.edit({ columns: ["first"] });
+  await s.fireDebounce();
+  await s.server.cancelOldest(false);
+  await s.edit({ columns: ["second"] });
+  await s.fire("pagehide");
+  await s.server.releaseOldest();
+  await s.server.cancelOldest(true);
+  assert.deepEqual(s.server.stored.payload, { columns: ["second"] });
+  await s.edit({ columns: ["third"] });
+  await s.fire("pagehide");
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["third"] });
+});
+
+test("a chat settings keepalive body shares the budget with recipe saves", async () => {
+  const sent: (boolean | undefined)[] = [];
+  const api = loadWithStubs<{
+    saveChatSettingsPatch: (p: object, o: { keepalive?: boolean }) => Promise<unknown>;
+  }>(new URL("../src/features/chat/api/chat-settings-api.ts", import.meta.url), {
+    "@/features/auth": {
+      authFetch: async (_u: string, init: RequestInit) => {
+        sent.push(init.keepalive);
+        return new Response(JSON.stringify({ settings: {} }), { status: 200 });
+      },
+    },
+    "@/lib/keepalive-budget": keepaliveBudget,
+    "../utils/settings-retry": {
+      ChatSettingsRequestError: Error,
+      asBodyTransportFailure: (e: unknown) => e,
+      isAbortOrTimeout: () => false,
+    },
+  });
+  const held = keepaliveBudget.reserveKeepaliveBody("x".repeat(40 * 1024));
+  assert.ok(held);
+  await api.saveChatSettingsPatch({ note: "y".repeat(30 * 1024) }, { keepalive: true });
+  held();
+  await api.saveChatSettingsPatch({ note: "y".repeat(30 * 1024) }, { keepalive: true });
+  assert.deepEqual(sent, [false, true]);
 });
