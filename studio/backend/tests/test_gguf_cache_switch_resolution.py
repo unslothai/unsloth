@@ -121,6 +121,40 @@ def test_inactive_source_uses_scoped_online_status(
     )
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
+    cache_locations, monkeypatch, complete
+):
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf import GgufVariantInfo
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    repo_id, expected = cache_locations
+    quant, repo, path = next(
+        (q, *source)
+        for q, source in expected.items()
+        if source[0].parent == hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    path.unlink()
+    blob = repo / "blobs" / ("a" * 64 + ("" if complete else ".incomplete"))
+    blob.parent.mkdir(exist_ok = True)
+    blob.write_bytes(b"GGUF" + bytes(996))
+    path.symlink_to(blob)
+
+    variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 1200)
+    requirement = plan_from_expected_files(quant, [ExpectedFile(path.name, 1200, "b" * 64)])
+    monkeypatch.setattr(
+        gguf_variants, "list_gguf_variants", lambda *a, **kw: ([variant], False, [])
+    )
+    monkeypatch.setattr(gguf_variants, "_variant_requirement_cache_get", lambda *a: requirement)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    [online] = [item for item in response.variants if item.quant == quant]
+    assert online.downloaded is complete
+    assert online.update_available is complete
+
+
 def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):
     from core.inference.llama_cpp import cached_gguf_for_load
     from routes.models import _resolve_quant_gguf

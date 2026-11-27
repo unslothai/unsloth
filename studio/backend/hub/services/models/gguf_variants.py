@@ -2323,6 +2323,7 @@ async def get_gguf_variants_answer(
 
         # snapshot totals keep shard sets intact, take maximum sizes, and compare keys case-insensitively
         cached_snapshots: list[tuple[dict[str, int], dict[str, int]]] = []
+        cached_snapshot_paths: list[Path] = []
         # public listings do not authorize exposing a caller's cached download and partial state
         if _is_valid_repo_id(repo_id) and cache_reads_authorized:
             # pinned rows resolve inside one snapshot and ignore other cached copies
@@ -2367,6 +2368,7 @@ async def get_gguf_variants_answer(
                         continue
                 if by_filename or by_quant:
                     cached_snapshots.append((by_filename, by_quant))
+                    cached_snapshot_paths.append(snap)
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -2674,10 +2676,59 @@ async def get_gguf_variants_answer(
                 ]
             return ready
 
+        def _has_previous_download(
+            quant: str, requirement: Optional[_GgufVariantRequirement]
+        ) -> bool:
+            if requirement is None or not requirement.main_filenames:
+                return False
+            from hub.utils.gguf_sources import cached_gguf_manifest_complete
+
+            companions = _non_mmproj_companions(requirement)
+            for snap, (files, _) in zip(cached_snapshot_paths, cached_snapshots):
+                if not _snapshot_has_companions(files, companions):
+                    continue
+                if requirement.mmproj_filenames and not _any_mmproj_cached(
+                    requirement.mmproj_filenames
+                ):
+                    continue
+                # Hugging Face publishes an LFS blob under its final SHA only after completing
+                # the download. Require that evidence for each old shard in this snapshot.
+                # A regular file / .incomplete blob still needs the normal size check.
+                try:
+                    blobs_dir = (snap.parent.parent / "blobs").resolve(strict = True)
+                    for name in requirement.main_filenames:
+                        cached = snap / name
+                        blob = cached.resolve(strict = True)
+                        if (
+                            not cached.is_symlink()
+                            or blob.parent != blobs_dir
+                            or re.fullmatch(r"[0-9a-f]{64}", blob.name) is None
+                            or files.get(name.lower(), 0) < 24
+                        ):
+                            break
+                        with blob.open("rb") as model_file:
+                            if model_file.read(4) != b"GGUF":
+                                break
+                    else:
+                        if cached_gguf_manifest_complete(repo_id, quant, snap):
+                            return True
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            return False
+
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants
             requirement = requirements_by_quant.get(v.quant.lower())
-            downloaded = _is_fully_downloaded(v) and not is_partial
+            has_update = not is_partial and _variant_update_available_from_requirement(
+                local_blobs_by_quant.get(v.quant.lower(), {}),
+                requirement,
+                v.quant,
+                alternates,
+            )
+            downloaded = not is_partial and (
+                _is_fully_downloaded(v)
+                or (has_update and _has_previous_download(v.quant, requirement))
+            )
             engram_ready = _engram_ready(requirement, downloaded)
             # A quant whose own table shard was skipped for a cached standalone table is on disk too.
             downloaded = downloaded or (bool(engram_ready) and not is_partial)
@@ -2703,13 +2754,7 @@ async def get_gguf_variants_answer(
                     else None
                 ),
                 downloaded = downloaded,
-                update_available = downloaded
-                and _variant_update_available_from_requirement(
-                    local_blobs_by_quant.get(v.quant.lower(), {}),
-                    requirement,
-                    v.quant,
-                    alternates,
-                ),
+                update_available = downloaded and has_update,
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
                 partial_resumable = (
