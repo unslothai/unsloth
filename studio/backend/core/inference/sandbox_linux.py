@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import glob
 import os
@@ -136,18 +137,39 @@ def _executable_refusal(resolved: str, owners: tuple[int, ...]) -> str | None:
     return None
 
 
+def _has_access_acl(path: str) -> bool:
+    """With an access ACL the group mode bits are its mask, so a named user may be the writer."""
+    try:
+        return "system.posix_acl_access" in os.listxattr(path, follow_symlinks = False)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return False
+        raise
+
+
 def _ancestor_refusal(resolved: str) -> str | None:
     """Why a directory above `resolved` would let a non-root user replace it, or None."""
     parent = os.path.dirname(resolved)
+    in_root_group = 0 in os.getresgid() or 0 in os.getgroups()
     try:
         while True:
             directory = os.stat(parent, follow_symlinks = False)
+            mode = directory.st_mode
             # Sticky (/nix/store is root:nixbld 1775): other writers cannot rename or delete root's entries.
-            shared = directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            # Group root write alone (/usr 0775 root:root) is safe while Studio is outside group root.
             if (
-                not stat.S_ISDIR(directory.st_mode)
+                not stat.S_ISDIR(mode)
                 or directory.st_uid != 0
-                or (shared and not directory.st_mode & stat.S_ISVTX)
+                or (
+                    mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    and not mode & stat.S_ISVTX
+                    and (
+                        mode & stat.S_IWOTH
+                        or directory.st_gid != 0
+                        or in_root_group
+                        or _has_access_acl(parent)
+                    )
+                )
             ):
                 return f"its directory is replaceable: {parent}"
             ancestor = os.path.dirname(parent)
