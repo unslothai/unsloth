@@ -83,7 +83,7 @@ export function isCompareCancellation(
 }
 
 type ComparePaneRunPreparer = (
-  pane: "model1" | "model2",
+  pane: "model1" | "model2" | "base" | "lora",
   signal: AbortSignal,
 ) => Promise<void>;
 
@@ -138,15 +138,17 @@ export async function loadComparePaneModel(
   }
 }
 
-const comparePaneRunPreparers = new Map<string, ComparePaneRunPreparer>();
+const comparePaneRunPreparers = new Map<string, { prepare: ComparePaneRunPreparer; lora: boolean }>();
 
 export function registerComparePaneRunPreparer(
   pairId: string,
   prepare: ComparePaneRunPreparer,
+  lora = false,
 ): () => void {
-  comparePaneRunPreparers.set(pairId, prepare);
+  const entry = { prepare, lora };
+  comparePaneRunPreparers.set(pairId, entry);
   return () => {
-    if (comparePaneRunPreparers.get(pairId) === prepare) {
+    if (comparePaneRunPreparers.get(pairId) === entry) {
       comparePaneRunPreparers.delete(pairId);
     }
   };
@@ -160,13 +162,12 @@ export async function prepareComparePaneRun(
   signal: AbortSignal,
   waitForModelIdle: () => Promise<void>,
 ): Promise<void> {
-  if (
-    !pairId ||
-    !comparePaneRunPreparers.has(pairId) ||
-    (pane !== "model1" && pane !== "model2")
-  ) {
+  if (!pairId || (pane !== "model1" && pane !== "model2" && pane !== "base" && pane !== "lora")) {
     return;
   }
+  const lora = pane === "base" || pane === "lora";
+  if (comparePaneRunPreparers.get(pairId)?.lora !== lora) return;
   await waitForModelIdle();
-  await comparePaneRunPreparers.get(pairId)?.(pane, signal);
+  const current = comparePaneRunPreparers.get(pairId);
+  if (current?.lora === lora) await current.prepare(pane, signal);
 }

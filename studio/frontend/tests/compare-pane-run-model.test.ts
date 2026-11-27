@@ -44,6 +44,23 @@ test("a compare pane run is prepared for its own pane and pair", async () => {
   assert.deepEqual(calls, ["model1", "model2"]);
 });
 
+test("both LoRA comparison panes check the checkpoint before refreshing", async () => {
+  let adapter = "B";
+  const unregister = registerComparePaneRunPreparer("saved-lora", async () => {
+    if (adapter !== "A") throw new Error("saved adapter A is not loaded");
+  }, true);
+  try {
+    for (const pane of ["base", "lora"] as const) {
+      await assert.rejects(prepareComparePaneRun("saved-lora", pane, live(), idle), /adapter A/);
+    }
+    await prepareComparePaneRun("saved-lora", "model1", live(), idle);
+    adapter = "A";
+    await prepareComparePaneRun("saved-lora", "lora", live(), idle);
+  } finally {
+    unregister();
+  }
+});
+
 test("a pane checks its model only after a load in flight lands", async () => {
   const events: string[] = [];
   const unregister = registerComparePaneRunPreparer("pair-e", async (pane) => {

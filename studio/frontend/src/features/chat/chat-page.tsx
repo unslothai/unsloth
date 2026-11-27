@@ -27,7 +27,11 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
-import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  ProjectComposer,
+  ReplyReloadUnavailableContext,
+  Thread,
+} from "@/components/assistant-ui/thread";
 import {
   type ComposerModelPickerSource,
   ComposerModelPickerContext,
@@ -1313,6 +1317,7 @@ function ComparePane({
   header,
   borderClassName,
   onInitialHistoryReady,
+  reloadUnavailableReason,
 }: {
   modelType: "base" | "lora" | "model1" | "model2";
   pairId: string;
@@ -1322,6 +1327,7 @@ function ComparePane({
   header: ReactElement;
   borderClassName?: string;
   onInitialHistoryReady?: (pane: string) => void;
+  reloadUnavailableReason?: string;
 }): ReactElement {
   const signalInitialHistoryReady = useMemo(
     () =>
@@ -1355,7 +1361,9 @@ function ComparePane({
           onInitialHistoryReady={signalInitialHistoryReady}
         >
           <RegisterCompareHandle name={handleName} />
-          <Thread hideComposer={true} hideWelcome={true} />
+          <ReplyReloadUnavailableContext.Provider value={reloadUnavailableReason}>
+            <Thread hideComposer={true} hideWelcome={true} />
+          </ReplyReloadUnavailableContext.Provider>
         </ChatRuntimeProvider>
       </div>
     </div>
@@ -1502,6 +1510,29 @@ const LoraCompareContent = memo(function LoraCompareContent({
         ? "Load the LoRA saved with this comparison before sending."
         : undefined;
 
+  useEffect(
+    () =>
+      registerComparePaneRunPreparer(pairId, async () => {
+        if (!threadsSettled) throw new Error("Loading comparison history.");
+        const store = useChatRuntimeStore.getState();
+        const current = store.params.checkpoint;
+        if (
+          (pairLoraModelId && !modelIdsMatch(pairLoraModelId, current)) ||
+          checkpointCompareClass({
+            checkpoint: current,
+            isExternal: isExternalModelId(current),
+            residentUnknown: store.residentCheckpoint === undefined,
+            models: store.models,
+            loras: store.loras,
+            inventorySettled: store.loraInventorySettled,
+          }) !== true
+        ) {
+          throw new Error("Load the LoRA saved with this comparison before running it.");
+        }
+      }, true),
+    [pairId, pairLoraModelId, threadsSettled],
+  );
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -1531,6 +1562,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={baseThreadId}
           handleName="base"
+          reloadUnavailableReason={sendUnavailableReason}
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }
@@ -1548,6 +1580,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           projectId={projectId}
           initialThreadId={loraThreadId}
           handleName="lora"
+          reloadUnavailableReason={sendUnavailableReason}
           onInitialHistoryReady={
             threadsSettled ? markInitialHistoryReady : undefined
           }

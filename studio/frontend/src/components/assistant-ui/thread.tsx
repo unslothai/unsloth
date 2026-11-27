@@ -549,6 +549,7 @@ import { useExpandedComposerFill } from "./use-expanded-composer-fill";
 import { watchComposerClearance } from "@/lib/toast-offset";
 
 const PageDragContext = createContext(false);
+export const ReplyReloadUnavailableContext = createContext<string | undefined>(undefined);
 
 const FOLLOW_UP_SHORTCUTS = {
   queueMessage: "queue",
@@ -7972,6 +7973,7 @@ const ComposerRightControls: FC<{
 };
 
 const MessageError: FC = () => {
+  const reloadUnavailableReason = useContext(ReplyReloadUnavailableContext);
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
   return (
@@ -7982,6 +7984,8 @@ const MessageError: FC = () => {
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
+              disabled={Boolean(reloadUnavailableReason)}
+              title={reloadUnavailableReason}
               className="btn-fill aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors "
             >
               <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
@@ -9128,6 +9132,7 @@ async function exportMessageMarkdown(content: string): Promise<void> {
 }
 const AssistantActionBar: FC = () => {
   const aui = useAui();
+  const reloadUnavailableReason = useContext(ReplyReloadUnavailableContext);
   const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
   // Not built on DropdownMenuContent, so clear the titlebar and cap the height here.
   const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
@@ -9140,6 +9145,16 @@ const AssistantActionBar: FC = () => {
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level; keep the bar while speaking, it holds the only Stop control.
   const speaking = useAuiState(({ message }) => message.speech != null);
+  const reloadButton = (
+    <TooltipIconButton
+      tooltip={reloadUnavailableReason ?? "Refresh"}
+      aria-label="Refresh"
+      aria-disabled={reloadUnavailableReason ? true : undefined}
+      className={reloadUnavailableReason ? "opacity-50" : undefined}
+    >
+      <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
 
   return (
     <>
@@ -9153,11 +9168,11 @@ const AssistantActionBar: FC = () => {
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
         {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
+          reloadUnavailableReason ? reloadButton : (
+            <ActionBarPrimitive.Reload asChild={true}>
+              {reloadButton}
+            </ActionBarPrimitive.Reload>
+          )
         )}
         {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
