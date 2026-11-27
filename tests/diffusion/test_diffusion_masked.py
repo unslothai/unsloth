@@ -647,6 +647,36 @@ def test_output_head_hook_installed_after_first_loss():
     assert fused.head.forward is forward
 
 
+@pytest.mark.parametrize("kind", ["forward_hook", "forward_pre_hook", "instance_forward"])
+def test_output_head_wrapped_after_first_loss_takes_the_dense_path(kind):
+    # Plain torch hooks and an instance forward added to the same head module after a fused batch.
+    from unsloth.models.diffusion_loss import fusable_head
+
+    softcap = lambda out: 0.5 * torch.tanh(out / 0.5)
+    inputs, _ = _batch()
+    fused, dense = _WithHead(), _Bidirectional()
+    dense.load_state_dict(fused.state_dict())
+    _ours("llada", fused, inputs, 3)
+    for model in (fused, dense):
+        if kind == "forward_hook":
+            model.head.register_forward_hook(lambda m, a, out: softcap(out))
+        elif kind == "forward_pre_hook":
+            model.head.register_forward_pre_hook(lambda m, a: (softcap(a[0]),))
+        else:
+            model.head.forward = lambda x, f = model.head.forward: softcap(f(x))
+    forward = vars(fused.head).get("forward")
+    assert fusable_head(fused, fused) is None
+
+    loss, _ = _ours("llada", fused, inputs, 3)
+    expected, _ = _ours("llada", dense, inputs, 3)
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    expected.backward()
+    for (n, a), b in zip(fused.named_parameters(), dense.parameters()):
+        torch.testing.assert_close(a.grad, b.grad, msg = n)
+    assert vars(fused.head).get("forward") is forward
+
+
 def _window_trainer(model, world = 1):
     from collections import defaultdict
     from unsloth.models.diffusion_trainer import DiffusionTrainer

@@ -64,6 +64,13 @@ def test_block_head_matches_full_logits_without_building_them():
     assert head.head is model.head
     block = head.logits(x, 4, 8)
     assert torch.allclose(block, full[:, 4:8], atol = 1e-6)
+    # The same head gaining a hook after a fused call keeps the model's own logits, so the hook sees every row.
+    seen = []
+    model.head.register_forward_hook(lambda m, a, out: seen.append(tuple(out.shape)))
+    hooked = BlockHead(model)
+    assert hooked.head is None and torch.equal(hooked.logits(x, 4, 8), full[:, 4:8])
+    assert seen == [(2, 12, VOCAB)]
+    model.head._forward_hooks.clear()
     # A head that is not a plain Linear keeps the model's own logits.
     model.head = torch.nn.Sequential(model.head)
     fallback = BlockHead(model)
