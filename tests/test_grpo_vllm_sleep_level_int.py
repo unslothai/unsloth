@@ -29,7 +29,6 @@ def _generated():
         "_generate_and_score_completions", _LEGACY_SOURCE
     )
     assert "self.llm.sleep(" in source and "self.llm.wake_up()" in source, source
-    # Only the wake_up / generate / sleep wrap runs: the other injected helpers are stubbed.
     scope = {
         "os": os,
         "all_prompts_text": ["p"],

@@ -5,6 +5,7 @@ export interface RecordedThreadWrite {
   threadId: string;
   settings?: Record<string, unknown>;
   settingsPatch?: Record<string, unknown>;
+  settingsDefaults?: Record<string, unknown>;
   settingsSeq?: number;
   settingsWriter?: string;
 }
@@ -13,9 +14,11 @@ export const threadRows = {
   writes: [] as RecordedThreadWrite[],
   rows: new Map<string, Record<string, unknown>>(),
   failNext: false,
+  afterWrite: null as null | (() => Promise<void>),
   reset(): void {
     threadRows.writes.length = 0;
     threadRows.rows.clear();
+    threadRows.afterWrite = null;
     threadRows.failNext = false;
   },
   writesFor(threadId: string): RecordedThreadWrite[] {
@@ -28,6 +31,7 @@ export async function updateStoredChatThread(
   update: {
     settings?: Record<string, unknown>;
     settingsPatch?: Record<string, unknown>;
+    settingsDefaults?: Record<string, unknown>;
     settingsSeq?: number;
     settingsWriter?: string;
   },
@@ -44,8 +48,11 @@ export async function updateStoredChatThread(
     threadId,
     update.settings !== undefined
       ? { ...update.settings }
-      : { ...row, ...update.settingsPatch },
+      : { ...update.settingsDefaults, ...row, ...update.settingsPatch },
   );
+  const afterWrite = threadRows.afterWrite;
+  threadRows.afterWrite = null;
+  await afterWrite?.();
 }
 
 export async function ensureStoredChatThread(): Promise<void> {}

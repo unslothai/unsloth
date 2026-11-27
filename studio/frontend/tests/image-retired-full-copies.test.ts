@@ -74,7 +74,6 @@ test("a remembered retired copy is recalled as itself: the backend decides wheth
   // Loaded through the base (not complete on disk), the finished load is remembered as that base.
   const base = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein", model_kind: "pipeline" };
   assert.deepEqual(retiredSnapshotAsLoaded(recalled!, base), { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
-  // Loaded from disk, it stays the copy.
   const own = { loaded: true, repo_id: "unsloth/flux-3-image-klein", model_kind: "pipeline" };
   assert.equal(retiredSnapshotAsLoaded(recalled!, own), recalled);
 });
@@ -126,13 +125,11 @@ test("a retired copy's snapshot that loaded through its base is remembered as th
   const resolved = retiredSnapshotAsLoaded(pipeline, base);
   assert.deepEqual(resolved, { repoId: "black-forest-labs/flux-3-image-klein", kind: "pipeline" });
   assert.equal(matchesRememberedModel(resolved, base), true);
-  // Its root transformer pick, and a snapshot path remembered alone, resolve the same way.
   const rootTransformer = { repoId: snapshot, kind: "single_file" as const, filename: "model.safetensors", baseRepo: snapshot };
   assert.deepEqual(retiredSnapshotAsLoaded(rootTransformer, base), {
     repoId: "black-forest-labs/flux-3-image-klein",
     kind: "pipeline",
   });
-  // A complete snapshot loaded as itself, and a status naming something else, keep the pick as it was.
   const asItself = { loaded: true, repo_id: snapshot, model_kind: "pipeline" };
   assert.equal(retiredSnapshotAsLoaded(pipeline, asItself), pipeline);
   const other = { loaded: true, repo_id: "black-forest-labs/flux-3-image-klein-base", model_kind: "pipeline" };

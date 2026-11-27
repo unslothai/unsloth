@@ -22,8 +22,7 @@ def test_login_uses_the_password_that_was_passed():
 
 
 def test_there_is_no_fallback_to_the_bootstrap_password():
-    """If --password were ignored, Studio would seed a bootstrap password and login would fail; a
-    fallback would quietly pass for a flag that did nothing."""
+    """A fallback to the bootstrap password would hide an ignored --password flag."""
     tree = ast.parse(SRC)
     func = next(
         node
@@ -46,8 +45,7 @@ def test_there_is_no_fallback_to_the_bootstrap_password():
 
 
 def test_the_generated_password_is_registered_as_a_secret_before_use():
-    """Register the generated password in __init__, before the server starts and any log is written;
-    registering later would scrub later logs but not the banner."""
+    """Register the generated password in __init__ before the banner and any logs are written."""
     tree = ast.parse(SRC)
     init = next(
         node
@@ -77,6 +75,5 @@ def test_no_constant_password_is_committed():
 
 
 def test_the_default_keeps_the_previous_bootstrap_behaviour():
-    """Empty means "use the bootstrap", so a caller that does not opt in is
-    unaffected and the existing Studio leg does not change shape."""
+    """Empty means use the bootstrap password, so callers that do not opt in are unaffected."""
     assert '"--studio-password",\n        default = "",' in SRC

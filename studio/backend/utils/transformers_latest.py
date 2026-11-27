@@ -92,8 +92,7 @@ _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
 def _read_within(resp, deadline: float) -> str | None:
-    """Body of resp, or None if still running at deadline; resp.read() has no bound against a
-    drip-fed body, while read1 returns what has arrived so the budget is checked as it comes in."""
+    """Body, or None past deadline; read1 since read() is unbounded on drip-fed bodies."""
     read1 = getattr(resp, "read1", None)
     if read1 is None:
         # A file-like that hands back the whole body in one go has nothing to dribble.
@@ -648,8 +647,7 @@ def _base_env_sidecar_pins() -> list[str]:
 
 
 def is_install_in_progress() -> bool:
-    """True while a latest-transformers install or lazy repair holds the sidecar swap; training and
-    export check it so a fresh worker never activates mid-swap."""
+    """True while a sidecar swap is held; workers check it so none activates mid-swap."""
     from utils.transformers_version import sidecar_swap_in_progress
     return sidecar_swap_in_progress()
 
@@ -709,9 +707,8 @@ def _scan_release_plan(version: str, extra_packages: tuple[str, ...]):
 
 
 def auto_install_preflight(version: str) -> dict | None:
-    """None when an unconfirmed install of *version* may go ahead: it is the current PyPI release
-    and the package scan of its install plan is clean. Otherwise the structured result to return
-    instead, before anything is reserved or unloaded. Never raises."""
+    """None if an unconfirmed install of version may proceed (current PyPI release, scan clean);
+    else the result dict to return, before anything is reserved or unloaded. Never raises."""
     try:
         if _disabled() or hf_env_offline():
             return _consent_required(
@@ -897,8 +894,7 @@ def _install_latest_transformers_locked(
 
 
 def _invalidate_capability_caches():
-    """Drop caches built before the new sidecar existed (tier probes, latest model_type mapping,
-    vision detection); a raw-heuristic False may now defer to the sidecar AutoConfig probe."""
+    """Clears caches built before the sidecar; a raw-heuristic False may defer to AutoConfig."""
     try:
         from utils import transformers_version as tv
         tv._probe_tier_cache.clear()

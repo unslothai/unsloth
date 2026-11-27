@@ -82,9 +82,7 @@ _ATEM_TAGS = (
     "</atem:parameter>",
 )
 
-# Control markup from user/system/tool turns must not reach the prompt raw: it can forge turns (#7066).
-# The name list is closed on purpose so "<div>", "List<String>" and "[1]" stay as typed.
-# \uXXXX escapes keep this file ASCII.
+# Stops user/system/tool markup forging turns (#7066); closed names keep <div>; ASCII file.
 _CONTROL_MARKUP = re.compile(
     r"<(?="
     # Phi-4 Mini closes with "<|/tool|>" / "<|/tool_call|>".
@@ -192,7 +190,6 @@ _TTS_MARKUP_BY_CODEC = {
     ),
     # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
     "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
-    # minimax wraps lyrics with chatml, caption, lyric, and audio stream boundaries.
     "minimax_music3": re.compile(
         r"<(?=\|(?:im_(?:start|end)|caption_(?:start|end)|lyrics_(?:start|end)"
         r"|audio_(?:start|end|cfg))\|>)"
@@ -476,8 +473,7 @@ ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
 
 
 def tts_voice_options(audio_type) -> Optional[list]:
-    """The voice picker a codec TTS model offers, in the audio.cpp ``audio_options`` shape, or None.
-    No default, so an unset voice keeps the unprefixed prompt fine-tunes were trained on."""
+    """Voices in audio.cpp audio_options shape, else None; unset keeps the unprefixed prompt."""
     if audio_type != "snac":
         return None
     return [
@@ -665,8 +661,7 @@ def _neutralize_content_parts(
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
-            # A split across a non-text part: moving the opener is smaller harm than collapsing all
-            # text.
+            # Across a non-text part, moving the opener is less harm than collapsing all text.
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
@@ -875,8 +870,7 @@ def neutralize_control_markup_in_messages(
             # Templates compare roles case-sensitively, so a known role is canonicalized.
             if role in _SCHEMA_ROLES and new_role != role:
                 new_role = role
-            # Phi-3 renders an unknown role as "<|" + role + "|>", so "end" spells its terminator. Falls back
-            # to "user" rather than padding, since a template that trims the role would undo a space.
+            # Role end spells Phi-3's terminator, so fall back to user; padding gets trimmed.
             elif role not in _SCHEMA_ROLES:
                 wrapped = f"<|{new_role}|>"
                 if neutralize_control_markup(wrapped, markup) != wrapped:
@@ -899,8 +893,7 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
-        # Concatenated into the header by a recipient-addressed template, so one carrying markup forged a whole system
-        # turn (#7066). Never holds delimiters.
+        # Header-joined recipient: markup forged a system turn (#7066); never holds delimiters.
         recipient = msg.get("recipient")
         if isinstance(recipient, str) and recipient:
             new_recipient = neutralize_control_markup(recipient, markup)
@@ -1063,23 +1056,19 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         "required",
         "pattern",
         "default",
-        # Under format assertion (or a custom validator) this is a constraint the MCP server checks, so a rewrite
-        # leaves the model targeting a different contract from the one the server enforces, exactly as for "pattern".
+        # Under format assertion the server enforces it; a rewrite targets another contract.
         "format",
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
-        # OpenAPI discriminator leaves are machine-valued identifiers, so the server resolves the
-        # original.
+        # Discriminator leaves are machine-valued identifiers; server resolves the original.
         "discriminator",
-        # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
-        # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
+        # xml name, namespace, prefix are identifiers; a rewrite advertises unproduced names.
         "xml",
         # References are resolved, not read; "$ref" can also name an external URI.
         "$ref",
         "$id",
         "$anchor",
-        # The dialect a validator resolves the whole schema against.
         "$schema",
         "$dynamicRef",
         "$dynamicAnchor",
@@ -1204,8 +1193,7 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        # Names are read from both function.name and the flat name, else a dropped tool escapes the
-        # catalog.
+        # Read both function.name and the flat name, so no dropped tool escapes the catalog.
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1756,8 +1744,7 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
 
 
 def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
-    """Earliest block terminator at or after ``start``. Callers that keep feeding the same buffer
-    pass what they have already searched, so a held block costs one scan."""
+    """Earliest block terminator at or after start; callers pass the already-searched offset."""
     index, length = -1, 0
     for marker in _ATEM_BLOCK_ENDS:
         found = text.find(marker, start)
@@ -1971,12 +1958,14 @@ class InklingMessageNormalizer:
         continued: bool = False,
     ):
         self._buffer = ""
-        # Where the prompt left off: an opened thought, a continued message's content, or a header.
         self._state = "thought" if in_reasoning else "text" if continued else "header"
         self._thought_seen = in_reasoning
         self._think_open = False
         self._in_string = False
         self._escape = False
+        # [at, len] of each <think> written: the opener's offset in the output, then the body length.
+        self.thought_spans: list[list[int]] = []
+        self._emitted = 0
 
     def feed(self, text: str) -> str:
         self._buffer += text or ""
@@ -1989,6 +1978,7 @@ class InklingMessageNormalizer:
         output = self.drain()
         if self._think_open:
             output += _THINK_CLOSE
+            self._emitted += len(_THINK_CLOSE)
             self._think_open = False
         return output
 
@@ -2049,23 +2039,29 @@ class InklingMessageNormalizer:
                             key = len,
                         )
                     )
-                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)]))
+                    output.append(self._body(self._buffer[: len(self._buffer) - len(held)], output))
                     self._buffer = held
                     break
                 index, marker = min(found)
-                output.append(self._body(self._buffer[:index]))
+                output.append(self._body(self._buffer[:index], output))
                 self._buffer = self._buffer[index + len(marker) :]
                 if self._think_open:
                     output.append(_THINK_CLOSE)
                     self._think_open = False
                 self._state = "header"
-        return "".join(output)
+        result = "".join(output)
+        self._emitted += len(result)
+        return result
 
-    def _body(self, text: str) -> str:
-        if self._state == "thought" and text and not self._think_open:
-            self._think_open = True
-            return _THINK_OPEN + text
-        return text
+    def _body(self, text: str, output: list) -> str:
+        if self._state != "thought" or not text:
+            return text
+        if self._think_open:
+            self.thought_spans[-1][1] += len(text)
+            return text
+        self._think_open = True
+        self.thought_spans.append([self._emitted + sum(map(len, output)), len(text)])
+        return _THINK_OPEN + text
 
     def _tool_call_end(self) -> int:
         """Index of the closer outside the call's JSON strings, or -1."""
@@ -2137,8 +2133,7 @@ class RecipientChannelNormalizer:
                 if pieces is not None:
                     output.append("".join(text for _, text in pieces))
                     continue
-                # No call in it at all: keep the body, but this block is closed and the next header is still ours to
-                # read, so do not stop normalizing the turn.
+                # A block with no call keeps its body; the turn is still normalized after it.
                 output.append(_atem_surrounding_text(block))
                 continue
 
@@ -2221,8 +2216,7 @@ class RecipientChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a naturally completed stream, closing an open reasoning block and keeping any call
-        that closed inside a block the model never terminated."""
+        """Flush a finished stream: close open reasoning and keep calls in unterminated blocks."""
         output = self._flush(keep_calls = True)
         if self._in_reasoning:
             output += _THINK_CLOSE
@@ -2252,6 +2246,26 @@ class RecipientChannelNormalizer:
             # Text before a later delta is already emitted, so it must not be re-parsed as a header.
             self._passthrough = True
         return output
+
+
+class ThoughtSpans(str):
+    """A normalized snapshot carrying ``thought_spans``, so a literal ``<think>`` in it is never read as one."""
+
+    thought_spans: tuple = ()
+
+
+def with_thought_spans(
+    text: str,
+    normalizer,
+    prefix: str = "",
+) -> str:
+    # A prefilled prefix is text no span covers, so that snapshot keeps tag parsing.
+    spans = getattr(normalizer, "thought_spans", None)
+    if spans is None or prefix:
+        return text
+    snapshot = ThoughtSpans(text)
+    snapshot.thought_spans = tuple(map(tuple, spans))
+    return snapshot
 
 
 def make_reasoning_normalizer(
@@ -2292,9 +2306,9 @@ def normalize_reasoning_snapshots(
     prompt: Optional[str] = None,
     continued: bool = False,
     ended = None,
+    prefix: str = "",
 ):
-    """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
-    closes."""
+    """Normalize prefix-monotonic streams; read ended after, so stop-ended turns still close."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2314,7 +2328,7 @@ def normalize_reasoning_snapshots(
         raw_output = snapshot
         if delta:
             normalized_output += delta
-            yield normalized_output
+            yield with_thought_spans(normalized_output, normalizer, prefix)
 
     cancelled = (
         not (ended is not None and ended()) and cancel_event is not None and cancel_event.is_set()
@@ -2322,7 +2336,7 @@ def normalize_reasoning_snapshots(
     tail = normalizer.drain() if cancelled else normalizer.finish()
     if tail:
         normalized_output += tail
-        yield normalized_output
+        yield with_thought_spans(normalized_output, normalizer, prefix)
 
 
 def detect_think_prefill(
@@ -2482,8 +2496,7 @@ def _special_token_strings(tokenizer) -> dict:
         try:
             value = getattr(tokenizer, name, None)
         except Exception:
-            # A tokenizer property can raise on a partially loaded model; a missing special is simply one fewer
-            # marker, never a failed request.
+            # Raising properties are skipped on a partly loaded model; never a failed request.
             continue
         # AddedToken rather than str on some tokenizers, and its str() is the content.
         if value is not None and not isinstance(value, str):
@@ -2537,8 +2550,7 @@ def _vocabulary_size_key(inner):
 
 
 def _native_markup_for_tokenizer(tokenizer, native_tpl, tools) -> Optional[ModelMarkup]:
-    """model_markup of the native fallback template, which walks the whole vocabulary, cached per tokenizer.
-    model_markup reads tools only for truthiness."""
+    """Walks the whole vocabulary, so cached per tokenizer; tools matter only for truthiness."""
     inner = getattr(tokenizer, "tokenizer", tokenizer)
     specials = _special_token_strings(inner)
     key = (
@@ -2654,6 +2666,43 @@ def count_structured_images(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
 
 
+def flatten_part_lists(messages: list, image_marker: Optional[str] = None) -> Optional[list]:
+    """String content for a template that concatenates ``message['content']``: parts in order, an
+    image as ``image_marker``. None when nothing is a part list or a part has nowhere to go."""
+
+    def typed(text):
+        # The template never names the marker, so the sweep left a typed one; only images may mark.
+        if image_marker and isinstance(text, str):
+            return text.replace(image_marker, f"{image_marker[0]} {image_marker[1:]}")
+        return text
+
+    flattened, changed = [], False
+    for message in messages:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            flattened.append(
+                {**message, "content": typed(content)} if isinstance(content, str) else message
+            )
+            continue
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                text = typed(part)
+            elif not isinstance(part, dict):
+                return None
+            elif part.get("type") == "text":
+                text = typed(part.get("text"))
+            elif str(part.get("type", "")).lower() in _STRUCTURED_IMAGE_TYPES and image_marker:
+                text = image_marker
+            else:
+                return None
+            if isinstance(text, str) and text:
+                pieces.append(text)
+        flattened.append({**message, "content": "\n".join(pieces)})
+        changed = True
+    return flattened if changed else None
+
+
 def count_structured_videos(content) -> int:
     return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
@@ -2716,8 +2765,7 @@ def messages_have_tool_history(messages) -> bool:
 
 
 def alternating_turns(messages: list) -> list:
-    """User/assistant text turns, alternating and ending on the newest user turn as sent; of two
-    same-role neighbours the later one is kept."""
+    """Alternating user/assistant text turns ending on the newest user; same-role: later kept."""
     from core.inference.message_content import content_to_text, named_turn
 
     messages = list(messages or [])
@@ -2888,8 +2936,7 @@ def template_resumes_thought(tokenizer, tools = None) -> bool:
 
 
 def splice_resumed_thought(prefix: str, thought: str) -> str:
-    """Reopen *thought* on a generation prompt, cutting the template's own reasoning prefill (open
-    or empty closed block) as llama-server does."""
+    """Reopen thought; cut the template's open or empty reasoning prefill as llama-server does."""
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at != -1 and prefix[open_at + len(_THINK_OPEN) :].strip() in ("", _THINK_CLOSE):
         prefix = prefix[:open_at]
@@ -2947,8 +2994,10 @@ def apply_chat_template_for_generation(
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
     continue_final_message: bool = False,
+    image_marker: Optional[str] = None,
 ) -> str:
-    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn."""
+    """Richest kwargs first, one group dropped per TypeError; continue_final_message resumes partial turn.
+    A template that cannot take part lists is retried on flattened content, images as ``image_marker``."""
     from core.inference.mcp_images import prepare_image_turn_boundaries
 
     for template in _selected_chat_template_strings(tokenizer, tools):
@@ -2970,7 +3019,21 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
-    if reasoning_effort is not None:
+    if enable_thinking is False and reasoning_effort is None:
+        from core.inference.llama_cpp import _thinking_off_effort
+
+        # Swapped, not added: a processor rejecting enable_thinking would otherwise drop "none" with it.
+        def _off(kw: dict) -> dict:
+            template = "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools")))
+            if "enable_thinking" not in kw or _thinking_off_effort(template) != "none":
+                return kw
+            return {
+                **{k: v for k, v in kw.items() if k != "enable_thinking"},
+                "reasoning_effort": "none",
+            }
+
+        attempts = [_off(kw) for kw in attempts]
+    if any("reasoning_effort" in kw for kw in attempts):
         from core.inference.llama_cpp import _fit_reasoning_effort_to_template
 
         # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
@@ -2979,7 +3042,7 @@ def apply_chat_template_for_generation(
                 **kw,
                 "reasoning_effort": _fit_reasoning_effort_to_template(
                     "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
-                    reasoning_effort,
+                    kw["reasoning_effort"],
                 ),
             }
             if "reasoning_effort" in kw
@@ -3000,8 +3063,7 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    # Anything not continuable (an empty partial included, matching the route guard and render_prompt_with_boundary)
-    # renders as an ordinary new turn.
+    # Not continuable, empty partials too (matching render_prompt_with_boundary): a new turn.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
     _resumes_thought = (
@@ -3127,6 +3189,12 @@ def apply_chat_template_for_generation(
             try:
                 # Split again: gpt-oss renders only tool_calls[0] and names every later result after it.
                 return _render_with_fallback(_split_parallel_tool_calls(repaired))
+            except Exception:
+                pass
+        flattened = flatten_part_lists(normalized, image_marker)
+        if flattened is not None:
+            try:
+                return _render_with_fallback(flattened)
             except Exception:
                 pass
         raise
@@ -3316,9 +3384,8 @@ def render_with_native_template_fallback(
         return prompt
 
     if not tools:
-        # Gemma 4 can emit its native reasoning protocol even when a generation-time Unsloth override rendered a
-        # marker-free prompt. Preserve the live-verified no-tools thinking behavior without letting cached native
-        # metadata describe unrelated tool prompts that kept the active override.
+        # Gemma 4 can emit native reasoning despite an override's marker-free prompt; keep
+        # live-verified no-tools thinking, not cached native metadata for unrelated tool prompts.
         markers = live_markers
         if markers is None:
             markers = detect_reasoning_channel_markers_from_model_info(

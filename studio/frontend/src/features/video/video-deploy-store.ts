@@ -5,8 +5,7 @@ import { create } from "zustand";
 
 import type { AdapterDeployRequest } from "@/features/images/stores/image-workflow-store";
 
-/** A video-family adapter deployed from a Train panel: Video takes it on its next active render and loads the
- * family's base with the adapter baked in. Images hands its video adapters over through here. */
+/** Video-family adapter from the Train panel or Images; Video bakes it in on next render. */
 interface VideoDeployState {
   pendingDeploy: AdapterDeployRequest | null;
   requestDeploy: (request: AdapterDeployRequest) => void;

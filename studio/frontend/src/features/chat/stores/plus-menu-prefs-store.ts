@@ -60,8 +60,7 @@ export function plusMenuAtDefaults(
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
 
-/** A saved order with unknown ids dropped and missing ones (added in a later release) placed
- *  after their default predecessor, so an older order still names every item once. */
+/** Drops unknown ids; ids missing from an older save go after their default predecessor. */
 export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
   const known = new Set<string>(PLUS_MENU_ORDER);
   const order: PlusMenuItemId[] = [];
@@ -111,8 +110,7 @@ export interface PlusMenuPrefsState {
   setOrder: (order: PlusMenuItemId[]) => void;
   /** Default order and pins; saved prompt and list pins are kept. */
   resetMenu: () => void;
-  // Ids of saved prompts the user pinned into the "Saved prompts" submenu. Kept client-side like
-  // the menu pins above, since prompts are addressed by their stable server id.
+  // Prompt ids pinned to the submenu; kept client-side since prompts use stable server ids.
   pinnedPromptIds: string[];
   togglePinnedPrompt: (id: string) => void;
   pinnedListIds: string[];
@@ -148,16 +146,14 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     {
       name: PLUS_MENU_PINS_STORAGE_KEY,
       version: 1,
-      // Version 1 moved MCP under "More". Saved pins hold every default, so without this an
-      // existing install would keep it at the top; the user can pin it back from "More".
+      // Saved pins hold every default, so older installs would keep MCP on top without this.
       migrate: (persisted, version) => {
         const saved = (persisted ?? {}) as Partial<PlusMenuPrefsState>;
         if (version < 1 && saved.pins) return { ...saved, pins: { ...saved.pins, mcp: false } };
         return saved;
       },
-      // Backfill any ids added in a later release so persisted state from an older version still
-      // resolves every menu item. A retired id survives the spread but PLUS_MENU_ORDER no
-      // longer names it, so it is inert.
+      // Backfills ids added in a later release so older persisted state resolves every item; a
+      // retired id survives the spread but is inert since PLUS_MENU_ORDER no longer names it.
       merge: (persisted, current) => {
         const saved = persisted as Partial<PlusMenuPrefsState> | undefined;
         return {

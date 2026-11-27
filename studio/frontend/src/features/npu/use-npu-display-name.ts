@@ -21,7 +21,6 @@ export function useNpuDisplayNames(
     if (!wantsListing || status?.ready !== true) return;
     listed = true;
     void refreshNpuModels().then((ok) => {
-      // Retry a failed listing on a later render, at most every 30 s.
       if (!ok) setTimeout(() => (listed = false), 30_000);
     });
   }, [wantsListing, status?.ready]);

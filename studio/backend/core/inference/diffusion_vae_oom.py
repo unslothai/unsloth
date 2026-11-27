@@ -93,9 +93,8 @@ def _release_cache(z: Any, vae: Any = None) -> None:
 
 
 def drop_tracebacks(exc: Optional[BaseException]) -> Optional[BaseException]:
-    """Clear the traceback of ``exc`` and of every exception chained to it (``__cause__`` / ``__context__``, cycles
-    guarded): a kept exception (to re-raise if nothing recovers) must not pin the failed attempt's frames and the
-    tensors they hold through the retry. Every place the scope or the ladder keeps an exception calls this first."""
+    """Clears the traceback of exc and its __cause__/__context__ chain (cycles guarded), so a kept
+    exception pins no frames or tensors across retries; every keeper calls it first."""
     seen: set = set()
     todo = [exc]
     while todo:
@@ -111,9 +110,8 @@ def drop_tracebacks(exc: Optional[BaseException]) -> Optional[BaseException]:
 
 
 def clear_partial_decode(vae: Any, z: Any = None) -> None:
-    """Before any retry of a partly failed decode, drops the causal decoder's frame or feature cache
-    (Wan, Qwen-Image, LTX-2 and HunyuanVideo expose clear_cache) and returns the freed blocks to
-    the device; every fallback calls this first."""
+    """Before a retry of a partly failed decode: drops the causal frame/feature cache (clear_cache:
+    Wan, Qwen-Image, LTX-2, HunyuanVideo) and frees blocks; every fallback calls it first."""
     _release_cache(z, vae)
 
 
@@ -126,8 +124,7 @@ def _compiling() -> bool:
 
 
 def _outer_gate_owns_untiled(vae: Any) -> bool:
-    """video_vae_untiled's gate turns tiling off for its own attempt and retries tiled itself. Outer wrappers (the ROCm
-    bf16 decode) expose it only through ``__wrapped__``."""
+    """Untiled gate retries tiled itself; ROCm bf16 wrappers expose it only via __wrapped__."""
     fn = vae.__dict__.get("decode")
     for _ in range(8):
         if fn is None:
@@ -149,8 +146,7 @@ def _group_hooked(module: Any) -> bool:
 
 
 def _hooked(module: Any) -> bool:
-    """Placed by an offload mechanism (accelerate model / sequential offload, diffusers group offload): that mechanism
-    owns where its weights live."""
+    """Offloaded by accelerate or diffusers hooks, which own where the weights live."""
     for m in module.modules():
         if getattr(m, "_hf_hook", None) is not None:
             return True
@@ -252,8 +248,7 @@ def _to_host(module: Any) -> None:
 
 
 def _placement(module: Any, device: Any) -> str:
-    """How a component sits on the card: "plain" (whole there, no hooks), "torchao_resident" (whole there, torchao
-    weights, no hooks), "groups" (resident offload groups), or "managed" (an offload mechanism places it)."""
+    """Plain/torchao_resident (whole, no hooks), groups (resident offload), or managed (hooks)."""
     if getattr(module, "_unsloth_resident_room", None):
         return "groups"
     if _hooked(module):
@@ -332,7 +327,6 @@ class DeferredReturn:
         self.pending.append((label, undo))
 
     def attempt(self) -> bool:
-        """Retry every pending undo in order; True once none is left."""
         while self.pending:
             label, undo = self.pending[0]
             try:
@@ -340,8 +334,7 @@ class DeferredReturn:
             except Exception as exc:  # noqa: BLE001
                 if not self.required:
                     return False
-                # its weights are on the host and nothing would move them: running it would fail on the wrong
-                # device, so say why (an out-of-memory keeps "out of memory" in the text for the OOM handlers)
+                # Host-held weights fail on wrong device; keep 'out of memory' for OOM handlers
                 module = self.module_ref()
                 raise RuntimeError(
                     f"{type(module).__name__} ({label.split(':', 1)[-1]}) is still on the host after a VAE decode "
@@ -373,8 +366,7 @@ class DeferredReturn:
 def _defer(
     module: Any, device: Any, label: str, undo: Callable[[], None], required: Any, owner: Any
 ) -> None:
-    """Hand ``undo`` to ``module``'s deferred return (one per module); ``owner`` (the VAE) records the module so
-    uninstall can settle it."""
+    """Hand undo to module's deferred return (one per module); owner records it for uninstall."""
     deferred = module.__dict__.get(_DEFERRED_ATTR)
     if deferred is None:
         deferred = DeferredReturn(module, device, required)
@@ -531,9 +523,8 @@ class DecodeSession:
             hooked.append(bool(diffusion_memory.hook_resident_denoiser(pipe, device, logger)))
 
         def undo() -> None:
-            # Installed: the hooks stay (every group re-pinned by the release's restore, as after an oversized
-            # request). Otherwise back to where it started from wherever it is: split -> whole on the card; settled
-            # (streamed under hooks) -> every group resident again. Idempotent: a clean refusal moves nothing.
+            # With hooks installed they stay (groups re-pinned on restore); otherwise split goes
+            # whole, settled groups go resident. Idempotent: a clean refusal moves nothing.
             if not (hooked and hooked[0]):
                 diffusion_memory.return_torchao_denoiser(pipe, device, logger, torch_hooks)
 
@@ -712,7 +703,6 @@ def _remove_vae_offload(vae: Any, device: Any) -> None:
 
 
 def _groups_hooked(pipe: Any) -> bool:
-    """Every component placed by resident offload groups still carries its group offloading hooks."""
     comps = [
         m
         for m in (getattr(pipe, "components", {}) or {}).values()
@@ -732,8 +722,6 @@ def _vae_hooked(vae: Any) -> bool:
 
 
 def _vae_streams(vae: Any) -> bool:
-    """Checked, not assumed: the VAE's offload hooks are on and every weight is on the host, so it decodes
-    (streamed) as it is."""
     return _vae_hooked(vae) and _whole_on_host(vae)
 
 
@@ -748,8 +736,7 @@ def _park_vae(vae: Any, device: Any) -> None:
 
 
 def _undo_vae_offload(vae: Any, device: Any) -> None:
-    """Hooks off and weights back on the card; if that fails, the VAE is parked streamed (``_park_vae``) and the
-    error raised, so the caller can retry later."""
+    """Hooks off, weights on card; on failure the VAE is parked streamed and the error raised."""
     try:
         _remove_vae_offload(vae, device)
     except Exception:
@@ -758,9 +745,8 @@ def _undo_vae_offload(vae: Any, device: Any) -> None:
 
 
 def settle_deferred(module: Any, strict: bool = False) -> bool:
-    """Run ``module``'s pending deferred returns now; True when nothing is left pending. ``strict``: a REQUIRED
-    repair that still fails raises (its clear error), so the caller never runs the module in an inconsistent state;
-    an optional one (it runs as it is) returns False."""
+    """Runs module's pending deferred returns; True once none left. With strict, a failing REQUIRED
+    repair raises so nothing runs inconsistent; optional ones return False and run as is."""
     deferred = getattr(module, "__dict__", {}).get(_DEFERRED_ATTR)
     if deferred is None:
         return True
@@ -782,9 +768,8 @@ def _device_of(z: Any) -> Any:
 
 
 def free_first(vae: Any, z: Any = None) -> bool:
-    """Step (a) before a cheaper decode fallback on OOM: frees the card within the current decode's
-    recovery session and returns True if anything was freed so the wrapper retries first; False
-    outside a decode scope, when retry is off, or once this decode already freed the card."""
+    """Step (a) before a cheaper OOM fallback: frees the card; True if it freed anything, so the
+    wrapper retries first; False outside a decode scope, with retry off, or once freed."""
     holder = getattr(vae, "__dict__", {}).get(_SESSION_ATTR)
     if holder is None or oom_retry_disabled() or _compiling():
         return False
@@ -808,10 +793,9 @@ def _ladder_steps(
     can_tile: bool,
     eager_rung: bool = False,
 ) -> list:
-    """The ladder's rungs, the one list both the ``_decode`` retry and the outer decode scope climb, in order:
-    (name, tiled, offload_vae, eager). "freed": the rest of the pipeline off the card, the same decode again;
-    "eager" (scope only, a compiled guard below): every compiled guard on its eager path, where the ``_decode``
-    ladder runs too; "tiled": stock tile sizes; "offload": the VAE's weights streamed from the host."""
+    """Ladder rungs, in order, for the _decode retry and the outer scope: freed (rest of pipeline
+    off the card, decode again); eager (scope only, a compiled guard below: eager path, where
+    _decode ladder runs); tiled (stock tile sizes); offload (VAE weights streamed from host)."""
     steps: list = [("freed", tiled_now, False, False)]
     if eager_rung:
         steps.append(("eager", tiled_now, False, True))
@@ -827,9 +811,8 @@ _STEP_TEXT = {"freed": "with the rest of the pipeline off the card", "eager": "o
 
 def _climb(vae: Any, session: "DecodeSession", steps: list, attempt: Callable, stats: dict, z: Any,
            logger: Any) -> tuple:  # fmt: skip
-    """Run ``steps`` in order, each rung's state change through ``session`` (applied once per logical decode: a
-    rung a nested climb already took is skipped), then ``attempt(tiled, eager)``. (True, out, rung) on the first
-    attempt that returns; (False, None, None) when none does."""
+    """Runs steps in order, each change via session once per logical decode (nested repeats
+    skipped), then attempt(tiled, eager); returns (True, out, rung) or (False, None, None)."""
     for name, tiled, offload_vae, eager in steps:
         _release_cache(z, vae)
         if name == "freed":
@@ -888,9 +871,7 @@ def install(
     logger: Any = None,
     pipe: Any = None,
 ) -> bool:
-    """Wrap ``vae._decode`` with the offload-first OOM ladder, and the public ``decode`` with the scope one logical
-    decode's recovery spans (a compiled decode's guard included). Idempotent. ``pipe``: the pipeline whose other
-    components step (a) may move off the card (kept as a weak reference; a reinstall keeps the last one)."""
+    """OOM ladder on vae._decode, scope on decode; idempotent; pipe lets step (a) free others."""
     if vae is None or oom_retry_disabled():
         return False
     if pipe is not None:
@@ -942,8 +923,7 @@ def install(
                 depth[0] -= 1
                 if owns:
                     _close_scope(vae, holder, z)
-                    # reached without the scope: a later rewrap (a compile fallback restoring its eager decode, a
-                    # speed layer run after load) dropped or covered it; put it back on top for the next decode
+                    # A later rewrap drops the scope; put it back on top for the next decode.
                     ensure_outermost(vae, logger)
 
         def _retrying(z: Any, args: tuple, kwargs: dict, holder: dict) -> Any:
@@ -976,8 +956,7 @@ def install(
                     holder.setdefault("first_oom", exc)
                     stats["oom"] += 1
                 if gate_owned:
-                    # The untiled-when-fits gate retries tiled itself; the ladder still sees the OOM first: free the
-                    # card (step a) and retry untiled once, then hand back to the gate.
+                    # Ladder sees OOM first: free card, retry untiled once; gate retries tiled.
                     if free_first(vae, z):
                         stats["freed_retry"] += 1
                         try:
@@ -1031,8 +1010,7 @@ def install(
 
 
 def _compiled_below(vae: Any, top: Any) -> bool:
-    """A compiled decode guard sits somewhere under ``top`` (walked through every wrapper kind), or the speed layer
-    compiled this VAE's decode (a guard behind a closure the walk cannot see)."""
+    """Compiled guard under top, or the speed layer compiled the decode behind a closure."""
     fn, seen = top, 0
     while fn is not None and seen < 64:
         seen += 1
@@ -1044,16 +1022,13 @@ def _compiled_below(vae: Any, top: Any) -> bool:
     return bool(vae.__dict__.get("_unsloth_compiled_decode", False))
 
 
-# Decode wrappers that must sit BELOW the scope: a compiled decode guard (the graph would trace the scope as a
-# pass-through and its guard re-raises the OOM), the untiled-when-fits gate (it retries tiled itself) and the dtype
-# wrappers (their own allocations: the fp16 isfinite check, the bf16 -> fp32 output cast).
+# Must sit below the scope: a compiled guard (graph traces the scope as pass-through and its guard
+# re-raises OOM), the untiled gate (retries tiled itself), dtype wrappers (own allocations).
 _BELOW_SCOPE_MARKERS = ("_unsloth_compiled_decode", "_unsloth_untiled_decode", "_unsloth_bf16_decode",
                         "_unsloth_decode_slot")  # fmt: skip
 
 
 def _scope_intact(vae: Any) -> bool:
-    """The scope layer is active, reachable from the current public decode, and none of the wrappers that must sit
-    below it is above it."""
     layer = vae.__dict__.get(_RECORD_ATTR, {}).get("scope")
     if layer is None or not layer.active or layer.owner is not vae:
         return False
@@ -1072,9 +1047,8 @@ def _scope_intact(vae: Any) -> bool:
 
 
 def ensure_outermost(vae: Any, logger: Any = None) -> bool:
-    """(Re)assert the OOM scope as the outermost decode layer after anything rewrapped ``vae.decode`` (a deferred
-    speed profile, a VAE compile, a compile fallback, a dtype wrapper). Called after every rewrap site and when a
-    decode closes; idempotent and cheap. True when the retry is installed and its scope is in place."""
+    """Reasserts the OOM scope as the outermost decode layer after any rewrap of vae.decode or when
+    a decode closes; idempotent. True when retry is installed and its scope is in place."""
     if (
         vae is None
         or decode_layers.find(vae, "_decode", _RETRY_LAYER) is None
@@ -1138,8 +1112,7 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
                 session = holder.get("session")
                 if session is None:
                     session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
-                # The same rungs as the _decode ladder, for an OOM it never saw (a compiled graph, a dtype wrapper's
-                # own allocation): each attempt is the whole decode, wrappers included.
+                # Same rungs as _decode, for unseen OOMs; each attempt is the whole decode.
                 can_tile = callable(getattr(vae, "enable_tiling", None)) and hasattr(
                     vae, "use_tiling"
                 )
@@ -1186,9 +1159,8 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
 
 
 def uninstall(vae: Any) -> None:
-    """Removes everything install and its retries added: the _decode layer, the decode scope or
-    compiled guard (cut out when outermost, else a pass-through), and every deferred return,
-    settled first; one the full card cannot take stays as its module's only way back."""
+    """Removes what install added (_decode layer, decode scope or compiled guard, deferred returns,
+    settled first); one the full card cannot take stays as its module's only way back."""
     record = vae.__dict__.get(_RECORD_ATTR, {})
     decode_layers.unwrap(record.pop("scope", None))
     for ref in record.pop("deferred", []):

@@ -75,8 +75,7 @@ def test_pins_the_toolkit_libdevice_up_front(fake_stack):
 
 
 def test_torch_2_12_policy_is_kept(monkeypatch):
-    """torch 2.12 keys the FX cache on libdevice but only switches under use_pytorch_libdevice: emulate_precision_casts
-    alone must leave the bundled file in place, as a cold compile there would."""
+    """torch 2.12 keys FX cache on libdevice: keep the file unless use_pytorch_libdevice is set"""
     knobs, calls, config = _stack(monkeypatch, policy = "2.12")
     assert aot.pin_triton_libdevice() is None
     assert calls == [] and knobs.nvidia.libdevice_path is None

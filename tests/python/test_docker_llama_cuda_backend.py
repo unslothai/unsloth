@@ -42,8 +42,7 @@ def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
 
 
 def test_loader_config_is_not_ld_library_path(dockerfile: str):
-    # LD_LIBRARY_PATH beats DT_RUNPATH and would shadow llama.cpp's $ORIGIN libs;
-    # ld.so.conf.d is consulted after.
+    # LD_LIBRARY_PATH beats DT_RUNPATH and shadows $ORIGIN libs; ld.so.conf.d is read after.
     assert "ld.so.conf.d/zz-unsloth-venv.conf" in dockerfile
     assert not re.search(
         r"ENV\s+LD_LIBRARY_PATH=.*site-packages/nvidia",

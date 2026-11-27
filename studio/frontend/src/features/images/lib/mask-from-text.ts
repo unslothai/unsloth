@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Mask from text": SAM 3.1 (or SAM 3) finds the objects a short text names and returns their union as a mask the
-// inpaint and localized-edit painters load, so it stays editable with the brush. Pure logic only (no "@/" imports)
-// so node:test can load it directly.
+// Mask from text: SAM 3.1 (or SAM 3) returns the union of named objects as a brush-editable mask
+// for the painters; pure logic, no @/ imports, so node:test can load it.
 
 /** Every segmenter route, in one place. */
 export const MASK_SEGMENT_ROUTES = {
@@ -14,8 +13,7 @@ export const MASK_SEGMENT_ROUTES = {
   segment: "/api/inference/images/segment",
 } as const;
 
-/** Window event carrying every segmenter status read (detail: SegmenterStatus), so a second reader (the Detailer
- *  control) sees a download finish in the Mask from text panel without polling. */
+/** Window event per segmenter status read (detail SegmenterStatus); other panels skip polling. */
 export const SEGMENTER_STATUS_EVENT = "unsloth:segmenter-status";
 
 export const MASK_FROM_TEXT_LABEL = "Mask from text";

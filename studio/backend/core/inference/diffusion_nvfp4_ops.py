@@ -104,9 +104,13 @@ def global_scale(t: Any):
 
 
 def _quantize_impl(x: Any, global_sf: Any):
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
 
     from . import diffusion_nvfp4_dispatch as dispatch
+
     with _device_guard(x):
         xq, sf = dispatch._fast_quantize(x, global_sf)
         if xq is not None:
@@ -117,6 +121,9 @@ def _quantize_impl(x: Any, global_sf: Any):
 def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend: str):
     """NVFP4 GEMM on a row-major ``[N, K/2]`` weight. A kernel (any, not ``torch.empty``) MUST run between
     the quantiser and this GEMM: cutlass launches with PDL but ``griddepcontrol`` is compiled out."""
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
     import torch
 
@@ -172,7 +179,11 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
 def _flashinfer_bucket(m: int) -> int:
     """The M FlashInfer's own mm_fp4 tuning keys ``m`` under (exact ``m`` when it cannot be read)."""
     try:
+        from .flashinfer_import import import_flashinfer
+
+        import_flashinfer()
         from flashinfer.gemm.gemm_base import _MM_FP4_TUNING_CONFIG_128x4
+
         return int(
             _MM_FP4_TUNING_CONFIG_128x4.dynamic_tensor_specs[0].map_to_tuning_buckets(int(m))
         )
@@ -418,8 +429,12 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
 
 
 def _preflight_probe(dev: Any) -> bool:
+    from .flashinfer_import import import_flashinfer
+
+    import_flashinfer()
     import flashinfer
     import torch
+
     with torch.cuda.device(dev):
         # An explicit CPU generator: up to torch 2.11 a default-generator draw raises while another thread
         # records, and a CPU draw moved to the device needs no CUDA generator (absent on a spoofed / CPU-only torch).
@@ -474,7 +489,11 @@ def nvfp4_backend_env() -> str:
 
 def _flashinfer_available() -> tuple[bool, str]:
     try:
+        from .flashinfer_import import import_flashinfer
+
+        import_flashinfer()
         import flashinfer
+
         return True, str(getattr(flashinfer, "__version__", "unknown"))
     except Exception as exc:  # noqa: BLE001 - any import failure means torchao
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"

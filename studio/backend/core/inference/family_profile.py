@@ -56,8 +56,7 @@ class UntiledVae:
 
 @dataclass(frozen = True)
 class FamilyProfile:
-    # int8 name tokens left dense on top of the generic M = 1 tokens (``_int_mm`` needs M > 16, or a measured quality
-    # lever). Baked into published int8 artifacts.
+    # Int8 tokens dense beyond generic M=1 (_int_mm needs M > 16, or quality lever); baked in.
     int8_exclude_tokens: tuple[str, ...] = ()
     # Subset of ``int8_exclude_tokens`` a STREAMED build quantises anyway (``int8_text_stream_scope``).
     int8_runtime_quant_tokens: tuple[str, ...] = ()
@@ -72,8 +71,7 @@ class FamilyProfile:
     int8_convrot: Optional[ConvRotSpec] = None
     # nvfp4 Linears reachable with an EMPTY activation (zero-row guard after quantization).
     nvfp4_zero_row_tokens: tuple[str, ...] = ()
-    # Transformer-quant schemes ruled out at the model level (explicit requests too); a passing NVFP4 gate record
-    # lifts an nvfp4 deny per base.
+    # Schemes denied per model (even explicit); a passing NVFP4 gate lifts nvfp4 deny per base.
     scheme_deny: frozenset[str] = frozenset()
     # Extra schemes denied for TRAINING on top of ``scheme_deny`` (nvfp4 is denied for training everywhere).
     train_scheme_deny: frozenset[str] = frozenset()
@@ -107,12 +105,10 @@ class FamilyProfile:
     # (base_repo, named_variant_bases, train_base_repos, prequant_variant_repos bases). Exact match, safetensors-only,
     # no remote code.
     trusted_repos: tuple[str, ...] = ()
-    # Extra exact family strings the transformer-quant tables (exclude / pad / ConvRot / zero-row / denies / auto
-    # preferences) answer to, besides ``name``: a builder spelling a family by a version name ("ltx-2.3"). Not general
-    # alias resolution, which would hand a family's artifact policy to every alias substring.
+    # Extra exact family strings the transformer-quant tables answer to besides name (e.g. ltx-2.3);
+    # not general alias matching, which would hand every alias substring the family's policy.
     quant_names: tuple[str, ...] = ()
-    # Compile the denoiser with static shapes (token counts depend only on (w, h, frames): one recompile per shape,
-    # ~1.3x faster); read by the diffusion_autoopt ``ltx_static_compile`` family hook.
+    # Static-shape compile, one recompile per shape, ~1.3x faster; read by ltx_static_compile.
     compile_static: bool = False
     # Install the LTX-2 STG compile adapter after a successful compile (``ltx_stg_compile_adapter`` family hook).
     stg_compile_adapter: bool = False
@@ -131,8 +127,7 @@ def _families() -> tuple[Any, ...]:
 
 
 def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
-    """``{family name: profile.<attr>}`` over both registries, for families that set it (not None / empty).
-    ``quant`` also keys each value under the profile's ``quant_names``."""
+    """Family name to profile.<attr> (both registries, if set); quant also keys by quant_names."""
     table: dict[str, Any] = {}
     for fam in _families():
         profile = getattr(fam, "profile", DEFAULT_PROFILE)
@@ -147,15 +142,12 @@ def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
 
 
 def compile_from_render_one_reason(family: Any) -> Optional[str]:
-    """``FamilyProfile.compile_from_render_one`` of ``family`` (a registry row or a stand-in with its ``name``)."""
     if family is None:
         return None
     return profile_for(family).compile_from_render_one
 
 
 def profile_for(family: Any) -> FamilyProfile:
-    """``family.profile``, else the registry row's profile for its exact ``name`` (a stand-in family object), else the
-    empty profile."""
     profile = getattr(family, "profile", None)
     if isinstance(profile, FamilyProfile):
         return profile
@@ -168,8 +160,7 @@ def profile_for(family: Any) -> FamilyProfile:
 
 
 def trusted_repo_ids(families: Any) -> frozenset[str]:
-    """Lowercased non-``unsloth/`` repo ids ``families`` name as their own bases, plus each profile's
-    ``trusted_repos``. ``unsloth/`` ids are trusted by prefix elsewhere, so they are left out here."""
+    """Lowercased non-unsloth/ family bases and trusted_repos; unsloth/ ids are prefix-trusted."""
     ids: set[str] = set()
     for fam in families:
         named = [fam.base_repo]

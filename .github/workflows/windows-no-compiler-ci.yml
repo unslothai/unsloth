@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Behavioural check that the installer runs no compiler: audits 4688 process creation and
-# fails on csc/vbc/cvtres or a DLL dropped in a temp dir. A positive control (one
-# Add-Type) must fire both detectors first. The shell leg measures the released
-# setup.ps1; the desktop leg uses --local and requires the overlay in the log.
+# Fails on csc/vbc/cvtres (4688 audit) or a temp DLL; positive control (Add-Type) must fire both
+# detectors first; shell leg measures released setup.ps1; desktop leg needs --local and overlay.
 
 name: Windows No Compiler CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip drafts, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.ps1'
@@ -142,8 +139,7 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
 
           $install = {
-              # Spawn a child powershell.exe as the desktop does. Not --tauri, which refuses the pinned
-              # UNSLOTH_STUDIO_HOME.
+              # Not --tauri, which refuses UNSLOTH_STUDIO_HOME; spawn a child powershell.exe.
               New-Item -ItemType Directory -Force -Path logs | Out-Null
               # 'Continue' around the child only: under 'Stop' any stderr line raises NativeCommandError.
               $outer = $ErrorActionPreference
@@ -184,8 +180,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . "$env:GITHUB_WORKSPACE\.github\scripts\Watch-ForCompiler.ps1"
 
-          # --tauri is what the launcher passes. --local makes this leg measure this checkout's
-          # setup.ps1; a run that fell back to the release is void.
+          # --local measures this checkout's setup.ps1; a release fallback is void.
           $desktop = {
               Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
               # 'Continue' around the child only: under 'Stop' any stderr line raises NativeCommandError.

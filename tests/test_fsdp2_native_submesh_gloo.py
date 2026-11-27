@@ -91,7 +91,6 @@ def _case_media(rank):
     vision.install_vision_dummy(model)
     ids = torch.randint(0, 16, (1, 5), generator = torch.Generator().manual_seed(rank))
     audio = lambda: torch.randn(1, 6, 3)  # noqa: E731
-    # Pair [0, 1]: both ranks user audio only. Pair [2, 3]: rank 2 has both inputs, rank 3 one.
     kwargs = {"user_input_values": audio()}
     if rank == 2:
         kwargs["moshi_input_values"] = audio()
@@ -177,8 +176,7 @@ def _case_save(native, rank):
 
 
 def _case_trainer_save(native, rank):
-    """Each pair saves its LoRA model, a full model and the optimizer + scheduler through the
-    Trainer hooks at the same time. Pair [2, 3]'s should_save is False on both ranks."""
+    """Each pair saves all artifacts at once; pair [2, 3] has should_save False on both ranks."""
     import torch.distributed as dist
 
     _stub_unsloth_save()
@@ -216,8 +214,7 @@ def _worker(rank, world, port, out, case):
     )
     import torch.distributed as dist
 
-    # Ranks 2 and 3 can wait at a world barrier while the other pair shards a model, which takes
-    # more than 30 s on a loaded CI runner; _run's deadline still catches a real hang.
+    # Ranks 2-3 wait while the other pair shards (30+ s on CI); _run still catches real hangs.
     dist.init_process_group(
         "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 150)
     )

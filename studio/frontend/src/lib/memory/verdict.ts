@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Shared fit verdict plus cause: the panel needs `tight`, the bar needs why it exceeds.
- * No `@/` alias imports: see ./format.ts.
- */
+/** Shared fit verdict and cause; imports stay relative (no @/ alias), see ./format.ts. */
 
 import { MEMORY_FIT_TIGHT_RATIO } from "./thresholds.ts";
 

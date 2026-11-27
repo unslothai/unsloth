@@ -4,8 +4,7 @@
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 
-// "Edit image" from the Library: the Images page may mount on navigation or already be mounted
-// off-route, so the source image waits here until the page takes it.
+// The Images page may mount later or sit off-route, so the source waits here until taken.
 interface ImageEditHandoffState {
   pending: string | null;
   offer: (dataUrl: string) => void;

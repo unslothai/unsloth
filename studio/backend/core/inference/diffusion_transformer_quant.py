@@ -165,8 +165,7 @@ def _weight_only_config() -> Any:
 
 
 def streamed_weight_only_layout(scheme: str, family: Optional[str] = None) -> dict:
-    """What a streamed build stores for the weight-only modulations (the prequant-cache key carries it): {} outside the
-    scope, else the name tokens, the mode and the dense outlier-channel count."""
+    """Weight-only layout: {} out of scope, else name tokens, mode and dense outlier count."""
     tokens = streamed_weight_only_tokens_for_scheme(scheme, family)
     if not tokens:
         return {}
@@ -802,9 +801,8 @@ def _family_train_denied(
 
 
 def nvfp4_gated_base(family: Optional[str]) -> Optional[str]:
-    """A base of ``family`` whose passing NVFP4 gate record lifts the family deny, or None. For a load whose base is
-    not known yet (a GGUF pick resolves it from its card tag at load time), so a network-free check can judge the
-    scheme the way the loader will if the pick turns out to be that base."""
+    """Base of family whose passing NVFP4 gate record lifts the family deny, else None; judged
+    network-free as the loader will, for GGUF picks whose base is unknown until load."""
     if not family:
         return None
     try:
@@ -1078,8 +1076,7 @@ _TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
 
 
 def torchao_unavailable_reason() -> Optional[str]:
-    """A torchao that fails to import must not read as a GPU lacking kernels; the smoke probe
-    swallows it."""
+    """An import failure must not read as a GPU lacking kernels; the smoke probe swallows it."""
     global _TORCHAO_UNAVAILABLE
     if _TORCHAO_UNAVAILABLE is not None:
         return _TORCHAO_UNAVAILABLE[0]
@@ -1393,8 +1390,7 @@ def transformer_is_quantised(module: Any) -> bool:
 
 
 def dense_transformer_supported(target: Any) -> bool:
-    """Whether the dense-source quant path is usable for ``target``: a CUDA device with bf16 dtype
-    (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
+    """Cheap pre-check: CUDA with bf16, the only config torchao dynamic schemes accelerate."""
     if getattr(target, "device", None) != "cuda":
         return False
     # The Windows-ROCm torchao stub's quantize_ is a no-op: the probe would pass falsely.
@@ -1760,8 +1756,7 @@ def select_transformer_quant_scheme(
     require_prequant: frozenset[str] = frozenset({TQ_NVFP4}),
     has_prequant: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
-    """Auto walks the ladder past failing smoke tests; an explicit scheme is honored or None, not
-    swapped."""
+    """Auto walks the ladder past failing smoke tests; an explicit scheme is honored or None."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
@@ -2212,9 +2207,8 @@ _NTSTATUS_ERROR_FLOOR = 0xC0000000
 
 
 def _crashed_child_verdict(proc: Any, device: str) -> Optional[dict[str, Optional[bool]]]:
-    """Return an all-false table after a fatal probe crash, otherwise None. The child may die before
-    identifying the scheme, and every scheme shares ``quantize_``, so disable the table rather
-    than repeating a proven-fatal probe in the backend."""
+    """All-false table after a fatal probe crash, else None: the child may die before naming a
+    scheme, and all schemes share quantize_, so the table is disabled, not re-probed."""
     try:
         exitcode = proc.exitcode if proc is not None else None
     except Exception:  # noqa: BLE001 -- no handle left: nothing proven, fall back as before
@@ -2260,8 +2254,7 @@ def _forget_probe_pid(pid: Optional[int]) -> None:
 
 
 def _probe_child_alive(proc: Any) -> bool:
-    """Whether the child is KNOWN to be running: a missing or never-started handle raises here, and
-    that is not a survivor."""
+    """True only if the child is known alive; a missing or unstarted handle is not a survivor."""
     try:
         return bool(proc is not None and proc.is_alive())
     except Exception:  # noqa: BLE001
@@ -2351,9 +2344,8 @@ def _smoke_probe(
 
 
 def _run_smoke_probe(scheme: str, device: str) -> Optional[bool]:
-    """The probe body, uncached: True, False, or None for an allocator failure, which is not a
-    verdict on the scheme (see ``_smoke_probe``). Split out so the out-of-process child runs the
-    exact same code the in-process fallback does and the two verdicts cannot drift."""
+    """Uncached probe body: True, False, or None for an allocator failure (not a verdict); the
+    out-of-process child runs it too, so verdicts cannot drift."""
     try:
         import torch
         from torchao.quantization import quantize_

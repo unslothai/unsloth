@@ -1,5 +1,4 @@
-/* Monokai palette overriding JupyterLab Dark. :root is safe: the theme manager only
- * loads this file while "Unsloth Dark" is active. */
+/* Monokai palette for JupyterLab Dark; :root is safe since this loads only for Unsloth Dark. */
 :root {
   /* surfaces */
   --jp-layout-color0: hsl(70, 8%, 12%);

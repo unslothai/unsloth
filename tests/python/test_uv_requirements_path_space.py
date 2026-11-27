@@ -45,7 +45,6 @@ def test_the_helper_is_defined():
 def test_every_uv_requirements_flag_uses_a_sanitised_path():
     lines = _code_lines(INSTALL_PS1.read_text(encoding = "utf-8"))
 
-    # Track variables by data flow from the helper, not by name.
     from_helper = set()
     for line in lines:
         hit = re.search(rf"(\$[A-Za-z_][A-Za-z0-9_]*)\s*=\s*{HELPER}\b", line)

@@ -203,8 +203,7 @@ def test_a_root_transformer_pick_missing_its_file_loads_the_copys_pipeline(tmp_p
 
 
 def test_a_copy_without_transformer_weights(tmp_path, offline_hub):
-    """Its pipeline (and the root pick, loaded as that pipeline) goes through the base; as the companion base of
-    another single file, which supplies the transformer, only the config is read, so it stays."""
+    """Its pipeline goes via the base; a companion base only has its config read, so it stays."""
     snapshot = str(_snapshot(tmp_path, complete = False))
     root = DiffusionLoadRequest(
         model_path = snapshot, gguf_filename = "model.safetensors", model_kind = "single_file"
@@ -222,8 +221,7 @@ def test_a_copy_without_transformer_weights(tmp_path, offline_hub):
 def test_the_auto_switch_loads_a_copy_in_an_earlier_models_folder_from_its_snapshot(
     tmp_path, offline_hub
 ):
-    """The seeded-snapshot rewrite would load it by id, which searches only the active cache, so the copy kept in an
-    earlier Models folder would be redirected to its base."""
+    """By-id loads only see the active cache, so an earlier Models copy must load by snapshot."""
     import asyncio
 
     from core.inference import media_auto_switch as mas

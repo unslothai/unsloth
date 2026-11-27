@@ -206,9 +206,8 @@ def convert_frozen_int8(
     names,
     device = None,
 ) -> tuple[int, int]:
-    """Swap each frozen nn.Linear in ``names`` for FrozenInt8Linear one at a time; with ``device`` a host Linear
-    moves there just before it is quantized, so the bf16 base is never whole on the device. A layer that fails
-    stays as it was. Returns (converted, failed)."""
+    """Swap frozen nn.Linear in names for FrozenInt8Linear in turn (moved to device first when
+    given, so the bf16 base is never whole there); failures stay; returns (converted, failed)."""
     done = failed = 0
     for fqn in sorted(names):
         parent_name, _, child = fqn.rpartition(".")

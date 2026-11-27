@@ -133,8 +133,7 @@ def test_grpo_patch_preserves_grad_checkpointing_block(generated_grpo_source):
 
 
 def test_grpo_patch_neutralizes_ref_adapter_and_qlora_cast(generated_grpo_source):
-    """TRL >= 1.7.0: the ref-adapter copy and the hardcoded QLoRA bf16 cast must
-    both be gone from the generated trainer."""
+    """On TRL >= 1.7.0, generated trainers must lack the ref-adapter copy and QLoRA bf16 cast."""
     from packaging.version import Version
 
     if _trl_version() < Version("1.7.0"):

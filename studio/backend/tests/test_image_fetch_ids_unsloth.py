@@ -44,12 +44,10 @@ _UNMIRRORED: dict[str, str] = {
     "nvidia/qwen-image-flash": "Qwen-Image-Flash",
 }
 
-# Third-party DENOISER artifacts the catalog still offers. Not a companion fetch and not licence-blocked: there is
-# simply no unsloth GGUF of FLUX.1 Krea dev yet. Its companions already come from unsloth/FLUX.1-Krea-dev.
+# Not licence-blocked: no unsloth GGUF yet; companions come from unsloth/FLUX.1-Krea-dev.
 _THIRD_PARTY_DENOISER_ROWS: frozenset[str] = frozenset({"quantstack/flux.1-krea-dev-gguf"})
 
-# Card tag of each quantised image repo: GGUF/bnb companions come from this repo, since no family
-# table names the card-tag-only variants; the catalog test flags gaps.
+# GGUF/bnb companions come from the card tag, as no family table names card-tag-only variants.
 _CARD_BASES: dict[str, str] = {
     "unsloth/Z-Image-Turbo-GGUF": "Tongyi-MAI/Z-Image-Turbo",
     "unsloth/Z-Image-Turbo-unsloth-bnb-4bit": "Tongyi-MAI/Z-Image-Turbo",
@@ -247,7 +245,6 @@ def _catalog_rows() -> list[tuple[str, str]]:
 
 
 def _catalog_fetch_id(helper: str, repo: str) -> str:
-    # bf16Mirror rows already load the unsloth copy; the rest reach the backend by their own id.
     if helper == "bf16Mirror":
         return f"unsloth/{repo.split('/', 1)[1]}"
     return _fetch_id(repo)
@@ -302,8 +299,7 @@ def test_licence_allowlist_is_still_needed():
 
 
 def test_no_image_asset_names_a_comfy_repack():
-    """Neither the tables nor the fetch map may name a ComfyUI-built file, and the legacy-cache fallback must not be
-    able to turn an image asset back into one."""
+    """Tables, fetch map and legacy-cache fallback must never name a ComfyUI-built file."""
     rows = _family_fetch_ids() + _sd_cpp_fetch_ids()
     bad = [r for r in rows if _is_comfy(r[2]) or _is_comfy(r[3])]
     assert not bad, bad

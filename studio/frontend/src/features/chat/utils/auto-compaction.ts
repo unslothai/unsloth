@@ -199,9 +199,8 @@ function requestedCompactionThreshold(
 }
 
 /**
- * Where a cloud chat compacts, in tokens, for the context meter. Anthropic and OpenAI compact
- * server-side: 200K at most unless the connection sets its own trigger, and never below
- * Anthropic's 50K floor.
+ * Cloud compaction trigger in tokens for the context meter: Anthropic and OpenAI compact
+ * server-side at 200K max unless the connection sets one, never below Anthropic's 50K floor.
  */
 export function cloudCompactionTrigger(options: {
   providerType: string | null | undefined;

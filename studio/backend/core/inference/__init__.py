@@ -36,7 +36,6 @@ __all__ = [
     "LlamaCppBackend",
 ]
 
-# name -> (submodule, attribute); InferenceBackend aliases InferenceOrchestrator.
 _LAZY_ATTRS = {
     "InferenceOrchestrator": ("orchestrator", "InferenceOrchestrator"),
     "InferenceBackend": ("orchestrator", "InferenceOrchestrator"),

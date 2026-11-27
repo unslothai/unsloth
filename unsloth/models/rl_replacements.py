@@ -189,6 +189,8 @@ _DPO_VISION_KEYS = (
     "pixel_position_ids",
     "image_position_ids",
     "mm_token_type_ids",
+    # Qwen2-VL / Qwen2.5-VL / Qwen3-VL: one (t, h, w) row per image; TRL < 0.29 DPO drops it.
+    "image_grid_thw",
 )
 
 torch_compile_options = {
@@ -656,7 +658,12 @@ def dpo_trainer_vision_process_row(
         "chosen_input_ids": chosen_input_ids,
         "rejected_input_ids": rejected_input_ids,
     }
-    if "pixel_values" in processed_features:
+    if "image_grid_thw" in processed_features:
+        # Grid processors return every image's patch rows flattened into one (patches, dim) array, not one
+        # array per row: [0] would keep a single patch row and the vision tower would see too few patches.
+        output["pixel_values"] = processed_features["pixel_values"]
+        output["image_grid_thw"] = processed_features["image_grid_thw"]
+    elif "pixel_values" in processed_features:
         output["pixel_values"] = processed_features["pixel_values"][0]
     if "pixel_attention_mask" in processed_features:
         output["pixel_attention_mask"] = processed_features["pixel_attention_mask"][0]
@@ -783,8 +790,33 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "            from trl.trainer.utils import pad as _unsloth_trl_pad\n"
         "        except Exception:\n"
         "            _unsloth_trl_pad = None\n"
+        "        if all('image_grid_thw' in example for example in examples):\n"
+        # Concatenate patch rows (vision tower + image_grid_thw layout), never a (batch, patches, dim) block;
+        # rows come from TRL's right-padded tensor, else are converted per row on any layout/dtype mismatch.
+        "            _padded = output.get('pixel_values', None)\n"
+        "            _rows = []\n"
+        "            if isinstance(_padded, _unsloth_torch.Tensor) and _padded.dim() >= 2 and _padded.shape[0] == len(examples):\n"
+        "                for _i, example in enumerate(examples):\n"
+        "                    _pv = example['pixel_values']\n"
+        "                    _probe = _unsloth_torch.as_tensor(_pv[:1])\n"
+        "                    if (\n"
+        "                        len(_pv) == 0 or _padded.dim() != _probe.dim() + 1 or _probe.dtype != _padded.dtype\n"
+        "                        or len(_pv) > _padded.shape[1] or _probe.shape[1:] != _padded.shape[2:]\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, :1], _probe)\n"
+        "                        or not _unsloth_torch.equal(_padded[_i, len(_pv) - 1:len(_pv)], _unsloth_torch.as_tensor(_pv[-1:]))\n"
+        "                    ):\n"
+        "                        _rows = []\n"
+        "                        break\n"
+        "                    _rows.append(_padded[_i, :len(_pv)])\n"
+        "            if len(_rows) != len(examples):\n"
+        "                _rows = [_unsloth_torch.as_tensor(example['pixel_values']) for example in examples]\n"
+        "            output['pixel_values'] = _unsloth_torch.cat(_rows, dim=0)\n"
+        "            del _padded, _rows\n"
+        "            output['image_grid_thw'] = _unsloth_torch.cat(\n"
+        "                [_unsloth_torch.as_tensor(example['image_grid_thw']).reshape(-1, 3) for example in examples], dim=0\n"
+        "            )\n"
         "        for _k in " + _vision_keys + ":\n"
-        "            if not all(_k in example for example in examples):\n"
+        "            if _k == 'image_grid_thw' or not all(_k in example for example in examples):\n"
         "                continue\n"
         "            _is_position_key = _k.endswith('position_ids')\n"
         "            _padding_value = -1 if _is_position_key else 0\n"
@@ -803,6 +835,32 @@ def dpo_trainer_data_collator_vision_keys(call_args, extra_args):
         "\n"
         "    DataCollatorForPreference.torch_call = _unsloth_dpo_torch_call\n"
         "    DataCollatorForPreference._unsloth_vision_keys_patch = True\n"
+    )
+
+
+def _unsloth_dpo_is_vision_model(model, processing_class):
+    # TRL 0.22 picks its vision path from MODEL_FOR_VISION_2_SEQ only, which on transformers 4.x leaves out
+    # image-text-to-text models such as Gemma3: their image rows went through the text tokenizer and datasets.map
+    # raised ArrowInvalid. Such a model counts as vision only when it is paired with an image processor.
+    from transformers.models.auto import modeling_auto
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type in getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}):
+        return True
+    if model_type not in getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}):
+        return False
+    return (
+        getattr(processing_class, "image_processor", None) is not None
+        and getattr(processing_class, "tokenizer", None) is not None
+    )
+
+
+def dpo_trainer_vision_model_detection(function_name, function):
+    if function_name != "__init__":
+        return function
+    return function.replace(
+        "self.is_vision_model = model.config.model_type in MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES.keys()",
+        "self.is_vision_model = _unsloth_dpo_is_vision_model(model, processing_class)",
     )
 
 
@@ -930,6 +988,8 @@ def dpo_trainer_reference_snapshot(function_name, function):
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_reference_snapshot)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_reference_loadable))
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_copy_policy_into_reference))
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_model_detection)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_is_vision_model))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_prepare_dataset)
 RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_row))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
@@ -3145,6 +3205,34 @@ def grpo_trainer__generate(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
+def _unsloth_wrap_vllm_generate_with_sleep(function):
+    """Wake a standby (enable_sleep_mode) engine around each self.llm.generate line, then sleep it again."""
+    pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
+    patched = function
+    for match in reversed(list(pattern.finditer(function))):
+        line = match.group(0)
+        indent_match = re.match(r"(\s*)", line)
+        indent = indent_match.group(1) if indent_match else ""
+
+        # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+        # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
+        wrapped = (
+            f"{indent}_unsloth_sleep_level = None\n"
+            f"{indent}if hasattr(self, 'llm'):\n"
+            f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+            f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+            f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+            f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
+            f"{indent}        self.llm.wake_up()\n"
+            f"{line}\n\n"
+            f"{indent}if _unsloth_sleep_level is not None:\n"
+            f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
+        )
+        patched = patched[: match.start()] + wrapped + patched[match.end() :]
+    return patched
+
+
 # Older TRL mishandles special tokens: 0.19.0 passed skip_special_tokens = True where it should be False.
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
@@ -3488,35 +3576,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if "wake_up()" not in function:
         # Sleep functionality was added to trl in v0.23.0 (commit edbe823), so do not redo it.
-
-        pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
-        matches = list(pattern.finditer(function))
-        patched = function
-
-        for match in reversed(matches):
-            line = match.group(0)
-            indent_match = re.match(r"(\s*)", line)
-            indent = indent_match.group(1) if indent_match else ""
-
-            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
-            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
-            wrapped = (
-                f"{indent}_unsloth_sleep_level = None\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
-                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
-                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
-                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
-                f"{indent}        self.llm.wake_up()\n"
-                f"{line}\n\n"
-                f"{indent}if _unsloth_sleep_level is not None:\n"
-                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
-            )
-
-            patched = patched[: match.start()] + wrapped + patched[match.end() :]
-
-        function = patched
+        function = _unsloth_wrap_vllm_generate_with_sleep(function)
 
     _mm_alignment = """
         if (
@@ -4815,6 +4875,19 @@ def online_dpo_trainer__generate_vllm_colocate(function_name, function):
     # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
     if function_name != "_generate_vllm_colocate":
         return function
+    if "self.llm.sleep(" not in function:
+        # TRL < 0.29 OnlineDPO never sleeps the engine: a standby engine would keep ~90% of VRAM during training.
+        return _unsloth_wrap_vllm_generate_with_sleep(function)
+    # Unsloth's allocator never sleeps the shared weights, so a tagged wake_up(tags=["weights"]) maps nothing and
+    # leaves vLLM's executor asleep; the generate wrapper's own wake_up then maps the KV cache a second time
+    # (cumem "invalid argument"). Wake the shared engine untagged, as the GRPO / RLOO sync_weights patch does.
+    function = re.sub(
+        r"^([ \t]+)self\.llm\.wake_up\(tags=(\[[^\]\n]*\])\)\n",
+        r"\1if getattr(self.llm, 'shared_weights', False): self.llm.wake_up()\n"
+        r"\1else: self.llm.wake_up(tags=\2)\n",
+        function,
+        flags = re.MULTILINE,
+    )
     return re.sub(
         r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
         r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",

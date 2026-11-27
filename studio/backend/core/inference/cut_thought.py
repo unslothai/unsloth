@@ -20,8 +20,7 @@ import threading
 import time
 from typing import Callable, Optional
 
-# Archived under its own role, so recall can tell it from a turn that must still be on the live
-# branch: a thought is never part of the branch text the branch filter compares against.
+# Own role, so recall tells it from live-branch turns; the branch filter never sees thoughts.
 THOUGHT_ROLE = "thinking"
 THOUGHT_DOCUMENT = f"earlier turn ({THOUGHT_ROLE})"
 # Tokens dropped from the end of the cut thought: the window can stop it mid-word.
@@ -50,8 +49,7 @@ def mark(
     thought: str,
     close_marker: str = "",
 ) -> bool:
-    """Records the cut thought for the thread's next request. Only for threads Studio persists, since
-    recovery reads the thread back; an API client's next request is left as it was."""
+    """Records the cut thought; only for Studio-persisted threads, as recovery reads them back."""
     if not thread_id or not thought.strip() or not _persisted(thread_id):
         return False
     with _lock:

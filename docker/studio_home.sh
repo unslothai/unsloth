@@ -16,8 +16,7 @@ LEGACY_NAME=".unsloth-studio-legacy"
 log() { echo "[unsloth-studio] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# mkdir -p, rm -rf and mv all follow a link planted at the legacy name (into the app
-# dir, say); refuse rather than write through it.
+# Refuse a link at the legacy name: mkdir, rm and mv would otherwise write through it.
 check_legacy() {
     if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
         die "$1 must be a directory, not a link or a file; move or remove it, then start the container again"
@@ -30,8 +29,7 @@ if [ "${1:-}" = "--restore" ]; then
     check_legacy "$legacy"
     shopt -s dotglob nullglob
     if [ ! -d "$legacy" ]; then
-        # No kept copy (first used after the split, or deleted): a pre-split image finds its
-        # own tree hidden under the mount and links to nothing, so give it real copies.
+        # A pre-split image sees its own tree hidden under the mount, so it needs real copies.
         [ -d "$APP" ] || die "no $legacy to restore and no $APP on this image: run --restore under an image that has the Unsloth Studio code in $APP (the one that last ran this volume), it copies that code into the home for an older image"
         copied=()
         for target in "$HOME_DIR"/*; do
@@ -41,8 +39,7 @@ if [ "${1:-}" = "--restore" ]; then
             name="${target##*/}"
             # the uv cache is this image's scratch (9 GB); no image before the split reads it
             if [ -e "$link" ] && [ "$name" != "uv-cache" ]; then
-                # copy beside the link and swap only once whole: a half-written real
-                # $target is skipped by this symlink-only loop on the rerun
+                # Swap only once whole: a half-written real $target is skipped on rerun.
                 tmp="$target.restore-tmp"
                 rm -rf -- "$tmp"
                 cp -a -- "$link" "$tmp" || {
@@ -180,8 +177,7 @@ if [ -s "$APP/.src-update.rollback" ]; then
     fi
 fi
 
-# Studio keeps the owner's skills on the volume; ~/.agents/skills, which the Skills dialog and
-# other agents in the container use, points there.
+# Skills stay on the volume; ~/.agents/skills, used by other agents, points there.
 skills="${UNSLOTH_STUDIO_SKILLS_HOME:-}"
 if [ -n "$skills" ]; then
     (umask 077 && mkdir -p -- "$skills") || log "WARNING: cannot create $skills"

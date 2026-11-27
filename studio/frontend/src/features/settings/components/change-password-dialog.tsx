@@ -23,6 +23,7 @@ import {
 } from "@/features/auth";
 import { useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { toast } from "@/lib/toast";
 import { type FormEvent, useEffect, useState } from "react";
 
@@ -181,10 +182,8 @@ async function requestPasswordChange(
     }
   }
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(payload?.detail || "");
+    const payload = await response.json().catch(() => null);
+    throw new Error(formatApiErrorBody(payload) ?? "");
   }
   return (await response.json()) as Record<string, unknown>;
 }

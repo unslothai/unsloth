@@ -96,9 +96,8 @@ def _plain(value: Any) -> Any:
 _SKIP = object()
 
 
-# The decode side's state on the shared VAE object: a decode wrapper re-bound every render (``decode`` /
-# ``_decode``), and private counters, last tile, canvas / OOM state. The encode never reads any of it, so keying on
-# it would make every render miss. Everything else, encode wrappers included, is keyed.
+# Decode-side VAE state (decode/_decode wrappers re-bound per render, counters, canvas/OOM) is
+# unkeyed: encode never reads it, so keying on it would make every render miss; all else is keyed.
 _UNKEYED_VAE_ATTR_PARTS = ("canvas", "_calls", "_stats", "oom_active", "logger", "strips")
 
 

@@ -2,26 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { hubTokenHeader } from "../lib/hub-token-header";
 import { abortError, withAbort } from "../lib/abort-signals";
 import type { TransportMode } from "./constants";
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (status === 405) {
-      return `${formatted || "Method Not Allowed"} - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.`;
-    }
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
+  const formatted = formatApiErrorBody(body);
   if (status === 405) {
-    return "Method Not Allowed - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.";
+    return `${formatted || "Method Not Allowed"} - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.`;
   }
-  return `Request failed (${status})`;
+  return formatted ?? `Request failed (${status})`;
 }
 
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {

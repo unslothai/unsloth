@@ -4,8 +4,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// The composer's Skills switch, apart from which skills are ticked: off hides the pill and sends no
-// skill tools. Unset follows whether any skill is ticked, as before the switch existed.
+// Skills switch: off hides the pill and skill tools; unset follows whether a skill is ticked.
 interface SkillsSwitchState {
   on: boolean | null;
   setOn: (on: boolean | null) => void;

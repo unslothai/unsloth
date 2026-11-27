@@ -5,8 +5,7 @@ import { isTauri } from "@/lib/api-base";
 import { browserPanelAvailable } from "../panel-availability";
 import { useBrowserAgentStore } from "./agent-store";
 
-/** The browser tools (core/inference/browser_agent.py). This tab runs them, so a turn that offers
- *  them must keep its stream to this tab. */
+/** Browser tools run by this tab; a turn offering them must keep its stream here. */
 export const BROWSER_AGENT_TOOLS = [
   "browser_navigate",
   "browser_snapshot",

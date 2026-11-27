@@ -105,6 +105,14 @@ def test_high_precision_norm_upcast_skips_shared_qwen4_exp_norms(
     test = compile(ast.Expression(gate.test), str(VISION_PATH), "eval")
     monkeypatch.setenv("UNSLOTH_HIGH_PRECISION_LAYERNORM", "1")
     assert (
-        eval(test, {"os": os, "fast_inference": fast_inference, "model_types": model_types})
+        eval(
+            test,
+            {
+                "os": os,
+                "fast_inference": fast_inference,
+                "model_types": model_types,
+                "model": object(),
+            },
+        )
         is upcast
     )

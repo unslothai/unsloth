@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# On failure, report how far the base has moved past this run's merge ref; re-runs reuse it.
-# Never changes the job result.
+# On failure, reports how far the base moved past the merge ref; never changes the job result.
 
 name: Report the age of this run's merge ref
 description: >-

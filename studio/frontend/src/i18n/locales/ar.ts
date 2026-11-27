@@ -2414,6 +2414,10 @@ export const ar = {
         confirmDescriptionChatOnly:
           "يوقف الخادم ويعيد تشغيل المثبّت. هذا تثبيت للدردشة فقط، لذا يرقّيه المثبّت أيضًا إلى التثبيت الكامل مع PyTorch، بحجم عدة غيغابايت إجمالًا. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
         confirmAction: "إصلاح الآن",
+        recommendedTorch:
+          "يُنصح بالإصلاح: يحتوي هذا التثبيت على PyTorch {torch}، وهو أقدم من الإصدار المُدار {managedTorch} الذي تدعم عليه وحدات RTX من الفئة 50.",
+        recommendedDriver:
+          "PyTorch {torch} أقدم من الإصدار المُدار {managedTorch} الذي تدعم عليه وحدات RTX من الفئة 50، لكن برنامج تشغيل وحدة معالجة الرسومات هذا لا يدعم CUDA 13. حدّث برنامج التشغيل أولًا، ثم أصلح التثبيت.",
       },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
@@ -4525,6 +4529,12 @@ export const ar = {
       epochs: "الحقب (Epochs)",
       useMaxSteps: "استخدام الحد الأقصى للخطوات",
       useEpochs: "استخدام الحقب",
+      stepGuidancePass: "حوالي {steps} خطوة تعني مرورًا واحدًا على صفوفك البالغة {rows} بدفعة فعلية قدرها {batch}.",
+      stepGuidanceFloor: "المرور مرة واحدة على صفوفك البالغة {rows} لا يتجاوز {passSteps} خطوة بدفعة فعلية قدرها {batch}، لذا فإن حوالي {steps} خطوة (عدة مرات) حد أدنى معقول.",
+      stepGuidanceCap: "المرور مرة واحدة على صفوفك البالغة {rows} يستغرق {passSteps} خطوة بدفعة فعلية قدرها {batch}؛ و{steps} خطوة تدرّب على جزء منها، وهذا يكفي غالبًا لتشغيل أول.",
+      stepGuidanceEpoch: "الحقبة الواحدة حوالي {passSteps} خطوة على صفوفك البالغة {rows} بدفعة فعلية قدرها {batch}.",
+      stepGuidancePacking: "التجميع يدمج الصفوف القصيرة، لذا قد يحتاج المرور الواحد خطوات أقل.",
+      useSuggestedSteps: "استخدام {steps}",
       maxStepsTooltip: "تجاوز إجمالي خطوات المُحسِّن.",
       epochsTooltip: "عدد المرات الكاملة للمرور على مجموعة البيانات.",
       contextLength: "السياق",

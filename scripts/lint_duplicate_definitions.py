@@ -226,8 +226,7 @@ def _scope_duplicates(body, scope, out, overloads, module_overloads) -> None:
             else:
                 seen[name] = (node.lineno, kind)
         if isinstance(node, ast.ClassDef):
-            # A class body resolves unbound names in the module namespace, so it gets the module's aliases,
-            # never the enclosing class's.
+            # A class body's unbound names resolve in the module, never in the enclosing class.
             _scope_duplicates(
                 node.body,
                 f"{scope}{node.name}.",
@@ -262,8 +261,7 @@ def _import_duplicates(body, scope, out) -> None:
             source = module if module is not None else alias.name
             bound = alias.asname or (alias.name if module is not None else alias.name.split(".")[0])
             implicit = alias.asname is None
-            # Remember every implicit source: an implicit binding collides with the same source, an explicit
-            # one with any earlier binding of that name.
+            # Implicit clashes with the same source; explicit with any earlier binding.
             first = seen_explicit.get(bound)
             if implicit:
                 first = seen_implicit.get((bound, source), first)
@@ -387,7 +385,6 @@ _SELF_TEST_CASES = [
     ),
     (4, "B, H, N, D = 1, 16, 50345, 128\nB, H, N, D = 2, 3, 4, 5\n"),
     (1, "import urllib.parse\nimport urllib.parse as urllib\n"),
-    # Negative controls: correct code that must report nothing.
     (0, "if FAST:\n    def go():\n        pass\nelse:\n    def go():\n        pass\n"),
     (0, "try:\n    from fast import x\nexcept ImportError:\n    from slow import x\n"),
     (

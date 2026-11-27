@@ -36,8 +36,7 @@ CACHE_HELPER="$SCRIPT_DIR/assert-prompt-cache.sh"
 mkdir -p "$LOGS_DIR" "$REDACTED_DIR"
 CONNECT_REF="unsloth_cli/commands/start.py"
 
-# Shrink Claude's prefill for CPU serving. --tools limits which schemas are sent;
-# --allowedTools only gates permission.
+# Cut Claude's CPU prefill: --tools limits schemas sent; --allowedTools only gates permission.
 CLAUDE_CONNECT_FLAGS=(
   --system-prompt-file "$SCRIPT_DIR/ci-connect-prompt.txt"
   --tools ""
@@ -82,8 +81,7 @@ assert_reply() {
   head -20 "$out"
 }
 
-# Run under a hard timeout. Sets TIMED_OUT when the cap was hit; a 137 counts only at the
-# deadline, since an unrelated SIGKILL (OOM) also returns 137.
+# Sets TIMED_OUT on timeout; 137 counts only at the deadline, as OOM SIGKILL also gives 137.
 run_timed() {
   local out="$1"; shift
   TIMED_OUT=0

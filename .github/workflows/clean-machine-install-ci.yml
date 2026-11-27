@@ -14,8 +14,7 @@ name: Clean machine install
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip draft PRs, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
@@ -99,8 +98,7 @@ on:
         default: tree
 
 concurrency:
-  # The event name stops a scheduled run and a push to main, which share a ref, from replacing each
-  # other as the one pending run, so a merge burst cannot drop the nightly.
+  # event_name keeps a scheduled run and a push to main from replacing each other as pending.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
   # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
@@ -237,15 +235,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # Empty on non-overlay legs and on installer_source=published.
           UNSLOTH_CI_SOURCE_OVERLAY: ${{ matrix.overlay && inputs.installer_source != 'published' && github.workspace || '' }}
         run: |
           set -a; . ./clean-machine.env; set +a
           set -o pipefail
           rc=0
           FLAGS="${{ matrix.flags }}"
-          # Strip CI/GITHUB_/RUNNER_ vars from the installer env; a consumer has none.
-          # Uses case, not sed: macOS BRE has no \| alternation.
+          # Strip CI/GITHUB_/RUNNER_ vars; use case, not sed, as macOS BRE lacks alternation.
           CLEAN_ENV=""
           for v in $(env | cut -d= -f1); do
             case "$v" in CI|GITHUB_*|RUNNER_*) CLEAN_ENV="$CLEAN_ENV -u $v" ;; esac
@@ -436,11 +432,9 @@ jobs:
             printf '%-8s %s\n' "$t" "$(command -v $t 2>/dev/null || echo ABSENT)"
           done | tee /tmp/container-baseline.txt
 
-      # Provision only the bootstrap transport; everything else stays absent.
       - name: Provision only the bootstrap transport
         run: |
-          # tar/gzip let overlay legs fetch source without git. Never both transports: the wget-only
-          # row must reach install.sh's wget branch.
+          # tar/gzip fetch source without git; never both, so wget-only rows still reach wget.
           if [ "${{ matrix.wget_only }}" = "true" ]; then
             pkgs="ca-certificates wget"
           else
@@ -512,7 +506,6 @@ jobs:
           # The editable overlay writes .egg-info into the source tree, so tester must own it.
           if [ -d ci-source ]; then chown -R tester ci-source; fi
 
-      # Prove elevation is truly unavailable, not merely uncalled.
       - name: Prove the unprivileged user genuinely cannot elevate
         if: matrix.nonroot
         run: |
@@ -683,8 +676,7 @@ jobs:
       - name: Assert llama.cpp came from the prebuilt bundle
         if: steps.install_root.outcome == 'success' || steps.install_nonroot.outcome == 'success'
         run: |
-          # Root legs legitimately apt-install cmake/git/gcc mid-run; assert llama.cpp did not use them
-          # (it silently falls back to a source build once a compiler exists).
+          # Root apt-installs build tools mid-run; llama.cpp must not silently source-build.
           for t in cmake git gcc; do
             printf '%-6s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo ABSENT)"
           done
@@ -722,7 +714,6 @@ jobs:
             exit 1
           fi
 
-      # Re-check curl after the install: wget must have carried every download.
       - name: Re-prove curl never appeared, and that wget carried the install
         if: matrix.wget_only && steps.install_nonroot.outcome == 'success'
         run: |
@@ -764,8 +755,7 @@ jobs:
           if-no-files-found: warn
 
   # ── WSL ───────────────────────────────────────────────────────────────────
-  # WSL: the only job running install.sh's real WSL branch and catching interop truncating
-  # the piped script. Off pull_request for cost.
+  # WSL branch of install.sh, catching interop truncating piped scripts; off PRs for cost.
   wsl:
     name: wsl ubuntu-24.04
     if: github.event_name != 'pull_request'
@@ -875,8 +865,7 @@ jobs:
             Write-Host '::error::the WSL install produced no log'
             exit 1
           }
-          # Interop relays inherited stdin and can truncate a piped script; a hit means the
-          # _unsloth_main wrapper regressed.
+          # Interop can truncate a piped script; a hit means _unsloth_main wrapper regressed.
           if (Select-String -Path logs/wsl-install.log `
                 -Pattern 'Syntax error: Unterminated quoted string' -Quiet) {
             Write-Host '::error::the piped install was truncated again; install.sh is no longer parsed in full before it runs'
@@ -1067,8 +1056,7 @@ jobs:
           }
           $newPath = ($kept -join ';')
           "PATH=$newPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # install.ps1 merges registry PATHs back into $env:Path, so scrub the registry too.
-          # Expand first: SetEnvironmentVariable rewrites REG_EXPAND_SZ as REG_SZ.
+          # install.ps1 re-merges registry PATHs; expand REG_EXPAND_SZ or it becomes REG_SZ.
           foreach ($scope in 'Machine','User') {
             $raw = [System.Environment]::GetEnvironmentVariable('Path', $scope)
             if ([string]::IsNullOrWhiteSpace($raw)) { continue }
@@ -1211,14 +1199,12 @@ jobs:
             Write-Host '::error::setup.ps1 stopped at the git gate; only --local and llama.cpp source-build installs may need git, so that has regressed'
             exit 1
           }
-          # Since #12971 setup.ps1 reaches for winget only when something clones, so on this
-          # consumer install the attempt itself is the regression, not a missing line.
+          # 12971 limits winget to clones: a consumer install trying it is a regression.
           if ($log -match 'Git not found -- attempting install via winget') {
             Write-Host '::error::setup.ps1 tried to install git on a consumer install, which #12971 limited to --local and llama.cpp source builds'
             exit 1
           }
-          # The step line is printed only when Get-Command git came back empty, so it is what
-          # proves the scrub held and this row really ran without git.
+          # Printed only if git is absent; proves the scrub held and the row ran without git.
           if (-not ($log -match 'git\s+not found \(not required\)')) {
             Write-Host '::error::setup.ps1 never reported git as missing, so the scrub leaked it back and this row never exercised the no-git path'
             exit 1
@@ -1310,9 +1296,8 @@ jobs:
           if-no-files-found: warn
 
   # ── Windows, genuinely virgin: the same install inside a Windows container ────
-  # Genuinely virgin Windows: a servercore container has no VC++ runtime and no Store.
-  # container: is Linux-only, so drive docker from run steps. windows-2022 because process
-  # isolation needs matching host and image builds and only it pre-caches ltsc2022.
+  # A servercore container has no VC++ runtime or Store; drive docker from steps (container: is
+  # Linux-only); windows-2022 alone pre-caches ltsc2022 (process isolation needs matching builds).
   windows_container_probe:
     name: virgin win container / probe
     needs: select
@@ -1433,8 +1418,7 @@ jobs:
             *>&1 | Tee-Object -FilePath logs/virginity.log
           exit $LASTEXITCODE
 
-      # After the virginity check. A fresh container has an almost empty root store; Node's
-      # urllib download needs it.
+      # After virginity: fresh container's root store is almost empty; Node's urllib needs it.
       - name: Seed the container's trusted root CA store
         shell: pwsh
         run: |
@@ -1480,8 +1464,7 @@ jobs:
             Write-Host '::error::the overlay row never overlaid the checkout, so it only tested the released package'
             exit 1
           }
-          # Git: no Store, no winget, no git, and nothing on the consumer path needs it. The
-          # relaxed gate is the only reason this row gets past setup.ps1 at all.
+          # No Store, winget or git here; only the relaxed git gate lets setup.ps1 pass.
           if ($log -match 'Git is required (but could not be installed automatically|for --local)') {
             Write-Host '::error::studio/setup.ps1 stopped at the unconditional git gate; the relax to --local and llama.cpp source-build installs has regressed'
             exit 1

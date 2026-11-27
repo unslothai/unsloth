@@ -393,9 +393,8 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     ), f"{rust_file} does not force PYTHONIOENCODING"
 
 
-# Windows only, opt-in off CI. Runners give CREATE_NO_WINDOW children a console anyway, so the
-# child calls FreeConsole() itself (Add-Type of kernel32 trips AV, hence the opt-in).
-# Not DETACHED_PROCESS: Windows PowerShell 5.1 spawned that way exits 0 without running a line.
+# Windows-only, opt-in: runners give CREATE_NO_WINDOW children a console, so the child calls
+# FreeConsole() (Add-Type trips AV); not DETACHED_PROCESS, which makes 5.1 exit 0 without running.
 CREATE_NO_WINDOW = 0x08000000
 
 _CONSOLE_LESS_OPTED_IN = (
@@ -612,8 +611,7 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     )
 
 
-# Removing the fast path leaves a bare SupportsVirtualTerminal read, which answers True when
-# redirected; assert directly that the shipped code answers False.
+# Without the fast path a bare SupportsVirtualTerminal read answers True when redirected.
 _VT_FAST_PATH = re.compile(
     r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
     r"(?:^[ \t]*#.*\n)*"

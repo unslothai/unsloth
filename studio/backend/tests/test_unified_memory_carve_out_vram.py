@@ -55,8 +55,7 @@ def _torch_module(props_by_ordinal) -> types.SimpleNamespace:
 
 
 def _not_hip(monkeypatch) -> None:
-    """Stub the torch the CUDA classifier asks for HIP, so a ROCm runner does not invert
-    every assertion here (the same trap test_dgx_spark_gpu_inventory.py documents)."""
+    """No HIP on torch, else a ROCm runner inverts these; see test_dgx_spark_gpu_inventory.py."""
     monkeypatch.setitem(
         sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = None))
     )
@@ -436,7 +435,6 @@ def test_the_predicate_is_the_whole_rule():
     """Direct table for the one function every site above shares."""
     # A blank CLI total: the DGX Spark shape, always widened.
     assert hw._integrated_total_is_understated(None, 121.0) is True
-    # A carve-out: the N1X shape.
     assert hw._integrated_total_is_understated(N1X_CARVE_OUT_GB, N1X_POOL_GB) is True
     assert hw._integrated_total_is_understated(45.39, 45.39) is False
     assert hw._integrated_total_is_understated(45.39, 45.40) is False
@@ -558,8 +556,7 @@ def test_a_numeric_mask_under_fastest_first_refuses_the_join(monkeypatch):
 
 
 def test_the_widened_utilization_is_capped_by_the_cgroup(monkeypatch):
-    """psutil reports host-wide counters in containers, while unified-memory use is charged to
-    memory.max, so published free bytes must not exceed what this process can still charge."""
+    """psutil is host-wide in containers, but memory.max bounds unified use, so cap free bytes."""
     _cuda_host(monkeypatch, _N1XProps())
     _host_memory(monkeypatch)
     monkeypatch.setattr(LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: 2048))
