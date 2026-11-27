@@ -4900,8 +4900,7 @@ def _linux_math_core_count(
 
 
 def _studio_cpu_thread_cap(env: Mapping[str, str]) -> Optional[int]:
-    # Studio's launcher validates the setting. In process-only callers, leave an invalid
-    # value to that caller's existing launch behavior.
+    # run.py and main.py reject an invalid value; other callers keep llama.cpp's default.
     try:
         cap = int(env.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
