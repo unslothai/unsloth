@@ -4546,6 +4546,12 @@ _ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
 def sync_load_when_quantizing(quantization_config, model_config):
     """Sync-load on-the-fly quantization: transformers 5.0-5.3 worker threads put full-precision
     tensors on the card faster than they are quantized (5.4+ already loads these synchronously)."""
+    if getattr(quantization_config, "_unsloth_gguf_packed", False):
+        # `gguf_packed = True`: transformers' GGUF quantizer keeps blocks packed with Unsloth's kernels.
+        from .gguf_packed import gguf_packed_load
+        with gguf_packed_load():
+            yield
+        return
     if (
         quantization_config is None
         or getattr(model_config, "quantization_config", None) is not None

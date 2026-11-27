@@ -1,0 +1,354 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+"""`gguf_packed = True`: quantized Linears keep their GGUF blocks, LoRA trains on top, and everything matches the
+same GGUF dequantized to dense (transformers' own load) bit for bit."""
+
+import os
+
+import numpy as np
+import pytest
+import torch
+from torch import nn
+
+from unsloth.kernels import gguf_reference as ref
+from unsloth.models import gguf_packed as gp
+
+# Byte offsets of the fp16 scale fields in one block, made small and finite so products stay meaningful.
+_F16_FIELDS = {
+    "Q4_0": (0,),
+    "Q5_0": (0,),
+    "Q8_0": (0,),
+    "Q4_K": (0, 2),
+    "Q5_K": (0, 2),
+    "Q6_K": (208,),
+    "IQ4_XS": (0,),
+    "IQ2_XXS": (0,),
+}
+_TYPES = ("Q4_K", "Q5_K", "Q6_K", "Q8_0", "Q4_0", "Q5_0", "IQ4_XS", "IQ2_XXS")
+
+
+def _blocks(
+    name,
+    rows,
+    cols,
+    seed,
+    scale = 0.01,
+):
+    t = ref.GGML_TYPE_IDS[name]
+    elems, size = ref.GGML_BLOCK[t]
+    rng = np.random.default_rng(seed)
+    raw = rng.integers(0, 256, size = (rows * cols // elems, size), dtype = np.uint8)
+    scale = np.array([scale], dtype = np.float16).view(np.uint8)
+    for offset in _F16_FIELDS[name]:
+        raw[:, offset : offset + 2] = scale
+    return torch.from_numpy(raw.reshape(rows, ref.row_bytes(t, cols)).copy())
+
+
+def _pair(
+    name,
+    rows = 64,
+    cols = 256,
+    seed = 0,
+    dtype = torch.float32,
+    permutation = None,
+):
+    t = ref.GGML_TYPE_IDS[name]
+    packed = _blocks(name, rows, cols, seed)
+    module = gp.UnslothGGUFLinear.from_packed(
+        packed, t, cols, rows, input_permutation = permutation, compute_dtype = dtype
+    )
+    weight = ref.dequantize_gguf(packed, t, (rows, cols), dtype)
+    if permutation is not None:
+        weight = weight[:, torch.argsort(permutation)]
+    dense = nn.Linear(cols, rows, bias = False, dtype = dtype)
+    dense.weight = nn.Parameter(weight, requires_grad = False)
+    return module, dense
+
+
+@pytest.mark.parametrize("name", _TYPES)
+def test_packed_linear_forward_backward_match_dense(name):
+    module, dense = _pair(name)
+    assert module.weight_packed.dtype == torch.uint8 and module.shape == (64, 256)
+    assert torch.equal(module.weight, dense.weight)
+    x = torch.randn(3, 5, 256, requires_grad = True)
+    x_dense = x.detach().clone().requires_grad_(True)
+    y, y_dense = module(x), dense(x_dense)
+    assert torch.equal(y, y_dense)
+    grad = torch.randn_like(y)
+    y.backward(grad)
+    y_dense.backward(grad)
+    assert torch.equal(x.grad, x_dense.grad)
+    assert not module.weight_packed.requires_grad and module.weight_packed.grad is None
+
+
+def test_input_permutation_is_the_dense_column_reorder():
+    permutation = torch.randperm(256)
+    module, dense = _pair("Q4_K", permutation = permutation)
+    x = torch.randn(4, 256)
+    # Stored columns are the model's reordered: y = blocks @ x[perm].
+    blocks = ref.dequantize_gguf(
+        module.weight_packed, module.ggml_type, module.shape, torch.float32
+    )
+    assert torch.allclose(module(x), x[:, permutation] @ blocks.t(), atol = 1e-5)
+    assert torch.equal(module(x), dense(x))
+
+
+@pytest.mark.parametrize("name", ("Q4_K", "Q8_0", "Q6_K"))
+def test_peft_lora_on_packed_base_matches_dense(name):
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(0)
+    module, dense = _pair(name)
+    trees = []
+    for base in (module, dense):
+        tree = nn.Sequential()
+        tree.add_module("proj", base)
+        config = peft.LoraConfig(
+            r = 4, lora_alpha = 8, target_modules = ["proj"], init_lora_weights = False
+        )
+        torch.manual_seed(1)
+        trees.append(peft.get_peft_model(tree, config))
+    x = torch.randn(6, 256)
+    losses, grads = [], []
+    for tree in trees:
+        loss = tree(x).square().mean()
+        loss.backward()
+        losses.append(loss)
+        grads.append({n: p.grad for n, p in tree.named_parameters() if p.requires_grad})
+    assert torch.equal(losses[0], losses[1])
+    assert grads[0].keys() == grads[1].keys() and len(grads[0]) == 2
+    for key in grads[0]:
+        assert torch.equal(grads[0][key], grads[1][key]), key
+    # merge_and_unload densifies the packed base, then folds the adapter in.
+    merged = [tree.merge_and_unload() for tree in trees]
+    assert type(merged[0].proj) is nn.Linear
+    assert torch.equal(merged[0].proj.weight, merged[1].proj.weight)
+
+
+def test_peft_unmerge_restores_the_packed_base():
+    peft = pytest.importorskip("peft")
+    module, _ = _pair("Q4_K")
+    packed = module.weight_packed
+    tree = nn.Sequential()
+    tree.add_module("proj", module)
+    tree = peft.get_peft_model(
+        tree, peft.LoraConfig(r = 4, target_modules = ["proj"], init_lora_weights = False)
+    )
+    x = torch.randn(2, 256)
+    before = tree(x)
+    tree.base_model.model.proj.merge()
+    tree.base_model.model.proj.unmerge()
+    base = tree.base_model.model.proj.base_layer
+    assert isinstance(base, gp.UnslothGGUFLinear) and base.weight_packed is packed
+    assert torch.allclose(tree(x), before, atol = 1e-5)
+
+
+def test_pissa_init_refused_on_packed_base():
+    peft = pytest.importorskip("peft")
+    module, _ = _pair("Q8_0")
+    tree = nn.Sequential()
+    tree.add_module("proj", module)
+    with pytest.raises(NotImplementedError, match = "packed in its GGUF"):
+        peft.get_peft_model(
+            tree, peft.LoraConfig(r = 4, target_modules = ["proj"], init_lora_weights = "pissa")
+        )
+
+
+@pytest.mark.parametrize("name", ("Q4_K", "Q6_K"))
+def test_fused_lora_kernels_read_the_packed_state(name):
+    from unsloth.kernels.utils import fast_dequantize, matmul_lora
+
+    module, dense = _pair(name)
+    state = module.mxfp4_quant_state()
+    assert getattr(type(state), "_unsloth_packed_weight_state", False)
+    W = module.weight_packed
+    assert torch.equal(fast_dequantize(W, state), dense.weight)
+    assert torch.equal(fast_dequantize(W.t(), state), dense.weight.t())
+    x = torch.randn(7, 256)
+    A, B = torch.randn(4, 256) * 0.1, torch.randn(64, 4) * 0.1
+    out = matmul_lora(x, W, state, A, B, 0.5)
+    expected = x @ dense.weight.t() + 0.5 * (x @ A.t()) @ B.t()
+    assert torch.allclose(out, expected, atol = 1e-4)
+    grad = torch.randn(7, 64)
+    # Backward orientation: W.t() view, X is the output gradient.
+    assert torch.allclose(
+        matmul_lora(grad, W.t(), state, None, None, None), grad @ dense.weight, atol = 1e-4
+    )
+
+
+def test_request_validation(monkeypatch):
+    assert gp.check_gguf_packed_request({"gguf_file": "a.gguf"}) is False
+    with pytest.raises(ValueError, match = "gguf_file"):
+        gp.check_gguf_packed_request({"gguf_packed": True})
+    with pytest.raises(NotImplementedError, match = "full_finetuning"):
+        gp.check_gguf_packed_request(
+            {"gguf_packed": True, "gguf_file": "a.gguf"}, full_finetuning = True
+        )
+    monkeypatch.setattr(
+        gp, "gguf_packed_supported", lambda: "transformers 4.57.6 is older than 5.18.0"
+    )
+    with pytest.raises(RuntimeError, match = "5.18.0"):
+        gp.check_gguf_packed_request({"gguf_packed": True, "gguf_file": "a.gguf"})
+
+
+def test_dense_default_unchanged():
+    from unsloth.models._utils import gguf_dequantize_kwargs
+
+    kwargs = gguf_dequantize_kwargs({"gguf_file": "a.gguf"})
+    config = kwargs.get("quantization_config")
+    assert config is None or config.dequantize is True
+
+
+# ----------------------------------------------------------------------------------------------------------
+# A tiny llama GGUF written here: packed load vs transformers' dense load of the same file.
+# ----------------------------------------------------------------------------------------------------------
+
+_HIDDEN, _HEADS, _KV, _HEAD_DIM, _FFN, _LAYERS, _VOCAB = 256, 2, 1, 128, 512, 2, 512
+_LLAMA_TYPES = {
+    "attn_q": "Q4_K",
+    "attn_k": "Q8_0",
+    "attn_v": "Q6_K",
+    "attn_output": "IQ4_XS",
+    "ffn_gate": "Q5_0",
+    "ffn_up": "Q4_0",
+    "ffn_down": "Q5_K",
+}
+
+
+def _write_llama_gguf(path, arch = "llama"):
+    gguf = pytest.importorskip("gguf")
+    writer = gguf.GGUFWriter(str(path), arch)
+    writer.add_uint32(f"{arch}.context_length", 256)
+    writer.add_uint32(f"{arch}.embedding_length", _HIDDEN)
+    writer.add_uint32(f"{arch}.block_count", _LAYERS)
+    writer.add_uint32(f"{arch}.feed_forward_length", _FFN)
+    writer.add_uint32(f"{arch}.rope.dimension_count", _HEAD_DIM)
+    writer.add_uint32(f"{arch}.attention.head_count", _HEADS)
+    writer.add_uint32(f"{arch}.attention.head_count_kv", _KV)
+    writer.add_float32(f"{arch}.attention.layer_norm_rms_epsilon", 1e-5)
+    writer.add_float32(f"{arch}.rope.freq_base", 10000.0)
+    writer.add_string("tokenizer.ggml.model", "llama")
+    writer.add_array("tokenizer.ggml.tokens", [f"t{i}" for i in range(_VOCAB)])
+    rng = np.random.default_rng(0)
+
+    def quantized(name, rows, cols, type_name, seed):
+        t = getattr(gguf.GGMLQuantizationType, type_name)
+        # Small scales keep the logits O(1), so the LoRA gradients compare at a tight tolerance.
+        writer.add_tensor(
+            name, _blocks(type_name, rows, cols, seed, scale = 1e-4).numpy(), raw_dtype = t
+        )
+
+    quantized("token_embd.weight", _VOCAB, _HIDDEN, "Q8_0", 1)
+    quantized("output.weight", _VOCAB, _HIDDEN, "Q6_K", 2)
+    writer.add_tensor(
+        "output_norm.weight", (1 + 0.1 * rng.standard_normal(_HIDDEN)).astype(np.float32)
+    )
+    shapes = {
+        "attn_q": (_HEADS * _HEAD_DIM, _HIDDEN),
+        "attn_k": (_KV * _HEAD_DIM, _HIDDEN),
+        "attn_v": (_KV * _HEAD_DIM, _HIDDEN),
+        "attn_output": (_HIDDEN, _HEADS * _HEAD_DIM),
+        "ffn_gate": (_FFN, _HIDDEN),
+        "ffn_up": (_FFN, _HIDDEN),
+        "ffn_down": (_HIDDEN, _FFN),
+    }
+    for layer in range(_LAYERS):
+        for leaf, (rows, cols) in shapes.items():
+            quantized(
+                f"blk.{layer}.{leaf}.weight", rows, cols, _LLAMA_TYPES[leaf], 10 * layer + len(leaf)
+            )
+        for norm in ("attn_norm", "ffn_norm"):
+            writer.add_tensor(
+                f"blk.{layer}.{norm}.weight",
+                (1 + 0.1 * rng.standard_normal(_HIDDEN)).astype(np.float32),
+            )
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+
+def _new_gguf_path():
+    if gp.gguf_packed_supported() is not None:
+        pytest.skip(f"packed GGUF loading needs transformers >= {gp.GGUF_PACKED_MIN_TRANSFORMERS}")
+
+
+def test_packed_llama_gguf_matches_transformers_dense_load(tmp_path):
+    _new_gguf_path()
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf")
+    dense = AutoModelForCausalLM.from_pretrained(
+        tmp_path, gguf_file = "tiny.gguf", dtype = torch.float32
+    )
+    with gp.gguf_packed_load():
+        packed = AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            dtype = torch.float32,
+            attn_implementation = "eager",
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+    census = packed._unsloth_gguf_packed_census
+    assert census["packed_linear"] == 7 * _LAYERS
+    assert set(census["dequantized"]) == {"model.embed_tokens", "lm_head"}
+    assert getattr(packed, "hf_quantizer", None) is None
+    reference = dense.state_dict()
+    for name, module in packed.named_modules():
+        if isinstance(module, gp.UnslothGGUFLinear):
+            assert torch.equal(module.weight, reference[f"{name}.weight"]), name
+    for key, value in packed.state_dict().items():
+        if value.dtype != torch.uint8:
+            assert torch.equal(value, reference[key]), key
+    ids = torch.randint(0, _VOCAB, (2, 9))
+    # Bitwise-equal weights; the products may differ in the last bits (CPU GEMM blocking follows the buffers).
+    with torch.no_grad():
+        torch.testing.assert_close(
+            packed(input_ids = ids).logits, dense(input_ids = ids).logits, rtol = 1e-5, atol = 1e-3
+        )
+
+    # One LoRA step on both: same loss and gradients, the base never trains.
+    peft = pytest.importorskip("peft")
+    grads, losses = [], []
+    for model in (dense, packed):
+        torch.manual_seed(0)
+        model = peft.get_peft_model(
+            model,
+            peft.LoraConfig(
+                r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = False
+            ),
+        )
+        out = model(input_ids = ids, labels = ids)
+        out.loss.backward()
+        losses.append(out.loss.detach())
+        grads.append({n: p.grad for n, p in model.named_parameters() if p.requires_grad})
+    torch.testing.assert_close(losses[0], losses[1], rtol = 1e-5, atol = 0)
+    assert grads[0].keys() == grads[1].keys() and len(grads[0]) == 2 * 7 * _LAYERS
+    for key in grads[0]:
+        torch.testing.assert_close(grads[0][key], grads[1][key], rtol = 1e-4, atol = 1e-5, msg = key)
+
+
+def test_unknown_architecture_is_named(tmp_path):
+    _new_gguf_path()
+    from transformers import AutoModelForCausalLM
+
+    _write_llama_gguf(tmp_path / "tiny.gguf", arch = "starcoder2")
+    with gp.gguf_packed_load(), pytest.raises(NotImplementedError, match = "starcoder2"):
+        AutoModelForCausalLM.from_pretrained(
+            tmp_path,
+            gguf_file = "tiny.gguf",
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+
+
+def test_load_context_restores_transformers(tmp_path):
+    _new_gguf_path()
+    import transformers.integrations.gguf.dequant as dequant
+    import transformers.integrations.gguf.gguf_conversion_mapping as mapping
+    import transformers.quantizers.quantizer_gguf as quantizer
+
+    before = (dict(dequant.GGML_BLOCK), dict(mapping.GGUF_ARCHS), quantizer.get_gguf_kernel)
+    with pytest.raises(RuntimeError, match = "boom"):
+        with gp.gguf_packed_load():
+            assert "llama" in mapping.GGUF_ARCHS
+            raise RuntimeError("boom")
+    assert (dict(dequant.GGML_BLOCK), dict(mapping.GGUF_ARCHS), quantizer.get_gguf_kernel) == before
