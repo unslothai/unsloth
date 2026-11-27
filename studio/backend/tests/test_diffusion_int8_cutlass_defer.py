@@ -495,8 +495,7 @@ def test_a_failed_load_drops_only_its_own_shapes(monkeypatch):
 
 
 def test_cancel_waits_for_a_finalizer_already_past_job_removal(monkeypatch):
-    """A finalizer runs after the worker removed its job: cancel() must wait for it, and it must neither remove a
-    replacement load's shape keys nor publish for it."""
+    """cancel() waits for a finalizer already past job removal; it must not touch a new load."""
     table: dict = {}
     _env(monkeypatch, table)
     finishing = threading.Event()

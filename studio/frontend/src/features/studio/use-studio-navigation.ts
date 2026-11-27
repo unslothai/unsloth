@@ -12,12 +12,17 @@ import { useShallow } from "zustand/react/shallow";
 
 export type TrainSubTab = "configure" | "current-run" | "history";
 
-function initialStudioTab(
+let mountedStudioPages = 0;
+
+function studioTabFor(
   selectedHistoryRunId: string | null,
+  jobId: string | null,
   trainingRunActive: boolean,
 ): TrainSubTab {
   if (selectedHistoryRunId) {
-    return "history";
+    return trainingRunActive && selectedHistoryRunId === jobId
+      ? "current-run"
+      : "history";
   }
   return trainingRunActive ? "current-run" : "configure";
 }
@@ -53,6 +58,7 @@ function runtimeRequestedTab({
   selectedHistoryRunId: string | null;
   trainingRunActive: boolean;
 }): TrainSubTab | null {
+  // A selected run's visible tab comes from studioTabFor; History is where clearing it lands.
   if (
     selectedHistoryRunId &&
     selectedHistoryRunId !== previousSelectedHistoryRunId &&
@@ -111,40 +117,32 @@ export function useStudioNavigation() {
     })),
   );
   const [requestedTab, setRequestedTabState] = useState<TrainSubTab>(() =>
-    initialStudioTab(selectedHistoryRunId, trainingRunActive),
+    selectedHistoryRunId
+      ? "history"
+      : studioTabFor(null, currentJobId, trainingRunActive),
   );
   const requestedTabRef = useRef(requestedTab);
   const setRequestedTab = useCallback((next: TrainSubTab) => {
     requestedTabRef.current = next;
     setRequestedTabState(next);
   }, []);
-  const activeTab = activeStudioTab(
-    requestedTab,
-    trainingRunActive,
-    showTrainingView,
-  );
+  const activeTab = selectedHistoryRunId
+    ? studioTabFor(selectedHistoryRunId, currentJobId, trainingRunActive)
+    : activeStudioTab(requestedTab, trainingRunActive, showTrainingView);
 
   useEffect(() => {
     setCurrentRunViewActive(activeTab === "current-run");
     return () => setCurrentRunViewActive(false);
   }, [activeTab, setCurrentRunViewActive]);
 
+  // A route change briefly mounts a second Train page in the fading-out wrapper; only the last one to unmount clears.
   useEffect(() => {
-    return () => setSelectedHistoryRunId(null);
+    mountedStudioPages += 1;
+    return () => {
+      mountedStudioPages -= 1;
+      if (mountedStudioPages === 0) setSelectedHistoryRunId(null);
+    };
   }, [setSelectedHistoryRunId]);
-
-  useEffect(() => {
-    if (activeTab !== "current-run" || selectedHistoryRunId === null) {
-      return;
-    }
-    if (
-      requestedTabRef.current === "current-run" &&
-      useTrainingRuntimeStore.getState().selectedHistoryRunId ===
-        selectedHistoryRunId
-    ) {
-      setSelectedHistoryRunId(null);
-    }
-  }, [activeTab, selectedHistoryRunId, setSelectedHistoryRunId]);
 
   useEffect(() => {
     return useTrainingRuntimeStore.subscribe((state, previousState) => {
@@ -171,37 +169,23 @@ export function useStudioNavigation() {
   const handleTabChange = useCallback(
     (value: TrainSubTab) => {
       setRequestedTab(value);
-      if (value !== "history") {
-        setSelectedHistoryRunId(null);
-      }
+      setSelectedHistoryRunId(null);
     },
     [setRequestedTab, setSelectedHistoryRunId],
   );
 
   const clearHistorySelection = useCallback(() => {
-    setSelectedHistoryRunId(null);
-  }, [setSelectedHistoryRunId]);
-
-  const handleHistoryRunSelected = useCallback(
-    (runId: string) => {
-      if (runId === currentJobId && trainingRunActive) {
-        handleTabChange("current-run");
-        return;
-      }
-      setSelectedHistoryRunId(runId);
-    },
-    [currentJobId, handleTabChange, setSelectedHistoryRunId, trainingRunActive],
-  );
+    handleTabChange("history");
+  }, [handleTabChange]);
 
   const handleResumeStarted = useCallback(() => {
-    setSelectedHistoryRunId(null);
     handleTabChange("current-run");
-  }, [handleTabChange, setSelectedHistoryRunId]);
+  }, [handleTabChange]);
 
   return {
     activeTab,
     clearHistorySelection,
-    handleHistoryRunSelected,
+    handleHistoryRunSelected: setSelectedHistoryRunId,
     handleResumeStarted,
     handleTabChange,
     trainingRunActive,

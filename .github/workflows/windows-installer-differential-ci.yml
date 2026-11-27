@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Installs from the merge base and the candidate on identical runners and compares the
-# transcript, .lnk contract, launcher files and reinstall writes; zero differences passes.
-# VOID (nothing measured) has its own exit code, and the comparer self-tests first
-# (tests/python/test_installer_differential_comparer.py). Opt-in by label, dispatch or
-# weekly schedule. Cannot answer for third-party AV or a real 5.1 console.
+# Base and candidate on same runners (transcript, .lnk, launchers, reinstall writes); zero diffs
+# pass; VOID (unmeasured) has own exit code; self-tests run first
+# (tests/python/test_installer_differential_comparer.py); opt-in by label, dispatch, weekly; cannot
+# judge third-party AV or real 5.1 console.
 
 name: "Windows: installer differential (base vs head)"
 
@@ -115,17 +114,14 @@ jobs:
               exit 1
             fi
           elif [ -n "${PR_BASE:-}" ]; then
-            # The merge base, not the base tip.
             base="$(git merge-base "$PR_BASE" "$head")"
           else
-            # The default branch's merge base, as base_ref documents; HEAD~1 is wrong for multi-commit
-            # feature branches.
+            # Default branch's merge base; HEAD~1 is wrong for multi-commit feature branches.
             git fetch --no-tags origin "$DEFAULT_BRANCH" 2>/dev/null || true
             default_tip="$(git rev-parse --verify --quiet FETCH_HEAD || git rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" || true)"
             base="$(git merge-base "$default_tip" "$head" 2>/dev/null || true)"
             if [ -n "$default_tip" ] && [ "$head" = "$default_tip" ]; then
-              # Only at the default branch tip (weekly health run) compare with the previous commit;
-              # other ancestor cases fall through to the same-commit guard and are VOID.
+              # At default tip: compare with previous commit; other ancestor cases are VOID.
               echo "head is the tip of $DEFAULT_BRANCH, so this compares it against the previous commit on that branch"
               base="$(git rev-parse HEAD~1)"
             elif [ -z "$base" ]; then
@@ -193,7 +189,6 @@ jobs:
             exit 1
           }
 
-      # Both sides are measured with the candidate's collector and comparer.
       - name: Take the measuring tools from the candidate, not from each side
         shell: pwsh
         env:
@@ -331,7 +326,6 @@ jobs:
       - name: Prove the comparer can still fail, then compare
         run: |
           set -euo pipefail
-          # Self-test again immediately before the verdict.
           python .github/scripts/compare_installer_evidence.py --self-test
           echo
           set +e

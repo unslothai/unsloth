@@ -110,7 +110,6 @@ def probe_torch_wheel_env(
                     "torch_mm = parts[0] + '.' + minor; "
                     "print(json.dumps({"
                     "'python_tag': f'cp{sys.version_info.major}{sys.version_info.minor}', "
-                    # Differs from python_tag only on a free-threaded build (cp314t).
                     "'abi_tag': f'cp{sys.version_info.major}{sys.version_info.minor}' + ('t' if sysconfig.get_config_var('Py_GIL_DISABLED') else ''), "
                     "'torch_mm': torch_mm, "
                     # xFormers publishes one wheel per exact torch PATCH and per CUDA MINOR, so 'torch_mm' / 'cuda_major' cannot pick between them. Full release + full CUDA version: cu126 and cu128 are different builds of the same version string.
@@ -231,8 +230,7 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
-# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
+# Linux torch 2.10-2.12: our causal-conv1d/mamba-ssm (flash-attn 2.8.1 smaller, so upstream).
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
@@ -365,9 +363,8 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
-# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
-# ahead of the source fallback, so it resolves to nothing.
+# Pinned causal-conv1d v1.6.1.post4 and mamba-ssm v2.3.1 publish cp310-cp313; other cells (CUDA 13
+# before torch 2.9, aarch64 before 2.7, abiFALSE after 2.6) would 404 before source fallback.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,
@@ -404,8 +401,7 @@ PINNED_SOURCE_BUILD_MAX_TORCH = (2, 12)
 
 
 def pinned_source_build_supported(env: dict[str, str] | None) -> bool:
-    """Whether a source build of the pinned causal-conv1d / mamba-ssm (or their upstream wheels)
-    can work with this torch; from torch 2.13 on only our prebuilt wheels can."""
+    """Whether source builds or upstream wheels work with this torch; from 2.13 on only ours."""
     try:
         major, minor = (int(part) for part in str((env or {}).get("torch_mm") or "").split(".")[:2])
     except ValueError:

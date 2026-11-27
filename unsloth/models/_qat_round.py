@@ -131,8 +131,7 @@ def _checksum(weight):
         elif size == 1:
             flat = flat.view(torch.uint8)
         else:
-            # 4 bytes as one int32 word, 8-byte dtypes (float64) as two: the bits, never a value conversion
-            # (float64 weights below 1 in magnitude all converted to 0, so every such weight matched).
+            # Compare bits, not values: float64 |x| < 1 became 0, so all such weights matched.
             flat = flat.view(torch.int32)
         total = 0
         for start in range(0, flat.numel(), _CHUNK):
@@ -178,8 +177,7 @@ def _rewritten(quantizer, weight):
 
 
 def _unversioned_write(record, weight, state):
-    """An inference tensor has no version counter: an in place write (a reload under inference mode) keeps its
-    (pointer, None) state, so compare its values with the rounding checksum instead. False when it cannot tell."""
+    """Inference tensors have no version counter: compare values to the checksum; else False."""
     if (
         state is None
         or state[1] is not None
@@ -194,8 +192,7 @@ def _unversioned_write(record, weight, state):
 
 
 def _adopted_record(weight, state):
-    """Record for a weight taken as already rounded (a loaded rounded checkpoint, a copied or unpickled model),
-    with its checksum, so a later device move of it is still recognised as rounded."""
+    """Rounded weight adopted on load, copy or unpickle; checksum survives device moves."""
     record = _RoundRecord(state)
     try:
         record.checksum = (state, _checksum(weight))
@@ -205,8 +202,7 @@ def _adopted_record(weight, state):
 
 
 def _same_rounded_values(record, weight, state):
-    """A weight with new storage or version (a device move: model.cpu(), .to()) that still holds the values
-    it was rounded to; adopts the new state when so. False without a rounding checksum to compare."""
+    """Still holds rounded values after a move: adopts new state. False without a checksum."""
     if record.checksum is None:
         return False
     try:
@@ -304,8 +300,7 @@ def _before_load(
     local_metadata = None,
     *args,
 ):
-    """load_state_dict pre hook on a rounded module: note the weight's state and whether the incoming
-    weight is already rounded (marked so by the state_dict that produced it, or the rounded one it holds)."""
+    """Notes whether the incoming weight is already rounded (marked, or held rounded)."""
     module.__dict__.pop(_SAME, None)
     quantizer = module._modules.get("weight_fake_quantizer")
     if quantizer is None or not quantizer.__dict__.get(_FLAG, False):
@@ -318,10 +313,9 @@ def _before_load(
     try:
         same = incoming.shape == weight.shape
         if same:
-            # The state_dict marker holds a checksum taken before any dtype cast (any edit or
-            # replacement changes it) and the fake quantization recipe; a marked weight counts as
-            # rounded only if still exact in this dtype or already held, and values rounded on
-            # another grid (int8 into int4) do not count.
+            # The marker is a checksum taken before any dtype cast plus the quant recipe; a marked
+            # weight counts only if still exact in this dtype or held, not if rounded on another
+            # grid.
             marked = isinstance(marker, (tuple, list)) and list(marker) == [
                 *_checksum(incoming),
                 _recipe(quantizer),
@@ -347,8 +341,7 @@ def _after_load(module, incompatible_keys):
     if state == before and not _unversioned_write(quantizer.__dict__.get(_RECORD), weight, state):
         return  # not written (for example a failed shape check)
     if same:
-        # Rounded values (another prepared model's state_dict, or this model's own): already on the grid. int8 /
-        # cactus fake quant is not idempotent, so rounding them again would move them.
+        # Rounded values are already on the grid; int8 / cactus fake quant is not idempotent.
         quantizer.__dict__[_RECORD] = _adopted_record(weight, state)
         return
     _unround(quantizer)

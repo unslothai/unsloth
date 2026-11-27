@@ -18,9 +18,8 @@ function findScrollContainer(element: HTMLElement): HTMLElement | null {
 }
 
 /**
- * Locks the nearest scrollable ancestor's scrollTop during a collapsible animation so the page does
- * not jump; unlike assistant-ui's useScrollLock it does not set scrollbar-width none, since hiding
- * the scrollbar flickered tool-call collapsibles.
+ * Locks the nearest scrollable ancestor's scrollTop during a collapse so the page does not jump;
+ * unlike assistant-ui's useScrollLock it skips scrollbar-width none, since hiding it flickered.
  */
 export function useCollapseScrollLock(
   animatedElementRef: RefObject<HTMLElement | null>,

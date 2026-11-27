@@ -152,13 +152,13 @@ test("video-family adapters get Deploy to Video; image families keep Deploy to C
   assert.match(src, /isVideoFamily\(famName\) \? "Deploy to Video" : "Deploy to Create"/);
   assert.match(
     src,
-    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,400}\(isVideoFamily\(viewRun\.family \|\| ""\) \? onDeployVideo : onDeploy\)\?\.\(/,
+    /viewRun\.catalog_path && canDeployFamily\(viewRun\.family \|\| ""\) && \(\s*<Button[\s\S]{0,200}onClick=\{\(\) => deployRun\(viewRun\)\}/,
   );
   assert.match(
     src,
-    /status\?\.catalog_path && canDeployFamily\(status\.family \|\| family\?\.name \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{onDeployClick\}>/,
+    /liveDeploy\?\.catalog_path && canDeployFamily\(liveDeploy\.family \|\| ""\) && \(\s*<Button type="button" size="sm" onClick=\{\(\) => deployRun\(liveDeploy\)\}>/,
   );
-  assert.match(src, /\(isVideoFamily\(famName\) \? onDeployVideo : onDeploy\)\?\.\(\{/);
+  assert.match(src, /\(isVideoFamily\(request\.family\) \? onDeployVideo : onDeploy\)\?\.\(request\)/);
 });
 
 test("Deploy loads the family base on Video with the adapter at weight 1", () => {

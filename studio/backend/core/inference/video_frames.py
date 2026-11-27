@@ -128,7 +128,6 @@ def refuse_non_finite_tensor(frames: Any) -> None:
 
 
 def _decoded_frames(output: Any) -> Any:
-    """The pixel tensor of a ``vae.decode`` result: a tensor, ``(tensor, ...)`` or a ``DecoderOutput``."""
     if isinstance(output, (tuple, list)):
         return output[0] if output else None
     sample = getattr(output, "sample", None)
@@ -183,8 +182,7 @@ _FRAME_WISE_METHODS = ("postprocess", "_denormalize_conditionally", "denormalize
 
 
 def _frame_wise_prepare(proc: Any, postprocess: Any, frames: Any, kwargs: dict) -> Any:
-    """Per-slice ``postprocess(slice, "pt")`` prepare, or None. Only diffusers' own unoverridden VaeImageProcessor
-    methods are frame-wise; a subclass or instance override may mix frames, so it keeps the whole-clip call."""
+    """Per-slice prepare, or None if a VaeImageProcessor method is overridden (may mix frames)."""
     try:
         from diffusers.image_processor import VaeImageProcessor
     except Exception:  # noqa: BLE001

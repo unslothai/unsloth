@@ -4,11 +4,11 @@
 # The transformer, scheduler and pipeline below are a port of OpenMOSS-Team's ``pipeline_moss_image.py``
 # (Apache-2.0, https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT), keeping its state-dict names and numerics.
 
-"""MOSS-Image in-tree diffusers pipeline, no remote code; numerics bit-identical to reference, only
-default sigmas differ"""
+"""In-tree MOSS-Image pipeline; no remote code, bit-identical numerics, default sigmas differ."""
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 from typing import Any, Callable, Optional
@@ -42,6 +42,13 @@ SHARED_QKV_ATTR = "_unsloth_moss_shared_qkv"
 SITU_DOWN_ATTR = "_unsloth_moss_situ_down"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
+# Kill switch for the layer-major batched forward of an offloaded DiT: 0 runs each row through every block in turn.
+LAYER_MAJOR_ENV = "UNSLOTH_MOSS_LAYER_MAJOR"
+# Hooks that only move a block's weights and arguments; any other hook on a block keeps the per-sample forward.
+_ROW_SAFE_HOOKS = frozenset(
+    {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
+)
+_LAYER_MAJOR_STATS: dict = {"forwards": 0, "rows": 0, "serial": {}}
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
 # SFT skips nothing; Base skips block 22 for the first half of the sigma schedule. Env 0 = block 22 every step.
 REFERENCE_SKIP_ENV = "UNSLOTH_MOSS_REFERENCE_SKIP"
@@ -108,9 +115,8 @@ def _validate_skip_layers(
 
 
 def _length_dynamic(*tensors) -> None:
-    """Hint dim 1 (the text length) of the refiner block inputs as dynamic. The pipeline refines the text once per render
-    OUTSIDE ``forward`` (``refine_text``), where Studio's per-forward prompt-length arming does not reach, so the
-    compiled text block otherwise specialised on the first length and recompiled on the uncond one. A no-op eagerly."""
+    """Marks dim 1 (text length) of refiner inputs dynamic: refine_text runs outside forward, where
+    prompt-length arming misses, so the uncond length would recompile; no-op eagerly."""
     try:
         if torch.compiler.is_compiling():
             return
@@ -123,8 +129,7 @@ def _length_dynamic(*tensors) -> None:
 
 
 def _rope_tables(rope):
-    """``(cos, sin)`` duplicated to the full head dim, shaped to broadcast over heads: the split-half layout the
-    reference's ``_rotate`` builds on every call, built once."""
+    """Cos/sin duplicated to full head dim, unsqueezed to broadcast over heads; built once."""
     sin, cos = rope.chunk(2, -1)
     sin = torch.cat((sin, sin), -1).unsqueeze(-2)
     cos = torch.cat((cos, cos), -1).unsqueeze(-2)
@@ -279,6 +284,10 @@ class _Block(nn.Module, _AttentionMixin):
         return self._linear("q", y), self._linear("k", y), self._linear("v", y)
 
     def forward(self, x, rope, modulation):
+        if isinstance(x, (list, tuple)):
+            # Layer-major rows: one call so an offload hook uploads weights once; each row runs solo.
+            forward = type(self).forward
+            return tuple(forward(self, *row) for row in zip(x, rope, modulation))
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
         dtype = _compute_dtype(self.proj["q"])
@@ -390,6 +399,87 @@ def _capturing(device) -> bool:
         return False
 
 
+def _bound_to(fn, module) -> bool:
+    return (
+        getattr(fn, "__func__", None) is type(module).forward
+        and getattr(fn, "__self__", None) is module
+    )
+
+
+def _passes_rows(layer) -> bool:
+    """Whether ``layer`` reaches ``_Block.forward`` through weight-moving offload hooks only."""
+    if getattr(layer, "_compiled_call_impl", None) is not None:
+        return False
+    if layer._forward_hooks or layer._forward_pre_hooks:
+        return False
+    instance = layer.__dict__.get("forward")
+    if instance is None:
+        return True
+    # The outermost forward must be the hook wrapper itself, not something installed over it.
+    wrapper = getattr(getattr(instance, "func", None), "__qualname__", "")
+    if not isinstance(instance, functools.partial) or instance.args[:1] != (layer,):
+        return False
+    registry = layer.__dict__.get("_diffusers_hook")
+    refs = list(getattr(registry, "_fn_refs", None) or ())
+    if refs:
+        names = set(getattr(registry, "_hook_order", None) or ())
+        if not wrapper.startswith("HookRegistry.register_hook.") or not names <= _ROW_SAFE_HOOKS:
+            return False
+        if any(ref.original_forward is not None for ref in refs):
+            return False
+        return _bound_to(refs[0].forward, layer)
+    old = layer.__dict__.get("_old_forward")  # accelerate's add_hook_to_module
+    return (
+        wrapper.startswith("add_hook_to_module.")
+        and getattr(layer, "_hf_hook", None) is not None
+        and _bound_to(old, layer)
+    )
+
+
+def layer_major_refusal(transformer) -> Optional[str]:
+    """Why a batch cannot run layer-major (one upload per block per call, rows bit-identical to solo), else None."""
+    if _env_off(LAYER_MAJOR_ENV):
+        return f"{LAYER_MAJOR_ENV}=0"
+    if transformer.gradient_checkpointing and torch.is_grad_enabled():
+        return "gradient checkpointing"
+    if (
+        torch.compiler.is_compiling()
+        or getattr(transformer, "_compiled_call_impl", None) is not None
+    ):
+        return "compiled denoiser"
+    if not _offloaded(transformer):
+        return "resident weights"
+    if not all(_passes_rows(layer) for layer in transformer.layers):
+        return "a block runs compiled, graphed or hooked"
+    return None
+
+
+# Measured layer-major verdicts per card; ``serves`` only if the G2c, row-0 and speed gates passed. Others render alone.
+MEASURED_BATCH_WINS: dict = {
+    # bf16 group offload, 1024 px, 10 steps; torch 2.14.1, diffusers 0.42.1: N=2 1.98x, N=4 2.42x vs serial.
+    "NVIDIA A100-SXM4-80GB": {"serves": True, "speed_lo": 1.98, "g2c_upper": 0.0, "g2c_n": 24},
+}
+
+
+def coalesce_key(pipe) -> Optional[tuple]:
+    """Batch key for a layer-major load on a card with a serving verdict, else None (render alone)."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or layer_major_refusal(transformer) is not None:
+        return None
+    device = torch.device(pipe._execution_device)
+    card = torch.cuda.get_device_name(device) if device.type == "cuda" else device.type
+    verdict = MEASURED_BATCH_WINS.get(card) or {}
+    return ("moss-image layer-major",) if verdict.get("serves") is True else None
+
+
+def layer_major_stats(reset: bool = False) -> dict:
+    """``forwards`` / ``rows`` served layer-major, and ``serial`` batches by refusal reason."""
+    out = {**_LAYER_MAJOR_STATS, "serial": dict(_LAYER_MAJOR_STATS["serial"])}
+    if reset:
+        _LAYER_MAJOR_STATS.update(forwards = 0, rows = 0, serial = {})
+    return out
+
+
 def _model_bases():
     from diffusers.configuration_utils import ConfigMixin
     from diffusers.models.modeling_utils import ModelMixin
@@ -468,8 +558,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
         return _compute_dtype(self.video_embedder)
 
     def refine_text(self, encoder_hidden_states):
-        """The text refiner over [B, L, text_dim] at full length L (no padding): [B, L, dim]. Depends on neither the
-        latent nor the timestep, so it is step-invariant; the RoPE text positions depend only on L."""
+        """Unpadded [B, L, text_dim] -> [B, L, dim]; step-invariant as RoPE depends only on L."""
         length = encoder_hidden_states.shape[1]
         device = encoder_hidden_states.device
         _, text_tables = self.rope.tables(1, 1, length, device, self._activation_dtype())
@@ -525,6 +614,19 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
             if mask.shape != text_in.shape[:2] or not torch.all((mask == 0) | (mask == 1)):
                 raise ValueError("encoder_attention_mask must be a binary [B, S] mask.")
         device = hidden_states.device
+        if batch > 1:
+            refusal = layer_major_refusal(self)
+            if refusal is None:
+                sample = self._layer_major(
+                    hidden_states, timestep, text_in, mask, refined_text, skip_layers
+                )
+                if not return_dict:
+                    return (sample,)
+                from diffusers.models.modeling_outputs import Transformer2DModelOutput
+
+                return Transformer2DModelOutput(sample = sample)
+            serial = _LAYER_MAJOR_STATS["serial"]
+            serial[refusal] = serial.get(refusal, 0) + 1
         mod, head = self._time_modulation(timestep, batch, device)
         dtype = self._activation_dtype()
         outputs = []
@@ -561,6 +663,48 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
         from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
         return Transformer2DModelOutput(sample = sample)
+
+    def _layer_major(self, hidden_states, timestep, text_in, mask, refined_text, skip_layers):
+        """Per-sample forward, layer loop outer: AdaLN runs at batch 1 too so each row is bit-identical to solo."""
+        batch, _, height, width = hidden_states.shape
+        device = hidden_states.device
+        times = torch.as_tensor(timestep, device = device, dtype = torch.float32).reshape(-1)
+        times.expand(batch)  # the per-sample path's shape check
+        if times.numel() == 1:
+            per_row = [self._time_modulation(timestep, 1, device)] * batch
+        else:
+            per_row = [self._time_modulation(times[index], 1, device) for index in range(batch)]
+        xs, tables, mods = [], [], []
+        for index in range(batch):
+            if mask is None:
+                context = text_in[index : index + 1]
+            else:
+                context = text_in[index : index + 1, mask[index].bool()]
+            length = context.shape[1]
+            if length == 0:
+                raise ValueError("Each sample needs at least one valid text token.")
+            video = hidden_states[index : index + 1].flatten(2).transpose(1, 2)
+            video = self.video_embedder(video.to(_compute_dtype(self.video_embedder)).contiguous())
+            full_tables, text_tables = self.rope.tables(height, width, length, device, video.dtype)
+            text = self.text_embedder(context, text_tables) if refined_text is None else context
+            xs.append(torch.cat((video, text.to(video.dtype)), 1))
+            tables.append(full_tables)
+            mods.append(per_row[index][0])
+        xs, tables, mods = tuple(xs), tuple(tables), tuple(mods)
+        for layer_index, layer in enumerate(self.layers):
+            if layer_index in skip_layers:
+                continue
+            xs = layer(xs, tables, mods)
+        outputs = []
+        for index, x in enumerate(xs):
+            head = per_row[index][1]
+            x = self.final_norm_video(x[:, : height * width].to(self.final_norm_video.weight.dtype))
+            x = x * (1 + head[:, 1, None]) + head[:, 0, None]
+            x = self.final_linear_video(x.to(_compute_dtype(self.final_linear_video)))
+            outputs.append(x.transpose(1, 2).reshape(1, -1, height, width))
+        _LAYER_MAJOR_STATS["forwards"] += 1
+        _LAYER_MAJOR_STATS["rows"] += batch
+        return torch.cat(outputs)
 
 
 from diffusers import FlowMatchEulerDiscreteScheduler  # noqa: E402
@@ -691,8 +835,7 @@ def percent_to_sigma(percent: float, shift: float) -> float:
 
 
 def _offloaded(module: Any) -> bool:
-    """Accelerate / diffusers offload hooks move weights per call: the pre-refined text path calls a submodule outside
-    the forward, so an offloaded transformer keeps the reference per-step refine."""
+    """Offloaded: keep the per-step refine; pre-refined path calls a submodule outside forward."""
     if module is None:
         return True
     for sub in module.modules():
@@ -843,8 +986,7 @@ class MOSSImagePipeline(DiffusionPipeline):
         return embeds, mask
 
     def _branch(self, embeds, mask, refine: bool) -> dict:
-        """Transformer kwargs for one CFG branch. Equal-length rows need no mask (no host sync in the forward); with
-        ``refine`` the text refiner runs here, once for the whole render."""
+        """Branch kwargs: refine once per render; no mask for equal-length rows (no host sync)."""
         full = mask is None or bool(mask.all())
         kwargs: dict = {}
         if full and refine:
@@ -998,8 +1140,7 @@ class MOSSImagePipeline(DiffusionPipeline):
             uncond_skip_active = skip_active and (
                 uncond_window is None or uncond_window[step_index]
             )
-            # CFG combines fp32 predictions, even when the DiT runs in bf16.
-            # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
+            # CFG in fp32 even for bf16 DiT; return_dict=False: CUDA-graph replay gives tuples.
             prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[
                 0
             ].float()

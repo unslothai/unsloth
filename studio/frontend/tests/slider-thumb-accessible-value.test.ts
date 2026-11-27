@@ -46,9 +46,7 @@ test("the context slider says Auto rather than zero", () => {
 });
 
 test("Auto announces a current value only once one exists", () => {
-  // Before a load autoValue is the offload fallback that seeds the input,
-  // not a selection: Auto may still fit the model's native context. Announcing it
-  // as "currently N" tells a screen-reader user a number no other user is shown.
+  // Pre-load autoValue is a fallback seed, not a selection; announcing it misleads users.
   assert.match(
     panel,
     /activeLoadedContext != null \? `Auto, currently \$\{autoValue\.toLocaleString\(\)\} tokens` : "Auto"/,

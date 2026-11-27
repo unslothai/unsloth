@@ -583,8 +583,7 @@ def redact_load_progress(progress: Any, *, via_api_key: bool) -> Any:
 
 
 def raised_inventory_detail(detail: Any, *, via_api_key: bool) -> Any:
-    """For a payload that was RAISED, since the route's wrappers never run. Restore first so a
-    path the caller owns comes back as its handle, then redact what is left."""
+    """Raised payloads skip route wrappers: restore caller-owned handles first, then redact."""
     return redact_inventory_error_detail(restore_inventory_handles(detail), via_api_key = via_api_key)
 
 

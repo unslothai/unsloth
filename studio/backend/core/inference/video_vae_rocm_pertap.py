@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Windows ROCm: run a large video VAE decoder Conv3d as one Conv2d per temporal tap.
-
-On Windows gfx1151 (torch 2.11 + ROCm 7.14) a Conv3d whose input or output tensor exceeds 2 GiB runs about 10x slower
-per element than the same conv below that size; measured on the LTX-2.3 decoder across 6 conv shape classes and
-5 clip sizes. Splitting such a call into Conv2d calls, one per temporal tap with time folded into the batch, summed in
-fp32 with the bias added once, decodes 1920x1088x121 about 1.8x faster and closer to a CPU fp32 decode. Below 2 GiB
-the stock Conv3d is faster, and Linux ROCm has no cliff, so only Windows ROCm installs it and only calls over 2 GiB
-outside autocast take it. UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 turns it off (read per call).
-"""
+"""Windows ROCm only: Conv3d calls whose input or output exceeds 2 GiB (outside autocast) run as one
+Conv2d per temporal tap, fp32 summed with bias once, since stock Conv3d is much slower there
+(gfx1151, torch 2.11, ROCm 7.14); UNSLOTH_VIDEO_VAE_ROCM_PERTAP=0 disables it."""
 
 from __future__ import annotations
 
@@ -54,8 +48,7 @@ def pertap_conv3d(
     dilation: tuple,
     groups: int = 1,
 ) -> Any:
-    """``F.conv3d(x, weight, bias, stride, padding, dilation, groups)`` (zero padding, int tuples) as one Conv2d per
-    temporal tap over output-frame chunks, taps summed in fp32, bias added once; returns a contiguous tensor."""
+    """Conv3d as one Conv2d per temporal tap (zero padding); fp32 sum, bias once, contiguous."""
     import torch
     import torch.nn.functional as F
 
@@ -95,8 +88,7 @@ def pertap_conv3d(
     return out
 
 
-# fp16 stays: a synthetic cancelling pair can overflow a tap, but the real LTX-2.3 fp16 decode on gfx1151 is finite
-# and 2.4x faster per tap (35.7 vs 87.0 s, 7.1 GiB lower peak).
+# fp16 stays: real LTX-2.3 fp16 decodes on gfx1151 are finite (a synthetic pair can overflow).
 ENGAGE_DTYPES = ("bfloat16", "float16", "float32")
 
 

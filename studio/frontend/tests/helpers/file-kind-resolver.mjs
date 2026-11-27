@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// file-kind.ts asks the document viewer and the chat feature about names; stub both with the
-// answers for the plain names these tests use.
+// Stubs the document viewer and chat feature: file-kind.ts asks them about plain test names.
 const FILE_VIEWER_STUB =
   "data:text/javascript," +
   encodeURIComponent("export const documentKind = () => null; export const isMarkdown = (name) => /\\.md$/i.test(name);");

@@ -90,8 +90,7 @@ class SourceMismatch(RuntimeError):
 
 
 _MISMATCH_EXIT = 3
-# Q4_0 / Q4_1 / Q8_0 (q4k: Q4_K) blocks are packed as is, but FastFlowLM reads each slot in the
-# config's layout, so a mismatch decodes as noise: refuse it.
+# Q4_0/Q4_1/Q8_0 (q4k: Q4_K) are packed as is; a FLM config mismatch decodes as noise: refuse.
 _GUARD = f"""
 from gguf import GGMLQuantizationType as T
 from q4nx.gguf_tensor import GGUFTensor

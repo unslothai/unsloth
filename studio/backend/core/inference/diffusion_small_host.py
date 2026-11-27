@@ -683,8 +683,7 @@ def _spill_choice(
 
 
 def _widened_embed_mib(comp: StoredComponent, compute: str) -> int:
-    """Host MiB of an encoder's token embedding converted to a wider ``compute`` dtype (bf16 -> float32 doubles it,
-    past what the reserve absorbs); 0 at the same width, where the reserve covers the copy as measured on FLUX.2."""
+    """Host MiB of an encoder token embedding, past the reserve when widened; 0 at same width."""
     if _itemsize(compute) <= _itemsize(comp.dtype):
         return 0
     return comp.embed_mib * _itemsize(compute) // _itemsize(comp.dtype)
@@ -738,8 +737,7 @@ def int8_act_counts() -> dict[str, int]:
 
 
 def int8_act_device_ok(device: Any) -> bool:
-    """sm_75 CUDA only (fp32-promoted, int8 tensor cores; on sm_80+ bf16 eager W8A8 does not win; ROCm capabilities
-    differ), and ``torch._int_mm`` must return the exact integer product there."""
+    """sm_75 CUDA only (no bf16 W8A8 win on sm_80+; ROCm differs); torch._int_mm must be exact."""
     import torch
 
     try:
@@ -1495,8 +1493,7 @@ def install_encoder_prefetch(
     device: Any,
     logger: Any = None,
 ) -> int:
-    """Swap each streamed offload group's ``onload_`` of a small-host text encoder for the prefetching copy. Groups made
-    resident are left alone. Returns the number of groups covered (0: unchanged, e.g. kill switch or no CUDA)."""
+    """Swaps streamed onload_ for prefetch copies; returns count, 0 if disabled or no CUDA."""
     if encoder_prefetch_disabled():
         return 0
     try:

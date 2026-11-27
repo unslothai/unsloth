@@ -247,6 +247,83 @@ def test_krea2_forward_matches_stock():
     torch.testing.assert_close(got, ref, atol = 1e-5, rtol = 1e-4)
 
 
+def _krea2_named_norms_forward(
+    self,
+    hidden_states,
+    temb,
+    image_rotary_emb,
+    attention_mask = None,
+):
+    modulation = temb.unflatten(-1, (6, -1)) + self.scale_shift_table
+    prescale, preshift, pregate, postscale, postshift, postgate = modulation.unbind(-2)
+    norm1 = self.norm1(hidden_states)
+    attn_out = self.attn(
+        torch.addcmul(preshift, norm1, 1 + prescale),
+        attention_mask = attention_mask,
+        image_rotary_emb = image_rotary_emb,
+    )
+    hidden_states = torch.addcmul(hidden_states, pregate, attn_out)
+    norm2 = self.norm2(hidden_states)
+    ff_out = self.ff(torch.addcmul(postshift, norm2, 1 + postscale))
+    return torch.addcmul(hidden_states, postgate, ff_out)
+
+
+def _peak_live_bytes(fn):
+    from torch.profiler import ProfilerActivity, profile
+
+    with profile(activities = [ProfilerActivity.CPU], profile_memory = True) as prof:
+        out = fn()
+    events = sorted(
+        (e.start_ns(), e.nbytes())
+        for e in prof.profiler.kineto_results.events()
+        if e.name() == "[memory]"
+    )
+    live = peak = 0
+    for _, nbytes in events:
+        live += nbytes
+        peak = max(peak, live)
+    return out, peak
+
+
+def test_krea2_forward_is_bit_equal_to_named_norms_with_one_less_buffer_live():
+    from diffusers.models.transformers.transformer_krea2 import (
+        Krea2RotaryPosEmbed,
+        Krea2TransformerBlock,
+    )
+
+    torch.manual_seed(5)
+    dim, heads, seq = 64, 4, 96
+    blk = (
+        Krea2TransformerBlock(
+            hidden_size = dim,
+            intermediate_size = 4 * dim,
+            num_heads = heads,
+            num_kv_heads = heads // 2,
+            norm_eps = 1e-6,
+        )
+        .to(torch.bfloat16)
+        .eval()
+    )
+    with torch.no_grad():
+        blk.scale_shift_table.normal_()
+    positions = torch.stack(
+        [torch.zeros(seq, dtype = torch.long), torch.arange(seq) // 12, torch.arange(seq) % 12], -1
+    )
+    head_dim = dim // heads
+    rope = Krea2RotaryPosEmbed(theta = 10000, axes_dim = [head_dim // 2, head_dim // 4, head_dim // 4])
+    image_rotary_emb = rope(positions)
+    hs = torch.randn(1, seq, dim, dtype = torch.bfloat16)
+    tm = torch.randn(1, 1, 6 * dim, dtype = torch.bfloat16)
+    with torch.inference_mode():
+        ap._krea2_block_forward(blk, hs, tm, image_rotary_emb)
+        got, peak = _peak_live_bytes(lambda: ap._krea2_block_forward(blk, hs, tm, image_rotary_emb))
+        ref, ref_peak = _peak_live_bytes(
+            lambda: _krea2_named_norms_forward(blk, hs, tm, image_rotary_emb)
+        )
+    assert torch.equal(got, ref)
+    assert ref_peak - peak == hs.numel() * hs.element_size()
+
+
 def test_install_idempotent_and_reversible():
     from diffusers.models.transformers.transformer_qwenimage import QwenImageTransformerBlock as Q
     from diffusers.models.transformers.transformer_z_image import ZImageTransformerBlock as Z

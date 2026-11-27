@@ -57,8 +57,7 @@ def test_a_read_that_fails_settles_nothing(tmp_path):
 
 
 def test_a_listing_with_no_bytes_pairs_by_subject():
-    """Remote listings carry no bytes, so a ``._x`` goes only when its subject is listed beside
-    it, in the same directory -- a sole candidate survives whatever it is called."""
+    """Remote listings have no bytes: ._x drops only when its subject is in the same directory."""
     assert drop_shadowed_appledouble_names(["._solo.py"]) == ["._solo.py"]
     assert drop_shadowed_appledouble_names(["._a.py", "a.py"]) == ["a.py"]
     assert drop_shadowed_appledouble_names(["sub/._a.py", "a.py"]) == ["sub/._a.py", "a.py"]
@@ -83,8 +82,7 @@ class _CachedFile:
 
 
 def _cache_repo(tmp_path, entries):
-    """A repo scan shaped like a real cache: the snapshot entry is a symlink, and the bytes it
-    names live in a content-addressed blob whose own name carries no prefix."""
+    """Snapshot entries are symlinks to content-addressed blobs whose names carry no prefix."""
     blobs = tmp_path / "blobs"
     snapshot = tmp_path / "snapshots" / "rev0"
     blobs.mkdir()
@@ -102,8 +100,7 @@ def _cache_repo(tmp_path, entries):
 
 
 def test_cached_repo_files_follows_the_snapshot_entry_to_its_blob(tmp_path):
-    """The ``._`` name is on the snapshot entry and the bytes are in the blob, but the entry
-    links to it, so one open observes both. Every cache and model-route scan reads this list."""
+    """The ._ name sits on the snapshot link, and one open of it reads the blob's bytes too."""
     from hub.services.models.cache_inventory import cached_repo_files
 
     repo = _cache_repo(
@@ -126,8 +123,7 @@ def test_cached_repo_files_follows_the_snapshot_entry_to_its_blob(tmp_path):
 
 
 def test_a_drafter_budget_prices_the_largest_file_of_a_shared_basename(tmp_path, monkeypatch):
-    """Quant subdirectories share a basename, so the budget maxes over every cached file that
-    carries it: keeping one entry per name would charge whichever quant a frozenset yielded."""
+    """Shared basenames across quants: price the largest, not whichever a frozenset yields."""
     import huggingface_hub
 
     from routes.inference import _cached_repo_gguf_bytes

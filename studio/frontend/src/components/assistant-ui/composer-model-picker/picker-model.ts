@@ -318,14 +318,6 @@ export function dedupeRows<T extends PickerRow>(rows: readonly T[]): T[] {
   return out;
 }
 
-export function pinCoversId(pinned: readonly string[], id: string): boolean {
-  const base = norm(id);
-  return pinned.some((key) => {
-    const k = norm(key);
-    return k === base || k.startsWith(`${base}::`);
-  });
-}
-
 /** Favorites lists each pinned quant of a repo as its own row, as the header picker did. */
 export function expandQuantFavorites<
   T extends PickerRow & {

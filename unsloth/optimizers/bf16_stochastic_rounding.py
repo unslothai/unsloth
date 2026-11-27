@@ -456,9 +456,11 @@ def stochastic_round_to_bf16_(
     src,
     generator = None,
 ):
-    """dst (bfloat16) <- src (float32) rounded stochastically (unbiased: E[round(x)] = x)."""
+    """dst (bfloat16) <- src (float32) rounded stochastically (unbiased: E[round(x)] = x).
+    DTensors (FSDP2 / TP shards) round their local shards: the rounding is elementwise."""
+    dst_local, src = _local(dst), _local(src)
     flat_src = src.reshape(-1)
-    flat_dst = dst.view(-1)
+    flat_dst = dst_local.view(-1)
     for start in range(0, flat_src.numel(), _CHUNK):
         bits = flat_src[start : start + _CHUNK].contiguous().view(torch.int32)
         noise = torch.randint(
@@ -475,15 +477,67 @@ def _is_dtensor(p):
     return type(p).__name__ == "DTensor" or hasattr(p, "_local_tensor")
 
 
-def _tracked(p):
+def _local(t):
+    """A DTensor's local shard (same storage), else the tensor itself."""
+    local = getattr(t, "_local_tensor", None) if t is not None else None
+    return t if local is None else local
+
+
+def _tracked(p, dtensor = False):
+    """bfloat16 weights this optimizer can round. DTensors (FSDP2 / TP) only on the torch AdamW / Adam route:
+    the update and the rounding are elementwise, so they run on the local shard."""
+    if _is_dtensor(p) and not dtensor:
+        return False
+    local = _local(p)
     return (
         p.dtype == torch.bfloat16
         and p.requires_grad
-        and not _is_dtensor(p)
-        and p.layout == torch.strided
-        and p.is_contiguous()
-        and p.device.type in ("cuda", "cpu", "xpu")
+        and local.dtype == torch.bfloat16
+        and local.layout == torch.strided
+        and local.is_contiguous()
+        and local.device.type in ("cuda", "cpu", "xpu")
     )
+
+
+def _dtensor_steppable(p):
+    """A DTensor weight steps on its shard only when its gradient is laid out like it (FSDP2's reduce-scattered
+    shard, TP's matching placement); anything else stays on the optimizer's own step."""
+    if not _is_dtensor(p):
+        return True
+    g = p.grad
+    if not _is_dtensor(g):
+        return False
+    try:
+        same = tuple(g.placements) == tuple(p.placements) and g.device_mesh == p.device_mesh
+    except Exception:
+        return False
+    return same and _local(g).shape == _local(p).shape
+
+
+def _shard_offset(optimizer, p):
+    """Flat global index where a DTensor's local shard starts: 0 for a plain tensor and the same on every replica
+    of one shard, so replicas round identically and different shards draw different noise."""
+    if not _is_dtensor(p):
+        return 0
+    offsets = optimizer.__dict__.setdefault("_unsloth_sr_shard_offsets", {})
+    key = id(p)
+    if key not in offsets:
+        try:
+            try:
+                from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
+            except ImportError:  # torch < 2.5
+                from torch.distributed._tensor._utils import compute_local_shape_and_global_offset
+            _, offset = compute_local_shape_and_global_offset(p.shape, p.device_mesh, p.placements)
+            offsets[key] = sum(int(o) * int(s) for o, s in zip(offset, p.stride()))
+        except Exception:
+            # Fallback: the coordinate along the sharded mesh dims only, so replicas still agree.
+            coordinate = p.device_mesh.get_coordinate() or ()
+            offsets[key] = 1 + sum(
+                int(c) * 7919**i
+                for i, (c, placement) in enumerate(zip(coordinate, p.placements))
+                if placement.is_shard()
+            )
+    return offsets[key]
 
 
 def _generator(optimizer, device, seed):
@@ -497,16 +551,17 @@ def _generator(optimizer, device, seed):
     return generators[key]
 
 
-def _index(optimizer, p):
-    index = optimizer.__dict__.setdefault("_unsloth_sr_index", {})
-    return index.setdefault(id(p), len(index))
-
-
 def _seed_for(optimizer, p, seed, step):
-    """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would."""
-    return (int(seed) + 0x5EED + _index(optimizer, p) * 1000003 + int(step) * 2654435761) & (
-        0x7FFFFFFFFFFFFFFF
-    )
+    """Seeded by (param index, optimizer step): a resumed run draws what an uninterrupted one would.
+    A DTensor shard also mixes in where it starts (0 for plain weights, so their draws are unchanged)."""
+    index = optimizer._unsloth_sr_index[id(p)]
+    return (
+        int(seed)
+        + 0x5EED
+        + index * 1000003
+        + int(step) * 2654435761
+        + _shard_offset(optimizer, p) * 0x9E3779B97F4A7C15
+    ) & (0x7FFFFFFFFFFFFFFF)
 
 
 def _step_of(optimizer, p):
@@ -561,7 +616,7 @@ class _Float32Step:
             if self.triton_round:
                 try:
                     seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
-                    _round_cuda_(p.detach(), stepped, seed)
+                    _round_cuda_(_local(p.detach()), _local(stepped), seed)
                     _count(self.optimizer, "_unsloth_sr_triton_rounds")
                 except torch.cuda.OutOfMemoryError:
                     raise
@@ -576,6 +631,13 @@ class _Float32Step:
                 stochastic_round_to_bf16_(
                     p.detach(), stepped, _reseed(self.optimizer, p, self.seed)
                 )
+            if _is_dtensor(p):
+                # The rounding wrote the local shard: bump the DTensor's own version counter too, so a graph
+                # saved before the step refuses to backpropagate, as for a plain weight.
+                increment = getattr(torch.autograd.graph, "increment_version", None)
+                if increment is not None:
+                    increment(p)
+                _count(self.optimizer, "_unsloth_sr_dtensor_rounds")
         return False
 
 
@@ -680,13 +742,19 @@ def _wrap_torch(optimizer, tracked, seed):
         groups = self.param_groups
         try:
             for group in groups:
-                rest = [p for p in group["params"] if id(p) not in tracked]
-                mine = [p for p in group["params"] if id(p) in tracked and p.grad is not None]
+                rest = [
+                    p
+                    for p in group["params"]
+                    if id(p) not in tracked or (p.grad is not None and not _dtensor_steppable(p))
+                ]
+                mine = [
+                    p
+                    for p in group["params"]
+                    if id(p) in tracked and p.grad is not None and _dtensor_steppable(p)
+                ]
                 if rest:
                     self.param_groups = [dict(group, params = rest)]
                     original()
-                for p in mine:  # indices in parameter order, whichever route steps them
-                    _index(self, p)
                 # Step hooks fire per weight when the optimizer has its own (state offload, idle experts,
                 # DP sync), as torch's per-weight steps did before; else once for the group.
                 batches = [[p] for p in mine] if _step_hooks(self) else ([mine] if mine else [])
@@ -754,15 +822,17 @@ def _fused_group(optimizer, group):
 
 
 def _fused_param(optimizer, p):
-    g = p.grad
+    if not _dtensor_steppable(p):
+        return False
+    g = _local(p.grad)
     if (
         p.device.type != "cuda"
         or g is None
         or g.is_sparse
         or g.layout != torch.strided
         or g.dtype not in (torch.bfloat16, torch.float16, torch.float32)
-        or g.device != p.device
-        or g.shape != p.shape
+        or g.device != _local(p).device
+        or g.shape != _local(p).shape
         or not g.is_contiguous()
         or not _triton_ok(p.device)
     ):
@@ -776,8 +846,10 @@ def _fused_param(optimizer, p):
             not torch.is_tensor(value)
             or value.dtype != torch.bfloat16
             or value.shape != p.shape
-            or value.device != p.device
-            or not value.is_contiguous()
+            or _is_dtensor(value) != _is_dtensor(p)
+            or _local(value).shape != _local(p).shape
+            or _local(value).device != _local(p).device
+            or not _local(value).is_contiguous()
         ):
             return False  # e.g. float32 moments from a checkpoint: the float32 route converts them
     return torch.is_tensor(state.get("step")) and state["step"].numel() == 1
@@ -827,15 +899,16 @@ def _fused_adamw_step(optimizer, group, params, seed):
         t = step.item() if step.device.type == "cpu" else values[id(step)]
         bc1 = 1 - beta1**t
         bc2 = 1 - beta2**t
-        n = p.numel()
+        # A DTensor (FSDP2 / TP) steps its local shard: every op in the kernel is elementwise.
+        n = _local(p).numel()
         if n:
             try:
                 with torch.cuda.device(p.device):
                     _adamw_kernel[_grid(n)](
-                        p.data,
-                        p.grad,
-                        state["exp_avg"],
-                        state["exp_avg_sq"],
+                        _local(p.data),
+                        _local(p.grad),
+                        _local(state["exp_avg"]),
+                        _local(state["exp_avg_sq"]),
                         n,
                         _seed_for(optimizer, p, seed, int(t)),
                         decay,
@@ -869,8 +942,13 @@ def _fused_adamw_step(optimizer, group, params, seed):
     increment = getattr(torch.autograd.graph, "increment_version", None)
     if increment is not None:
         for p in stepped:
-            increment(p)
+            for t in (p, _local(p)) if _is_dtensor(p) else (p,):
+                try:
+                    increment(t)
+                except Exception:
+                    pass
     _count(optimizer, "_unsloth_sr_fused_steps", len(stepped))
+    _count(optimizer, "_unsloth_sr_dtensor_rounds", sum(1 for p in stepped if _is_dtensor(p)))
     return left
 
 
@@ -904,10 +982,17 @@ def enable_bf16_stochastic_rounding(
     kind = _kind(optimizer)
     if kind is None:
         return 0
-    params = [p for group in optimizer.param_groups for p in group["params"] if _tracked(p)]
+    params = [
+        p
+        for group in optimizer.param_groups
+        for p in group["params"]
+        if _tracked(p, dtensor = kind == "torch")
+    ]
     if not params:
         return 0
-    tracked = {id(p) for p in params}
+    # A routed weight may first receive a gradient on either side of a checkpoint.
+    tracked = {id(p): index for index, p in enumerate(params)}
+    optimizer._unsloth_sr_index = tracked
     if kind == "bitsandbytes":
         _wrap_bitsandbytes(optimizer, tracked, seed)
     else:

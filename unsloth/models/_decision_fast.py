@@ -35,8 +35,7 @@ def _encoder_sdpa(
     scaling = None,
     **kwargs,
 ):
-    # transformers' SDPA attention without unsloth_zoo's wrappers, which carry a __module__ that
-    # torch 2.11's dynamo cannot guard, so the compiled layers fell back to eager on Linux.
+    # SDPA, no unsloth_zoo wrapper: its __module__ defeats torch 2.11 dynamo; eager on Linux.
     out = torch.nn.functional.scaled_dot_product_attention(
         query, key, value, attn_mask = attention_mask, dropout_p = dropout, scale = scaling
     )
@@ -155,8 +154,7 @@ def compiled_encoder(
     amp_dtype = None,
     max_length: Optional[int] = None,
 ):
-    """Compile Laya encoder layers in place for one training run, then go back to eager; parameter
-    names stay unchanged so saving and LoRA merging work"""
+    """Compile encoder layers for one run, then restore eager; names kept for save/LoRA merge."""
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []

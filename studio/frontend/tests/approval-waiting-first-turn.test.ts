@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A first turn runs under "__default" until initialize() adopts it. A call that parks after that must
-// be filed under the chat, or its row keeps the spinner instead of the approval mark.
+// Calls parked after initialize() must file under the chat, or their row keeps the spinner.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

@@ -28,7 +28,7 @@ DECODE_LAYER = "video_batch_per_row"
 
 # Families whose Diffusers pipeline denoises any batch with one generator per row and no per-row state
 # outside the latents: the Wan text-to-video pipelines (5B TI2V, A14B two-expert, 2.1).
-BATCH_FAMILIES = frozenset(
+WAN_FAMILIES = frozenset(
     {
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
@@ -36,6 +36,19 @@ BATCH_FAMILIES = frozenset(
         "wan2.1-t2v-14b",
     }
 )
+# LTX-2.5 text-to-video on the distilled DiT (one stage, or two through the latent upsampler): its
+# euler-ancestral sampler draws each row's renoise from that row's own generator (``per_row_noise``),
+# video and audio latents are per row, and the upsampler runs one clip at a time.
+LTX25_FAMILY = "ltx-2.5"
+BATCH_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
+# Families Auto may batch (on the Low VRAM placement, ``streamed_load``); the rest batch only under
+# UNSLOTH_VIDEO_BATCH=force. LTX-2.5 under Low VRAM, two stages, eager (A100-80, 768x512x49): 39.6 s per clip one
+# at a time, 21.7 batched by 2, 12.7 by 4, and both sizes pass the paired quality gate against the solo renders
+# (72 clips by 2, 24 by 4). The one-stage recipe's batch of 2 did not pass it, so it stays serial.
+AUTO_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
+# Batch sizes Auto may run, per family: the sizes whose quality gate passed. Another size renders its clips one at
+# a time (force runs any size).
+AUTO_SIZES = {LTX25_FAMILY: frozenset({2, 4})}
 
 _OFF = frozenset({"0", "off", "false", "no", "disable", "disabled"})
 _FORCE = frozenset({"force", "always", "on", "1", "true", "yes"})
@@ -92,6 +105,17 @@ def load_decline_reason(state: Any) -> Optional[str]:
         return "this family keeps one clip per denoise"
     if getattr(fam, "modular_workflow", False):
         return "a modular workflow renders one clip per call"
+    if fam.name == LTX25_FAMILY and getattr(
+        getattr(state, "pipe", None), "_unsloth_ltx25_dev", False
+    ):
+        # Unmeasured: the dev DiT runs CFG plus STG over 30+ steps, a different cost and guidance path.
+        return "the LTX-2.5 dev DiT renders one clip per denoise"
+    if chosen == "auto" and fam.name not in AUTO_FAMILIES:
+        # Not yet shown to batch at no quality cost on a measured-faster placement: serial unless forced.
+        return "this family batches only when forced (UNSLOTH_VIDEO_BATCH=force)"
+    if chosen == "auto" and fam.name == LTX25_FAMILY and not _ltx25_two_stage():
+        # Measured: the one-stage recipe's batch of 2 drifted past the quality gate's margin.
+        return "the one-stage LTX-2.5 recipe batches only when forced"
     if getattr(state, "transformer_cache", None):
         # A step cache decides on the whole batch's residual, so one clip could change another's skips.
         return "a step cache is on"
@@ -130,10 +154,32 @@ def load_decline_reason(state: Any) -> Optional[str]:
     return None
 
 
+def _ltx25_two_stage() -> bool:
+    try:
+        from .video_ltx25 import two_stage_enabled
+    except Exception:  # noqa: BLE001 -- no LTX-2.5 module: nothing to batch there
+        return False
+    return bool(two_stage_enabled())
+
+
+def auto_size_decline(state: Any, rows: int) -> Optional[str]:
+    """Why Auto renders a sealed batch of ``rows`` clips one at a time (a size its quality gate did not pass),
+    else None. ``force`` runs any size."""
+    if rows <= 1 or mode() != "auto":
+        return None
+    sizes = AUTO_SIZES.get(getattr(getattr(state, "family", None), "name", None))
+    if sizes is not None and int(rows) not in sizes:
+        return f"Auto batches this family {sorted(sizes)} clips at a time, not {int(rows)}"
+    return None
+
+
 def stochastic_sampler(scheduler: Any) -> Optional[str]:
     """Why ``scheduler.step`` draws noise each step, else None. Only the initial noise is per row (one generator
     each); a sampler that renoises every step from a shared stream would shift a clip's draws with the batch."""
     if scheduler is None:
+        return None
+    if getattr(scheduler, "per_row_noise", False):
+        # Draws each row's step noise from that row's generator (a generator list): its solo draws.
         return None
     name = type(scheduler).__name__
     if any(tag in name for tag in ("Ancestral", "SDE", "LCM", "DDPM", "Stochastic")):
@@ -239,8 +285,10 @@ def request_key(
     guidance: Any,
     guidance_2: Any,
     flow_shift: Any,
+    audio_flow_shift: Any = None,
 ) -> tuple:
-    """What every row of one denoise shares: the latent shape, the timestep grid and the guidance scale."""
+    """What every row of one denoise shares: the latent shape, the timestep grid and the guidance scale
+    (and an audio stream's shift: LTX-2.5 steps its audio latents on their own grid)."""
 
     def _f(value: Any) -> Any:
         return None if value is None else float(value)
@@ -257,6 +305,7 @@ def request_key(
         _f(guidance),
         _f(guidance_2),
         _f(flow_shift),
+        _f(audio_flow_shift),
     )
 
 
@@ -379,9 +428,11 @@ def per_row_encode(pipe: Any):
                 original(prompt = text, negative_prompt = negative, **kwargs)
                 for text, negative in zip(prompt, negatives)
             ]
-            positive = torch.cat([row[0] for row in rows], dim = 0)
-            negative = None if rows[0][1] is None else torch.cat([row[1] for row in rows], dim = 0)
-            return positive, negative
+            # Wan returns (embeds, negative embeds); LTX-2.5 adds each one's attention mask.
+            return tuple(
+                None if rows[0][i] is None else torch.cat([row[i] for row in rows], dim = 0)
+                for i in range(len(rows[0]))
+            )
 
         encode_prompt.__wrapped__ = original
         try:
@@ -403,9 +454,45 @@ def per_row_encode(pipe: Any):
     return _ctx()
 
 
+def _row_split(inner: Any) -> Callable[..., Any]:
+    """``inner`` called one row at a time on a batch (tensor arguments with the batch's leading size are sliced
+    with it, e.g. a per-row decode timestep), the results joined along the batch."""
+
+    def call(z: Any, *args: Any, **kwargs: Any) -> Any:
+        count = int(getattr(z, "shape", (1,))[0] or 1)
+        if count <= 1:
+            return inner(z, *args, **kwargs)
+        import torch
+
+        def row(value: Any, i: int) -> Any:
+            if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == count:
+                return value[i : i + 1]
+            return value
+
+        outputs = [
+            inner(
+                z[i : i + 1],
+                *(row(arg, i) for arg in args),
+                **{key: row(value, i) for key, value in kwargs.items()},
+            )
+            for i in range(count)
+        ]
+        first = outputs[0]
+        if isinstance(first, tuple):
+            return (torch.cat([out[0] for out in outputs], dim = 0),) + tuple(first[1:])
+        sample = getattr(first, "sample", None)
+        if sample is not None:
+            first.sample = torch.cat([out.sample for out in outputs], dim = 0)
+            return first
+        return torch.cat(outputs, dim = 0)
+
+    return call
+
+
 def per_row_decode(pipe: Any, rows: Callable[[], int]):
     """While active, a ``vae.decode`` of a batch decodes one clip at a time and joins the results, so the
-    decode peak stays one clip's (decode is per request) and each clip's pixels come from a one-clip decode."""
+    decode peak stays one clip's (decode is per request) and each clip's pixels come from a one-clip decode.
+    A soundtrack's decoders (LTX-2.5's ``audio_vae.decode`` and ``vocoder``) run one clip at a time too."""
     import contextlib
 
     @contextlib.contextmanager
@@ -416,26 +503,20 @@ def per_row_decode(pipe: Any, rows: Callable[[], int]):
             return
         from . import decode_layers
 
-        def make(inner: Any, _layer: Any) -> Any:
-            def decode(z: Any, *args: Any, **kwargs: Any) -> Any:
-                count = int(getattr(z, "shape", (1,))[0] or 1)
-                if count <= 1:
-                    return inner(z, *args, **kwargs)
-                import torch
-
-                outputs = [inner(z[i : i + 1], *args, **kwargs) for i in range(count)]
-                first = outputs[0]
-                if isinstance(first, tuple):
-                    return (torch.cat([out[0] for out in outputs], dim = 0),) + tuple(first[1:])
-                sample = getattr(first, "sample", None)
-                if sample is not None:
-                    first.sample = torch.cat([out.sample for out in outputs], dim = 0)
-                    return first
-                return torch.cat(outputs, dim = 0)
-
-            return decode
-
-        layer = decode_layers.wrap(vae, "decode", DECODE_LAYER, make)
+        layer = decode_layers.wrap(
+            vae, "decode", DECODE_LAYER, lambda inner, _layer: _row_split(inner)
+        )
+        audio_layers = []
+        for owner, attr in (
+            (getattr(pipe, "audio_vae", None), "decode"),
+            (getattr(pipe, "vocoder", None), "forward"),
+        ):
+            if owner is not None and callable(getattr(owner, attr, None)):
+                audio_layers.append(
+                    decode_layers.wrap(
+                        owner, attr, DECODE_LAYER, lambda inner, _layer: _row_split(inner)
+                    )
+                )
         try:
             from .diffusion_vae_oom import ensure_outermost
             ensure_outermost(vae)
@@ -444,6 +525,8 @@ def per_row_decode(pipe: Any, rows: Callable[[], int]):
         try:
             yield
         finally:
+            for audio_layer in reversed(audio_layers):
+                decode_layers.unwrap(audio_layer)
             decode_layers.unwrap(layer)
             try:
                 from .diffusion_vae_oom import ensure_outermost

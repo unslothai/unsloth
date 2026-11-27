@@ -192,8 +192,7 @@ def get_stored_embedding_model() -> str | None:
 
 
 def _get_stored_state(fresh: bool = False) -> _StoredState:
-    """Reads the override as one snapshot: its resolution is one JSON value so model/repo/backend
-    cannot tear; legacy fields share the same SQL statement for older builds."""
+    """One JSON value: model/repo/backend cannot tear; legacy fields share the SQL statement."""
     key = (current_account_id(), EMBEDDING_RESOLUTION_SETTING_KEY)
     now = time.monotonic()
     with _lock:
@@ -245,8 +244,7 @@ def _get_stored_state(fresh: bool = False) -> _StoredState:
 
 
 def get_rag_embedding_model(fresh: bool = False) -> str:
-    """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache
-    and raises when the store cannot be read, for a check that must see another process's save."""
+    """Stored or default; fresh skips cache to see cross-process saves, raises if unreadable."""
     stored = _get_stored_state(fresh)
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.

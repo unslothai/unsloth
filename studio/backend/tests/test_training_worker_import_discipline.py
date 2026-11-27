@@ -11,8 +11,7 @@ from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 
-# Mirrors run_training_process's imports before _activate_transformers_version
-# (worker.py); keep in sync. Must not pull in transformers.
+# Mirrors worker.py's pre-activation imports, keep in sync; must not pull in transformers.
 _PREFLIGHT_SNIPPET = r"""
 import sys
 
@@ -50,8 +49,7 @@ print("PREFLIGHT_CLEAN")
 
 
 def test_worker_preflight_does_not_import_transformers():
-    """A fresh interpreter running the worker's pre-activation imports must leave ``transformers``
-    (and ``unsloth_zoo``) unimported, so the 5.x sidecar prepend is not defeated by a stale module."""
+    """Worker imports must not load transformers or unsloth_zoo, or 5.x sidecar is defeated."""
     result = subprocess.run(
         [sys.executable, "-c", _PREFLIGHT_SNIPPET],
         cwd = str(_BACKEND_DIR),

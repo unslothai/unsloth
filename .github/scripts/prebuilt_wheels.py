@@ -62,9 +62,8 @@ CXX11_ABI = "TRUE"
 # CUDA >= 12.4 driver to load, below the cu13 floor.
 NVCC_APPEND_FLAGS = "-Xfatbin -compress-all --compress-mode=size"
 
-# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS, and the Linux runners' ccache (4.5)
-# has no namespaces, so the flags' identity goes into the actions/cache key instead: a cache
-# saved before them would otherwise hand back uncompressed objects.
+# ccache hashes the nvcc command line, not NVCC_APPEND_FLAGS; Linux ccache 4.5 has no namespaces, so
+# the flags' identity goes into actions/cache key, or old caches return uncompressed objects.
 CCACHE_TAG = "fatbin-size-sass"
 
 # SASS targets per package (patch_cuda_targets.py trims each setup.py to these). causal-conv1d's
@@ -86,8 +85,7 @@ def cuda_archs(package: str, platform: str) -> str:
     return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
 
 
-# Wheel tagged linux_x86_64 rather than manylinux like upstream, so pip accepts any glibc; the
-# practical floor is the runner glibc, hence ubuntu-22.04 (glibc 2.35), not ubuntu-latest.
+# Not manylinux, so pip accepts any glibc; floor is ubuntu-22.04 (2.35), not ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
 
 # Keyed by pip platform tag, and no upstream release ships a Windows wheel; abi is
@@ -101,9 +99,7 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": "",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
-        # Upstream's torch2.10 causal-conv1d / mamba-ssm wheels (205 / 351 MB, reused on 2.11 and
-        # 2.12) carry -lineinfo and every arch; ours are ~30 / ~55 MB. Upstream flash-attn 2.8.1 is
-        # already smaller than ours there (125 MB, no PTX), so it is not built for these torches.
+        # Extra torches only for causal-conv1d and mamba-ssm, whose upstream wheels are larger.
         "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
@@ -131,19 +127,37 @@ PLATFORMS = {
         "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
     # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
-    # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
-    # which needs CUDA 13.4, the first toolkit with a Windows ARM64 nvcc.
+    # two are built here, against the CUDA torches that exist for it on NVIDIA's index:
+    # 2.14.0+cu134 (CUDA 13.4, the first toolkit with a Windows ARM64 nvcc) and 2.15.0+cu135.
+    # Each torch builds with the toolkit its own +cuNNN tag names, from WIN_ARM64_CUDA_REDIST.
     "win_arm64": {
         "os": "windows",
         "runner": "windows-11-arm",
         "abi": "TRUE",
         "label": " / win_arm64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
-        "torches": ("2.14.0",),
+        "torches": ("2.14.0", "2.15.0"),
         "packages": ("causal-conv1d", "mamba-ssm"),
-        "torch_local": "cu134",
+        "torch_locals": {"2.14.0": "cu134", "2.15.0": "cu135"},
         "torch_index_args": "--extra-index-url https://pypi.nvidia.com/nvtorch_oot",
     },
+}
+
+# Windows ARM64 CUDA toolkit per torch, installed from NVIDIA's redist archives: (release,
+# manifest URL, manifest sha256). The manifest lists a sha256 for every archive, so pinning it
+# pins everything unpacked. Keyed by torch so a cell's nvcc matches the +cuNNN torch it links.
+_CUDA_REDIST = "https://developer.download.nvidia.com/compute/cuda/redist"
+WIN_ARM64_CUDA_REDIST = {
+    "2.14.0": (
+        "13.4.1",
+        f"{_CUDA_REDIST}/redistrib_13.4.1.json",
+        "e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5",
+    ),
+    "2.15.0": (
+        "13.5.0",
+        f"{_CUDA_REDIST}/redistrib_13.5.0.json",
+        "401529e951b845788177f999c0756c520c4d0db1cd4cd05c0a295e331884b596",
+    ),
 }
 
 # Per platform, what differs from the x86_64 defaults below without changing any x86_64 cell.
@@ -152,10 +166,10 @@ _PLATFORM_DEFAULTS = {
     "packages": None,  # every SPECS entry
     "extra_torch_packages": None,  # packages built for `extra_torches` (None = `packages`)
     "torch_local": "",
+    "torch_locals": None,  # torch version -> local tag, over `torch_local`
     "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
 }
-# What the build asserts about its own interpreter and output, so an emulated x64 Python on an
-# ARM runner cannot quietly produce an x64 wheel under an arm64 name.
+# Checks interpreter arch: emulated x64 Python on ARM must not make an x64 wheel named arm64.
 _PY_PLATFORM = {
     "linux_x86_64": "linux-x86_64",
     "win_amd64": "win-amd64",
@@ -168,14 +182,29 @@ def _platform(platform: str, key: str):
     return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
 
 
-# torch 2.10 and 2.11 pin triton==3.6.0, 2.12.0 triton==3.7.0, 2.13 triton==3.7.1 and 2.14
-# triton~=3.8.0 (Linux-only markers); exact pins keep the Windows smoke test reproducible.
+def _torch_local(platform: str, torch_version: str) -> str:
+    """The +cuNNN local tag the platform's torch carries for this version ("" for none)."""
+    per_torch = _platform(platform, "torch_locals") or {}
+    return per_torch.get(torch_version, _platform(platform, "torch_local"))
+
+
+def _cuda_redist(platform: str, torch_version: str) -> tuple[str, str, str]:
+    """(release, manifest URL, manifest sha256) of the redist toolkit, or empty strings."""
+    if platform != "win_arm64":
+        return "", "", ""
+    return WIN_ARM64_CUDA_REDIST[torch_version]
+
+
+# torch 2.10 and 2.11 pin triton==3.6.0, 2.12.0 triton==3.7.0, 2.13 triton==3.7.1, 2.14
+# triton~=3.8.0 and 2.15 triton~=3.9.0 (Linux-only markers); exact pins keep the Windows smoke
+# test reproducible. 3.8.0.post29 and 3.9.0.post30 also publish win_arm64 wheels.
 TRITON_WINDOWS = {
     "2.10": "3.6.0.post26",
     "2.11": "3.6.0.post26",
     "2.12": "3.7.0.post26",
     "2.13": "3.7.1.post27",
     "2.14": "3.8.0.post29",
+    "2.15": "3.9.0.post30",
 }
 WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
@@ -208,8 +237,7 @@ SPECS = {
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
         "import_names": ["flash_attn", "flash_attn_2_cuda"],
-        # Largest CUDA extension the size gate lets through, in MB. SASS only and compressed it is
-        # ~176 (PTX was 23% of each measured TU); with the PTX ~229, uncompressed 1,488.
+        # Size cap for flash-attn, in MB; SASS-only compressed ~176, with PTX ~229.
         "max_extension_mb": 230,
     },
     "causal-conv1d": {
@@ -245,8 +273,7 @@ SPECS = {
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
-        # x86 ~62 trimmed without -lineinfo (Arm ~88), 241 before, 358 in default mode: the gate
-        # catches flags or a trim that never reached nvcc.
+        # Cap for mamba-ssm; the gate catches flags or a trim that never reached nvcc.
         "max_extension_mb": 130,
     },
 }
@@ -279,9 +306,8 @@ ALLOWED_TORCH = tuple(
     )
 )
 
-# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.11 and 3.12 can
-# be added as separate cells; 3.14 is absent since torch has a cu130 wheel for it but nothing in the
-# Unsloth stack is tested on 3.14 yet.
+# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.14 is absent:
+# torch has a cu130 wheel for it, but nothing in the Unsloth stack is tested on 3.14 yet.
 PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 
 DEFAULT_PACKAGES = tuple(SPECS)
@@ -391,10 +417,11 @@ def build_matrix(
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
         torches = _platform_torches(platform)
-        local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
             if torch_version not in torches:
                 continue
+            local = _torch_local(platform, torch_version)
+            redist_version, redist_url, redist_sha256 = _cuda_redist(platform, torch_version)
             packages_here = _platform_packages(platform, torch_version)
             for python_version in chosen_python:
                 for package in chosen_packages:
@@ -443,13 +470,16 @@ def build_matrix(
                             + (f"+{local}" if local else ""),
                             "torch_index_args": _platform(platform, "torch_index_args"),
                             "py_platform": _PY_PLATFORM[platform],
+                            "cuda_redist_version": redist_version,
+                            "cuda_redist_url": redist_url,
+                            "cuda_redist_sha256": redist_sha256,
                         }
                     )
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
             "(torch 2.10.0 to 2.12.0 build flash-attn on win_amd64 only; win_arm64 builds "
-            "causal-conv1d and mamba-ssm for torch 2.14.0 only)."
+            "causal-conv1d and mamba-ssm for torch 2.14.0 and 2.15.0 only)."
         )
     return include
 
@@ -588,7 +618,6 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-# How the release body names each platform.
 PLATFORM_NAMES = {
     "linux_x86_64": "Linux x86_64",
     "win_amd64": "Windows x86_64",
@@ -608,7 +637,6 @@ def _coverage(rows: list[dict]) -> str:
         by_torch.setdefault(row["torch"], set()).add(row["python"])
     groups: dict[tuple[str, ...], list[str]] = {}
     for torch in sorted(by_torch, key = lambda v: tuple(map(int, v.split(".")))):
-        # cp313 -> 3.13
         pythons = tuple(
             f"{cp[2]}.{cp[3:]}" for cp in sorted(by_torch[torch], key = lambda cp: int(cp[3:]))
         )
@@ -794,9 +822,8 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
-# Fatbin container: magic, version 1, a 16-byte header, then entries with kind (1 PTX, 2 ELF) and
-# target arch at byte 28; read directly because cuobjdump only reads its host object format and
-# names PTX entries sm_XX.ptx.
+# Fatbin layout: magic, version 1, 16-byte header, entries of kind (1 PTX, 2 ELF) with arch at byte
+# 28; parsed directly since cuobjdump reads only host objects and names PTX sm_XX.ptx.
 _FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
 _FATBIN_PTX, _FATBIN_ELF = 1, 2
 
@@ -867,8 +894,7 @@ def _cmd_targets_gate(args: argparse.Namespace) -> int:
             )
             problems += check_targets(member, sass, ptx, want)
     if not checked:
-        # Every package here is a CUDA extension; none with device code means the scan found
-        # nothing, not that there was nothing to check.
+        # Every package is a CUDA extension, so no device code means the scan found nothing.
         problems.append(f"{args.wheel}: no extension with device code")
     for problem in problems:
         print(f"::error::{problem}")

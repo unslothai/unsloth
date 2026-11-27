@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The hub index would put the Hub pages in the startup bundle.
+import { formatBytes } from "@/features/hub/lib/format";
 import {
   consumeNativePathToken,
   nativeFileName,
@@ -38,22 +40,6 @@ import {
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export type { StagedSource };
-
-function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const shown =
-    value >= 10 || unit === 0
-      ? String(Math.round(value))
-      : value.toFixed(1).replace(/\.0$/, "");
-  return `${shown} ${units[unit]}`;
-}
 
 const projectsWithPendingSources = new Set<string>();
 
@@ -416,7 +402,7 @@ export function ProjectSourceDropzone({
                     {entry.name}
                   </span>
                   <span className="shrink-0 text-ui-11 text-muted-foreground">
-                    {formatSize(entry.size)}
+                    {entry.size > 0 ? formatBytes(entry.size) : ""}
                   </span>
                   <button
                     type="button"

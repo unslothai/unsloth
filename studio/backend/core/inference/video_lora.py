@@ -62,9 +62,18 @@ _H3_COMMUNITY_RENAMES = (
 )
 
 
-def h3_community_key_map(module: str, rows: int) -> list:
+# Raw H3 DiT reads fused qkv as [heads, 3, head_dim] (DiffSynth minimax_h3_dit.py); Comfy-Org repack as [3, heads, head_dim].
+_H3_HEAD_DIM = 128
+
+
+def h3_community_key_map(
+    module: str,
+    rows: int,
+    per_head_qkv: bool = False,
+) -> list:
     """``[(diffusers module, B row slices or None)]`` for one community-layout H3 module with ``rows`` output rows:
-    fused qkv splits by thirds into to_q / to_k / to_v, gated fc1 [gate; value] becomes ff.net.0.proj [value; gate]."""
+    fused qkv splits by thirds into to_q / to_k / to_v, gated fc1 [gate; value] becomes ff.net.0.proj [value; gate].
+    ``per_head_qkv``: qkv rows are per head (DiffSynth-Studio layout), not contiguous thirds."""
     if module.startswith("token_refiner.blocks."):
         name = "token_refiner.refiner_blocks." + module[len("token_refiner.blocks.") :]
     else:
@@ -77,6 +86,19 @@ def h3_community_key_map(module: str, rows: int) -> list:
             raise ValueError(f"{module}: fused qkv with {rows} rows is not three equal projections")
         third = rows // 3
         stem = name[: -len("qkv_proj")]
+        if per_head_qkv:
+            width = _H3_HEAD_DIM
+            if third % width:
+                raise ValueError(
+                    f"{module}: per-head fused qkv with {rows} rows is not heads * 3 * {width}"
+                )
+            return [
+                (
+                    f"{stem}{part}",
+                    [(head * 3 * width + i * width, width) for head in range(third // width)],
+                )
+                for i, part in enumerate(("to_q", "to_k", "to_v"))
+            ]
         return [
             (f"{stem}{part}", [(i * third, third)])
             for i, part in enumerate(("to_q", "to_k", "to_v"))
@@ -89,7 +111,11 @@ def h3_community_key_map(module: str, rows: int) -> list:
     return [(name, None)]
 
 
-def _h3_community_targets(module: str, b: Any) -> Optional[list]:
+def _h3_community_targets(
+    module: str,
+    b: Any,
+    per_head_qkv: bool = False,
+) -> Optional[list]:
     """``[(diffusers module, B)]`` for a community-layout H3 module, else None; A is shared by every split."""
     if not _H3_COMMUNITY_MODULE.match(module):
         return None
@@ -97,7 +123,7 @@ def _h3_community_targets(module: str, b: Any) -> Optional[list]:
 
     return [
         (key, b if rows is None else torch.cat([b[s : s + n] for (s, n) in rows], dim = 0))
-        for key, rows in h3_community_key_map(module, int(b.shape[0]))
+        for key, rows in h3_community_key_map(module, int(b.shape[0]), per_head_qkv)
     ]
 
 
@@ -163,8 +189,7 @@ def load_refusal(
     transformer_quant: Optional[str],
     loras: Any = None,
 ) -> Optional[str]:
-    """Why this video load cannot bake LoRAs, or None when it can. Network-free. With ``loras``, a two-expert
-    family also refuses any pick that is not a catalog high / low-noise pair."""
+    """Refusal reason or None, network-free; two-expert plus loras needs catalog high/low pair."""
     if fam is None:
         return None
     label = getattr(fam, "label", None) or getattr(fam, "name", None) or "this model"
@@ -310,8 +335,7 @@ def planned_side_branch_quant(
 
 
 def check_families(specs: Iterable[tuple[str, float]], family: Optional[str]) -> None:
-    """Network-free family gate for catalog ids, so a mismatched pick is a 400 before anything is evicted.
-    Ids the catalog does not know (public HF repo ids) are resolved, and gated, by the load itself."""
+    """Network-free: wrong-family catalog ids 400 before eviction; unknown ids gated by load."""
     from core.inference import diffusion_lora
 
     req = (family or "").strip().lower()
@@ -557,7 +581,11 @@ def read_deltas(files: Iterable[tuple[str, float]], *, family: Optional[str] = N
             for slot, suffixes in (("a", _A_SUFFIXES), ("b", _B_SUFFIXES), ("alpha", (".alpha",))):
                 hit = next((s for s in suffixes if name.endswith(s)), None)
                 if hit is not None:
-                    parts.setdefault(_diffusers_module_name(name[: -len(hit)]), {})[slot] = tensor
+                    slots = parts.setdefault(_diffusers_module_name(name[: -len(hit)]), {})
+                    slots[slot] = tensor
+                    if slot == "b":
+                        # DiffSynth-Studio's PEFT ``.default`` names mean raw-DiT per-head qkv rows.
+                        slots["per_head_qkv"] = hit == ".lora_B.default.weight"
                     break
         if not parts:
             raise ValueError(f"{Path(str(path)).name} holds no LoRA weights this loader recognises")
@@ -579,7 +607,11 @@ def read_deltas(files: Iterable[tuple[str, float]], *, family: Optional[str] = N
                     or rank
                 )
             scale = alpha / (math.sqrt(rank) if meta.get("use_rslora") else rank)
-            split = _h3_community_targets(module, b) if family == _H3_FAMILY else None
+            split = (
+                _h3_community_targets(module, b, slots.get("per_head_qkv", False))
+                if family == _H3_FAMILY
+                else None
+            )
             for target, part in split if split is not None else ((module, b),):
                 out.setdefault(target, []).append((a, part, scale * float(weight)))
     return out
@@ -602,9 +634,8 @@ def bake_into_module_(
     label: str = "denoiser",
     family: Optional[str] = None,
 ) -> int:
-    """Add every LoRA delta in ``files`` to ``module``'s dense Linear weights in place (parameter identity kept);
-    returns the number of layers merged. Every adapted layer must exist and hold a plain float weight, else nothing
-    is merged and ValueError says why: a partial bake would be a silently different model."""
+    """Merges LoRA deltas into dense Linear weights in place and returns the layer count; a missing
+    or non-float layer raises ValueError with nothing merged (no silent partial bake)."""
     import torch
 
     deltas = read_deltas(files, family = family)

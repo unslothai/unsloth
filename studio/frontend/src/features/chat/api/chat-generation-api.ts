@@ -3,6 +3,7 @@
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the auth barrel's React login page.
 import { authFetch } from "@/features/auth/api";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { watchStreamSilence } from "@/lib/stream-silence";
 import type {
   OpenAIChatChunk,
@@ -173,15 +174,9 @@ export function isLegacyFallbackChatGenerationAdmissionError(
 async function json<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = (body as { detail?: unknown; message?: unknown } | null)
-      ?.detail;
-    const message = (body as { message?: unknown } | null)?.message;
     throw new ChatGenerationApiError(
-      typeof detail === "string"
-        ? detail
-        : typeof message === "string"
-          ? message
-          : `Chat generation request failed (${response.status})`,
+      formatApiErrorBody(body) ??
+        `Chat generation request failed (${response.status})`,
       response.status,
     );
   }

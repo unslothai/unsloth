@@ -403,8 +403,8 @@ $FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
@@ -455,7 +455,7 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
-# ── Helper: is a conda environment ACTIVE in this session? ──
+# -- Helper: is a conda environment ACTIVE in this session? --
 function Test-ActiveCondaEnvironment {
     foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
         if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -1910,7 +1910,7 @@ function New-StudioChildScriptDirectory {
     return $dir
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
@@ -2214,7 +2214,7 @@ function Get-NvidiaLibraryInventory {
     }
     return $script:NvidiaLibraryInventory
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 
 # Must match install.ps1's Get-TorchIndexUrl ladder exactly (asserted by a test).
 # Below CUDA 11 gets "cpu".
@@ -3073,8 +3073,8 @@ function Ensure-VCRedist {
     }
 }
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 $Rule = [string]::new([char]0x2500, 52)
 
 
@@ -3339,9 +3339,9 @@ function Show-NpmRegistryHint {
     substep "(min-release-age and save-exact stay enforced.)"
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Banner
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 Write-StudioLine ""
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  " + (Get-StudioAnsi Title) + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup" + (Get-StudioAnsi Reset))
@@ -3688,7 +3688,7 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 # nvidia-smi dirs in preference order, filtered to ones holding the binary (SysNative/ProgramW6432 for
 # 32-bit processes, DriverStore). System32 before legacy NVSMI, which may hold an older binary.
 function Get-NvidiaSmiCandidatePaths {
@@ -3744,7 +3744,7 @@ function Get-NvidiaSmiCandidatePaths {
     }
     return $paths
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
 # 124 means the bounded runner killed the probe; recorded so the banner skips a second query.
@@ -4195,7 +4195,7 @@ function Invoke-AmdSmiNoElevate {
     }
 }
 
-# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+# -- AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU --
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
@@ -4371,7 +4371,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         }
     }
     if ($hipinfoExe) {
-        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        $HipSdkInstalled = $true   # binary found -> SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($hipOut -match "(?i)gcnArchName") {
@@ -4498,7 +4498,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
-    # ── Arch resolution: env-var override → name inference ──────────────────
+    # -- Arch resolution: env-var override -> name inference ------------------
     # Runs even without a confirmed runtime: the Adrenalin driver alone runs the per-gfx llama.cpp
     # prebuilt, which only needs the arch. PyTorch ROCm wheels stay gated on $HasROCm.
     if (-not $script:ROCmGfxArch) {
@@ -5736,7 +5736,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
 
-        # ── Restore hidden .gitignore files ──
+        # -- Restore hidden .gitignore files --
         foreach ($gi in $HiddenGitignores) {
             Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
         }
@@ -7688,7 +7688,7 @@ function Fast-Download {
     }
 }
 
-# ── Check if Python deps need updating ──
+# -- Check if Python deps need updating --
 # One definition of a verified install for the incomplete-install guard and the offline rule.
 function Test-StudioInstallVerified {
     try {
@@ -8666,7 +8666,7 @@ if ($ROCmIndexUrl) {
     }
 }
 
-# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
+# -- Intel XPU (SYCL) ---------------------------------------------------------
 # Intel XPU has its own index leaf and must not fall into the CUDA branch.
 $XpuCpuFallback = $false
 if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
@@ -8928,7 +8928,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # No unsloth.exe rename needed: install.ps1 runs the CLI through python.exe and the base is not
 # reinstalled. Duplicate metadata repair is wrapped in the CLI launcher transaction.
 
-# ── Publish the torch flavor this run settled on ──
+# -- Publish the torch flavor this run settled on --
 # so install_python_stack.py can enforce it; PyPI's Windows torch wheel is +cpu.
 if (-not $NoTorchMode) {
     $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
@@ -9036,7 +9036,7 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     }
 }
 
-# ── Intel XPU: bitsandbytes must carry XPU kernels ──
+# -- Intel XPU: bitsandbytes must carry XPU kernels --
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
 # Never the unsloth[intel-gpu-torch*] extra. Must stay above the EAP restore below (5.1 needs Continue).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -9055,7 +9055,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     }
 }
 
-# ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
+# -- Intel XPU: triton-windows must not shadow torch's XPU triton --
 # Both own the `triton` package. Run after the stack (it reinstalls triton-windows); always
 # pair the uninstall with a reinstall.
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -9225,7 +9225,7 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
-# ── Finish with the setup script this update installed ──
+# -- Finish with the setup script this update installed --
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
@@ -9306,7 +9306,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     }
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
+# -- Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ --
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
@@ -10808,7 +10808,7 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+# -- Precompile bytecode -- (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
 $_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
@@ -10826,9 +10826,9 @@ if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOp
     $global:LASTEXITCODE = $_pycPrevExit
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Footer
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 $DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))

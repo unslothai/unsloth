@@ -25,7 +25,6 @@ on:
       - 'tests/test_gc_skip_auto.py'
       - 'tests/test_native_resume_old_torch.py'
       - 'tests/test_ulysses_hybrid.py'
-      # Shared helpers, the conftest that loads them, and pytest's config.
       - 'tests/_*.py'
       - 'tests/_shared/**'
       - 'tests/conftest.py'
@@ -53,7 +52,6 @@ on:
       - 'tests/test_gc_skip_auto.py'
       - 'tests/test_native_resume_old_torch.py'
       - 'tests/test_ulysses_hybrid.py'
-      # Shared helpers, the conftest that loads them, and pytest's config.
       - 'tests/_*.py'
       - 'tests/_shared/**'
       - 'tests/conftest.py'

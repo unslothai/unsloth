@@ -39,7 +39,6 @@ export function setShowLoadedModels(show: boolean): void {
     // Switching it on asks to see the card, so an earlier X must not keep it hidden.
     if (show) localStorage.removeItem(DISMISSED_KEY);
   } catch {
-    // storage unavailable
   }
   notify();
 }
@@ -82,7 +81,6 @@ export function setLoadedModelsDismissed(dismissed: boolean): void {
       localStorage.removeItem(DISMISSED_KEY);
     }
   } catch {
-    // storage unavailable
   }
   notify();
 }

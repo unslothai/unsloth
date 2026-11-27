@@ -275,7 +275,7 @@ def test_accepted_training_start_stays_locked_during_preparation():
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in completion_watch
     assert "isTrainingStartPending(useTrainingRuntimeStore.getState())" in unload_guard
 
-    assert "initialStudioTab(selectedHistoryRunId, trainingRunActive)" in navigation
+    assert "studioTabFor(null, currentJobId, trainingRunActive)" in navigation
     assert "activeStudioTab(" in navigation
     assert 'trainingRunActive && requestedTab !== "history"' in navigation
     assert "jobId !== previousJobId && trainingRunActive" in navigation

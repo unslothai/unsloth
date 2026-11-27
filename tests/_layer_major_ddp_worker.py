@@ -99,16 +99,29 @@ def build_model():
     return model
 
 
-def rows(n = STEPS * GA * PER_RANK * 2):
+def rows(n = STEPS * GA * PER_RANK * 2, seq = None):
     g = torch.Generator().manual_seed(1)
     return [
         {
             "input_ids": torch.randint(
-                0, 256, (6 + int(torch.randint(0, 14, (1,), generator = g)),), generator = g
+                0,
+                256,
+                (seq or 6 + int(torch.randint(0, 14, (1,), generator = g)),),
+                generator = g,
             )
         }
         for _ in range(n)
     ]
+
+
+def unsloth_gc():
+    """unsloth_zoo's gradient checkpointing module (the one the engine's shim checks look up), or None."""
+    try:
+        import unsloth_zoo.gradient_checkpointing as gc
+    except Exception as e:
+        print(f"unsloth_zoo.gradient_checkpointing: {type(e).__name__}: {e}", flush = True)
+        return None
+    return gc
 
 
 def collate(batch):
@@ -191,11 +204,17 @@ def train(
     record = None,
     hook_wrapper = False,
     rank1_wrapper = False,
+    seq = None,
+    gc_shim = None,
 ):
     os.environ["UNSLOTH_OFFLOAD_LAYER_MAJOR"] = mode
     model = build_model()
     model.get_base_model().model.layers._unsloth_block_swap = Swap()
-    data = rows()
+    if gc_shim is not None:
+        # use_gradient_checkpointing = "unsloth": the decoder layers carry Unsloth's checkpoint shim.
+        for layer in model.get_base_model().model.layers:
+            layer._gradient_checkpointing_func = gc_shim
+    data = rows(seq = seq)
     seen = []
 
     def recording_collate(batch):
@@ -311,6 +330,9 @@ def close(a, b):
 
 def main(out_dir, zoo_dir):
     torch.set_num_threads(1)
+    sys.path.insert(
+        0, zoo_dir
+    )  # unsloth_zoo.gradient_checkpointing from the same tree as the engine
     mod, engine = load(zoo_dir)
     report = {}
 
@@ -371,18 +393,21 @@ def main(out_dir, zoo_dir):
         return lambda: mlp.__dict__.pop("forward", None)
 
     def buffer_written(mod, engine, model):
-        # A forward writing a DDP-broadcast buffer (BatchNorm, dynamic RoPE) fails every rank's commit vote.
+        # A forward writing a DDP-broadcast buffer the output reads (a counter, as BatchNorm's running stats and
+        # dynamic RoPE): every rank's commit vote fails, and the buffer is put back before the standard retry.
         attn = model.get_base_model().model.layers[2].self_attn
+        attn.register_buffer("unsloth_calls", torch.zeros(()), persistent = False)
         mlp = model.get_base_model().model.layers[2].mlp
         real = mlp.forward
 
         def write(*args, **kwargs):
-            attn.unsloth_inv_freq.add_(0)
-            return real(*args, **kwargs)
+            attn.unsloth_calls.add_(1)
+            return real(*args, **kwargs) + 1e-3 * attn.unsloth_calls
 
         mlp.forward = write
         return lambda: mlp.__dict__.pop("forward", None)
 
+    buf0 = run("buffer_written_plain", "0", inject = buffer_written)
     buf_r = run("buffer_written", "1", inject = buffer_written)
     hook_r = run("ddp_wrapper_hook", "1", hook_wrapper = True)
     wrap_r = run("rank1_instance_wrapper", "1", rank1_wrapper = True)
@@ -416,6 +441,34 @@ def main(out_dir, zoo_dir):
             "steps": len(r["grads"]),
         }
     report["one_process_vs_plain_max_diff"] = max_diff(plain["grads"], ref_grads)
+    report["buffer_written"]["bitwise_vs_its_plain"] = (
+        bitwise(buf_r["grads"], buf0["grads"])
+        and bitwise([buf_r["weights"]], [buf0["weights"]])
+        and buf_r["logs"] == buf0["logs"]
+    )
+    # use_gradient_checkpointing = "unsloth" at max_seq_length >= 512 (Unsloth's default): its checkpoint shim on
+    # every decoder layer, 512-token rows. Windows run where the engine accepts the shim, else every rank aborts
+    # alike and runs the standard step; either way bitwise equal to plain DDP.
+    gc = unsloth_gc()
+    if gc is None:
+        report["unsloth_gc"] = None
+    else:
+        shim = gc.unsloth_gradient_checkpoint
+        probe = build_model().get_base_model().model.layers[0]
+        probe._gradient_checkpointing_func = shim
+        accepted = engine._checkpoint_mode(probe)[1] is None
+        g0 = run("unsloth_gc_plain", "0", seq = 512, gc_shim = shim)
+        g1 = run("unsloth_gc", "1", seq = 512, gc_shim = shim)
+        report["unsloth_gc"] = {
+            "accepted": accepted,
+            "windows": g1["windows"],
+            "aborts": g1["aborts"],
+            "reduces": g1["reduces"],
+            "plain_windows": g0["windows"],
+            "bitwise": bitwise(g1["grads"], g0["grads"])
+            and bitwise([g1["weights"]], [g0["weights"]])
+            and g1["logs"] == g0["logs"],
+        }
     try:
         import datasets  # noqa: F401
         import tokenizers  # noqa: F401

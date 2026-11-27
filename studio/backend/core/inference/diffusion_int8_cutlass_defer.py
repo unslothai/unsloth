@@ -43,8 +43,7 @@ _WAIT_POLL_S = 0.1
 _RETRY_S = 0.5
 _CANCEL_WAIT_S = 60.0
 
-# Set by the image backend's load and render to the arming owner: a video load (no render hooks here) keeps racing at
-# load. None = not armed.
+# Set by image load/render to the arming owner; None = not armed; video keeps racing at load.
 _ALLOWED: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
     "unsloth_int8_cutlass_defer_allowed", default = None
 )

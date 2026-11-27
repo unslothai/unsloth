@@ -41,8 +41,7 @@ def test_the_check_time_state_reaches_the_worker_load():
 
 
 def test_a_merged_decision_checkpoint_still_loads_when_no_adapter_was_seen(tmp_path, monkeypatch):
-    # Merged Clef / Laya runs carry their own weights and load no adapter base, so "no adapter at
-    # check time" is true for them and must not refuse them; an adapter-only Clef run still is.
+    # Merged Clef/Laya runs are not refused for an unseen adapter; adapter-only Clef still is.
     merged = tmp_path / "clef-merged"
     merged.mkdir()
     for name in ("joint_head.safetensors", "joint_head_config.json", "config.json"):

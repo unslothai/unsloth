@@ -75,9 +75,8 @@ def _attn_chunk() -> int:
 def _sink_attention_chunk(
     q, kv, block_bias, sinks, q_start, full_seq, window, scaling, dropout_p, training
 ):
-    """Sink-softmax attention for query rows [q_start, q_start + q.shape[2]): q [B, H, rows, D], kv
-    [B, 1, full_seq + n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows,
-    H, D]."""
+    """Sink-softmax attention for query rows from q_start: q [B, H, rows, D], kv [B, 1, full_seq +
+    n_blocks, D] (K == V), block_bias [B, 1, rows, n_blocks]; returns [B, rows, H, D]."""
     batch, _, rows, _ = q.shape
     dtype = q.dtype
     q_idx = torch.arange(q_start, q_start + rows, device = q.device)
@@ -112,9 +111,7 @@ def _refuse_dropout(dropout_p, training):
 
 
 def _recompute_rows(chunk, full_seq, run, grad_out, row_inputs, full_inputs, needs):
-    """Backward of a query-chunked op: recomputes each chunk and accumulates input grads; run(start,
-    end, *rows, *full) -> [B, rows, H, D]; row_inputs sliced on dim 2, full_inputs not; needs is
-    ctx.needs_input_grad for row_inputs + full_inputs."""
+    """Backward recomputes chunks; run -> [B, rows, H, D]; only row_inputs sliced, on dim 2."""
     row_need, full_need = needs[: len(row_inputs)], needs[len(row_inputs) :]
     row_grads = [torch.zeros_like(t) if n else None for t, n in zip(row_inputs, row_need)]
     full_grads = [
@@ -198,9 +195,8 @@ class _ChunkedSinkAttention(torch.autograd.Function):
 
 
 def _sink_attention(q, kv, block_bias, sinks, window, scaling, dropout_p, training):
-    """Query-chunked sink attention so the score matrix is [H/cp, chunk, S] rather than [H/cp, S,
-    S]; with grad, chunks are recomputed in backward (_ChunkedSinkAttention), keeping peak memory
-    O(chunk * S) per layer."""
+    """Query-chunked sink attention: scores are [H/cp, chunk, S] not [H/cp, S, S]; with grad, chunks
+    are recomputed in backward (_ChunkedSinkAttention) for O(chunk * S) memory."""
     _refuse_dropout(dropout_p, training)
     full_seq = q.shape[2]
     chunk = _attn_chunk()

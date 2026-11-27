@@ -149,8 +149,7 @@ _TOOL_CHOICE_NONE = (
     '(tool_choice is "none").'
 )
 
-# Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
-# delta, so it needs a short result; the long model-facing nudge stays in the conversation.
+# Card text for a skipped call: the client already drew its card; the long nudge stays in chat.
 _TOOL_SKIPPED = {
     "duplicate": "Unsloth did not run this call because an identical one had already completed.",
     "disabled": _TOOL_DISABLED,
@@ -191,10 +190,9 @@ def _truncate_for_model(
     *,
     joiner: str = "\n",
 ) -> str:
-    """Hold a hosted result to the same cap a local result gets. Read off ``tools`` rather than
-    copied, so an install that lowers ``UNSLOTH_TOOL_RESULT_MAX_CHARS`` (or the Settings > Chat
-    limit) gets the lower cap here too. A raised setting is not applied: the provider's window is
-    unknown here."""
+    """Hold a hosted result to the local result cap, read from tools rather than copied, so a
+    lowered UNSLOTH_TOOL_RESULT_MAX_CHARS or Settings > Chat limit applies; a raised one does
+    not, as the provider's window is unknown."""
     if limit is None:
         limit = min(tools_module._tool_result_max_chars(), tools_module._MAX_OUTPUT_CHARS)
     if len(text) <= limit:
@@ -226,7 +224,6 @@ def _carries_image_sentinel(result: str) -> bool:
 
 
 def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
-    """The part of a hosted tool's arguments worth showing the model."""
     if not isinstance(arguments, dict):
         return {}
     return {
@@ -237,8 +234,7 @@ def _hosted_arguments_for_model(arguments: Any) -> dict[str, Any]:
 
 
 def _append_hosted_replay(message: dict[str, Any], hosted_text: str) -> None:
-    """Gemini replays a turn from its native answer parts instead of ``content``, so the hosted
-    output goes into both, or a turn with any answer text loses it."""
+    """Gemini replays native answer parts, not content; hosted text must be in both or be lost."""
     if not hosted_text:
         return
     content = message.get("content")
@@ -503,7 +499,6 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 
     for i, ch in enumerate(text):
         if in_string:
-            # A backslash escapes one character, so a run of them toggles.
             if escaped:
                 escaped = False
             elif ch == "\\":
@@ -685,8 +680,7 @@ class _Turn:
                     google[plural] = compacted
                 google.pop(singular, None)
             if google.get("thought_parts") or google.get("answer_parts"):
-                # Native ledgers already pin every signature to its original part. Retaining the legacy scalar
-                # would let the translator move an earlier thought signature onto later unsigned text.
+                # Native parts pin signatures; a legacy scalar would move one to unsigned text.
                 google.pop("thought_signature", None)
                 google.pop("thoughtSignature", None)
                 google.pop("thought", None)
@@ -733,8 +727,7 @@ class _Turn:
         }
 
     def note_hosted_tool_event(self, event: Any) -> None:
-        """Keeps provider tool calls for replay: tool_end omits the name, and the code is only in
-        tool_start."""
+        """Keeps provider calls for replay; tool_end has no name or code, only tool_start does."""
         if not isinstance(event, dict):
             return
         kind = event.get("type")
@@ -871,8 +864,7 @@ class _Turn:
                 or id_names_another_call
                 or names_next_call
             ) and not resends_this_call
-            # An announcement has no object to close, so the rule above cannot reach it. A different name bringing an
-            # object is the next call; gluing gave "A_longB", which matches no tool.
+            # Announcements lack an object; another name with one is the next call, not glue.
             announces_over_announcement = (
                 held is not None
                 and (held.get("announced_only") is True or held.get("resend_suspect") is True)
@@ -956,8 +948,7 @@ class _Turn:
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
             function = raw_call.get("function")
             if isinstance(function, dict):
-                # llama-server resends the whole growing name, OpenAI streams fragments: a fragment starting
-                # with the current name replaces it, anything else appends.
+                # llama-server resends names; OpenAI fragments: prefix replaces, else appends.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
                 # Never rename a closed object that has a name: one tool's arguments would land under another's name.
@@ -981,8 +972,7 @@ class _Turn:
                         )
 
     def _scan(self, key: Any, text: str) -> tuple[list[str], str]:
-        """Resumes _split_top_level_json_objects(text) for key; same as a full rescan, costing only
-        new bytes."""
+        """Resumes the scan for key: same result as a full rescan, costing only new bytes."""
         scan = self.scan_by_key.get(key)
         if scan is None:
             scan = _BoundaryScan()
@@ -999,7 +989,6 @@ class _Turn:
         extra_before: dict[str, Any] | None,
         incoming_extra: dict[str, Any] | None,
     ) -> None:
-        """Give every call after the first in one slot a call of its own."""
         complete, tail = self._scan(key, current["function"]["arguments"])
         segments = complete + ([tail] if tail else [])
         if len(segments) < 2:
@@ -1037,8 +1026,7 @@ class _Turn:
         self.open_key_by_index[index] = open_key
 
     def _call_is_finished(self, key: Any) -> bool:
-        """A stray trailing brace looks complete, so running it is worse than dropping a call never
-        finished."""
+        """A stray trailing brace looks complete; dropping an unfinished call beats running it."""
         if key not in self.open_tail_keys:
             return True
         closed, unfinished = _split_top_level_json_objects(
@@ -1126,7 +1114,6 @@ class _Turn:
 
 
 def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str) -> str:
-    """Re-emit a chunk with its content replaced by what the healer released."""
     new_delta = {key: value for key, value in choice.get("delta", {}).items() if key != "content"}
     if text:
         new_delta["content"] = text
@@ -1159,8 +1146,7 @@ def _split_turn_end(
 
 
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
-    """Provenance for a hand-built unrun card; carries the MCP display names so a budget-exhausted
-    or truncated MCP call never shows the internal server id or an alias."""
+    """MCP display names keep unrun calls from showing the internal server id or an alias."""
     provenance: dict[str, Any] = {"source": "local", "round_id": round_id}
     mcp = mcp_display_parts(tool_name)
     if mcp:
@@ -1823,8 +1809,7 @@ async def _stream_with_studio_tools(
                     elif kind == "tool_call":
                         turn.healed.append(value)
 
-            # Arm even without held_final: a provider closing on [DONE] alone would otherwise end with no
-            # finish_reason, which openai-node rejects. Truncated turns keep their reason.
+            # Arm without held_final: [DONE]-only lacks finish_reason; openai-node rejects it.
             if (
                 turn.healed
                 and turn.finish_reason not in ("length", "content_filter")
@@ -1855,8 +1840,7 @@ async def _stream_with_studio_tools(
             if context > 0:
                 usage_totals["context_tokens"] = context
 
-        # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
-        # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.
+        # Runs on each turn end: a [DONE]-only turn has no finish_reason to mark its boundary.
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
 
@@ -1875,8 +1859,7 @@ async def _stream_with_studio_tools(
             # The partial this run resumed is inside the compaction now, and merging over the item would discard it.
             resumes_partial = False
 
-        # stop is exempt: llama.cpp and vLLM finish valid tool calls with it, so refusing it
-        # disables them.
+        # stop is exempt: llama.cpp, vLLM finish valid calls with it; refusing disables them.
         truncated = turn.finish_reason in ("length", "content_filter")
         if truncated and healer is not None and turn.healed:
             # Truncated calls must not run; give back the exact healed span so the text survives, released at turn end since length is only known then.
@@ -1893,8 +1876,7 @@ async def _stream_with_studio_tools(
         elif tool_choice == "none":
             unrun_reason = _TOOL_CHOICE_NONE
         if unrun_reason is not None:
-            # The relayed delta already drew a card: close it like any unrun call, via `calls` (executes nothing), which
-            # mints the id the client drew for an id-less call.
+            # Close the relayed card via `calls` (runs nothing; mints ids for id-less calls).
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
                 unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
@@ -1940,8 +1922,7 @@ async def _stream_with_studio_tools(
                     append_assistant_turn(
                         conversation,
                         stalled_message,
-                        # A resumed partial is the same turn as what the model just added, so merge rather than
-                        # append: appending puts a turn boundary mid-sentence.
+                        # Merge resumed partials: appending would split the turn mid-sentence.
                         continue_final_message = resumes_partial,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
@@ -1966,7 +1947,6 @@ async def _stream_with_studio_tools(
             decision = controller.prepare_call(call)
             signed_provider_call = _signed_provider_call_for_replay(call)
             if not unlimited and remaining <= 0:
-                # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
@@ -1975,8 +1955,7 @@ async def _stream_with_studio_tools(
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
-                # Replay the result with its call; orphan tool messages get rejected by OpenAI,
-                # Anthropic, Gemini.
+                # Each result replays with its call; OpenAI, Anthropic, Gemini reject orphans.
                 exhausted_call = signed_provider_call or decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if (
@@ -2250,8 +2229,7 @@ async def _stream_with_studio_tools(
                     tool_call_id = card_id,
                     cancel_event = cancel_event,
                 )
-            # Start following URL reads now only if each is exactly the call the loop will run: new host, no
-            # approval, within budget, key not in flight. Results are still emitted in call order.
+            # Prefetch URL reads (new host, no approval, budget left, key free); order kept.
             current_host = _web_fetch_host(name, arguments)
             if current_host is not None and not cancel_event.is_set():
                 in_flight_hosts = {current_host}

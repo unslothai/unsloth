@@ -74,8 +74,7 @@ export function resolveProgressUpdate(
     : Math.max(reported > 0 ? reported : job.expectedBytes, job.expectedBytes);
   const previousDownloadedBytes = job.downloadedBytes;
   const reportedCompleted = finiteReading(progressResp.completed_bytes);
-  // Hold the last reading through an all-zero poll (an unmeasurable, negatively cached answer).
-  // Not a high-water mark: bytes may legitimately drop within a generation (Xet->HTTP fallback).
+  // All-zero poll is unmeasurable: hold the last reading; bytes may drop (Xet to HTTP).
   const reportedDownloaded = finiteReading(progressResp.downloaded_bytes);
   // Whether this poll measured the counter or held it; a held figure belongs to the previous total.
   const measuredTransfer = resetMonotonic || reportedDownloaded > 0;

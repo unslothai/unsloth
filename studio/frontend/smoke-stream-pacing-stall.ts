@@ -3,10 +3,7 @@
 
 // Separate from the harness entry so it can be tested without mounting React.
 
-/**
- * Stall duration not yet closed by a paint, capped at stream end so a freeze spanning the end
- * counts in full but the settle check's quiet frames do not. Idempotent after stream end.
- */
+/** Unpainted stall time, capped at stream end (freezes across it count in full); idempotent. */
 export function stallInProgress(
   lastGrowthAt: number,
   now: number,

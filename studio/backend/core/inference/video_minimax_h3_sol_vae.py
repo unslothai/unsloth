@@ -277,8 +277,7 @@ def _build_module_classes():
         def _window_attn(
             self, q: Any, k: Any, v: Any, kgw: Any, vgw: Any, gvalid: Any, k0: int, s: int
         ) -> Any:
-            """Attention over each spatial window of one temporal window; kgw / vgw are its global
-            tokens."""
+            """Spatial-window attention in one temporal window; kgw/vgw are its global tokens."""
             n, H, W, D = q.shape
             ws, tb, hd, dh = self.window, self.block, self.heads, self.dh
             Hp = -(-(H + s) // ws) * ws
@@ -763,8 +762,7 @@ def install_h3_sol_vae(
             hf_token = hf_token, local_files_only = local_files_only
         )
         free_gb = _free_device_gb(device)
-        # resident on the card when it has room for the weights plus a long clip's decode; else parked on the host and
-        # moved on for each decode (a streamed / low-VRAM placement)
+        # On the card if weights plus a long decode fit; else parked on host, moved per decode.
         resident = free_gb is None or free_gb >= SOL_WEIGHTS_GB + _RESIDENT_MARGIN_GB + 4.0
         home = torch.device(device) if resident else torch.device("cpu")
         model = load_sol_decoder(

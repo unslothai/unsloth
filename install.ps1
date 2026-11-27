@@ -172,7 +172,7 @@ function Install-UnslothStudio {
         }
     }
 
-    # ── Tauri structured output ──
+    # -- Tauri structured output --
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
         if ($TauriMode) {
@@ -1033,7 +1033,7 @@ function Install-UnslothStudio {
         return ""
     }
 
-    # ── Bound nvidia-smi so a wedged driver cannot hang the installer. ──
+    # -- Bound nvidia-smi so a wedged driver cannot hang the installer. --
     function Invoke-NvidiaSmiBounded {
         param(
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
@@ -1067,7 +1067,7 @@ function Install-UnslothStudio {
         }
     }
 
-    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+    # -- BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) --
     # Every directory nvidia-smi might be in, in the order worth trying, filtered to the ones that
     # actually hold the binary. Callers still run their own Test-NvidiaSmiHasGpu over the result:
     # existing is not the same as answering.
@@ -1143,7 +1143,7 @@ function Install-UnslothStudio {
         }
         return $paths
     }
-    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) ──
+    # -- END SHARED WITH studio/setup.ps1 (Get-NvidiaSmiCandidatePaths) --
 
     # One list, because the presence probe and the driver-version probe must agree: a host only the first finds reports a GPU with no driver version, and the CUDA-major guard is then skipped.
     # Reset per run: under `irm | iex` the script scope IS the caller's session, so a second
@@ -1686,7 +1686,7 @@ function Install-UnslothStudio {
         throw $Message
     }
 
-    # ── Usable temporary storage ──
+    # -- Usable temporary storage --
     # Usable temporary storage. Windows never checks TMP/TEMP exist or are writable
     # (#9140), and downloads stage there. If it cannot hold a file, point BOTH at a
     # directory we own; children and GetTempPath() read the process environment.
@@ -1920,7 +1920,7 @@ function Install-UnslothStudio {
         # The directory stays: an autostarted Unsloth inherited it as %TEMP%.
     }
 
-    # ── Parse flags ──
+    # -- Parse flags --
     $StudioLocalInstall = $false
     $PackageName = "unsloth"
     $RepoRoot = ""
@@ -3772,7 +3772,7 @@ function Install-UnslothStudio {
     # Here so its warning lands under the banner, before the temp dir's first user.
     Initialize-StudioTempEnvironment
 
-    # ── Helper: refresh PATH from registry (deduplicating entries) ──
+    # -- Helper: refresh PATH from registry (deduplicating entries) --
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
     # Active conda prefixes, deepest first: CONDA_PREFIX, CONDA_PREFIX_1.., and CONDA_EXE's root.
     function Get-ActiveCondaPrefixes {
@@ -3856,7 +3856,7 @@ function Install-UnslothStudio {
         $env:Path = $unique -join ";"
     }
 
-    # ── Helper: is a conda environment ACTIVE in this session? ──
+    # -- Helper: is a conda environment ACTIVE in this session? --
     # CONDA_PREFIX or CONDA_DEFAULT_ENV, not merely conda being installed.
     function Test-ActiveCondaEnvironment {
         foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
@@ -3876,7 +3876,7 @@ function Install-UnslothStudio {
         return $Position
     }
 
-    # ── Helper: safely add a directory to the persistent User PATH ──
+    # -- Helper: safely add a directory to the persistent User PATH --
     # Direct registry access preserves REG_EXPAND_SZ (dotnet/runtime#1442).
     function Add-ToUserPath {
         param(
@@ -4032,7 +4032,7 @@ function Install-UnslothStudio {
 
     # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so
     # it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
-    # ── BEGIN SHARED WITH studio/setup.ps1 ──
+    # -- BEGIN SHARED WITH studio/setup.ps1 --
 
     # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
     function Test-AccessDeniedError {
@@ -4658,7 +4658,7 @@ function Install-UnslothStudio {
         elseif ($Ran -and $Output -notmatch 'https?://') { $Ran }
     }
 
-    # ── END SHARED WITH studio/setup.ps1 ──
+    # -- END SHARED WITH studio/setup.ps1 --
 
     # Redact index-URL credentials (userinfo, query, fragment) from captured output before
     # printing on failure. Verbose mode streams uncaptured, so it isn't redacted.
@@ -4817,7 +4817,7 @@ function Install-UnslothStudio {
         }
     }
 
-    # ── Managed CLI invocation, Application Control safe ──
+    # -- Managed CLI invocation, Application Control safe --
     # The generated unsigned unsloth.exe is denied by AppLocker/WDAC/Smart App Control while
     # the venv's signed python.exe runs (#8490), so go through the interpreter.
     # Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs: argv[0] is
@@ -5674,7 +5674,7 @@ exit 0
         }
     }
 
-    # ── Leave Windows system directories before installing ──
+    # -- Leave Windows system directories before installing --
     # "Run as administrator" starts in System32, where setup refuses after the PyTorch
     # download. Relocating is safe (nothing reads the caller's directory except
     # --with-llama-cpp-dir, rebased first). Not restored, like the PSModulePath fix.
@@ -5768,14 +5768,14 @@ exit 0
         }
     }
 
-    # ── Preflight the managed llama.cpp cache ──
+    # -- Preflight the managed llama.cpp cache --
     # After System32 relocation (it picks the profile), before any download.
     $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
     if ($llamaPreflightFailure) {
         return (Exit-InstallFailure $llamaPreflightFailure)
     }
 
-    # ── Check winget ──
+    # -- Check winget --
     # Only needed to install Python or uv, so the hard failure is deferred to those branches.
     function Enter-StudioNamedMutex {
         param([Parameter(Mandatory = $true)][string]$Name)
@@ -5848,7 +5848,7 @@ exit 0
 
     function Get-StudioRuntimePathHash {
         param([Parameter(Mandatory = $true)][string]$Path)
-        # Byte-for-byte spelling: .NET and Python disagree on Unicode case (ß).
+        # Byte-for-byte spelling: .NET and Python disagree on Unicode case (the German sharp s).
         $canonical = Get-StudioFinalPath -Path $Path
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -6416,7 +6416,7 @@ exit 0
         return $null
     }
 
-    # ── uv-managed Python: minor and arch now, the interpreter once uv is installed ──
+    # -- uv-managed Python: minor and arch now, the interpreter once uv is installed --
     Write-TauriLog "STEP" "Installing Python"
     # A reinstall keeps its minor so cached cp3XX wheels (torch) are reused; UNSLOTH_TORCH_UPGRADE=1 moves it.
     if (-not $PythonExplicitRequest -and $env:UNSLOTH_TORCH_UPGRADE -ne '1') {
@@ -6464,7 +6464,7 @@ exit 0
     }
     Invoke-MirrorFallback
 
-    # ── Install uv ──
+    # -- Install uv --
     Write-TauriLog "STEP" "Installing uv package manager"
     # Below 0.13.4 uv's bundled roots still trust the compromised emSign CAs (GHSA-hq85-5cpj-mr62).
     $UvMinVersion = "0.13.4"
@@ -7180,7 +7180,7 @@ exit 0
         step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
     }
 
-    # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
+    # -- Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. --
     Write-TauriLog "STEP" "Creating virtual environment"
     Write-StudioRootOwnerMarker -Root $StudioHome
 
@@ -8328,7 +8328,7 @@ exit 0
         return (Exit-InstallFailure "Managed Python is unavailable at $VenvPython (recorded base home: $recordedBaseHome)")
     }
 
-    # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
+    # -- Helper: run amd-smi without triggering a UAC elevation prompt --
     # __COMPAT_LAYER=RunAsInvoker stops amd-smi auto-elevating; WMI fallback still resolves
     # the arch.
     function Invoke-AmdSmiNoElevate {
@@ -8371,7 +8371,7 @@ exit 0
         }
     }
 
-    # ── A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row. ──
+    # -- A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row. --
     # 124 means Invoke-NvidiaSmiBounded killed the probe; recorded so the banner skips a
     # second query.
     $script:NvidiaSmiWedged = $false
@@ -8402,7 +8402,7 @@ exit 0
         try { return "$(Get-StudioEarlyPython)" } catch { return "" }
     }
 
-    # ── BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # -- BEGIN SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) --
     # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
     function Get-NvidiaNvmlLibraryPath {
         $dirs = @()
@@ -8706,11 +8706,11 @@ main()
         }
         return $script:NvidiaLibraryInventory
     }
-    # ── END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) ──
+    # -- END SHARED WITH studio/setup.ps1 (Get-NvidiaLibraryInventory) --
     # Under `irm | iex` the script scope is the caller's session: probe once per invocation.
     $script:NvidiaLibraryInventoryProbed = $false
     $script:NvidiaLibraryInventory = $null
-    # ── Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) ──
+    # -- Detect GPU (robust: PATH + hardcoded fallback paths, mirrors setup.ps1) --
     $HasNvidiaSmi = $false
     $NvidiaSmiExe = $null
     $NvidiaGpuName = $null
@@ -9222,7 +9222,7 @@ main()
             }
         } catch {}
     }
-    # ── AMD ROCm detection (Windows) — mirrors setup.ps1 ──
+    # -- AMD ROCm detection (Windows) - mirrors setup.ps1 --
     $HasROCm = $false
     $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
     $ROCmGpuLabel = $null
@@ -9306,7 +9306,7 @@ main()
         }
         # The notice-only probe runs no HIP tool: an unbounded hipinfo must not hold up an install that keeps CUDA.
         if ($hipinfoExe -and -not $script:StudioMuteLines) {
-            $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+            $HipSdkInstalled = $true   # binary found -> SDK is installed regardless of device state
             try {
                 $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
                 if ($hipOut -match "(?i)gcnArchName") {
@@ -9442,7 +9442,7 @@ main()
         $unsupportedNameArchTable = @(
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
         )
-        # ── Arch resolution: env-var override → name inference ──────────────
+        # -- Arch resolution: env-var override -> name inference --------------
         # Runs even without a confirmed runtime: repo.amd.com wheels bundle their own runtime,
         # so a mapped arch installs ROCm torch directly.
         if (-not $ROCmGfxArch) {
@@ -9554,7 +9554,7 @@ main()
     }
     } finally { $script:StudioMuteLines = $false }
 
-    # ── WSL2 needs AMD Adrenalin >= 26.2.2; AMD referrer-gates it, so only link their page. ──
+    # -- WSL2 needs AMD Adrenalin >= 26.2.2; AMD referrer-gates it, so only link their page. --
     function Show-AmdWslDriverHint {
         if ($env:UNSLOTH_SKIP_AMD_DRIVER_HINT) { return }
         try {
@@ -9584,7 +9584,7 @@ main()
         } catch {}
     }
 
-    # ── AMD gfx arch → AMD pip index family (repo.amd.com/rocm/whl/<family>) ──
+    # -- AMD gfx arch -> AMD pip index family (repo.amd.com/rocm/whl/<family>) --
     # Hoisted above the Intel scan: an unmapped arch gets CPU torch and must not outrank a usable Arc.
     $archFamilyMap = @{
         "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -9668,7 +9668,7 @@ main()
         }
     }
 
-    # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
+    # -- Intel GPU detection (Arc / Data Center GPU Max / Flex) --
     # Before the report chain: a WMI-named-only AMD adapter would otherwise hide a discrete Arc.
     # $script:IsIntelXpu = XPU wheels suit it (Arc / Data Center only, not UHD / Iris Xe).
     $HasIntelGpu = $false
@@ -9865,7 +9865,7 @@ main()
         return $Family
     }
 
-    # ── Choose the correct PyTorch index URL based on driver CUDA version ──
+    # -- Choose the correct PyTorch index URL based on driver CUDA version --
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         # An explicit pin skips ALL GPU probing, as in install.sh / install_python_stack.py.
@@ -9935,7 +9935,7 @@ main()
         return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe $caps)"
     }
 
-    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+    # -- Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) --
     # Untagged wheel = cpu, matching setup.ps1's stale-venv parse.
     function ConvertTo-TorchFlavorTag {
         param([string]$TorchVersion)
@@ -10001,7 +10001,7 @@ main()
         return $torchVer
     }
 
-    # ── xFormers must match the torch BUILD, not just the torch version ──
+    # -- xFormers must match the torch BUILD, not just the torch version --
     # _C.pyd links one exact (torch, CUDA) pair; a mismatch only logs a warning and silently drops
     # memory-efficient attention. PyPI ships only cu128, so resolve from the torch index. Rows were
     # verified live on download.pytorch.org; keep in step with _XFORMERS_WHEEL_VERSIONS in
@@ -10101,7 +10101,7 @@ main()
         return $false
     }
 
-    # ── Torch release preservation (twin of _previous_torch_pin, PR 7250); UPGRADE=1 opts out. ──
+    # -- Torch release preservation (twin of _previous_torch_pin, PR 7250); UPGRADE=1 opts out. --
 
     # Strips ONLY the +local tag; the anchored numeric match keeps dev/rc/alpha from pinning.
     function ConvertTo-TorchNumericRelease {
@@ -10270,8 +10270,8 @@ main()
         substep "PyTorch XPU (SYCL) wheels will be installed from $(Remove-IndexUrlCredentials $TorchIndexUrl)"
     }
 
-    # ── GPU arch → newest compatible Windows ROCm wheel release ──
-    # ── AMD Windows ROCm: arch-aware pip index (repo.amd.com) ──
+    # -- GPU arch -> newest compatible Windows ROCm wheel release --
+    # -- AMD Windows ROCm: arch-aware pip index (repo.amd.com) --
     # Wheels bundle their own runtime, so the HIP SDK version does not matter; newest release for the
     # arch wins. UNSLOTH_ROCM_WINDOWS_MIRROR overrides for air-gapped installs.
     $ROCmIndexUrl = $null
@@ -10376,7 +10376,7 @@ main()
     $GpuBranch = Get-TauriGpuBranch $TorchIndexFamily
     Write-TauriDiag -GpuBranch $GpuBranch -TorchIndexFamily $TorchIndexFamily -PythonVersionForDiag $DetectedPython.Version
 
-    # ── Print CPU-only hint when no GPU detected ──
+    # -- Print CPU-only hint when no GPU detected --
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-StudioLine ""
         if ($ROCmGfxArch) {
@@ -10414,8 +10414,8 @@ main()
         Write-StudioLine ""
     }
 
-    # ── Install PyTorch first, then unsloth separately ──
-    # ── Helper: find no-torch-runtime.txt ──
+    # -- Install PyTorch first, then unsloth separately --
+    # -- Helper: find no-torch-runtime.txt --
     # `uv pip install unsloth --torch-backend=cpu` resolves to the pre-CLI unsloth==2024.8. Use
     # --upgrade-package so upgrading unsloth cannot re-resolve torch from PyPI and drop +cuXXX.
     # uv splits -r/-c/--overrides on whitespace (#6503, #10722, #11012), so the requirements path
@@ -10487,7 +10487,7 @@ main()
         return $installed
     }
 
-    # ── Freeze the trio: a released unsloth wheel can downgrade it. The caller removes it. ──
+    # -- Freeze the trio: a released unsloth wheel can downgrade it. The caller removes it. --
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
@@ -10847,7 +10847,7 @@ print(*pair)
             }
         # Keyed off the index leaf: a FAMILY=xpu pin on a mixed NVIDIA box never ran the Intel scan.
         } elseif ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
-            # ── Intel Arc / XPU PyTorch install ──
+            # -- Intel Arc / XPU PyTorch install --
             Write-TauriLog "STEP" "Installing PyTorch (Intel XPU)"
             substep "installing PyTorch from $(Remove-IndexUrlCredentials $TorchIndexUrl)..."
             # Bound the trio: the xpu index serves torch past our ceiling. Floor 2.6 (unsloth raises below it
@@ -11086,7 +11086,7 @@ print(*pair)
         }
     }
 
-    # ── Intel XPU: bitsandbytes must carry XPU kernels ──
+    # -- Intel XPU: bitsandbytes must carry XPU kernels --
     # Floor 0.50.0 (AMD's: <=0.49.2 NaNs at 4-bit decode, and an Arc can sit beside a Radeon); runs
     # after the unsloth install so a migrated venv cannot keep an older wheel. --no-deps, and not the
     # intel-gpu-torch extra (pins a single +xpu URL). Keyed off the index leaf; best-effort.
@@ -11130,8 +11130,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
         substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
 
-    # ── PEP 440 ignores +cpu/+cuXXX, so uv keeps a stale torch+cpu against a CUDA index:
-    # reinstall the triplet when a GPU build is expected. ──
+    # -- PEP 440 ignores +cpu/+cuXXX, so uv keeps a stale torch+cpu against a CUDA index:
+    # reinstall the triplet when a GPU build is expected. --
     if (-not $SkipTorch) {
         $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
         if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
@@ -11207,7 +11207,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── Pin xFormers to the wheel built for the torch that is actually installed ──
+    # -- Pin xFormers to the wheel built for the torch that is actually installed --
     # After the flavor repair, keyed off the installed torch, not $TorchIndexUrl (a migrated venv can
     # hold +cu128 under a /cpu leaf). Optional: failures warn, no match installs nothing.
     # UNSLOTH_SKIP_XFORMERS=1 opts out.
@@ -11276,7 +11276,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── CI only: overlay a source checkout over the package just installed ──
+    # -- CI only: overlay a source checkout over the package just installed --
     # Clean-machine legs install unsloth from PyPI; the overlay makes setup.ps1 and friends come from
     # this ref. Not --local: it git-clones unsloth-zoo, and these legs remove git.
     if ($env:UNSLOTH_CI_SOURCE_OVERLAY) {
@@ -11312,7 +11312,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         }
     }
 
-    # ── Run studio setup ──
+    # -- Run studio setup --
     # setup.ps1 installs Git, CMake, VS Build Tools and CUDA via winget; Node is isolated, not winget.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
@@ -11574,7 +11574,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     Clear-TauriInstallError "studio setup completed"
 
-    # ── Shim dir holds only unsloth.exe; the venv Scripts python.exe would hijack the system. ──
+    # -- Shim dir holds only unsloth.exe; the venv Scripts python.exe would hijack the system. --
     # Remove the legacy Scripts PATH entry older installers wrote.
     $LegacyScriptsDir = Join-Path $VenvDir "Scripts"
     try {
@@ -11675,7 +11675,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         step "path" "exported $ShimDir for this session (no registry PATH change in env-override mode)"
     }
 
-    # ── Tauri mode: done, skip shortcuts and auto-launch ──
+    # -- Tauri mode: done, skip shortcuts and auto-launch --
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
         return

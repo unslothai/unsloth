@@ -246,8 +246,7 @@ def wait_prewarm(timeout: Optional[float] = 60.0) -> bool:
 
 
 def slice_seconds(eager_render_s: Optional[float]) -> float:
-    """Compile seconds a render lets run before it pauses the compile: ``SLICE_ENV`` when set, else the load's
-    fastest eager render (0 when none was timed), clamped to [0, 30]."""
+    """Compile seconds: SLICE_ENV, else fastest eager render (0 if untimed), clamped [0, 30]."""
     raw = (os.environ.get(SLICE_ENV) or "").strip()
     value: Optional[float] = None
     if raw:
@@ -1011,8 +1010,7 @@ def capture_suppressed() -> bool:
 
 @contextlib.contextmanager
 def no_capture():
-    """No CUDA graph record or replay: a two-card split call (diffusion_sequence_parallel) issues
-    CUDA work on two threads, so a recording would wait out the other's hold (OUTSIDE_WAIT_S)."""
+    """No CUDA graph in two-card splits: a recording waits out the other thread's hold."""
     token = _NO_CAPTURE.set(True)
     try:
         yield
@@ -1035,8 +1033,7 @@ def auxiliary() -> bool:
 
 @contextlib.contextmanager
 def auxiliary_pass():
-    """Detailer crop inpaints: eager, uncaptured, unrecorded, uncounted. Each box is its own size, so compiling
-    them recompiled per detection and used up the per-module graph cap the main render needs."""
+    """Detailer crops: eager, uncaptured; per-box sizes recompile and exhaust the graph cap."""
     tokens = (_AUXILIARY.set(True), _NO_RECORD.set(True), _FORCE_EAGER.set(True))
     try:
         yield

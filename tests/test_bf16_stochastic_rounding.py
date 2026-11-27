@@ -3,6 +3,7 @@
 
 """bfloat16 stochastic rounding for full finetuning. CPU; bitsandbytes on CUDA only."""
 
+import copy
 import importlib.util
 from pathlib import Path
 
@@ -83,6 +84,27 @@ def test_torch_adamw_keeps_the_float32_update(sr, foreach):
     }
     assert kept["bf16"] < 0.5, kept
     assert abs(kept["sr"] - 1) < 0.1, kept
+
+
+def test_resume_with_an_initially_inactive_weight(sr):
+    def setup(weights):
+        params = [torch.nn.Parameter(weight.detach().clone()) for weight in weights]
+        optimizer = torch.optim.AdamW(params, lr = 0.001, weight_decay = 0.0)
+        sr.enable_bf16_stochastic_rounding(optimizer, verbose = False)
+        return params, optimizer
+
+    params, optimizer = setup([torch.ones(1024, dtype = torch.bfloat16) for _ in range(2)])
+    params[1].sum().backward()
+    optimizer.step()
+    optimizer.zero_grad(set_to_none = True)
+
+    resumed, restored = setup(params)
+    restored.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+    for weights, opt in ((params, optimizer), (resumed, restored)):
+        (weights[0].sum() + weights[1].sum()).backward()
+        opt.step()
+    for actual, expected in zip(resumed, params):
+        assert torch.equal(actual, expected)
 
 
 def test_idempotent_kill_switch_and_scope(sr, monkeypatch):
@@ -228,3 +250,93 @@ def test_resume_draws_what_an_uninterrupted_run_draws(sr):
     resumed, _ = run(2, state)
     for a, b in zip(whole, resumed):
         assert torch.equal(a.view(torch.int16), b.view(torch.int16))
+
+
+def _inactive_first_resume(sr, opt_fn, device, cut):
+    """3 weights; step 0 only the last has a gradient, step 1 the last two, then all. Run 4 steps straight,
+    or `cut` steps, save weights + optimizer state, and continue in a fresh optimizer: same bits."""
+    active = lambda step: range(max(0, 2 - step), 3)
+
+    def run(steps, state = None):
+        g = torch.Generator().manual_seed(0)
+        params = [
+            torch.nn.Parameter((torch.randn(n, generator = g) * 0.05).to(torch.bfloat16).to(device))
+            for n in (4096, 300, 1024)
+        ]
+        if state is not None:
+            for p, w in zip(params, state["weights"]):
+                p.data.copy_(w)
+        opt = opt_fn(params)
+        assert sr.enable_bf16_stochastic_rounding(opt, verbose = False) == 3
+        if state is not None:  # after enabling, as Trainer resumes
+            opt.load_state_dict(state["optimizer"])
+        start = 0 if state is None else state["done"]
+        for step in range(start, start + steps):
+            gg = torch.Generator().manual_seed(100 + step)
+            for i in active(step):
+                params[i].grad = (
+                    (torch.randn(params[i].shape, generator = gg) * 1e-3)
+                    .to(torch.bfloat16)
+                    .to(device)
+                )
+            opt.step()
+            opt.zero_grad(set_to_none = True)
+        return params, opt
+
+    whole, opt = run(4)
+    half, half_opt = run(cut)
+    state = {
+        "weights": [p.detach().clone() for p in half],
+        "optimizer": half_opt.state_dict(),
+        "done": cut,
+    }
+    resumed, resumed_opt = run(4 - cut, state)
+    for i, (a, b) in enumerate(zip(whole, resumed)):
+        assert torch.equal(a.view(torch.int16), b.view(torch.int16)), (i, int((a != b).sum()))
+    return whole, opt, resumed, resumed_opt
+
+
+@pytest.mark.parametrize("cut", [1, 2])
+def test_resume_after_an_inactive_weight_draws_what_an_uninterrupted_run_draws(sr, cut):
+    whole, opt, resumed, resumed_opt = _inactive_first_resume(
+        sr, lambda params: torch.optim.AdamW(params, lr = 1e-3, weight_decay = 0.0), "cpu", cut
+    )
+    for p, q in zip(whole, resumed):
+        for k in ("exp_avg", "exp_avg_sq"):
+            assert torch.equal(
+                opt.state[p][k].view(torch.int16), resumed_opt.state[q][k].view(torch.int16)
+            )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires CUDA")
+@pytest.mark.parametrize("cut", [1, 2])
+@pytest.mark.parametrize(
+    "route", ["foreach", "fused", "bnb_one_kernel", "bnb_float32_copy", "float32_copy"]
+)
+def test_resume_after_an_inactive_weight_is_bitwise_on_cuda(sr, monkeypatch, route, cut):
+    monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED", raising = False)
+    monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED_BNB", raising = False)
+    if route == "float32_copy":
+        monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED", "0")
+    if route == "bnb_float32_copy":
+        monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED_BNB", "0")
+    if route.startswith("bnb"):
+        bnb = pytest.importorskip("bitsandbytes")
+        # 4096 elements: 8-bit state; 300 and 1024: 32-bit state, so both kernels resume
+        opt_fn = lambda params: bnb.optim.AdamW8bit(params, lr = 1e-3, weight_decay = 0.01)
+    else:
+        kw = {"fused": True} if route == "fused" else {"foreach": route == "foreach"}
+        opt_fn = lambda params: torch.optim.AdamW(params, lr = 1e-3, weight_decay = 0.01, **kw)
+    whole, opt, _, resumed_opt = _inactive_first_resume(sr, opt_fn, "cuda", cut)
+    counters = {
+        k: opt.__dict__.get(k, 0) + resumed_opt.__dict__.get(k, 0)
+        for k in ("_unsloth_sr_fused_steps", "_unsloth_sr_bnb_fused_steps")
+    }
+    expected = {
+        "foreach": "_unsloth_sr_fused_steps",
+        "fused": "_unsloth_sr_fused_steps",
+        "bnb_one_kernel": "_unsloth_sr_bnb_fused_steps",
+    }.get(route)
+    for key, count in counters.items():
+        assert (count > 0) == (key == expected), (route, counters)
