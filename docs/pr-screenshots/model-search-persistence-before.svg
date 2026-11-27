@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="620" viewBox="0 0 1100 620" role="img" aria-labelledby="title desc">
+  <title id="title">Model picker search before the fix</title>
+  <desc id="desc">The search term disappears after selecting a result and reopening the model picker.</desc>
+  <rect width="1100" height="620" fill="#f7f8fb"/>
+  <text x="70" y="66" fill="#111827" font-family="Inter,Arial,sans-serif" font-size="30" font-weight="700">Model picker search</text>
+  <text x="70" y="102" fill="#667085" font-family="Inter,Arial,sans-serif" font-size="18">Before: reopening the picker loses the search term.</text>
+  <g transform="translate(70 150)">
+    <rect width="430" height="330" rx="18" fill="#fff" stroke="#d0d5dd"/>
+    <text x="28" y="42" fill="#344054" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="600">1. Search for a model</text>
+    <rect x="28" y="66" width="374" height="52" rx="10" fill="#f9fafb" stroke="#98a2b3"/>
+    <text x="54" y="99" fill="#101828" font-family="ui-monospace,Menlo,monospace" font-size="18">Qwen3-8B</text>
+    <rect x="28" y="142" width="374" height="72" rx="10" fill="#eef4ff" stroke="#84adff"/>
+    <text x="52" y="174" fill="#175cd3" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="600">unsloth/Qwen3-8B</text>
+    <text x="52" y="198" fill="#667085" font-family="Inter,Arial,sans-serif" font-size="14">Select result</text>
+    <text x="28" y="274" fill="#667085" font-family="Inter,Arial,sans-serif" font-size="15">Selecting closes the popover.</text>
+  </g>
+  <path d="M520 312h58" stroke="#98a2b3" stroke-width="4" stroke-linecap="round"/>
+  <path d="m566 294 24 18-24 18" fill="none" stroke="#98a2b3" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(600 150)">
+    <rect width="430" height="330" rx="18" fill="#fff" stroke="#d0d5dd"/>
+    <text x="28" y="42" fill="#344054" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="600">2. Reopen picker</text>
+    <rect x="28" y="66" width="374" height="52" rx="10" fill="#f9fafb" stroke="#f04438" stroke-width="2"/>
+    <text x="54" y="99" fill="#98a2b3" font-family="Inter,Arial,sans-serif" font-size="16">Search models</text>
+    <text x="28" y="168" fill="#b42318" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="600">Query is empty</text>
+    <text x="28" y="198" fill="#667085" font-family="Inter,Arial,sans-serif" font-size="15">The user must type it again.</text>
+  </g>
+</svg>

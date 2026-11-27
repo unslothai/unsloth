@@ -316,6 +316,8 @@ function ModelSelectorContent({
   externalModels,
   value,
   loaded,
+  searchQuery,
+  onSearchQueryChange,
   onSelect,
   resolveDownloadFootprint,
   onEject,
@@ -338,6 +340,8 @@ function ModelSelectorContent({
   externalModels: ExternalModelOption[];
   value?: string;
   loaded?: boolean;
+  searchQuery: string;
+  onSearchQueryChange: (query: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
@@ -590,6 +594,8 @@ function ModelSelectorContent({
               externalModels={externalModels}
               value={value}
               valueLoaded={loaded}
+              searchQuery={searchQuery}
+              onSearchQueryChange={onSearchQueryChange}
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onBrowseHub={onBrowseHub}
@@ -666,6 +672,9 @@ export function ModelSelector({
   const navigate = useNavigate();
   const t = useT();
   const [uncontrolled, setUncontrolled] = useState("");
+  // Keep the Hub query at the selector level because Radix unmounts the popover
+  // content when it closes after a model is selected.
+  const [hubSearchQuery, setHubSearchQuery] = useState("");
 
   const selected = value ?? uncontrolled;
   // The chat model can be evicted by an image or video load while the pick survives.
@@ -826,6 +835,8 @@ export function ModelSelector({
         externalModels={externalModels}
         value={selected}
         loaded={loaded}
+        searchQuery={hubSearchQuery}
+        onSearchQueryChange={setHubSearchQuery}
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}

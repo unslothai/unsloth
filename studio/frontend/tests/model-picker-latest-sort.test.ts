@@ -22,3 +22,21 @@ test("the search-only hook stays idle until there is a query, so browse fetches 
     /enabled: online && section === "recommended" && debouncedQuery\.trim\(\)\.length > 0,\n\s*\}\);\n\s*const recommendedSearch = useHubModelSearch\(""/,
   );
 });
+
+test("Hub search state is owned by ModelSelector so selecting a result does not clear it", () => {
+  const selector = readSrc(
+    "features/model-picker/components/model-selector.tsx",
+  );
+  assert.match(
+    selector,
+    /const \[hubSearchQuery, setHubSearchQuery\] = useState\(""\);/,
+  );
+  assert.match(
+    selector,
+    /searchQuery=\{hubSearchQuery\}\s*onSearchQueryChange=\{setHubSearchQuery\}/,
+  );
+  assert.match(
+    pickers,
+    /const query = searchQuery \?\? internalQuery;\s*const setQuery = onSearchQueryChange \?\? setInternalQuery;/,
+  );
+});
