@@ -91,6 +91,50 @@ def _index_override_leaf(environ = os.environ) -> Optional[str]:
     return family.split("/")[-1].lower() if family else None
 
 
+_UV_TRUE = ("1", "t", "true", "y", "yes", "on")
+# install.ps1 Test-MirrorConfigured -Tool uv: an index line in a uv config file.
+_UV_INDEX_LINE = re.compile(
+    r"^\s*(\[\[(tool\.uv\.)?index\]\]|(pip\.)?(index|index-url|default-index|extra-index-url|no-index)\s*=)",
+    re.M,
+)
+
+
+def _uv_config_files(environ) -> list[str]:
+    files = []
+    if environ.get("UV_CONFIG_FILE"):
+        files.append(environ["UV_CONFIG_FILE"])
+    if environ.get("APPDATA"):
+        files.append(os.path.join(environ["APPDATA"], "uv", "uv.toml"))
+    if (
+        environ.get("ProgramData")
+        and str(environ.get("UV_NO_SYSTEM_CONFIG", "")).strip().lower() not in _UV_TRUE
+    ):
+        files.append(os.path.join(environ["ProgramData"], "uv", "uv.toml"))
+    return files
+
+
+def _installer_admits_managed_torch(environ = os.environ) -> bool:
+    """install.ps1's Test-PypiUnslothAdmitsTorch gates before its PyPI read: offline, an exclude-newer cutoff, or a
+    configured package mirror (env or uv config file) keeps the old torch window, so Repair cannot reach 2.13."""
+    if str(environ.get("UV_OFFLINE", "")).strip().lower() in _UV_TRUE:
+        return False
+    if environ.get("UV_EXCLUDE_NEWER") or environ.get("UV_EXCLUDE_NEWER_PACKAGE"):
+        return False
+    if any(
+        environ.get(name)
+        for name in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+    ):
+        return False
+    for path in _uv_config_files(environ):
+        try:
+            with open(path, encoding = "utf-8", errors = "replace") as handle:
+                if _UV_INDEX_LINE.search(handle.read()):
+                    return False
+        except OSError:
+            continue
+    return True
+
+
 def _managed_route_host(environ = os.environ) -> bool:
     """install.ps1's 2.13 route (Test-Cu130Torch213Platform): x64 Windows, the venv Repair builds is 3.13, and
     no index override pins a leaf other than cu130."""
@@ -99,6 +143,7 @@ def _managed_route_host(environ = os.environ) -> bool:
         _platform.machine().lower() in ("amd64", "x86_64")
         and _repair_python_minor(environ) == "3.13"
         and leaf in (None, "cu130")
+        and _installer_admits_managed_torch(environ)
     )
 
 

@@ -134,6 +134,45 @@ def test_an_index_override_off_cu130_closes_the_route(monkeypatch, env, eligible
     assert wr._managed_route_host(env) is eligible
 
 
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UV_INDEX_URL": "https://mirror.example/simple"},
+        {"UV_DEFAULT_INDEX": "https://mirror.example/simple"},
+        {"UV_EXTRA_INDEX_URL": "https://mirror.example/simple"},
+        {"UV_OFFLINE": "1"},
+        {"UV_EXCLUDE_NEWER": "2026-01-01"},
+    ],
+)
+def test_a_package_mirror_or_offline_uv_closes_the_route(monkeypatch, env):
+    # install.ps1's Test-PypiUnslothAdmitsTorch returns false here, so Repair keeps the old torch window.
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    assert wr._managed_route_host(env) is False
+
+
+def test_an_index_in_the_uv_config_file_closes_the_route(monkeypatch, tmp_path):
+    monkeypatch.setattr(wr._platform, "machine", lambda: "AMD64")
+    (tmp_path / "uv").mkdir()
+    config = tmp_path / "uv" / "uv.toml"
+    config.write_text(
+        "[[index]]\nurl = 'https://mirror.example/simple'\ndefault = true\n", encoding = "utf-8"
+    )
+    assert wr._managed_route_host({"APPDATA": str(tmp_path)}) is False
+    config.write_text("cache-dir = 'D:/uv'\n", encoding = "utf-8")
+    assert wr._managed_route_host({"APPDATA": str(tmp_path)}) is True
+
+
+def test_the_mirror_gate_matches_install_ps1():
+    install = (Path(__file__).resolve().parents[3] / "install.ps1").read_text(encoding = "utf-8")
+    body = re.search(r"function Test-PypiUnslothAdmitsTorch \{.*?\n    \}", install, re.S).group(0)
+    assert (
+        "Test-MirrorConfigured -Tool uv" in body
+        and "UV_OFFLINE" in body
+        and "UV_EXCLUDE_NEWER" in body
+    )
+    assert '"$env:UV_DEFAULT_INDEX$env:UV_INDEX_URL$env:UV_INDEX$env:UV_EXTRA_INDEX_URL"' in install
+
+
 def test_the_route_gate_matches_install_ps1():
     install = Path(__file__).resolve().parents[3] / "install.ps1"
     body = re.search(
