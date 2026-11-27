@@ -930,3 +930,35 @@ def test_a_spoken_reply_refuses_tool_turns_after_the_question(monkeypatch, trail
         assert "tool turns after it" in response.text
     else:
         assert seen.get("speak") is True
+
+
+def _replay_request(replay_on_latest = False):
+    audio = _audio_message(text = "listen")
+    audio["content"][1]["studio_replay"] = True
+    follow_up = {"role": "user", "content": "what was said?"}
+    if replay_on_latest:
+        return _request(
+            {"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}, audio
+        )
+    return _request(audio, {"role": "assistant", "content": "OK"}, follow_up)
+
+
+def test_a_replayed_recording_stays_on_its_turn_and_is_priced():
+    payload = _replay_request()
+    inference_route._reject_misplaced_audio_parts(payload)
+    _normalise_chat_content_parts(payload)
+    assert payload.audio_base64 is None
+    assert inference_route._request_audio_clips(payload) == [AUDIO_B64]
+
+    messages, _ = inference_route._openai_messages_for_gguf_chat(payload, True)
+    audio = [p for p in messages[0]["content"] if p.get("type") == "input_audio"]
+    assert len(audio) == 1 and audio[0]["input_audio"]["data"] == AUDIO_B64
+    assert "studio_replay" not in audio[0]
+    assert audio[0]["studio_audio_tokens"] > 0
+    assert messages[-1]["content"] == "what was said?"
+
+
+def test_a_replay_marker_on_the_current_turn_is_refused():
+    with pytest.raises(HTTPException) as exc:
+        inference_route._reject_misplaced_audio_parts(_replay_request(replay_on_latest = True))
+    assert exc.value.status_code == 400
