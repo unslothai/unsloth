@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # An existing Apple Silicon home on torch 2.10, re-run with the merge base's install.sh (kept)
-# and with this checkout's (moved to the 2.13 route); then opt-out, a 2.14 home, studio update.
+# and with this checkout's (moved to the 2.14.1 route); then opt-out, a kept 2.13 home, studio update.
 
 name: Studio macOS torch floor upgrade
 
@@ -90,26 +90,26 @@ jobs:
           grep -q "existing install has torch 2.10.0 -- keeping it" "$LOGS/A_base_rerun.log"
           grep -q "^PROBE [0-9.]* 2\.10\.0 " "$LOGS/A_probe.log"
 
-      - name: "B (head): a re-run moves 2.10 to the 2.13 route"
+      - name: "B (head): a re-run moves 2.10 to the 2.14 route"
         run: |
           set -o pipefail
           bash install.sh --local 2>&1 | tee "$LOGS/B_head_rerun.log"
           bash "$HELPER" probe | tee "$LOGS/B_probe.log"
-          grep -q "existing install has torch 2.10.0 -- moving to torch>=2.13.0,<2.14.0" "$LOGS/B_head_rerun.log"
+          grep -q "existing install has torch 2.10.0 -- moving to torch>=2.14.1,<2.15.0" "$LOGS/B_head_rerun.log"
           # Hosted macos-15 runners expose a paravirtual Metal device without MPS: the versions are checked always,
           # MPS (and the helper's SDPA check) only where it is available.
-          grep -Eq "^PROBE [0-9.]+ 2\.13\.[0-9]+ 0\.28\.[0-9]+ 2\.11\.[0-9]+ mps (True|False)" "$LOGS/B_probe.log"
+          grep -Eq "^PROBE [0-9.]+ 2\.14\.[1-9][0-9]* 0\.29\.[0-9]+ 2\.11\.[0-9]+ mps (True|False)" "$LOGS/B_probe.log"
 
-      - name: "B2 (head): a second re-run and studio update keep 2.13"
+      - name: "B2 (head): a second re-run and studio update keep 2.14"
         env:
           STUDIO_LOCAL_REPO: ${{ github.workspace }}
         run: |
           set -o pipefail
           bash install.sh --local 2>&1 | tee "$LOGS/B2_head_rerun.log"
-          grep -Eq "existing install has torch 2\.13\.[0-9]+ -- keeping it" "$LOGS/B2_head_rerun.log"
+          grep -Eq "existing install has torch 2\.14\.[0-9]+ -- keeping it" "$LOGS/B2_head_rerun.log"
           "$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth" studio update --local 2>&1 | tee "$LOGS/B2_update.log"
           bash "$HELPER" probe | tee "$LOGS/B2_probe.log"
-          grep -Eq "^PROBE [0-9.]+ 2\.13\.[0-9]+ 0\.28\.[0-9]+ " "$LOGS/B2_probe.log"
+          grep -Eq "^PROBE [0-9.]+ 2\.14\.[0-9]+ 0\.29\.[0-9]+ " "$LOGS/B2_probe.log"
 
       - name: "C (head): UNSLOTH_TORCH_UPGRADE=0 keeps a 2.10 home"
         run: |
@@ -120,14 +120,15 @@ jobs:
           grep -q "existing install has torch 2.10.0 -- keeping it" "$LOGS/C_optout.log"
           grep -q "^PROBE [0-9.]* 2\.10\.0 " "$LOGS/C_probe.log"
 
-      - name: "D (head): a 2.14.1 home is kept"
+      - name: "D (head): a 2.13.0 home is kept (at the move floor, below the new-install pin)"
         run: |
           set -o pipefail
-          bash "$HELPER" seed 2.14.1 0.29.2 2.11.1 | tee "$LOGS/D_seed.log"
+          bash "$HELPER" seed 2.13.0 0.28.0 2.11.1 | tee "$LOGS/D_seed.log"
           bash install.sh --local 2>&1 | tee "$LOGS/D_rerun.log"
           bash "$HELPER" probe | tee "$LOGS/D_probe.log"
-          grep -q "existing install has torch 2.14.1 -- keeping it" "$LOGS/D_rerun.log"
-          grep -q "^PROBE [0-9.]* 2\.14\.1 " "$LOGS/D_probe.log"
+          grep -q "existing install has torch 2.13.0 -- keeping it" "$LOGS/D_rerun.log"
+          if grep -q "moving to" "$LOGS/D_rerun.log"; then echo "a 2.13.0 home was moved"; exit 1; fi
+          grep -q "^PROBE [0-9.]* 2\.13\.0 0\.28\.0 " "$LOGS/D_probe.log"
 
       - name: Declare this job a uv cache consumer, not a producer
         uses: ./.github/actions/uv-cache-save

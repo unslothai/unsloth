@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# New Apple Silicon installs on macOS 14+ get torch 2.13 (fused MPS attention); existing 2.4-2.14 installs keep theirs.
+# New Apple Silicon installs on macOS 14+ get torch 2.14.1 (fused MPS attention, faster MPS renders); existing 2.13-2.14 installs keep theirs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -82,15 +82,15 @@ _stub_python 3.13
 
 echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
 _PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_MACOS_NEW_INSTALL_ROUTE" = true \]; then$/p' "$INSTALL_SH"
-    printf '    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"\n    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"\nfi\n')
+    printf '    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"\n    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"\nfi\n')
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _MACOS_NEW_INSTALL_ROUTE=true && echo yes)"
 assert_eq "install.sh new-install body matches the replayed one" "yes" \
     "$(grep -A2 '^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_MACOS_NEW_INSTALL_ROUTE" = true \]; then$' "$INSTALL_SH" | tail -2 \
-        | tr -d '\n' | grep -qF 'TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"' && echo yes)"
+        | tr -d '\n' | grep -qF 'TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"' && echo yes)"
 substep() { :; }
 eval "$(grep -E '^_(CU130|MACOS)_(TORCH_CEILING|NEW_INSTALL_TORCH|TORCH_MOVE_FLOOR)=' "$INSTALL_SH")"
 assert_eq "macOS ceiling" "2.15.0" "$_MACOS_TORCH_CEILING"
-assert_eq "macOS new-install spec" "torch>=2.13.0,<2.14.0" "$_MACOS_NEW_INSTALL_TORCH"
+assert_eq "macOS new-install spec" "torch>=2.14.1,<2.15.0" "$_MACOS_NEW_INSTALL_TORCH"
 assert_eq "macOS move floor is the fused-attention gate" "2.13.0" "$_MACOS_TORCH_MOVE_FLOOR"
 SKIP_TORCH=false; TORCH_INDEX_URL="$CPU"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version, $3 default floor
@@ -120,7 +120,7 @@ for gate in unreachable capped open; do
     assert_eq "PyPI $gate: existing home with unreadable torch stays on the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
     _run_block false ""
     want="torch>=2.6,<2.12.0"; tv="torchvision>=0.19,<0.27.0"
-    [ "$gate" = open ] && want="torch>=2.13.0,<2.14.0" && tv="torchvision>=0.28.0,<0.29.0"
+    [ "$gate" = open ] && want="torch>=2.14.1,<2.15.0" && tv="torchvision>=0.29.0,<0.30.0"
     assert_eq "PyPI $gate: fresh home default" "$want" "$TORCH_CONSTRAINT"
     assert_eq "PyPI $gate: fresh home torchvision" "$tv" "$TORCHVISION_CONSTRAINT"
 done
@@ -130,9 +130,9 @@ assert_eq "preservation keeps the 2.4 floor below Python 3.13" "torch>=2.4,<2.15
 _run_block true "2.15.0"
 assert_eq "2.15 is outside the window: old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.14" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.13.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 on a resident 2.13 takes the 2.13 window" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 on a resident 2.13 moves it to 2.14" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
 assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 MACOS_MAJOR=13; _run_block false ""; MACOS_MAJOR=15
@@ -146,21 +146,21 @@ assert_eq "--no-torch never takes the route" "torch>=2.6,<2.12.0" "$TORCH_CONSTR
 _stub_python 3.9; _run_block false "" 2.4; _stub_python 3.13
 assert_eq "Python 3.9 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
 
-echo "=== an existing home below the 2.13 floor moves to 2.13 when the route is open ==="
+echo "=== an existing home below the 2.13 floor moves to the 2.14 pin when the route is open ==="
 _pypi_fixture "torch<2.15.0,>=2.4.0"
 _SUBSTEP_LOG=$(mktemp)
 substep() { printf '%s\n' "$1" >> "$_SUBSTEP_LOG"; }
 for prev in 2.10.0 2.11.0 2.12.1 2.6.0; do
     : > "$_SUBSTEP_LOG"
     _run_block true "$prev"
-    assert_eq "existing $prev moves to the new-install spec" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
-    assert_eq "existing $prev moves torchvision with it" "torchvision>=0.28.0,<0.29.0" "$TORCHVISION_CONSTRAINT"
+    assert_eq "existing $prev moves to the new-install spec" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
+    assert_eq "existing $prev moves torchvision with it" "torchvision>=0.29.0,<0.30.0" "$TORCHVISION_CONSTRAINT"
     assert_eq "existing $prev is not a kept pin" "" "$_PREV_TORCH_PIN"
     assert_contains "existing $prev: the move is announced with its opt-out" "$(cat "$_SUBSTEP_LOG")" "UNSLOTH_TORCH_UPGRADE=0"
     assert_not_contains "existing $prev: no 'keeping it' line" "$(cat "$_SUBSTEP_LOG")" "keeping it"
 done
 _run_block true "2.10.0+cpu"
-assert_eq "a local-tagged 2.10.0+cpu moves too" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "a local-tagged 2.10.0+cpu moves too" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 for prev in 2.13.0 2.13.1 2.14.0 2.14.1; do
     : > "$_SUBSTEP_LOG"
     _run_block true "$prev"
@@ -173,9 +173,9 @@ for v in 0 false no; do
     assert_eq "UNSLOTH_TORCH_UPGRADE=$v keeps the 2.10 torchvision window" "torchvision>=0.19,<0.27.0" "$TORCHVISION_CONSTRAINT"
 done
 UNSLOTH_TORCH_UPGRADE=""; _run_block true "2.10.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "an empty UNSLOTH_TORCH_UPGRADE is the default (moves)" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "an empty UNSLOTH_TORCH_UPGRADE is the default (moves)" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.10.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 still moves an existing 2.10" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 still moves an existing 2.10" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 _torch_index_pinned=true; _run_block true "2.10.0"; _torch_index_pinned=false
 assert_eq "a pinned index keeps an existing 2.10" "torch==2.10.0" "$TORCH_CONSTRAINT"
 MACOS_MAJOR=13; _run_block true "2.10.0"; MACOS_MAJOR=15
@@ -207,15 +207,20 @@ for os in linux wsl windows; do
     TORCH_INDEX_URL="$CPU"
 done
 OS=macos
-# A later pin bump (here to 2.14) must not move a 2.13 home: the floor is its own literal.
-_pin_saved="$_MACOS_NEW_INSTALL_TORCH"; _MACOS_NEW_INSTALL_TORCH="torch>=2.14.0,<2.15.0"
-_run_block true "2.13.0"
-assert_eq "pin bumped to 2.14: an existing 2.13 home is kept" "torch==2.13.0" "$TORCH_CONSTRAINT"
-_run_block true "2.13.1"
-assert_eq "pin bumped to 2.14: an existing 2.13.1 home is kept" "torch==2.13.1" "$TORCH_CONSTRAINT"
+# The pin moved to 2.14.1 but the floor is its own literal: a 2.13 home is not moved, only a below-floor one.
+for prev in 2.13.0 2.13.1; do
+    : > "$_SUBSTEP_LOG"
+    _run_block true "$prev"
+    assert_eq "2.14 pin: an existing $prev home is kept" "torch==$prev" "$TORCH_CONSTRAINT"
+    assert_not_contains "2.14 pin: an existing $prev home is not announced as moving" "$(cat "$_SUBSTEP_LOG")" "moving to"
+done
 _run_block true "2.10.0"
-assert_eq "pin bumped to 2.14: an existing 2.10 home moves to the bumped pin" "torch>=2.14.0,<2.15.0" "$TORCH_CONSTRAINT"
-_MACOS_NEW_INSTALL_TORCH="$_pin_saved"
+assert_eq "2.14 pin: an existing 2.10 home moves to the 2.14 pin" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
+# A released unsloth that admits 2.13 but caps below 2.14.1 keeps the route closed (never installs a torch it rejects).
+_pypi_fixture "torch<2.14.0,>=2.4.0"
+_run_block false ""
+assert_eq "PyPI capped below 2.14.1: fresh home keeps the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
+_pypi_fixture "torch<2.15.0,>=2.4.0"
 rm -f "$_SUBSTEP_LOG"
 substep() { :; }
 

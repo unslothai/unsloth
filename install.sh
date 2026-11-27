@@ -4366,8 +4366,9 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<${_TORCHAUDIO_CEILING}"
 _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 # Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
+# New homes take 2.14.1: on an M5 Max its diffusers-on-MPS renders ran 1.16-1.45x faster than 2.13.0.
 _MACOS_TORCH_CEILING="2.15.0"
-_MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+_MACOS_NEW_INSTALL_TORCH="torch>=2.14.1,<2.15.0"
 # An existing home below this moves to the new-install spec; fixed at Studio's fused-attention gate, not the pin.
 _MACOS_TORCH_MOVE_FLOOR="2.13.0"
 
@@ -5973,7 +5974,7 @@ _macos_product_major() {
     case "$_mpm" in ''|*[!0-9]*) echo "" ;; *) echo "$_mpm" ;; esac
 }
 
-# New installs only: torch 2.13's macOS wheels are macosx_14_0 and it has no cp313t build.
+# New installs only: torch 2.13 / 2.14's macOS wheels are macosx_14_0 and neither has a cp313t build.
 _macos_torch213_host_ok() {
     _mth_major=$(_macos_product_major)
     [ -n "$_mth_major" ] && [ "$_mth_major" -ge 14 ] 2>/dev/null || { echo "no"; return; }
@@ -7062,8 +7063,8 @@ elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_UR
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] || [ "$_macos_below_floor" = true ]; } \
        && [ "${_torch_index_pinned:-false}" = false ] \
        && [ "$(_macos_torch213_host_ok)" = "yes" ] \
-       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
-        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.13: only the chosen one moves
+       && [ "$(_pypi_unsloth_admits_torch "2.14.1")" = "yes" ]; then
+        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.14: only the chosen one moves
         _MACOS_NEW_INSTALL_ROUTE=true
         _MACOS_FLOOR_MOVE="$_macos_below_floor"
     fi
@@ -7093,7 +7094,7 @@ if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"
-    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"
 fi
 
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
